@@ -1,5 +1,8 @@
 import streamlit as st
 import Utils
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib_venn import venn2
 
 st.set_page_config(page_title="Network Pharmacology Platform", layout="centered")
 
@@ -71,12 +74,34 @@ if analyze_btn:
     else:
         with st.spinner(f"Querying targets for {drug_name}…"):
             drug_targets = Utils.get_drug_targets(drug_name)
+            disease_targets = Utils.get_disease_targets()
 
         st.markdown('<div class="result-card">', unsafe_allow_html=True)
 
-        col_a, col_b = st.columns([1, 1])
+        col_a, col_b, col_c = st.columns([1, 1, 1])
         col_a.metric("Drug", drug_name)
         col_b.metric("Targets", len(drug_targets))
+        col_c.metric("Disease targets", len(disease_targets))
+
+        drug_set = set(drug_targets)
+        disease_set = set(disease_targets)
+        common = drug_set & disease_set
+
+        st.metric("🎯 Common targets", len(common))
+
+        # ----- Venn diagram -----
+        fig, ax = plt.subplots(figsize=(6, 4))
+        v = venn2(
+            subsets=(len(drug_set - disease_set),
+                     len(disease_set - drug_set),
+                     len(common)),
+            set_labels=(f"{drug_name} targets", "Disease targets"),
+            ax=ax,
+        )
+        if v and v.get_label_by_id("11"):
+            v.get_label_by_id("11").set_fontsize(12)
+        ax.set_title(f"{drug_name} vs Disease — Venn Diagram", fontsize=14)
+        st.pyplot(fig)
 
         with st.expander("View target list", expanded=False):
             st.write(drug_targets)
@@ -85,4 +110,4 @@ if analyze_btn:
 
         st.success("✅ Analysis complete")
 else:
-    st.info("💡 Enter a drug name above and click Analyze")
+    st.info("� Enter a drug name above and click Analyze")
