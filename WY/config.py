@@ -26,7 +26,17 @@ API_TIMEOUT = 60
 API_MAX_RETRIES = 5
 API_RETRY_DELAY = 3
 API_REQUEST_DELAY = 1
-# ======== 文件存储路径配置（先不写，讨论之后再写） =========
+# ======== 文件存储路径配置 =========
+import os
+# 自动计算项目根目录（config.py 所在目录本地电脑的目录）
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# cache目录 — 储存 API 返回的原始数据
+CACHE_DIR = os.path.join(BASE_DIR, "Static", "data", "cache")
+
+# downloads目录 — 储存分析后的成品文件与 zip 压缩包
+DOWNLOADS_DIR = os.path.join(BASE_DIR, "Static", "data", "downloads")
+
 # ======== 物种映射表 =========
 #先写了人类，小鼠，大鼠，后面想加自己加
 SPECIES_MAP = {
