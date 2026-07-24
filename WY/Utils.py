@@ -10,6 +10,7 @@ def get_drug_targets(drug_name: str) -> list[str]:
 
 
 @st.cache_data
-def get_disease_targets() -> list[str]:
-    """返回硬编码的疾病靶点列表。"""
-    return ["TP53", "AKT1", "TNF", "IL6", "VEGFA", "EGFR"]
+def get_disease_targets(disease_name: str) -> list[str]:
+    """读取 static/data/{disease_name}.csv，返回 'Gene' 列的靶点列表。"""
+    df = pd.read_csv(f"Static/data/{disease_name}.csv")
+    return df["Gene"].tolist()

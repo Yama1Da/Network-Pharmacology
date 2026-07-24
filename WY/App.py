@@ -55,26 +55,36 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------- Title ----------
-st.markdown('<div class="title-area"><h1>🧬 Network Pharmacology Analysis Platform</h1><p>Input drug name to query its target information</p></div>',
+st.markdown('<div class="title-area"><h1>🧬 Network Pharmacology Analysis Platform</h1><p>Input drug and disease names to analyze overlapping targets</p></div>',
             unsafe_allow_html=True)
 
 # ---------- Search bar ----------
-col1, col2 = st.columns([3, 1])
-with col1:
+col_drug, col_disease = st.columns(2)
+with col_drug:
     drug_name = st.text_input("Drug name", value="aspirin",
                                label_visibility="collapsed",
-                               placeholder="e.g. aspirin")
-with col2:
-    analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
+                               placeholder="Drug name, e.g. aspirin")
+with col_disease:
+    disease_name = st.text_input("Disease name", value="cancer",
+                                  label_visibility="collapsed",
+                                  placeholder="Disease name, e.g. cancer")
+
+analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
 
 # ---------- Results ----------
 if analyze_btn:
+    errors = []
     if not drug_name.strip():
-        st.warning("Please enter a drug name")
+        errors.append("drug name")
+    if not disease_name.strip():
+        errors.append("disease name")
+
+    if errors:
+        st.warning(f"Please enter {' and '.join(errors)}")
     else:
-        with st.spinner(f"Querying targets for {drug_name}…"):
+        with st.spinner(f"Querying targets for {drug_name} and {disease_name}…"):
             drug_targets = Utils.get_drug_targets(drug_name)
-            disease_targets = Utils.get_disease_targets()
+            disease_targets = Utils.get_disease_targets(disease_name)
 
         st.markdown('<div class="result-card">', unsafe_allow_html=True)
 
@@ -95,12 +105,12 @@ if analyze_btn:
             subsets=(len(drug_set - disease_set),
                      len(disease_set - drug_set),
                      len(common)),
-            set_labels=(f"{drug_name} targets", "Disease targets"),
+            set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
             ax=ax,
         )
         if v and v.get_label_by_id("11"):
             v.get_label_by_id("11").set_fontsize(12)
-        ax.set_title(f"{drug_name} vs Disease — Venn Diagram", fontsize=14)
+        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
         st.pyplot(fig)
 
         with st.expander("View target list", expanded=False):
@@ -110,4 +120,4 @@ if analyze_btn:
 
         st.success("✅ Analysis complete")
 else:
-    st.info("� Enter a drug name above and click Analyze")
+    st.info("💡 Enter drug and disease names above and click Analyze")
