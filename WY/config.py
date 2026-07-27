@@ -59,4 +59,15 @@ SPECIES_MAP = {
     }
 }
 # ======== 分析参数 =========
-#生信的我不懂，后面找你了解
+# PPI 网络置信度阈值（STRING），≥0.7 为高置信度，≥0.4为中置信度
+PPI_CONFIDENCE = 0.7
+# 富集分析显著性阈值
+ENRICHMENT_PVALUE = 0.05
+# 药物-靶点连接阈值（STITCH，范围 0~1），≥0.7 为可信
+DRUG_TARGET_SCORE = 0.7
+# 通路展示数量上限
+PATHWAY_DISPLAY_NUM = 30
+# 最小度数过滤器 — 节点度数 ≤ 此值将被过滤，不视为核心靶点，该参数为兜底，正常应该使用中位数法
+MIN_DEGREE_FILTER = 3
+# PyVis 物理引擎迭代次数 — 值越大布局越松散，防止节点过度拥挤
+PHYSICS_ITERATIONS = 500
