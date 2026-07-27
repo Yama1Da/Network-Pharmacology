@@ -21,6 +21,11 @@ OpenTargetsPlatform_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 # 富集分析替补路径
 ENRICHR_ADD_URL = "https://maayanlab.cloud/Enrichr/addList"
 ENRICHR_QUERY_URL = "https://maayanlab.cloud/Enrichr/enrich"
+# ======== 其他路径 =========
+# RxNorm — 药物名称转 RxCUI，使用方式：requests.get(RxNorm_URL, params=RxNorm_PARAMS(drug_name))
+RxNorm_URL = "https://rxnav.nlm.nih.gov/REST/rxcui.json"
+def RxNorm_PARAMS(drug_name: str) -> dict:
+    return {"idtype": "name", "name": drug_name}
 # ======== API请求控制(鉴于都是国外网站所以设置的条件更宽松) =========
 API_TIMEOUT = 60
 API_MAX_RETRIES = 5
