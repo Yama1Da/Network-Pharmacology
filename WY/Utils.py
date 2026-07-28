@@ -177,54 +177,63 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
             pchembl_value__isnull=False,
         ))
 
-        # ---- Step 3: collect unique target IDs ----
-        target_ids: set[str] = set()
+        # ---- Step 3: get target details (cache by target_id) ----
+        from collections import OrderedDict
+        target_cache: dict[str, dict | None] = {}
         for act in acts:
             tid = act.get("target_chembl_id")
-            if tid:
-                target_ids.add(tid)
+            if tid and tid not in target_cache:
+                try:
+                    target_cache[tid] = new_client.target.get(tid)
+                except Exception:
+                    target_cache[tid] = None
 
-        # ---- Step 4: get target details & gene symbols ----
-        rows: list[dict] = []
-        for tid in sorted(target_ids):
-            try:
-                t = new_client.target.get(tid)
-            except Exception:
-                continue
-            if not t:
-                continue
-
-            pref_name = t.get("pref_name", "") or ""
-
-            # extract gene symbol from target_component synonyms
-            gene_name = None
+        def _extract_gene_name(t: dict) -> str | None:
+            """Extract gene symbol from a target dict."""
             if "target_components" in t:
                 for comp in t["target_components"]:
                     for syn in comp.get("target_component_synonyms", []):
                         if syn.get("syn_type") == "GENE_SYMBOL":
-                            gene_name = syn.get("component_synonym")
-                            break
-                    if gene_name:
-                        break
-
-            # fallback: HGNC xref
-            if not gene_name and "target_components" in t:
-                for comp in t["target_components"]:
+                            return syn.get("component_synonym")
                     for xref in comp.get("target_component_xrefs", []):
                         if xref.get("xref_src_db") == "HGNC":
-                            gene_name = xref.get("xref_name")
-                            break
-                    if gene_name:
-                        break
+                            return xref.get("xref_name")
+            return None
 
-            if gene_name:
-                rows.append({
-                    "approvedSymbol": gene_name,
-                    "target_id": tid,
-                    "approvedName": pref_name,
-                })
+        # ---- Step 4: build one row per activity with target info ----
+        rows: list[dict] = []
+        seen: set[tuple] = set()
+        for act in acts:
+            tid = act.get("target_chembl_id")
+            if not tid:
+                continue
 
-        df = pd.DataFrame(rows).drop_duplicates(subset=["approvedSymbol"]).reset_index(drop=True)
+            t = target_cache.get(tid)
+            if not t:
+                continue
+
+            gene_name = _extract_gene_name(t)
+            if not gene_name:
+                continue
+
+            pref_name = t.get("pref_name", "") or ""
+            assay_type = act.get("assay_type", "") or ""
+            pchembl_value = act.get("pchembl_value")
+
+            key = (gene_name, assay_type, pchembl_value)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            rows.append({
+                "approvedSymbol": gene_name,
+                "target_id": tid,
+                "approvedName": pref_name,
+                "assay_type": assay_type,
+                "pchembl_value": pchembl_value,
+            })
+
+        df = pd.DataFrame(rows).reset_index(drop=True)
 
         # ---- cache to CSV ----
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
