@@ -81,7 +81,8 @@ if analyze_btn:
         st.warning(f"Please enter {' and '.join(errors)}")
     else:
         with st.spinner(f"Querying targets for {drug_name} and {disease_name}…"):
-            drug_targets = Utils.get_drug_targets(drug_name)
+            drug_df, _ = Utils.fetch_drug_targets_chembl(drug_name)
+            drug_targets = drug_df["approvedSymbol"].tolist() if not drug_df.empty else []
             disease_targets = Utils.get_disease_targets(disease_name)
 
         st.markdown('<div class="result-card">', unsafe_allow_html=True)
@@ -112,7 +113,7 @@ if analyze_btn:
         st.pyplot(fig)
 
         with st.expander("View target list", expanded=False):
-            st.write(drug_targets)
+            st.write(drug_df if not drug_df.empty else [])
 
         st.markdown('</div>', unsafe_allow_html=True)
 

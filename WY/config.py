@@ -3,17 +3,16 @@
 DisGeNET_API_KEY = "your_api_key"
 BioGRID_API_KEY = "your_api_key"
 # ======== 主要路径 =========
-# 药物靶点路径
-STITCH_URL = "https://stitch.embl.de/api/json/getInteractions"
 # PPI网络路径
 STRING_URL = "https://string-db.org/api/json/network"
 # 疾病靶点路径
 DisGeNET_URL = "https://www.disgenet.org/api/gda/disease"
 # 富集分析路径
 gProfiler_URL = "https://biit.cs.ut.ee/gprofiler/api/gost/profile/"
+# ChEMBL — 药物靶点主数据源
+ChEMBL_API_BASE_URL = "https://www.ebi.ac.uk/chembl/api/data"
+ChEMBL_MAX_ACTIVITIES = 1000
 # ======== 备选路径 =========
-# 药物靶点替补路径
-PubChem_URL = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 # PPI网络替补路径
 BioGRID_URL = "https://webservice.thebiogrid.org/interactions"
 # 疾病靶点替补路径
@@ -46,7 +45,7 @@ DOWNLOADS_DIR = os.path.join(BASE_DIR, "Static", "data", "downloads")
 #先写了人类，小鼠，大鼠，后面想加自己加
 SPECIES_MAP = {
     "Human": {
-        "ncbi_taxon": "9606",       # 给 STRING / STITCH / BioGRID 用
+        "ncbi_taxon": "9606",       # 给 STRING / BioGRID 用
         "gprofiler": "hsapiens",    # 给 g:Profiler 用
     },
     "Mouse": {
@@ -63,7 +62,7 @@ SPECIES_MAP = {
 PPI_CONFIDENCE = 0.7
 # 富集分析显著性阈值
 ENRICHMENT_PVALUE = 0.05
-# 药物-靶点连接阈值（STITCH，范围 0~1），≥0.7 为可信
+# 药物-靶点连接阈值（Open Targets），≥0.7 为可信
 DRUG_TARGET_SCORE = 0.7
 # 通路展示数量上限
 PATHWAY_DISPLAY_NUM = 30
