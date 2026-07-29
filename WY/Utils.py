@@ -217,6 +217,7 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
                 continue
 
             pref_name = t.get("pref_name", "") or ""
+            organism = t.get("organism", "") or ""
             assay_type = act.get("assay_type", "") or ""
             pchembl_value = act.get("pchembl_value")
 
@@ -229,6 +230,7 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
                 "approvedSymbol": gene_name,
                 "target_id": tid,
                 "approvedName": pref_name,
+                "organism": organism,
                 "assay_type": assay_type,
                 "pchembl_value": pchembl_value,
             })
