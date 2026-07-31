@@ -83,17 +83,20 @@ if analyze_btn:
         with st.spinner(f"Querying targets for {drug_name} and {disease_name}…"):
             drug_df, _ = Utils.fetch_drug_targets_chembl(drug_name)
             drug_targets = drug_df["approvedSymbol"].tolist() if not drug_df.empty else []
-            disease_targets = Utils.get_disease_targets(disease_name)
+            disease_df = Utils.get_disease_targets(disease_name)
+            # 韦恩图/统计需要基因符号列表，从表格中取出
+            disease_targets = disease_df["approvedSymbol"].tolist() if not disease_df.empty else []
 
         st.markdown('<div class="result-card">', unsafe_allow_html=True)
 
-        col_a, col_b, col_c = st.columns([1, 1, 1])
-        col_a.metric("Drug", drug_name)
-        col_b.metric("Targets", len(drug_targets))
-        col_c.metric("Disease targets", len(disease_targets))
-
         drug_set = set(drug_targets)
         disease_set = set(disease_targets)
+
+        col_a, col_b, col_c = st.columns([1, 1, 1])
+        col_a.metric("Drug", drug_name)
+        col_b.metric("Targets", len(drug_set))
+        col_c.metric("Disease targets", len(disease_set))
+
         common = drug_set & disease_set
 
         st.metric("🎯 Common targets", len(common))
@@ -112,8 +115,19 @@ if analyze_btn:
         ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
         st.pyplot(fig)
 
-        with st.expander("View target list", expanded=False):
-            st.write(drug_df if not drug_df.empty else [])
+        with st.expander("View target lists", expanded=False):
+            # ----- 第一段：药物靶点（全量，按 pchembl 降序） -----
+            st.markdown(f"**💊 {drug_name} targets** — {len(drug_set)} genes ({len(drug_df)} records, sorted by pChEMBL desc)")
+            st.write(drug_df if not drug_df.empty else "（未获取到药物靶点数据）")
+
+            st.divider()
+
+            # ----- 第二段：疾病靶点（表格，含 Open Targets 关联指标，按分数降序） -----
+            st.markdown(f"**🦠 {disease_name} targets** — {len(disease_targets)} genes")
+            if not disease_df.empty:
+                st.dataframe(disease_df, use_container_width=True)
+            else:
+                st.write("（未获取到疾病靶点数据）")
 
         st.markdown('</div>', unsafe_allow_html=True)
 
