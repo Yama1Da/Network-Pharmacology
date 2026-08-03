@@ -49,12 +49,57 @@ st.markdown("""
     .stAlert {
         border-radius: 8px;
     }
+    /* Hide auto multipage navigation sidebar */
+    [data-testid="stSidebar"] {
+        display: none;
+    }
+    /* Top-left corner management buttons (fixed overlay, no card background) */
+    div.st-key-top_left_buttons {
+        position: fixed;
+        top: 3.5rem;
+        left: 1rem;
+        z-index: 9999;
+        display: flex;
+        flex-direction: row;
+        gap: 0.6rem;
+    }
+    /* Management buttons: #167A9C background, #C6E7F5 text, gently float up/down */
+    div.st-key-top_left_buttons .stButton button {
+        background-color: #167A9C;
+        color: #C6E7F5;
+        border: 1px solid #167A9C;
+        box-shadow: none;
+        animation: gentle-float 2s ease-in-out infinite;
+    }
+    /* On hover: stop floating, keep colors unchanged */
+    div.st-key-top_left_buttons .stButton button:hover,
+    div.st-key-top_left_buttons .stButton button:active {
+        background-color: #167A9C;
+        color: #C6E7F5;
+        border: 1px solid #167A9C;
+        box-shadow: none;
+        animation: none;
+    }
+    @keyframes gentle-float {
+        0%   { transform: translateY(0); }
+        50%  { transform: translateY(-4px); }
+        100% { transform: translateY(0); }
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ---------- Title ----------
 st.markdown('<div class="title-area"><h1>🧬 Network Pharmacology Analysis Platform</h1><p>Input drug and disease names to analyze overlapping targets</p></div>',
             unsafe_allow_html=True)
+
+# ---------- Management buttons (fixed top-left, open full-screen pages) ----------
+with st.container(key="top_left_buttons"):
+    if st.button("Drug Target Information Management", key="drug_mgmt_btn"):
+        st.switch_page("pages/Drug_Target_Information_Management.py")
+    if st.button("Disease Target Information Management", key="disease_mgmt_btn"):
+        st.switch_page("pages/Disease_Target_Information_Management.py")
+
+st.divider()
 
 # ---------- Search bar ----------
 col_drug, col_disease = st.columns(2)

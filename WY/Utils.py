@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime
 
 import pandas as pd
 import requests
@@ -454,3 +455,30 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
     except Exception:
         logging.exception("fetch_drug_targets_chembl failed for '%s'", drug_name)
         return pd.DataFrame(), None
+
+
+def list_cache_files(category: str) -> pd.DataFrame:
+    """列出 Static/data/cache/<category> 目录下缓存文件的文件名与创建时间。
+
+    Parameters
+    ----------
+    category : str
+        子目录名，如 "drug" 或 "disease"。
+
+    Returns
+    -------
+    pd.DataFrame
+        含 "File name"、"Created time" 两列；目录不存在或为空时返回空表。
+    """
+    cache_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", category
+    )
+    if not os.path.isdir(cache_dir):
+        return pd.DataFrame(columns=["File name", "Created time"])
+    rows = []
+    for name in sorted(os.listdir(cache_dir)):
+        path = os.path.join(cache_dir, name)
+        if os.path.isfile(path):
+            created = datetime.fromtimestamp(os.path.getctime(path)).strftime("%Y-%m-%d %H:%M:%S")
+            rows.append({"File name": name, "Created time": created})
+    return pd.DataFrame(rows, columns=["File name", "Created time"])
