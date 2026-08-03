@@ -1,9 +1,6 @@
-streamlit>=1.60.0
-pandas>=3.0.5
-requests>=2.34.2
-pyvis>=0.3.2
-plotly>=6.9.0
-matplotlib-venn>=1.1.2
-matplotlib>=3.11.1
-networkx>=3.6.1
-chembl_webresource_client>=0.10.9
+streamlit>=1.28
+pandas>=1.4
+requests>=2.31
+matplotlib>=3.5
+matplotlib-venn>=0.11
+chembl_webresource_client>=0.10
