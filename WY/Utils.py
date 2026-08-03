@@ -40,7 +40,23 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
         每行一个靶点，包含基因符号、ENSG ID、基因全名、染色体位置、
         靶点类别、关联分数、新颖性及各数据类型分数等指标；
         API 请求失败或未找到该疾病时返回空 DataFrame。
+
+    缓存
+    ----
+    结果持久化为 CSV（Static/data/cache/disease/OpenTargets_{disease_name}.csv），
+    命中缓存时直接读取本地文件，不访问远端 API。
     """
+    cache_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "disease"
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    csv_path = os.path.join(cache_dir, f"OpenTargets_{disease_name}.csv")
+
+    # ---- cache hit: load local ----
+    if os.path.exists(csv_path):
+        logging.info("Loading cached disease targets for '%s'", disease_name)
+        return pd.read_csv(csv_path)
+
     try:
         # ========== 第一步：search 查询，根据疾病名获取疾病 ID ==========
         # 这个 search 端点会在整个平台（疾病、药物、靶点、研究等实体）中做模糊搜索。
@@ -170,6 +186,8 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             })
 
         df = pd.DataFrame(records)
+        # ---- cache to CSV ----
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
         logging.info("Disease '%s' (%s): %d targets fetched", disease_name, disease_id, len(df))
         return df
 
@@ -275,7 +293,7 @@ def fetch_drug_targets_opentargets(drug_name: str) -> tuple[pd.DataFrame, str | 
 
         # ---- cache to CSV ----
         cache_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache"
+            os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "drug"
         )
         os.makedirs(cache_dir, exist_ok=True)
         csv_path = os.path.join(cache_dir, f"OpenTargets_{drug_name}.csv")
@@ -307,10 +325,13 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
     If a cached CSV already exists for this drug, loads it directly
     instead of calling the remote API.
 
-    Uses ALL activity records of the drug to identify target proteins
-    (no count limit — return as many targets as ChEMBL has), extracts
-    gene symbols from target component synonyms, and sorts the result
-    by pChEMBL value in descending order.
+    当前为【全靶点模式】：获取药物在 ChEMBL 中的全部活性记录
+    （不限数量、不过滤 pChEMBL 值），再提取基因符号，并按 pChEMBL 降序排列。
+    靶点更全，但会包含 ALB、CYP450 等弱关联/非特异性结合靶点。
+
+    若后续需要【高置信度模式】，只需在下方 Step 2 的 activity.filter 中
+    加回 pchembl_value__isnull=False 参数，即可只保留有 pChEMBL 定量值的靶点
+    （数量更少，但均为经过活性定量的高置信度靶点）。
 
     Parameters
     ----------
@@ -325,7 +346,7 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
          path to the cached CSV file, or None if the request failed).
     """
     cache_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache"
+        os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "drug"
     )
     os.makedirs(cache_dir, exist_ok=True)
     csv_path = os.path.join(cache_dir, f"ChEMBL_{drug_name}.csv")
@@ -355,7 +376,10 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
 
         chembl_id = mols[0]["molecule_chembl_id"]
 
-        # ---- Step 2: get ALL activities (no pChEMBL filter, no count limit) ----
+        # ---- Step 2: 获取全部活性数据（全靶点模式） ----
+        # 【全靶点模式】不筛选 pChEMBL 值，取药物全部活性记录，靶点更全。
+        # 后续如需切换为【高置信度模式】，在此 filter 中加回 pchembl_value__isnull=False，
+        # 即可只保留有 pChEMBL 定量值的靶点（更少但更可靠）。
         acts = list(new_client.activity.filter(
             molecule_chembl_id=chembl_id,
         ))
