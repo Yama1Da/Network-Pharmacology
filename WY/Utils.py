@@ -393,9 +393,16 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
             tid = act.get("target_chembl_id")
             if tid and tid not in target_cache:
                 try:
-                    target_cache[tid] = new_client.target.get(tid)
+                    t = new_client.target.get(tid)
                 except Exception:
-                    target_cache[tid] = None
+                    logging.exception("Failed to fetch target details for '%s'", tid)
+                    st.toast("靶点获取错误，停止信息获取", icon="⚠️")
+                    return pd.DataFrame(), None  # 失败即停止，且不保存 CSV
+                if not t:
+                    logging.error("Target '%s' not found, aborting fetch", tid)
+                    st.toast("靶点获取错误，停止信息获取", icon="⚠️")
+                    return pd.DataFrame(), None  # 失败即停止，且不保存 CSV
+                target_cache[tid] = t
 
         def _extract_gene_name(t: dict) -> str | None:
             """Extract gene symbol from a target dict."""
@@ -419,7 +426,11 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
 
             t = target_cache.get(tid)
             if not t:
-                continue
+                # 正常情况下不会走到这里（Step 3 已保证所有 target 有效）；
+                # 若发生则视为获取失败，停止并提示，保证数据完整性。
+                logging.error("Target details missing for '%s', aborting fetch", tid)
+                st.toast("靶点获取错误，停止信息获取", icon="⚠️")
+                return pd.DataFrame(), None
 
             gene_name = _extract_gene_name(t)
             if not gene_name:
