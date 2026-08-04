@@ -36,7 +36,7 @@ def RxNorm_PARAMS(drug_name: str) -> dict:
 API_TIMEOUT = 60
 API_MAX_RETRIES = 5
 API_RETRY_DELAY = 3
-API_REQUEST_DELAY = 1
+API_REQUEST_DELAY = 0.2
 # ======== 文件存储路径配置 =========
 import os
 # 自动计算项目根目录（config.py 所在目录本地电脑的目录）

@@ -31,12 +31,18 @@ st.markdown("""
     [data-testid="stSidebar"] {
         display: none;
     }
-    /* Update buttons colors (#6347A1 bg, #E0D8F2 text) */
+    /* 行内 Update 按钮（#6347A1 底、#E0D8F2 字） */
     .st-key-update_btn button,
-    .st-key-file_rows button {
+    .st-key-file_rows [class*="st-key-update_"] button {
         background-color: #6347A1;
         color: #E0D8F2;
         border: 1px solid #6347A1;
+    }
+    /* 行内 Download 按钮（#207D62 底、#C8F0DF 字） */
+    .st-key-file_rows [class*="st-key-download_"] button {
+        background-color: #207D62;
+        color: #C8F0DF;
+        border: 1px solid #207D62;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -82,24 +88,43 @@ if all_update_clicked:
 st.divider()
 
 disease_files = Utils.list_cache_files("disease")
+clicked_file = None
+
 if disease_files.empty:
     st.info("No cached disease target files.")
 else:
     # 表头
-    col_h_name, col_h_time, col_h_btn = st.columns([3, 2, 1])
+    col_h_name, col_h_time, col_h_btn, col_h_dl = st.columns([3, 2, 1, 1])
     col_h_name.markdown("**File name**")
     col_h_time.markdown("**Created time**")
     col_h_btn.markdown("**Update**")
+    col_h_dl.markdown("**Download**")
 
-    # 每行一个 Update 按钮，只更新该行对应的文件
+    # 每行：Update（只更新该文件）+ Download（下载磁盘上的 CSV，保证持久化）
     with st.container(key="file_rows"):
         for _, row in disease_files.iterrows():
-            col_name, col_time, col_btn = st.columns([3, 2, 1])
+            col_name, col_time, col_btn, col_dl = st.columns([3, 2, 1, 1])
             col_name.write(row["File name"])
             col_time.write(row["Created time"])
             with col_btn:
                 if st.button("Update", key=f"update_{row['File name']}"):
-                    with st.spinner(f"Updating {row['File name']}…"):
-                        result = refresh_file(row["File name"])
-                    st.session_state["last_update"] = {"File": row["File name"], **result}
-                    st.rerun()
+                    clicked_file = row["File name"]
+            with col_dl:
+                file_path = os.path.join(CACHE_DIR, row["File name"])
+                if os.path.exists(file_path):
+                    with open(file_path, "rb") as f:
+                        csv_bytes = f.read()
+                    st.download_button(
+                        "Download",
+                        data=csv_bytes,
+                        file_name=row["File name"],
+                        mime="text/csv",
+                        key=f"download_{row['File name']}",
+                    )
+
+# 更新在容器外执行后再 rerun，避免旧行以残影形式残留在页面上
+if clicked_file:
+    with st.spinner(f"Updating {clicked_file}…"):
+        result = refresh_file(clicked_file)
+    st.session_state["last_update"] = {"File": clicked_file, **result}
+    st.rerun()

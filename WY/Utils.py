@@ -387,11 +387,15 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
         ))
 
         # ---- Step 3: get target details (cache by target_id) ----
+        import time
+        import config
         from collections import OrderedDict
         target_cache: dict[str, dict | None] = {}
         for act in acts:
             tid = act.get("target_chembl_id")
             if tid and tid not in target_cache:
+                # 请求间隔：每个靶点请求前先等待，避免连续快速请求被 ChEMBL 限流/封禁
+                time.sleep(config.API_REQUEST_DELAY)
                 try:
                     t = new_client.target.get(tid)
                 except Exception:
@@ -467,6 +471,33 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
     except Exception:
         logging.exception("fetch_drug_targets_chembl failed for '%s'", drug_name)
         return pd.DataFrame(), None
+
+
+#TTL时间修改
+def set_chembl_cache_ttl(hours: int) -> None:
+    """调整 chembl_webresource_client 的 HTTP 响应缓存有效期（TTL）。
+
+    chembl 客户端默认把每个 API 响应缓存在本地 sqlite（CACHE_EXPIRE=24h）。
+    本函数把 TTL 改为指定小时数，并同步更新当前进程内已创建的会话，
+    使其对之后保存的响应立即生效（超过 TTL 的响应会自动重新联网请求）。
+
+    Parameters
+    ----------
+    hours : int
+        缓存小时数。数值越小数据越新、真实请求越频繁。
+    """
+    try:
+        from chembl_webresource_client.settings import Settings
+        Settings.Instance().CACHE_EXPIRE = hours * 3600
+        from chembl_webresource_client.new_client import new_client
+        for name in ("molecule", "activity", "target"):
+            qs = getattr(new_client, name, None)
+            query = getattr(qs, "query", None) if qs is not None else None
+            session = getattr(query, "session", None) if query is not None else None
+            if session is not None:
+                session.expire_after = hours * 3600
+    except Exception:
+        logging.exception("Failed to set ChEMBL cache TTL to %d hours", hours)
 
 
 def list_cache_files(category: str) -> pd.DataFrame:
