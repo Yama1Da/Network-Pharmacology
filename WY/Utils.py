@@ -527,6 +527,27 @@ def list_cache_files(category: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["File name", "Created time"])
 
 
+def list_download_dirs() -> pd.DataFrame:
+    """列出 DOWNLOADS_DIR 下的子目录（一次分析一组）及其创建时间。
+
+    Returns
+    -------
+    pd.DataFrame
+        含 "Directory"、"Created time" 两列；目录不存在或无子目录时返回空表。
+    """
+    import config
+
+    if not os.path.isdir(config.DOWNLOADS_DIR):
+        return pd.DataFrame(columns=["Directory", "Created time"])
+    rows = []
+    for name in sorted(os.listdir(config.DOWNLOADS_DIR)):
+        path = os.path.join(config.DOWNLOADS_DIR, name)
+        if os.path.isdir(path):
+            created = datetime.fromtimestamp(os.path.getctime(path)).strftime("%Y-%m-%d %H:%M:%S")
+            rows.append({"Directory": name, "Created time": created})
+    return pd.DataFrame(rows, columns=["Directory", "Created time"])
+
+
 # ==================== PPI 网络模块 ====================
 
 
@@ -944,4 +965,23 @@ def make_ppi_zip(file_paths: dict) -> bytes:
             path = file_paths.get(name)
             if path and os.path.exists(path):
                 zf.write(path, arcname=os.path.basename(path))
+    return buf.getvalue()
+
+
+def make_dir_zip(directory: str) -> bytes:
+    """
+    将某个目录下的全部文件打包为 zip 字节（供管理页按目录整体下载）。
+
+    zip 内使用各文件的文件名（不带目录前缀），返回空 zip 当目录不存在或为空。
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if os.path.isdir(directory):
+            for name in sorted(os.listdir(directory)):
+                path = os.path.join(directory, name)
+                if os.path.isfile(path):
+                    zf.write(path, arcname=name)
     return buf.getvalue()

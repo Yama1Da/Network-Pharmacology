@@ -21,16 +21,25 @@ st.markdown("""
         color: #C6E7F5;
         border: 1px solid #167A9C;
     }
+    /* Data Management button colors (#6347A1 bg, #E0D8F2 text) */
+    .st-key-data_mgmt_btn button {
+        background-color: #6347A1;
+        color: #E0D8F2;
+        border: 1px solid #6347A1;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🧬 PPI Network Analysis")
 st.caption("Drug ∩ Disease targets → STRING interactions → topology analysis → network visualization")
 
-col_back, _ = st.columns([1, 4])
+col_back, col_mgmt = st.columns([1, 1])
 with col_back:
     if st.button("← Back to Main", key="back_btn"):
         st.switch_page("App.py")
+with col_mgmt:
+    if st.button("Data Management", key="data_mgmt_btn"):
+        st.switch_page("pages/Data_Management.py")
 
 st.divider()
 
