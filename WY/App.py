@@ -98,6 +98,8 @@ with st.container(key="top_left_buttons"):
         st.switch_page("pages/Drug_Target_Information_Management.py")
     if st.button("Disease Target Information Management", key="disease_mgmt_btn"):
         st.switch_page("pages/Disease_Target_Information_Management.py")
+    if st.button("PPI Network Analysis", key="ppi_mgmt_btn"):
+        st.switch_page("pages/PPI_Network.py")
 
 st.divider()
 
@@ -112,7 +114,7 @@ with col_disease:
                                   label_visibility="collapsed",
                                   placeholder="Disease name, e.g. cancer")
 
-analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
+analyze_btn = st.button("Analyze", type="primary", width="stretch")
 
 # ---------- Results ----------
 if analyze_btn:
@@ -170,7 +172,7 @@ if analyze_btn:
             # ----- 第二段：疾病靶点（表格，含 Open Targets 关联指标，按分数降序） -----
             st.markdown(f"**🦠 {disease_name} targets** — {len(disease_targets)} genes")
             if not disease_df.empty:
-                st.dataframe(disease_df, use_container_width=True)
+                st.dataframe(disease_df, width="stretch")
             else:
                 st.write("（未获取到疾病靶点数据）")
 

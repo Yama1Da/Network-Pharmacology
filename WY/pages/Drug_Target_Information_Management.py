@@ -71,7 +71,7 @@ if all_update_clicked:
     if results.empty:
         st.info("No cached drug target files to update.")
     else:
-        st.dataframe(results, use_container_width=True, hide_index=True)
+        st.dataframe(results, width="stretch", hide_index=True)
         if results["Status"].eq("OK").all():
             st.success("✅ All updates complete")
         else:

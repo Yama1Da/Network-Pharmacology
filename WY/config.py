@@ -4,7 +4,14 @@ DisGeNET_API_KEY = "your_api_key"
 BioGRID_API_KEY = "your_api_key"
 # ======== 主要路径 =========
 # PPI网络路径
+# 版本化基础地址：裸 string-db.org 会随 STRING 版本更新而变化，版本化地址保证分析结果可复现
+STRING_BASE_URL = "https://version-12-0.string-db.org/api/json"
+# 非版本化地址（可手动切换，一般不推荐用于正式分析）
 STRING_URL = "https://string-db.org/api/json/network"
+# STRING 单次查询基因数量上限（API 限制约 1000 个）
+STRING_QUERY_LIMIT = 1000
+# STRING 调用方标识（STRING 官方要求标注应用身份，避免被限流）
+STRING_CALLER_IDENTITY = "NetworkPharmacologyPlatform"
 # 疾病靶点路径
 DisGeNET_URL = "https://www.disgenet.org/api/gda/disease"
 # 富集分析路径
@@ -37,6 +44,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # cache目录 — 储存 API 返回的原始数据
 CACHE_DIR = os.path.join(BASE_DIR, "Static", "data", "cache")
+
+# PPI缓存目录 — 储存 STRING API 返回的边表数据
+PPI_CACHE_DIR = os.path.join(CACHE_DIR, "ppi")
 
 # downloads目录 — 储存分析后的成品文件与 zip 压缩包
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "Static", "data", "downloads")
