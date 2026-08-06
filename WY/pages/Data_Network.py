@@ -7,7 +7,7 @@ import streamlit as st
 import config
 import Utils
 
-st.set_page_config(page_title="PPI Network Analysis", layout="wide")
+st.set_page_config(page_title="Data Network Pharmacology Analysis", layout="wide")
 
 # ---------- Hide auto navigation sidebar for full-screen display ----------
 st.markdown("""
@@ -30,8 +30,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🧬 PPI Network Analysis")
-st.caption("Drug ∩ Disease targets → STRING interactions → topology analysis → network visualization")
+st.title("🌐 Data Network Pharmacology Analysis")
+st.caption("Common targets → STRING interactions → topology analysis → GO/KEGG enrichment → visualization & export")
 
 col_back, col_mgmt = st.columns([1, 1])
 with col_back:
@@ -72,20 +72,21 @@ with col_params:
     score = st.slider("STRING confidence", 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
     min_degree = st.number_input("Min degree (hub)", 1, 20, config.MIN_DEGREE_FILTER, 1)
 
-run_btn = st.button("Build PPI Network", key="run_btn", type="primary", width="stretch")
+run_btn = st.button("Build Report", key="run_btn", type="primary", width="stretch")
 
 
 # ---------- 分析执行 ----------
-def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, score, min_degree) -> dict:
-    """执行完整 PPI 分析（交集→STRING→建图→指标→Hub→可视化→保存），返回结果字典。"""
+def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree) -> dict:
+    """执行完整分析（交集→STRING→建图→指标→Hub→富集→可视化→保存），返回结果字典。"""
     # Step 0: 确定输入基因列表
     if mode == "Drug + Disease names":
         genes = Utils.get_common_targets(drug_name, disease_name, top_n=config.STRING_QUERY_LIMIT)
-        prefix = re.sub(r"[^\w\-]+", "_", f"PPI_{drug_name}_{disease_name}")
+        # 结果目录/文件前缀：药物名_疾病名（save_ppi_results 会生成 <prefix>_data 目录）
+        prefix = re.sub(r"[^\w\-]+", "_", f"{drug_name}_{disease_name}")
     else:
         tokens = re.split(r"[\s,;]+", gene_text)
         genes = sorted({t.strip().upper() for t in tokens if t.strip()})
-        prefix = "PPI_manual"
+        prefix = "manual"
 
     # Step 1: STRING 获取相互作用
     edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score)
@@ -98,8 +99,21 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, scor
     html_content = Utils.render_pyvis_html(graph, metrics_df)
     static_fig = Utils.render_static_plot(graph, metrics_df)
 
+    # Step 4.5: 富集分析（g:Profiler 主 + Enrichr 备，输入为交集靶点）
+    enrichment_df, enrichment_source = Utils.run_enrichment(
+        genes, organism=organism, pvalue=config.ENRICHMENT_PVALUE
+    )
+    enrichment_bar_fig = enrichment_dot_fig = None
+    if not enrichment_df.empty:
+        enrichment_bar_fig, enrichment_dot_fig = Utils.render_enrichment_plots(enrichment_df)
+
     # Step 5: 保存到 DOWNLOADS_DIR（替代式：同 prefix 旧目录会被替换）
-    saved = Utils.save_ppi_results(graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix)
+    saved = Utils.save_ppi_results(
+        graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix,
+        enrichment_df=enrichment_df if not enrichment_df.empty else None,
+        enrichment_bar_fig=enrichment_bar_fig,
+        enrichment_dot_fig=enrichment_dot_fig,
+    )
 
     return {
         "genes": genes,
@@ -109,9 +123,13 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, scor
         "hub_df": hub_df,
         "html_content": html_content,
         "static_fig": static_fig,
+        "enrichment_df": enrichment_df,
+        "enrichment_source": enrichment_source,
+        "enrichment_bar_fig": enrichment_bar_fig,
+        "enrichment_dot_fig": enrichment_dot_fig,
         "saved": saved,
         "prefix": prefix,
-        "params": (mode, drug_name, disease_name, gene_text, species_id, score, min_degree),
+        "params": (mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree),
     }
 
 
@@ -125,6 +143,7 @@ current_params = (
     disease_name.strip(),
     gene_text.strip(),
     config.SPECIES_MAP[species_label]["ncbi_taxon"],
+    config.SPECIES_MAP[species_label]["gprofiler"],
     score,
     int(min_degree),
 )
@@ -133,13 +152,14 @@ if run_btn:
     if input_mode == "Drug + Disease names" and (not drug_name.strip() or not disease_name.strip()):
         st.warning("Please enter both drug and disease names")
     else:
-        with st.spinner("Building PPI network…"):
+        with st.spinner("Building Report…"):
             st.session_state.ppi = _run_ppi_analysis(
                 input_mode,
                 drug_name.strip(),
                 disease_name.strip(),
                 gene_text.strip(),
                 config.SPECIES_MAP[species_label]["ncbi_taxon"],
+                config.SPECIES_MAP[species_label]["gprofiler"],
                 score,
                 int(min_degree),
             )
@@ -187,6 +207,30 @@ if ppi is not None:
         st.subheader("📊 Static network")
         st.pyplot(static_fig)
 
+        # ---------- 富集分析展示 ----------
+        st.divider()
+        st.subheader("🧪 Enrichment analysis")
+        enrichment_df = ppi["enrichment_df"]
+        enrichment_source = ppi["enrichment_source"]
+        enrichment_bar_fig = ppi["enrichment_bar_fig"]
+        enrichment_dot_fig = ppi["enrichment_dot_fig"]
+        if enrichment_df is None or enrichment_df.empty:
+            st.info("No significant enrichment terms (adjusted p < 0.05) — try lowering the confidence threshold.")
+        else:
+            st.caption(
+                f"Source: **{enrichment_source}** · {len(enrichment_df)} significant terms "
+                f"(GO:BP / GO:MF / GO:CC / KEGG) · inputs: {len(genes)} common targets"
+            )
+            display_cols = ["source", "term_id", "term_name", "adjusted_p_value",
+                            "intersection_size", "query_size"]
+            st.dataframe(enrichment_df[display_cols], width="stretch", hide_index=True)
+            if enrichment_bar_fig is not None:
+                st.caption("Bar plot: top terms per source, length = -log10(adjusted p-value)")
+                st.pyplot(enrichment_bar_fig)
+            if enrichment_dot_fig is not None:
+                st.caption("Bubble plot: bubble size = hit count, color = adjusted p-value")
+                st.pyplot(enrichment_dot_fig)
+
         # ---------- 下载区 ----------
         with st.expander("Download results"):
             col_d1, col_d2, col_d3 = st.columns(3)
@@ -222,6 +266,29 @@ if ppi is not None:
                     f"{prefix}_network.svg", "image/svg+xml", width="stretch",
                 )
             with col_d6:
+                # 富集气泡图（与 ZIP 换位到第二行第三列；有富集结果时显示）
+                if "enrichment_csv" in saved:
+                    st.download_button(
+                        "⬇️ Enrichment Bubble",
+                        open(saved["enrichment_dot_png"], "rb").read(),
+                        f"{prefix}_enrichment_dot.png", "image/png", width="stretch",
+                    )
+            # 第三行：富集 CSV / Bar（有富集结果时）+ 右下角 ZIP（始终显示）
+            col_e1, col_e2, col_e3 = st.columns(3)
+            if "enrichment_csv" in saved:
+                with col_e1:
+                    st.download_button(
+                        "⬇️ Enrichment CSV",
+                        open(saved["enrichment_csv"], "rb").read(),
+                        f"{prefix}_enrichment.csv", "text/csv", width="stretch",
+                    )
+                with col_e2:
+                    st.download_button(
+                        "⬇️ Enrichment Bar",
+                        open(saved["enrichment_bar_png"], "rb").read(),
+                        f"{prefix}_enrichment_bar.png", "image/png", width="stretch",
+                    )
+            with col_e3:
                 st.download_button(
                     "⬇️ All results (ZIP)",
                     Utils.make_ppi_zip(saved),
@@ -231,4 +298,4 @@ if ppi is not None:
                 f"All files of this analysis are grouped in: `{saved['directory']}`"
             )
 
-        st.success("✅ PPI network analysis complete")
+        st.success("✅ Report analysis complete")

@@ -880,12 +880,18 @@ def save_ppi_results(
     nodes_df: pd.DataFrame,
     edges_df: pd.DataFrame,
     html_content: str,
-    prefix: str = "PPI",
+    prefix: str,
+    enrichment_df: pd.DataFrame | None = None,
+    enrichment_bar_fig: "matplotlib.figure.Figure | None" = None,
+    enrichment_dot_fig: "matplotlib.figure.Figure | None" = None,
 ) -> dict:
     """
-    将一次 PPI 分析的全部结果保存到 DOWNLOADS_DIR/<prefix>/ 目录（替代式）。
+    将一次 PPI 分析的全部结果保存到 DOWNLOADS_DIR/<prefix>_data/ 目录（替代式）。
 
-    【替代式保存】：保存前会删除同前缀的旧目录（含历史时间戳目录），
+    目录名 = <prefix>_data（prefix 如 药物名_疾病名，例如 aspirin_cancer_data），
+    文件名 = <prefix>_xxx（如 aspirin_cancer_nodes.csv）。
+
+    【替代式保存】：保存前会删除同 prefix 的旧目录（含历史时间戳目录），
     同一 prefix（同一药物+疾病）始终只保留最新一次分析，不会堆积。
 
     目录内容：
@@ -894,6 +900,9 @@ def save_ppi_results(
       - {prefix}_network.html   交互式网络
       - {prefix}_graph.graphml  可编辑网络文件（供 Cytoscape / Gephi 精修）
       - {prefix}_network.svg    静态图矢量版（论文出版用）
+      - {prefix}_enrichment.csv           富集结果表（有富集数据时）
+      - {prefix}_enrichment_bar.png/.svg  富集柱状图（有富集数据时）
+      - {prefix}_enrichment_dot.png/.svg  富集气泡图（有富集数据时）
 
     Parameters
     ----------
@@ -908,12 +917,16 @@ def save_ppi_results(
     html_content : str
         交互式网络的 HTML 内容。
     prefix : str
-        文件名前缀，建议用 药物_疾病 标识本次分析。
+        文件名/目录名前缀，如 "aspirin_cancer"（目录会追加 "_data" 后缀）。
+    enrichment_df : pd.DataFrame | None
+        富集结果表（统一列）；None 表示本次分析无富集数据。
+    enrichment_bar_fig / enrichment_dot_fig : Figure | None
+        富集柱状图 / 气泡图；None 表示无富集数据。
 
     Returns
     -------
     dict
-        {"nodes", "edges", "html", "graphml", "svg", "directory"} 各文件路径与目录路径。
+        各文件路径与目录路径（含可选富集文件路径）。
     """
     import glob
     import shutil
@@ -923,12 +936,10 @@ def save_ppi_results(
     os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
 
     # 替代式保存：删除同前缀的旧目录（含历史时间戳目录），只保留本次最新分析
-    for old in glob.glob(os.path.join(config.DOWNLOADS_DIR, f"{prefix}_*")):
+    for old in glob.glob(os.path.join(config.DOWNLOADS_DIR, f"{prefix}_data*")):
         if os.path.isdir(old):
             shutil.rmtree(old)
-    subdir = os.path.join(config.DOWNLOADS_DIR, prefix)
-    if os.path.isdir(subdir):
-        shutil.rmtree(subdir)
+    subdir = os.path.join(config.DOWNLOADS_DIR, f"{prefix}_data")
     os.makedirs(subdir, exist_ok=True)
 
     paths = {
@@ -945,13 +956,29 @@ def save_ppi_results(
     nx.write_graphml(graph, paths["graphml"])
     static_fig.savefig(paths["svg"], format="svg", bbox_inches="tight")
 
+    # 富集文件（可选）
+    if enrichment_df is not None and not enrichment_df.empty:
+        paths["enrichment_csv"] = os.path.join(subdir, f"{prefix}_enrichment.csv")
+        enrichment_df.to_csv(paths["enrichment_csv"], index=False, encoding="utf-8-sig")
+    if enrichment_bar_fig is not None:
+        paths["enrichment_bar_png"] = os.path.join(subdir, f"{prefix}_enrichment_bar.png")
+        paths["enrichment_bar_svg"] = os.path.join(subdir, f"{prefix}_enrichment_bar.svg")
+        enrichment_bar_fig.savefig(paths["enrichment_bar_png"], format="png", bbox_inches="tight")
+        enrichment_bar_fig.savefig(paths["enrichment_bar_svg"], format="svg", bbox_inches="tight")
+    if enrichment_dot_fig is not None:
+        paths["enrichment_dot_png"] = os.path.join(subdir, f"{prefix}_enrichment_dot.png")
+        paths["enrichment_dot_svg"] = os.path.join(subdir, f"{prefix}_enrichment_dot.svg")
+        enrichment_dot_fig.savefig(paths["enrichment_dot_png"], format="png", bbox_inches="tight")
+        enrichment_dot_fig.savefig(paths["enrichment_dot_svg"], format="svg", bbox_inches="tight")
+
     paths["directory"] = subdir
     return paths
 
 
 def make_ppi_zip(file_paths: dict) -> bytes:
     """
-    将一次分析的结果文件（nodes/edges/html/graphml/svg）打包为 zip 字节。
+    将一次分析的全部结果文件打包为 zip 字节（nodes/edges/html/graphml/svg
+    及富集 CSV/图等所有已落盘的文件，排除 directory 键）。
 
     供 st.download_button 直接下载；文件在 zip 内使用各自的文件名，
     配合独立子目录，用户解压后即可获得该次分析的全部成品。
@@ -961,8 +988,9 @@ def make_ppi_zip(file_paths: dict) -> bytes:
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name in ("nodes", "edges", "html", "graphml", "svg"):
-            path = file_paths.get(name)
+        for name, path in file_paths.items():
+            if name == "directory":
+                continue
             if path and os.path.exists(path):
                 zf.write(path, arcname=os.path.basename(path))
     return buf.getvalue()
@@ -985,3 +1013,326 @@ def make_dir_zip(directory: str) -> bytes:
                 if os.path.isfile(path):
                     zf.write(path, arcname=name)
     return buf.getvalue()
+
+
+# ==================== 富集分析模块 ====================
+
+# gseapy (Enrichr) 基因集库名与 g:Profiler sources 的映射关系：
+#   g:Profiler source    →  Enrichr 库名
+#   GO:BP                →  GO_Biological_Process_2021
+#   GO:MF                →  GO_Molecular_Function_2021
+#   GO:CC                →  GO_Cellular_Component_2021
+#   KEGG                 →  KEGG_2021_Human
+ENRICHR_LIB_MAP = {
+    "GO:BP": "GO_Biological_Process_2021",
+    "GO:MF": "GO_Molecular_Function_2021",
+    "GO:CC": "GO_Cellular_Component_2021",
+    "KEGG": "KEGG_2021_Human",
+}
+
+# g:Profiler 物种名 → Enrichr 物种名。
+# 注意：Enrichr 只支持 human / mouse 等，大鼠（rnorvegicus）无对应库，
+# 因此大鼠场景下降级 Enrichr 会被跳过，仅依赖 g:Profiler。
+_ENRICHR_ORGANISM_MAP = {
+    "hsapiens": "human",
+    "mmusculus": "mouse",
+}
+
+
+def _enrichment_cache_key(genes: list[str], organism: str, sources, pvalue: float) -> str:
+    """根据基因列表与查询参数生成富集缓存文件名（md5）：相同输入命中同一缓存文件。"""
+    payload = (
+        "\r".join(sorted(set(genes)))
+        + f"|{organism}|{','.join(sources)}|{pvalue}"
+    )
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def fetch_enrichment_gprofiler(
+    genes: list[str],
+    organism: str = "hsapiens",
+    sources: tuple = ("GO:BP", "GO:MF", "GO:CC", "KEGG"),
+    pvalue: float = 0.05,
+) -> pd.DataFrame:
+    """
+    通过 g:Profiler 官方客户端（gprofiler-official）获取功能富集结果。
+
+    结果缓存在 Static/data/cache/enrichment 下（md5 命名），命中缓存时直接读取
+    本地文件，不访问远端 API。
+
+    Parameters
+    ----------
+    genes : list[str]
+        输入基因符号列表。
+    organism : str
+        g:Profiler 物种名，如 "hsapiens"。
+    sources : tuple
+        g:Profiler 数据源，如 ("GO:BP", "GO:MF", "GO:CC", "KEGG")。
+    pvalue : float
+        显著性阈值（g:Profiler 的 user_threshold，默认即 g_SCS 校正后阈值）。
+
+    Returns
+    -------
+    pd.DataFrame
+        统一列富集结果（source / term_id / term_name / p_value /
+        adjusted_p_value / intersection_size / query_size / genes）；
+        请求失败或无显著结果时返回空 DataFrame。
+    """
+    import config
+
+    genes = sorted({g.strip() for g in genes if g and g.strip()})
+    if not genes:
+        return pd.DataFrame()
+    os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
+    cache_file = os.path.join(
+        config.ENRICHMENT_CACHE_DIR,
+        f"gProfiler_{_enrichment_cache_key(genes, organism, sources, pvalue)}.csv",
+    )
+    if os.path.exists(cache_file):
+        logging.info("Loading cached g:Profiler enrichment for %d genes", len(genes))
+        return pd.read_csv(cache_file)
+
+    try:
+        from gprofiler import GProfiler
+
+        gp = GProfiler(return_dataframe=True)
+        res = gp.profile(
+            query=genes,
+            organism=organism,
+            sources=list(sources),
+            user_threshold=pvalue,
+        )
+    except Exception:
+        logging.exception("g:Profiler enrichment failed for %d genes", len(genes))
+        return pd.DataFrame()
+
+    if res is None or len(res) == 0:
+        logging.info("g:Profiler: no significant terms (p < %s) for %d genes", pvalue, len(genes))
+        return pd.DataFrame()
+
+    df = _normalize_enrichment_gprofiler(res)
+    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    logging.info("g:Profiler enrichment for %d genes: %d terms cached", len(genes), len(df))
+    return df
+
+
+def _normalize_enrichment_gprofiler(df: pd.DataFrame) -> pd.DataFrame:
+    """把 g:Profiler 返回的 DataFrame 整理为统一列。
+
+    g:Profiler 默认已做 g_SCS 多重检验校正，p_value 即校正后 p 值，
+    因此 adjusted_p_value 与 p_value 相同。
+    """
+    df = df.reset_index()  # return_dataframe=True 时 term_id 常在 index 中
+    out = pd.DataFrame({
+        "source": df["source"].astype(str),
+        "term_id": df["term_id"].astype(str),
+        "term_name": df["term_name"].astype(str),
+        "p_value": pd.to_numeric(df["p_value"], errors="coerce"),
+        "adjusted_p_value": pd.to_numeric(df["p_value"], errors="coerce"),
+        "intersection_size": pd.to_numeric(df["intersection_size"], errors="coerce"),
+        "query_size": pd.to_numeric(df["query_size"], errors="coerce"),
+        "genes": df["intersection"].fillna(""),
+    })
+    out = out.dropna(subset=["term_id", "p_value"]).sort_values("p_value")
+    return out.reset_index(drop=True)
+
+
+def fetch_enrichment_enrichr(
+    genes: list[str],
+    libs: list[str],
+    organism: str = "human",
+    pvalue: float = 0.05,
+) -> pd.DataFrame:
+    """
+    通过 gseapy（Enrichr 官方 wrapper）获取功能富集结果（作为 g:Profiler 的降级方案）。
+
+    结果同样缓存在 Static/data/cache/enrichment 下。
+
+    Parameters
+    ----------
+    genes : list[str]
+        输入基因符号列表。
+    libs : list[str]
+        Enrichr 基因集库名（见 ENRICHR_LIB_MAP 的映射）。
+    organism : str
+        Enrichr 物种名（"human" / "mouse"）。
+    pvalue : float
+        显著性阈值（cutoff）。
+
+    Returns
+    -------
+    pd.DataFrame
+        统一列富集结果；请求失败或无显著结果时返回空 DataFrame。
+    """
+    import config
+
+    genes = sorted({g.strip() for g in genes if g and g.strip()})
+    if not genes or not libs:
+        return pd.DataFrame()
+    os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
+    cache_file = os.path.join(
+        config.ENRICHMENT_CACHE_DIR,
+        f"Enrichr_{_enrichment_cache_key(genes, organism, libs, pvalue)}.csv",
+    )
+    if os.path.exists(cache_file):
+        logging.info("Loading cached Enrichr enrichment for %d genes", len(genes))
+        return pd.read_csv(cache_file)
+
+    try:
+        import gseapy as gp
+
+        enr = gp.enrichr(
+            gene_list=genes,
+            gene_sets=list(libs),
+            organism=organism,
+            outdir=None,  # 不写盘，结果由我们自行缓存
+            cutoff=pvalue,
+        )
+        res = enr.results
+    except Exception:
+        logging.exception("Enrichr enrichment failed for %d genes", len(genes))
+        return pd.DataFrame()
+
+    if res is None or len(res) == 0:
+        return pd.DataFrame()
+
+    df = _normalize_enrichment_enrichr(res)
+    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    return df
+
+
+def _normalize_enrichment_enrichr(df: pd.DataFrame) -> pd.DataFrame:
+    """把 Enrichr 返回的 DataFrame 整理为统一列（并把库名反查回 g:Profiler 的 source 命名）。"""
+    import re
+
+    def _parse_overlap(s) -> tuple[int, int]:
+        try:
+            a, b = str(s).split("/")
+            return int(a), int(b)
+        except (ValueError, TypeError):
+            return 0, 0
+
+    def _extract_term_id(term) -> str:
+        # Enrichr 的 Term 形如 "peptidyl-tyrosine modification (GO:0018212)"，提取末尾括号内的 ID
+        m = re.search(r"\(([^()]+)\)\s*$", str(term))
+        return m.group(1) if m else str(term)
+
+    def _strip_suffix(term) -> str:
+        return re.sub(r"\s*\([^()]*\)\s*$", "", str(term)).strip() or str(term)
+
+    parsed = df["Overlap"].map(_parse_overlap)
+    source_rev = {v: k for k, v in ENRICHR_LIB_MAP.items()}  # 库名 → g:Profiler source 命名
+    out = pd.DataFrame({
+        "source": df["Gene_set"].map(source_rev).fillna(df["Gene_set"]),
+        "term_id": df["Term"].map(_extract_term_id),
+        "term_name": df["Term"].map(_strip_suffix),
+        "p_value": pd.to_numeric(df["P-value"], errors="coerce"),
+        "adjusted_p_value": pd.to_numeric(df["Adjusted P-value"], errors="coerce"),
+        "intersection_size": parsed.map(lambda t: t[0]),
+        "query_size": parsed.map(lambda t: t[1]),
+        "genes": df["Genes"].fillna(""),
+    })
+    out = out.dropna(subset=["term_id", "p_value"]).sort_values("p_value")
+    return out.reset_index(drop=True)
+
+
+def run_enrichment(
+    genes: list[str],
+    organism: str = "hsapiens",
+    pvalue: float = 0.05,
+    sources: tuple | None = None,
+) -> tuple[pd.DataFrame, str | None]:
+    """
+    富集分析主入口：g:Profiler 优先，失败降级 Enrichr。
+
+    Parameters
+    ----------
+    genes : list[str]
+        输入基因符号列表（通常为药物∩疾病交集靶点）。
+    organism : str
+        g:Profiler 物种名（hsapiens / mmusculus / rnorvegicus）。
+    pvalue : float
+        显著性阈值。
+    sources : tuple | None
+        g:Profiler 数据源，默认取 config.ENRICHMENT_SOURCES（GO三分类 + KEGG）。
+
+    Returns
+    -------
+    tuple[pd.DataFrame, str | None]
+        (统一列富集结果, 实际使用的数据源 "gProfiler" / "Enrichr")；
+        两者都失败时返回 (空表, None)。
+    """
+    import config
+
+    sources = sources or config.ENRICHMENT_SOURCES
+
+    # 主：g:Profiler
+    df = fetch_enrichment_gprofiler(genes, organism=organism, sources=sources, pvalue=pvalue)
+    if not df.empty:
+        return df, "gProfiler"
+
+    # 备：Enrichr（不支持大鼠，跳过）
+    enrichr_organism = _ENRICHR_ORGANISM_MAP.get(organism)
+    if enrichr_organism:
+        libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
+        df = fetch_enrichment_enrichr(genes, libs=libs, organism=enrichr_organism, pvalue=pvalue)
+        if not df.empty:
+            return df, "Enrichr"
+    return pd.DataFrame(), None
+
+
+def render_enrichment_plots(df: pd.DataFrame) -> tuple:
+    """
+    绘制富集结果图：柱状图（每个 source 取前 N 条，-log10 校正 p）+ 气泡图（全局前 N 条）。
+
+    Returns
+    -------
+    tuple
+        (柱状图 Figure, 气泡图 Figure)；df 无有效行时返回 (None, None)。
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import config
+
+    df = df[df["adjusted_p_value"].notna() & (df["adjusted_p_value"] > 0)].copy()
+    if df.empty:
+        return None, None
+    df["neg_log10_p"] = -np.log10(df["adjusted_p_value"])
+
+    source_colors = {
+        "GO:BP": "#4C72B0", "GO:MF": "#DD8452",
+        "GO:CC": "#55A868", "KEGG": "#C44E52",
+    }
+
+    # ---- 柱状图：每个 source 取校正 p 最小的前 N 条 ----
+    top = (
+        df.sort_values("adjusted_p_value")
+        .groupby("source", as_index=False)
+        .head(config.ENRICHMENT_TOP_PER_SOURCE)
+    )
+    fig_bar, ax_bar = plt.subplots(figsize=(9, max(5, 0.28 * len(top))))
+    colors = [source_colors.get(s, "#7f7f7f") for s in top["source"]]
+    ax_bar.barh(top["term_name"], top["neg_log10_p"], color=colors, height=0.6)
+    ax_bar.invert_yaxis()
+    ax_bar.set_xlabel("-log10(adjusted p-value)")
+    ax_bar.set_title("Functional Enrichment (top terms per source)")
+    ax_bar.tick_params(axis="y", labelsize=7)
+    fig_bar.tight_layout()
+
+    # ---- 气泡图：全局校正 p 最小的前 N 条 ----
+    bubble = df.sort_values("adjusted_p_value").head(config.PATHWAY_DISPLAY_NUM)
+    sizes = 40 + 120 * (bubble["intersection_size"] / max(bubble["intersection_size"].max(), 1))
+    fig_dot, ax_dot = plt.subplots(figsize=(10, max(6, 0.3 * len(bubble))))
+    sc = ax_dot.scatter(
+        bubble["neg_log10_p"], bubble["term_name"],
+        s=sizes, c=bubble["adjusted_p_value"], cmap="viridis_r",
+        edgecolors="grey", alpha=0.85,
+    )
+    cb = fig_dot.colorbar(sc, ax=ax_dot)
+    cb.set_label("adjusted p-value")
+    ax_dot.set_xlabel("-log10(adjusted p-value)")
+    ax_dot.set_title("Enrichment bubble plot")
+    ax_dot.tick_params(axis="y", labelsize=7)
+    fig_dot.tight_layout()
+
+    return fig_bar, fig_dot

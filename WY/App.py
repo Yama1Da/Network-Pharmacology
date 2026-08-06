@@ -98,8 +98,8 @@ with st.container(key="top_left_buttons"):
         st.switch_page("pages/Drug_Target_Information_Management.py")
     if st.button("Disease Target Information Management", key="disease_mgmt_btn"):
         st.switch_page("pages/Disease_Target_Information_Management.py")
-    if st.button("PPI Network Analysis", key="ppi_mgmt_btn"):
-        st.switch_page("pages/PPI_Network.py")
+    if st.button("Data Network Pharmacology Analysis", key="ppi_mgmt_btn"):
+        st.switch_page("pages/Data_Network.py")
 
 st.divider()
 
