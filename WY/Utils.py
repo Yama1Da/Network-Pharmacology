@@ -589,19 +589,8 @@ def _ppi_cache_key(genes: list[str], species: str, score: float, network_type: s
 
 
 def _read_cache_csv(cache_file: str) -> pd.DataFrame:
-    """读取本地缓存 CSV（兼容带 # 元数据头的新格式与旧的无头格式）。"""
+    """读取本地缓存 CSV（兼容旧版带 # 元数据头的文件；新文件为纯数据 CSV）。"""
     return pd.read_csv(cache_file, encoding="utf-8-sig", comment="#")
-
-
-def _write_cache_csv(df: pd.DataFrame, cache_file: str, meta: dict) -> None:
-    """写缓存 CSV：首行为 # 元数据注释头（记录来源/参数，便于追溯），随后是数据行。
-
-    meta : dict，如 {"label": "aspirin_cancer", "species": "9606", "score": 0.7, ...}。
-    先 "w" 模式写元数据头、再 "a" 模式追加数据，整个文件一次性重建，不会覆盖元数据。
-    """
-    with open(cache_file, "w", encoding="utf-8-sig", newline="") as f:
-        f.write("# " + "; ".join(f"{k}={v}" for k, v in meta.items()) + "\n")
-    df.to_csv(cache_file, mode="a", index=False, encoding="utf-8-sig")
 
 
 def _string_post(endpoint: str, params: dict) -> requests.Response | None:
@@ -740,14 +729,7 @@ def fetch_string_ppi(
     df = df[[c for c in keep if c in df.columns]]
 
     # ---- cache to CSV ----
-    _write_cache_csv(df, cache_file, {
-        "label": label or "unknown",
-        "species": species,
-        "score": score,
-        "network_type": network_type,
-        "genes": len(genes),
-        "edges": len(df),
-    })
+    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
     logging.info("STRING PPI for %d genes: %d edges cached", len(genes), len(df))
     return df
 
@@ -1141,14 +1123,7 @@ def fetch_enrichment_gprofiler(
         return pd.DataFrame()
 
     df = _normalize_enrichment_gprofiler(res)
-    _write_cache_csv(df, cache_file, {
-        "label": label or "unknown",
-        "organism": organism,
-        "pvalue": pvalue,
-        "sources": ",".join(sources),
-        "genes": len(genes),
-        "terms": len(df),
-    })
+    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
     logging.info("g:Profiler enrichment for %d genes: %d terms cached", len(genes), len(df))
     return df
 
@@ -1237,14 +1212,7 @@ def fetch_enrichment_enrichr(
         return pd.DataFrame()
 
     df = _normalize_enrichment_enrichr(res)
-    _write_cache_csv(df, cache_file, {
-        "label": label or "unknown",
-        "organism": organism,
-        "pvalue": pvalue,
-        "sources": ",".join(libs),
-        "genes": len(genes),
-        "terms": len(df),
-    })
+    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
     return df
 
 
