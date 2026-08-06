@@ -588,6 +588,22 @@ def _ppi_cache_key(genes: list[str], species: str, score: float, network_type: s
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
 
 
+def _read_cache_csv(cache_file: str) -> pd.DataFrame:
+    """读取本地缓存 CSV（兼容带 # 元数据头的新格式与旧的无头格式）。"""
+    return pd.read_csv(cache_file, encoding="utf-8-sig", comment="#")
+
+
+def _write_cache_csv(df: pd.DataFrame, cache_file: str, meta: dict) -> None:
+    """写缓存 CSV：首行为 # 元数据注释头（记录来源/参数，便于追溯），随后是数据行。
+
+    meta : dict，如 {"label": "aspirin_cancer", "species": "9606", "score": 0.7, ...}。
+    先 "w" 模式写元数据头、再 "a" 模式追加数据，整个文件一次性重建，不会覆盖元数据。
+    """
+    with open(cache_file, "w", encoding="utf-8-sig", newline="") as f:
+        f.write("# " + "; ".join(f"{k}={v}" for k, v in meta.items()) + "\n")
+    df.to_csv(cache_file, mode="a", index=False, encoding="utf-8-sig")
+
+
 def _string_post(endpoint: str, params: dict) -> requests.Response | None:
     """对 STRING API 发送 POST 请求，带超时与重试；最终失败返回 None。
 
@@ -620,6 +636,7 @@ def fetch_string_ppi(
     species: str = "9606",
     score: float = 0.7,
     network_type: str = "full",
+    label: str | None = None,
 ) -> pd.DataFrame:
     """
     通过 STRING API 获取基因列表的蛋白互作边表。
@@ -630,8 +647,9 @@ def fetch_string_ppi(
       2. network：用映射后的 STRING ID 获取相互作用边，按 required_score
          （= score×1000）过滤低置信度连接。
 
-    结果缓存在 Static/data/cache/ppi 下（按 基因列表+物种+阈值+网络类型 生成
-    md5 文件名），命中缓存时直接读取本地文件，不访问远端 API。
+    结果缓存在 Static/data/cache/ppi 下，文件名为 StringPPI_{label}_{md5}.csv
+    （label 为来源标识，如 药物名_疾病名；无 label 时退化为 StringPPI_{md5}.csv），
+    缓存首行为 # 元数据注释头（记录 label/物种/阈值等），命中缓存直接读本地，不访问远端 API。
 
     Parameters
     ----------
@@ -643,6 +661,8 @@ def fetch_string_ppi(
         置信度阈值（0~1），映射为 STRING 的 required_score（0~1000）。
     network_type : str
         "full"（功能关联，默认）或 "physical"（仅物理结合）。
+    label : str | None
+        来源标识（如 "aspirin_cancer" 或 "manual"），用于缓存文件名前缀，便于用户识别。
 
     Returns
     -------
@@ -659,14 +679,14 @@ def fetch_string_ppi(
         genes = genes[:config.STRING_QUERY_LIMIT]
 
     os.makedirs(config.PPI_CACHE_DIR, exist_ok=True)
-    cache_file = os.path.join(
-        config.PPI_CACHE_DIR, f"StringPPI_{_ppi_cache_key(genes, species, score, network_type)}.csv"
-    )
+    md5 = _ppi_cache_key(genes, species, score, network_type)
+    name = f"StringPPI_{label}_{md5}.csv" if label else f"StringPPI_{md5}.csv"
+    cache_file = os.path.join(config.PPI_CACHE_DIR, name)
 
     # ---- cache hit: load local ----
     if os.path.exists(cache_file):
         logging.info("Loading cached STRING PPI for %d genes", len(genes))
-        return pd.read_csv(cache_file)
+        return _read_cache_csv(cache_file)
 
     # ---- Step 1: 标识符映射（基因符号 → STRING ID） ----
     id_resp = _string_post("get_string_ids", {
@@ -720,7 +740,14 @@ def fetch_string_ppi(
     df = df[[c for c in keep if c in df.columns]]
 
     # ---- cache to CSV ----
-    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    _write_cache_csv(df, cache_file, {
+        "label": label or "unknown",
+        "species": species,
+        "score": score,
+        "network_type": network_type,
+        "genes": len(genes),
+        "edges": len(df),
+    })
     logging.info("STRING PPI for %d genes: %d edges cached", len(genes), len(df))
     return df
 
@@ -1053,12 +1080,14 @@ def fetch_enrichment_gprofiler(
     organism: str = "hsapiens",
     sources: tuple = ("GO:BP", "GO:MF", "GO:CC", "KEGG"),
     pvalue: float = 0.05,
+    label: str | None = None,
 ) -> pd.DataFrame:
     """
     通过 g:Profiler 官方客户端（gprofiler-official）获取功能富集结果。
 
-    结果缓存在 Static/data/cache/enrichment 下（md5 命名），命中缓存时直接读取
-    本地文件，不访问远端 API。
+    结果缓存在 Static/data/cache/enrichment 下，文件名为 gProfiler_{label}_{md5}.csv
+    （label 为来源标识，如 药物名_疾病名），缓存首行为 # 元数据注释头；
+    命中缓存时直接读取本地文件，不访问远端 API。
 
     Parameters
     ----------
@@ -1070,6 +1099,8 @@ def fetch_enrichment_gprofiler(
         g:Profiler 数据源，如 ("GO:BP", "GO:MF", "GO:CC", "KEGG")。
     pvalue : float
         显著性阈值（g:Profiler 的 user_threshold，默认即 g_SCS 校正后阈值）。
+    label : str | None
+        来源标识（如 "aspirin_cancer" 或 "manual"），用于缓存文件名前缀，便于用户识别。
 
     Returns
     -------
@@ -1084,13 +1115,12 @@ def fetch_enrichment_gprofiler(
     if not genes:
         return pd.DataFrame()
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
-    cache_file = os.path.join(
-        config.ENRICHMENT_CACHE_DIR,
-        f"gProfiler_{_enrichment_cache_key(genes, organism, sources, pvalue)}.csv",
-    )
+    md5 = _enrichment_cache_key(genes, organism, sources, pvalue)
+    name = f"gProfiler_{label}_{md5}.csv" if label else f"gProfiler_{md5}.csv"
+    cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
     if os.path.exists(cache_file):
         logging.info("Loading cached g:Profiler enrichment for %d genes", len(genes))
-        return pd.read_csv(cache_file)
+        return _read_cache_csv(cache_file)
 
     try:
         from gprofiler import GProfiler
@@ -1111,7 +1141,14 @@ def fetch_enrichment_gprofiler(
         return pd.DataFrame()
 
     df = _normalize_enrichment_gprofiler(res)
-    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    _write_cache_csv(df, cache_file, {
+        "label": label or "unknown",
+        "organism": organism,
+        "pvalue": pvalue,
+        "sources": ",".join(sources),
+        "genes": len(genes),
+        "terms": len(df),
+    })
     logging.info("g:Profiler enrichment for %d genes: %d terms cached", len(genes), len(df))
     return df
 
@@ -1142,11 +1179,13 @@ def fetch_enrichment_enrichr(
     libs: list[str],
     organism: str = "human",
     pvalue: float = 0.05,
+    label: str | None = None,
 ) -> pd.DataFrame:
     """
     通过 gseapy（Enrichr 官方 wrapper）获取功能富集结果（作为 g:Profiler 的降级方案）。
 
-    结果同样缓存在 Static/data/cache/enrichment 下。
+    结果同样缓存在 Static/data/cache/enrichment 下，文件名为 Enrichr_{label}_{md5}.csv，
+    缓存首行为 # 元数据注释头。
 
     Parameters
     ----------
@@ -1158,6 +1197,8 @@ def fetch_enrichment_enrichr(
         Enrichr 物种名（"human" / "mouse"）。
     pvalue : float
         显著性阈值（cutoff）。
+    label : str | None
+        来源标识（如 "aspirin_cancer" 或 "manual"），用于缓存文件名前缀，便于用户识别。
 
     Returns
     -------
@@ -1170,13 +1211,12 @@ def fetch_enrichment_enrichr(
     if not genes or not libs:
         return pd.DataFrame()
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
-    cache_file = os.path.join(
-        config.ENRICHMENT_CACHE_DIR,
-        f"Enrichr_{_enrichment_cache_key(genes, organism, libs, pvalue)}.csv",
-    )
+    md5 = _enrichment_cache_key(genes, organism, libs, pvalue)
+    name = f"Enrichr_{label}_{md5}.csv" if label else f"Enrichr_{md5}.csv"
+    cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
     if os.path.exists(cache_file):
         logging.info("Loading cached Enrichr enrichment for %d genes", len(genes))
-        return pd.read_csv(cache_file)
+        return _read_cache_csv(cache_file)
 
     try:
         import gseapy as gp
@@ -1197,7 +1237,14 @@ def fetch_enrichment_enrichr(
         return pd.DataFrame()
 
     df = _normalize_enrichment_enrichr(res)
-    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    _write_cache_csv(df, cache_file, {
+        "label": label or "unknown",
+        "organism": organism,
+        "pvalue": pvalue,
+        "sources": ",".join(libs),
+        "genes": len(genes),
+        "terms": len(df),
+    })
     return df
 
 
@@ -1241,6 +1288,7 @@ def run_enrichment(
     organism: str = "hsapiens",
     pvalue: float = 0.05,
     sources: tuple | None = None,
+    label: str | None = None,
 ) -> tuple[pd.DataFrame, str | None]:
     """
     富集分析主入口：g:Profiler 优先，失败降级 Enrichr。
@@ -1255,6 +1303,8 @@ def run_enrichment(
         显著性阈值。
     sources : tuple | None
         g:Profiler 数据源，默认取 config.ENRICHMENT_SOURCES（GO三分类 + KEGG）。
+    label : str | None
+        来源标识（如 "aspirin_cancer" 或 "manual"），用于缓存文件名前缀，便于用户识别。
 
     Returns
     -------
@@ -1267,7 +1317,7 @@ def run_enrichment(
     sources = sources or config.ENRICHMENT_SOURCES
 
     # 主：g:Profiler
-    df = fetch_enrichment_gprofiler(genes, organism=organism, sources=sources, pvalue=pvalue)
+    df = fetch_enrichment_gprofiler(genes, organism=organism, sources=sources, pvalue=pvalue, label=label)
     if not df.empty:
         return df, "gProfiler"
 
@@ -1275,7 +1325,7 @@ def run_enrichment(
     enrichr_organism = _ENRICHR_ORGANISM_MAP.get(organism)
     if enrichr_organism:
         libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
-        df = fetch_enrichment_enrichr(genes, libs=libs, organism=enrichr_organism, pvalue=pvalue)
+        df = fetch_enrichment_enrichr(genes, libs=libs, organism=enrichr_organism, pvalue=pvalue, label=label)
         if not df.empty:
             return df, "Enrichr"
     return pd.DataFrame(), None

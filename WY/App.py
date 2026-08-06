@@ -80,6 +80,38 @@ st.markdown("""
         box-shadow: none;
         animation: none;
     }
+    /* Popover 触发按钮（Source Information Management）同色 */
+    .st-key-source_mgmt_popover button {
+        background-color: #167A9C;
+        color: #C6E7F5;
+        border: 1px solid #167A9C;
+        box-shadow: none;
+    }
+    .st-key-source_mgmt_popover button:hover,
+    .st-key-source_mgmt_popover button:active {
+        background-color: #167A9C;
+        color: #C6E7F5;
+        border: 1px solid #167A9C;
+        box-shadow: none;
+    }
+    /* 下拉面板选项：浅灰底、深灰 hover 变色，醒目可辨 */
+    .st-key-drug_mgmt_btn button,
+    .st-key-disease_mgmt_btn button,
+    .st-key-ppi_info_btn button,
+    .st-key-enrichment_info_btn button {
+        background-color: #F0F0F0;
+        color: #333333;
+        border: 1px solid #D0D0D0;
+        width: 100%;
+    }
+    .st-key-drug_mgmt_btn button:hover,
+    .st-key-disease_mgmt_btn button:hover,
+    .st-key-ppi_info_btn button:hover,
+    .st-key-enrichment_info_btn button:hover {
+        background-color: #B8B8B8;
+        color: #000000;
+        border-color: #888888;
+    }
     @keyframes gentle-float {
         0%   { transform: translateY(0); }
         50%  { transform: translateY(-4px); }
@@ -94,10 +126,16 @@ st.markdown('<div class="title-area"><h1>🧬 Network Pharmacology Analysis Plat
 
 # ---------- Management buttons (fixed top-left, open full-screen pages) ----------
 with st.container(key="top_left_buttons"):
-    if st.button("Drug Target Information Management", key="drug_mgmt_btn"):
-        st.switch_page("pages/Drug_Target_Information_Management.py")
-    if st.button("Disease Target Information Management", key="disease_mgmt_btn"):
-        st.switch_page("pages/Disease_Target_Information_Management.py")
+    # 下拉式：四个信息管理页面的前往按钮（不含 Data Management）
+    with st.popover("Source Information Management", key="source_mgmt_popover"):
+        if st.button("Drug Target Information Management", key="drug_mgmt_btn", width="stretch"):
+            st.switch_page("pages/Drug_Target_Information_Management.py")
+        if st.button("Disease Target Information Management", key="disease_mgmt_btn", width="stretch"):
+            st.switch_page("pages/Disease_Target_Information_Management.py")
+        if st.button("PPI Information", key="ppi_info_btn", width="stretch"):
+            st.switch_page("pages/PPI_Information.py")
+        if st.button("Enrichment Information", key="enrichment_info_btn", width="stretch"):
+            st.switch_page("pages/Enrichment_Information.py")
     if st.button("Data Network Pharmacology Analysis", key="ppi_mgmt_btn"):
         st.switch_page("pages/Data_Network.py")
 

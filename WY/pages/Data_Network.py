@@ -88,8 +88,8 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         genes = sorted({t.strip().upper() for t in tokens if t.strip()})
         prefix = "manual"
 
-    # Step 1: STRING 获取相互作用
-    edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score)
+    # Step 1: STRING 获取相互作用（label=prefix 用于缓存文件命名，如 StringPPI_aspirin_cancer_xxx.csv）
+    edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score, label=prefix)
 
     # Step 2-4: 建图 + 拓扑指标 + Hub 筛选 + 可视化
     graph = Utils.build_ppi_graph(edges_df, genes)
@@ -101,7 +101,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
 
     # Step 4.5: 富集分析（g:Profiler 主 + Enrichr 备，输入为交集靶点）
     enrichment_df, enrichment_source = Utils.run_enrichment(
-        genes, organism=organism, pvalue=config.ENRICHMENT_PVALUE
+        genes, organism=organism, pvalue=config.ENRICHMENT_PVALUE, label=prefix
     )
     enrichment_bar_fig = enrichment_dot_fig = None
     if not enrichment_df.empty:
