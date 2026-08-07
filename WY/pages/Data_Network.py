@@ -68,7 +68,11 @@ with col_input:
         )
 
 with col_params:
-    species_label = st.selectbox("Species", list(config.SPECIES_MAP.keys()))
+    # 物种选择：当前仅开放“人类（Human）”。
+    # 多物种支持待后续优化后再开放（届时把下面选项恢复为
+    # list(config.SPECIES_MAP.keys())，并同步处理疾病靶点数据源
+    # Open Targets 只有人类数据的问题）。
+    species_label = st.selectbox("Species", ["Human"])
     score = st.slider("STRING confidence", 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
     min_degree = st.number_input("Min degree (hub)", 1, 20, config.MIN_DEGREE_FILTER, 1)
 
@@ -78,6 +82,13 @@ run_btn = st.button("Build Report", key="run_btn", type="primary", width="stretc
 # ---------- 分析执行 ----------
 def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree) -> dict:
     """执行完整分析（交集→STRING→建图→指标→Hub→富集→可视化→保存），返回结果字典。"""
+    # ============ 物种策略说明（待优化时确认） ============
+    # 当前疾病靶点仅来自 Open Targets（只有人类数据），因此整个分析
+    # 链路按【人类】处理；界面侧也暂时只开放 Human 选项。
+    # 后续优化时再决定：是否定死人类，或放开多物种（Mouse/Rat）。
+    # 若放开多物种，需同步解决疾病靶点数据源的多物种支持
+    # （如接入 DisGeNET / MGI / RGD 等，并处理人-鼠同源映射）。
+    # =====================================================
     # Step 0: 确定输入基因列表
     if mode == "Drug + Disease names":
         genes = Utils.get_common_targets(drug_name, disease_name, top_n=config.STRING_QUERY_LIMIT)

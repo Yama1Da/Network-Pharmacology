@@ -201,7 +201,7 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
 
 
 def _search_drug(drug_name: str) -> str | None:
-    """Search Open Targets for a drug and return its ChEMBL ID, or None."""
+    # 通过Open Targets API搜索药物名称，返回其ChEMBL ID（如果找到），否则返回None
     query = """
     query SearchDrug($queryString: String!) {
         search(queryString: $queryString) {
@@ -409,7 +409,7 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
                 target_cache[tid] = t
 
         def _extract_gene_name(t: dict) -> str | None:
-            """Extract gene symbol from a target dict."""
+            """从靶点字典中提取基因符号或HGNC名称，返回第一个找到的（如果找到），否则返回None"""
             if "target_components" in t:
                 for comp in t["target_components"]:
                     for syn in comp.get("target_component_synonyms", []):
@@ -574,13 +574,16 @@ def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> 
     """
     drug_df, _ = fetch_drug_targets_chembl(drug_name)
     disease_df = get_disease_targets(disease_name)
+    # 从药物和疾病靶点表中提取基因符号（approvedSymbol），并转换为集合
     drug_set = set(drug_df["approvedSymbol"].dropna()) if not drug_df.empty else set()
     disease_set = set(disease_df["approvedSymbol"].dropna()) if not disease_df.empty else set()
+    # 取药物和疾病靶点的交集，按字母序排序并截断到 top_n
     return sorted(drug_set & disease_set)[:top_n]
 
 
 def _ppi_cache_key(genes: list[str], species: str, score: float, network_type: str) -> str:
-    """根据基因列表与查询参数生成 PPI 缓存文件名（md5）：相同输入命中同一缓存文件。"""
+    # 根据基因列表与查询参数生成 PPI 缓存文件名（md5）：相同输入命中同一缓存文件。
+    #该函数作为后续存储为CSV文件的辅助函数，确保每个查询结果对应一个唯一的文件名
     payload = (
         "\r".join(sorted(set(genes)))
         + f"|{species}|{int(score * 1000)}|{network_type}"
@@ -589,7 +592,7 @@ def _ppi_cache_key(genes: list[str], species: str, score: float, network_type: s
 
 
 def _read_cache_csv(cache_file: str) -> pd.DataFrame:
-    """读取本地缓存 CSV（兼容旧版带 # 元数据头的文件；新文件为纯数据 CSV）。"""
+    # 读取本地缓存 CSV（兼容旧版带 # 元数据头的md5文件；新文件为纯数据 CSV）
     return pd.read_csv(cache_file, encoding="utf-8-sig", comment="#")
 
 

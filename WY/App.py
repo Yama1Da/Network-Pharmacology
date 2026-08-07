@@ -3,7 +3,7 @@ import Utils
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
-
+#页面布局
 st.set_page_config(page_title="Network Pharmacology Platform", layout="centered")
 
 # ---------- Custom Minimal CSS ----------
@@ -126,7 +126,7 @@ st.markdown('<div class="title-area"><h1>🧬 Network Pharmacology Analysis Plat
 
 # ---------- Management buttons (fixed top-left, open full-screen pages) ----------
 with st.container(key="top_left_buttons"):
-    # 下拉式：四个信息管理页面的前往按钮（不含 Data Management）
+    # 下拉式菜单：四个信息管理页面的前往按钮（不含 Data Management）
     with st.popover("Source Information Management", key="source_mgmt_popover"):
         if st.button("Drug Target Information Management", key="drug_mgmt_btn", width="stretch"):
             st.switch_page("pages/Drug_Target_Information_Management.py")
@@ -139,10 +139,10 @@ with st.container(key="top_left_buttons"):
     if st.button("Data Network Pharmacology Analysis", key="ppi_mgmt_btn"):
         st.switch_page("pages/Data_Network.py")
 
-st.divider()
+st.divider()# 水平分隔线，用于分隔管理按钮和搜索栏
 
 # ---------- Search bar ----------
-col_drug, col_disease = st.columns(2)
+col_drug, col_disease = st.columns(2)# 两个列，用于输入药物名称和疾病名称
 with col_drug:
     drug_name = st.text_input("Drug name", value="aspirin",
                                label_visibility="collapsed",
@@ -187,18 +187,18 @@ if analyze_btn:
         st.metric("🎯 Common targets", len(common))
 
         # ----- Venn diagram -----
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(6, 4))# 创建一个6x4英寸的子图
         v = venn2(
             subsets=(len(drug_set - disease_set),
                      len(disease_set - drug_set),
                      len(common)),
             set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
             ax=ax,
-        )
+        )# 绘制Venn图
         if v and v.get_label_by_id("11"):
-            v.get_label_by_id("11").set_fontsize(12)
-        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
-        st.pyplot(fig)
+            v.get_label_by_id("11").set_fontsize(12)# 设置Venn图中“交集”的字体大小
+        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)# 设置Venn图的标题
+        st.pyplot(fig)# 显示Venn图
 
         with st.expander("View target lists", expanded=False):
             # ----- 第一段：药物靶点（全量，按 pchembl 降序） -----
