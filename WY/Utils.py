@@ -1107,19 +1107,37 @@ def fetch_enrichment_gprofiler(
         logging.info("Loading cached g:Profiler enrichment for %d genes", len(genes))
         return _read_cache_csv(cache_file)
 
-    try:
-        from gprofiler import GProfiler
+    import time
+    import socket
 
-        gp = GProfiler(return_dataframe=True)
-        res = gp.profile(
-            query=genes,
-            organism=organism,
-            sources=list(sources),
-            user_threshold=pvalue,
-        )
-    except Exception:
-        logging.exception("g:Profiler enrichment failed for %d genes", len(genes))
-        return pd.DataFrame()
+    # 请求保护：gprofiler-official 内部 requests.post 未传 timeout、也无重试，
+    # 这里在调用层统一补上【请求间隔 + 失败重试 + socket 层超时兜底】。
+    # socket.setdefaulttimeout 兜底库内部的 requests 调用（未显式传 timeout 时生效），
+    # try/finally 确保调用结束后恢复，不影响其他请求。
+    from gprofiler import GProfiler
+
+    res = None
+    for attempt in range(config.API_MAX_RETRIES):
+        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前等待，避免快速连发被限流
+        socket.setdefaulttimeout(config.API_TIMEOUT)
+        try:
+            gp = GProfiler(return_dataframe=True)
+            res = gp.profile(
+                query=genes,
+                organism=organism,
+                sources=list(sources),
+                user_threshold=pvalue,
+            )
+            break  # 成功
+        except Exception:
+            logging.exception(
+                "g:Profiler enrichment failed (attempt %d/%d)",
+                attempt + 1, config.API_MAX_RETRIES,
+            )
+            if attempt < config.API_MAX_RETRIES - 1:
+                time.sleep(config.API_RETRY_DELAY)  # 失败退避后重试
+        finally:
+            socket.setdefaulttimeout(None)
 
     if res is None or len(res) == 0:
         logging.info("g:Profiler: no significant terms (p < %s) for %d genes", pvalue, len(genes))
@@ -1196,20 +1214,38 @@ def fetch_enrichment_enrichr(
         logging.info("Loading cached Enrichr enrichment for %d genes", len(genes))
         return _read_cache_csv(cache_file)
 
-    try:
-        import gseapy as gp
+    import time
+    import socket
 
-        enr = gp.enrichr(
-            gene_list=genes,
-            gene_sets=list(libs),
-            organism=organism,
-            outdir=None,  # 不写盘，结果由我们自行缓存
-            cutoff=pvalue,
-        )
-        res = enr.results
-    except Exception:
-        logging.exception("Enrichr enrichment failed for %d genes", len(genes))
-        return pd.DataFrame()
+    # 请求保护：gseapy 内部 session 虽自带 5xx 重试，但部分请求 timeout=None
+    # 无超时、且无请求间隔；这里在调用层统一补上【请求间隔 + 失败重试 + socket 层超时兜底】。
+    # socket.setdefaulttimeout 兜底库内部的 requests 调用（未显式传 timeout 时生效），
+    # try/finally 确保调用结束后恢复，不影响其他请求。
+    import gseapy as gp
+
+    res = None
+    for attempt in range(config.API_MAX_RETRIES):
+        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前等待，避免快速连发被限流
+        socket.setdefaulttimeout(config.API_TIMEOUT)
+        try:
+            enr = gp.enrichr(
+                gene_list=genes,
+                gene_sets=list(libs),
+                organism=organism,
+                outdir=None,  # 不写盘，结果由我们自行缓存
+                cutoff=pvalue,
+            )
+            res = enr.results
+            break  # 成功
+        except Exception:
+            logging.exception(
+                "Enrichr enrichment failed (attempt %d/%d)",
+                attempt + 1, config.API_MAX_RETRIES,
+            )
+            if attempt < config.API_MAX_RETRIES - 1:
+                time.sleep(config.API_RETRY_DELAY)  # 失败退避后重试
+        finally:
+            socket.setdefaulttimeout(None)
 
     if res is None or len(res) == 0:
         return pd.DataFrame()
