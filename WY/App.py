@@ -3,7 +3,7 @@ import Utils
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
-
+#页面布局
 st.set_page_config(page_title="Network Pharmacology Platform", layout="centered")
 
 # ---------- Custom Minimal CSS ----------
@@ -49,6 +49,74 @@ st.markdown("""
     .stAlert {
         border-radius: 8px;
     }
+    /* Hide auto multipage navigation sidebar */
+    [data-testid="stSidebar"] {
+        display: none;
+    }
+    /* Top-left corner management buttons (fixed overlay, no card background) */
+    div.st-key-top_left_buttons {
+        position: fixed;
+        top: 3.5rem;
+        left: 1rem;
+        z-index: 9999;
+        display: flex;
+        flex-direction: row;
+        gap: 0.6rem;
+    }
+    /* Management buttons: #167A9C background, #C6E7F5 text, gently float up/down */
+    div.st-key-top_left_buttons .stButton button {
+        background-color: #167A9C;
+        color: #C6E7F5;
+        border: 1px solid #167A9C;
+        box-shadow: none;
+        animation: gentle-float 2s ease-in-out infinite;
+    }
+    /* On hover: stop floating, keep colors unchanged */
+    div.st-key-top_left_buttons .stButton button:hover,
+    div.st-key-top_left_buttons .stButton button:active {
+        background-color: #167A9C;
+        color: #C6E7F5;
+        border: 1px solid #167A9C;
+        box-shadow: none;
+        animation: none;
+    }
+    /* Popover 触发按钮（Source Information Management）同色 */
+    .st-key-source_mgmt_popover button {
+        background-color: #167A9C;
+        color: #C6E7F5;
+        border: 1px solid #167A9C;
+        box-shadow: none;
+    }
+    .st-key-source_mgmt_popover button:hover,
+    .st-key-source_mgmt_popover button:active {
+        background-color: #167A9C;
+        color: #C6E7F5;
+        border: 1px solid #167A9C;
+        box-shadow: none;
+    }
+    /* 下拉面板选项：浅灰底、深灰 hover 变色，醒目可辨 */
+    .st-key-drug_mgmt_btn button,
+    .st-key-disease_mgmt_btn button,
+    .st-key-ppi_info_btn button,
+    .st-key-enrichment_info_btn button {
+        background-color: #F0F0F0;
+        color: #333333;
+        border: 1px solid #D0D0D0;
+        width: 100%;
+    }
+    .st-key-drug_mgmt_btn button:hover,
+    .st-key-disease_mgmt_btn button:hover,
+    .st-key-ppi_info_btn button:hover,
+    .st-key-enrichment_info_btn button:hover {
+        background-color: #B8B8B8;
+        color: #000000;
+        border-color: #888888;
+    }
+    @keyframes gentle-float {
+        0%   { transform: translateY(0); }
+        50%  { transform: translateY(-4px); }
+        100% { transform: translateY(0); }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -56,8 +124,25 @@ st.markdown("""
 st.markdown('<div class="title-area"><h1>🧬 Network Pharmacology Analysis Platform</h1><p>Input drug and disease names to analyze overlapping targets</p></div>',
             unsafe_allow_html=True)
 
+# ---------- Management buttons (fixed top-left, open full-screen pages) ----------
+with st.container(key="top_left_buttons"):
+    # 下拉式菜单：四个信息管理页面的前往按钮（不含 Data Management）
+    with st.popover("Source Information Management", key="source_mgmt_popover"):
+        if st.button("Drug Target Information Management", key="drug_mgmt_btn", width="stretch"):
+            st.switch_page("pages/Drug_Target_Information_Management.py")
+        if st.button("Disease Target Information Management", key="disease_mgmt_btn", width="stretch"):
+            st.switch_page("pages/Disease_Target_Information_Management.py")
+        if st.button("PPI Information", key="ppi_info_btn", width="stretch"):
+            st.switch_page("pages/PPI_Information.py")
+        if st.button("Enrichment Information", key="enrichment_info_btn", width="stretch"):
+            st.switch_page("pages/Enrichment_Information.py")
+    if st.button("Data Network Pharmacology Analysis", key="ppi_mgmt_btn"):
+        st.switch_page("pages/Data_Network.py")
+
+st.divider()# 水平分隔线，用于分隔管理按钮和搜索栏
+
 # ---------- Search bar ----------
-col_drug, col_disease = st.columns(2)
+col_drug, col_disease = st.columns(2)# 两个列，用于输入药物名称和疾病名称
 with col_drug:
     drug_name = st.text_input("Drug name", value="aspirin",
                                label_visibility="collapsed",
@@ -67,7 +152,7 @@ with col_disease:
                                   label_visibility="collapsed",
                                   placeholder="Disease name, e.g. cancer")
 
-analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
+analyze_btn = st.button("Analyze", type="primary", width="stretch")
 
 # ---------- Results ----------
 if analyze_btn:
@@ -102,18 +187,18 @@ if analyze_btn:
         st.metric("🎯 Common targets", len(common))
 
         # ----- Venn diagram -----
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(6, 4))# 创建一个6x4英寸的子图
         v = venn2(
             subsets=(len(drug_set - disease_set),
                      len(disease_set - drug_set),
                      len(common)),
             set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
             ax=ax,
-        )
+        )# 绘制Venn图
         if v and v.get_label_by_id("11"):
-            v.get_label_by_id("11").set_fontsize(12)
-        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
-        st.pyplot(fig)
+            v.get_label_by_id("11").set_fontsize(12)# 设置Venn图中“交集”的字体大小
+        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)# 设置Venn图的标题
+        st.pyplot(fig)# 显示Venn图
 
         with st.expander("View target lists", expanded=False):
             # ----- 第一段：药物靶点（全量，按 pchembl 降序） -----
@@ -125,7 +210,7 @@ if analyze_btn:
             # ----- 第二段：疾病靶点（表格，含 Open Targets 关联指标，按分数降序） -----
             st.markdown(f"**🦠 {disease_name} targets** — {len(disease_targets)} genes")
             if not disease_df.empty:
-                st.dataframe(disease_df, use_container_width=True)
+                st.dataframe(disease_df, width="stretch")
             else:
                 st.write("（未获取到疾病靶点数据）")
 
