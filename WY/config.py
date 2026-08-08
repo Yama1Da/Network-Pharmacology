@@ -37,6 +37,15 @@ API_TIMEOUT = 60
 API_MAX_RETRIES = 5
 API_RETRY_DELAY = 3
 API_REQUEST_DELAY = 0.2
+# 富集请求（g:Profiler / Enrichr）重试次数：服务不可达时单次连接可能空等 20s+，
+# 重试过多会拖慢整个分析，故单独压低
+ENRICHMENT_MAX_RETRIES = 2
+# g:Profiler 熔断标记有效期（秒）：gProfiler 连续失败后写入标记，
+# 有效期内直接跳过 g:Profiler 走 Enrichr，避免每次分析都白等连接超时
+GPROFILER_CIRCUIT_TTL_SECONDS = 1800
+# 缓存 TTL（秒）：参数不变时，PPI / 富集缓存超过该时长视为过期，
+# 重新执行同参数分析时重新发请求，以保证拿到最新数据
+CACHE_TTL_SECONDS = 6 * 3600
 # ======== 文件存储路径配置 =========
 import os
 # 自动计算项目根目录（config.py 所在目录本地电脑的目录）

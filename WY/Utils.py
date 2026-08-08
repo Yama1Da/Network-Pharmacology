@@ -596,6 +596,24 @@ def _read_cache_csv(cache_file: str) -> pd.DataFrame:
     return pd.read_csv(cache_file, encoding="utf-8-sig", comment="#")
 
 
+def _is_cache_fresh(cache_file: str, ttl_seconds: int | None = None) -> bool:
+    """缓存文件是否仍有效：存在且修改时间未超过 TTL。
+
+    ttl_seconds 缺省（None）时取 config.CACHE_TTL_SECONDS。
+    """
+    import time
+    import config
+
+    if not os.path.exists(cache_file):
+        return False
+    if ttl_seconds is None:
+        ttl_seconds = config.CACHE_TTL_SECONDS
+    try:
+        return (time.time() - os.path.getmtime(cache_file)) < ttl_seconds
+    except OSError:
+        return False
+
+
 def _string_post(endpoint: str, params: dict) -> requests.Response | None:
     """对 STRING API 发送 POST 请求，带超时与重试；最终失败返回 None。
 
@@ -675,8 +693,8 @@ def fetch_string_ppi(
     name = f"StringPPI_{label}_{md5}.csv" if label else f"StringPPI_{md5}.csv"
     cache_file = os.path.join(config.PPI_CACHE_DIR, name)
 
-    # ---- cache hit: load local ----
-    if os.path.exists(cache_file):
+    # ---- cache hit: load local (若超过 TTL 视为过期，重新请求) ----
+    if _is_cache_fresh(cache_file):
         logging.info("Loading cached STRING PPI for %d genes", len(genes))
         return _read_cache_csv(cache_file)
 
@@ -1060,6 +1078,57 @@ def _enrichment_cache_key(genes: list[str], organism: str, sources, pvalue: floa
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
 
 
+# ---------- g:Profiler 熔断（circuit breaker） ----------
+# g:Profiler 服务器不可达时，单次连接可能空等 20s+ 才超时（socket.setdefaulttimeout
+# 对库内部 requests 调用不生效），重试次数越多拖得越久。因此失败时写一个带时间戳的
+# 标记文件，TTL 内直接跳过 g:Profiler 走 Enrichr；TTL 过期后自动重试，服务恢复即复用。
+
+
+def _gprofiler_circuit_file() -> str:
+    """g:Profiler 熔断标记文件路径（内容为上次失败时间戳）。"""
+    import config
+
+    return os.path.join(config.ENRICHMENT_CACHE_DIR, ".gprofiler_unreachable")
+
+
+def _gprofiler_circuit_open() -> bool:
+    """熔断是否开启：失败标记存在且未超过 TTL。"""
+    import config
+    import time
+
+    path = _gprofiler_circuit_file()
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            failed_at = float(f.read().strip())
+    except Exception:
+        return False
+    return (time.time() - failed_at) < config.GPROFILER_CIRCUIT_TTL_SECONDS
+
+
+def _gprofiler_circuit_open_trip() -> None:
+    """记录 g:Profiler 本次失败时间（开启熔断）。"""
+    import time
+
+    path = _gprofiler_circuit_file()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    except Exception:
+        logging.exception("Failed to write g:Profiler circuit breaker file")
+
+
+def _gprofiler_circuit_close() -> None:
+    """g:Profiler 请求成功时清除熔断标记。"""
+    path = _gprofiler_circuit_file()
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        logging.exception("Failed to remove g:Profiler circuit breaker file")
+
+
 def fetch_enrichment_gprofiler(
     genes: list[str],
     organism: str = "hsapiens",
@@ -1103,9 +1172,14 @@ def fetch_enrichment_gprofiler(
     md5 = _enrichment_cache_key(genes, organism, sources, pvalue)
     name = f"gProfiler_{label}_{md5}.csv" if label else f"gProfiler_{md5}.csv"
     cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
-    if os.path.exists(cache_file):
+    if _is_cache_fresh(cache_file):
         logging.info("Loading cached g:Profiler enrichment for %d genes", len(genes))
         return _read_cache_csv(cache_file)
+
+    # 熔断：gProfiler 近期失败过则直接跳过，不再空等连接超时（走 Enrichr 兜底）
+    if _gprofiler_circuit_open():
+        logging.info("g:Profiler circuit breaker open — skipping, Enrichr fallback")
+        return pd.DataFrame()
 
     import time
     import socket
@@ -1117,7 +1191,7 @@ def fetch_enrichment_gprofiler(
     from gprofiler import GProfiler
 
     res = None
-    for attempt in range(config.API_MAX_RETRIES):
+    for attempt in range(config.ENRICHMENT_MAX_RETRIES):
         time.sleep(config.API_REQUEST_DELAY)  # 每次请求前等待，避免快速连发被限流
         socket.setdefaulttimeout(config.API_TIMEOUT)
         try:
@@ -1132,9 +1206,10 @@ def fetch_enrichment_gprofiler(
         except Exception:
             logging.exception(
                 "g:Profiler enrichment failed (attempt %d/%d)",
-                attempt + 1, config.API_MAX_RETRIES,
+                attempt + 1, config.ENRICHMENT_MAX_RETRIES,
             )
-            if attempt < config.API_MAX_RETRIES - 1:
+            _gprofiler_circuit_open_trip()  # 记录失败时间，开启熔断
+            if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
                 time.sleep(config.API_RETRY_DELAY)  # 失败退避后重试
         finally:
             socket.setdefaulttimeout(None)
@@ -1143,6 +1218,7 @@ def fetch_enrichment_gprofiler(
         logging.info("g:Profiler: no significant terms (p < %s) for %d genes", pvalue, len(genes))
         return pd.DataFrame()
 
+    _gprofiler_circuit_close()  # 请求成功，关闭熔断
     df = _normalize_enrichment_gprofiler(res)
     df.to_csv(cache_file, index=False, encoding="utf-8-sig")
     logging.info("g:Profiler enrichment for %d genes: %d terms cached", len(genes), len(df))
@@ -1210,7 +1286,7 @@ def fetch_enrichment_enrichr(
     md5 = _enrichment_cache_key(genes, organism, libs, pvalue)
     name = f"Enrichr_{label}_{md5}.csv" if label else f"Enrichr_{md5}.csv"
     cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
-    if os.path.exists(cache_file):
+    if _is_cache_fresh(cache_file):
         logging.info("Loading cached Enrichr enrichment for %d genes", len(genes))
         return _read_cache_csv(cache_file)
 
@@ -1224,7 +1300,7 @@ def fetch_enrichment_enrichr(
     import gseapy as gp
 
     res = None
-    for attempt in range(config.API_MAX_RETRIES):
+    for attempt in range(config.ENRICHMENT_MAX_RETRIES):
         time.sleep(config.API_REQUEST_DELAY)  # 每次请求前等待，避免快速连发被限流
         socket.setdefaulttimeout(config.API_TIMEOUT)
         try:
@@ -1240,9 +1316,9 @@ def fetch_enrichment_enrichr(
         except Exception:
             logging.exception(
                 "Enrichr enrichment failed (attempt %d/%d)",
-                attempt + 1, config.API_MAX_RETRIES,
+                attempt + 1, config.ENRICHMENT_MAX_RETRIES,
             )
-            if attempt < config.API_MAX_RETRIES - 1:
+            if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
                 time.sleep(config.API_RETRY_DELAY)  # 失败退避后重试
         finally:
             socket.setdefaulttimeout(None)
