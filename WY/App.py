@@ -97,11 +97,6 @@ st.markdown("""
         flex-direction: row;
         gap: 0.6rem;
         width: fit-content;
-        pointer-events: none;
-    }
-    /* 容器不拦截点击，按钮自身恢复可点击 */
-    div.st-key-top_left_buttons .stButton {
-        pointer-events: auto;
     }
     /* Management buttons: #167A9C background, #C6E7F5 text, gently float up/down */
     div.st-key-top_left_buttons .stButton button {
