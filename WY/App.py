@@ -3,6 +3,10 @@ import Utils
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
+
+# 初始化日志系统（幂等：每天一个文件、保留两年、四级全录）
+Utils.setup_logging()
+
 #页面布局
 st.set_page_config(page_title="Network Pharmacology Platform", layout="centered")
 
@@ -53,6 +57,36 @@ st.markdown("""
     [data-testid="stSidebar"] {
         display: none;
     }
+    /* Top-right corner Logs button (fixed overlay) */
+    div.st-key-top_right_logs {
+        position: fixed;
+        top: 3.5rem;
+        right: 1rem;
+        left: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: row;
+        justify-content: flex-end;
+        pointer-events: none;
+    }
+    /* 容器不拦截点击，按钮自身恢复可点击 */
+    div.st-key-top_right_logs .stButton {
+        pointer-events: auto;
+    }
+    /* Logs button: #909399 background, white text */
+    div.st-key-top_right_logs .stButton button {
+        background-color: #909399;
+        color: #FFFFFF;
+        border: 1px solid #909399;
+        box-shadow: none;
+    }
+    div.st-key-top_right_logs .stButton button:hover,
+    div.st-key-top_right_logs .stButton button:active {
+        background-color: #909399;
+        color: #FFFFFF;
+        border: 1px solid #909399;
+        box-shadow: none;
+    }
     /* Top-left corner management buttons (fixed overlay, no card background) */
     div.st-key-top_left_buttons {
         position: fixed;
@@ -62,6 +96,7 @@ st.markdown("""
         display: flex;
         flex-direction: row;
         gap: 0.6rem;
+        width: fit-content;
     }
     /* Management buttons: #167A9C background, #C6E7F5 text, gently float up/down */
     div.st-key-top_left_buttons .stButton button {
@@ -123,6 +158,11 @@ st.markdown("""
 # ---------- Title ----------
 st.markdown('<div class="title-area"><h1>🧬 Network Pharmacology Analysis Platform</h1><p>Input drug and disease names to analyze overlapping targets</p></div>',
             unsafe_allow_html=True)
+
+# ---------- Logs button (fixed top-right, open full-screen Logs page) ----------
+with st.container(key="top_right_logs"):
+    if st.button("📜 Logs", key="logs_btn"):
+        st.switch_page("pages/Logs.py")
 
 # ---------- Management buttons (fixed top-left, open full-screen pages) ----------
 with st.container(key="top_left_buttons"):

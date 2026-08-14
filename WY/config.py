@@ -63,6 +63,16 @@ ENRICHMENT_CACHE_DIR = os.path.join(CACHE_DIR, "enrichment")
 # downloads目录 — 储存分析后的成品文件与 zip 压缩包
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "Static", "data", "downloads")
 
+# ======== 日志配置 ========
+# 日志目录（WY/Static/log）— 每天一个文件 app_YYYY-MM-DD.log，纯文本 UTF-8
+LOG_DIR = os.path.join(BASE_DIR, "Static", "log")
+# 日志保留天数：超过该天数的 .log 文件在应用启动时自动删除
+LOG_RETENTION_DAYS = 730
+# 日志格式：时间 | 级别 | 函数名 | 消息体
+# 消息体目标长度 20~120 字（不强制填充/截断，仅作为书写规范）
+LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(funcName)s | %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 # ======== 物种映射表 =========
 #先写了人类，小鼠，大鼠，后面想加自己加
 SPECIES_MAP = {
@@ -93,7 +103,7 @@ ENRICHMENT_TOP_PER_SOURCE = 10
 DRUG_TARGET_SCORE = 0.7
 # 通路展示数量上限
 PATHWAY_DISPLAY_NUM = 30
-# 最小度数过滤器 — 节点度数 ≤ 此值将被过滤，不视为核心靶点，该参数为兜底，正常应该使用中位数法
+# 最小度数过滤器 — 节点度数 ≤ 此值将被过滤，不视为核心靶点，该参数为兜底
 MIN_DEGREE_FILTER = 3
 # PyVis 物理引擎迭代次数 — 值越大布局越松散，防止节点过度拥挤
 PHYSICS_ITERATIONS = 500
