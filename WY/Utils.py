@@ -11,6 +11,35 @@ import streamlit as st
 OPENTARGETS_API_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 
 
+def _opentargets_post(query: str, variables: dict, timeout: int = 30) -> dict | None:
+    """向 Open Targets GraphQL 端点发送 POST，带失败重试；最终失败返回 None。
+
+    网络抖动 / 临时 5xx 时按退避重试（config.LIGHT_API_MAX_RETRIES 次），
+    避免一次失败就让整个查询返回空表。GraphQL 层错误（payload["errors"]）
+    不属于网络异常，由调用方自行判断。
+    """
+    import time
+    import config
+
+    for attempt in range(config.LIGHT_API_MAX_RETRIES):
+        try:
+            resp = requests.post(
+                OPENTARGETS_API_URL,
+                json={"query": query, "variables": variables},
+                timeout=timeout,
+            )
+            resp.raise_for_status()  # 非 2xx 状态码会抛出异常
+            return resp.json()
+        except Exception:
+            logging.exception(
+                "Open Targets POST failed (attempt %d/%d)",
+                attempt + 1, config.LIGHT_API_MAX_RETRIES,
+            )
+            if attempt < config.LIGHT_API_MAX_RETRIES - 1:
+                time.sleep(config.API_RETRY_DELAY)
+    return None
+
+
 # ==================== 日志系统 ====================
 
 
@@ -143,13 +172,9 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             }
         }
         """
-        resp = requests.post(
-            OPENTARGETS_API_URL,
-            json={"query": search_query, "variables": {"queryString": disease_name.strip()}},
-            timeout=30,
-        )
-        resp.raise_for_status()  # 非 2xx 状态码会抛出异常
-        payload = resp.json()
+        payload = _opentargets_post(search_query, {"queryString": disease_name.strip()})
+        if payload is None:
+            return pd.DataFrame()
 
         # GraphQL 层错误（如查询语法问题）会出现在 payload["errors"] 中，而不是抛异常
         if "errors" in payload or "data" not in payload:
@@ -209,13 +234,9 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             }
         }
         """
-        resp = requests.post(
-            OPENTARGETS_API_URL,
-            json={"query": disease_query, "variables": {"diseaseId": disease_id, "size": top_n}},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
+        payload = _opentargets_post(disease_query, {"diseaseId": disease_id, "size": top_n})
+        if payload is None:
+            return pd.DataFrame()
 
         if "errors" in payload or "data" not in payload:
             logging.error("Open Targets disease query failed: %s", payload.get("errors"))
@@ -568,6 +589,7 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
     当前为【全靶点模式】：获取药物在 ChEMBL 中的全部活性记录
     （不限数量、不过滤 pChEMBL 值），再提取基因符号，并按 pChEMBL 降序排列。
     靶点更全，但会包含 ALB、CYP450 等弱关联/非特异性结合靶点。
+    【物种限定】：仅保留人类（organism = Homo sapiens）的靶点记录。
 
     若后续需要【高置信度模式】，只需在下方 Step 2 的 activity.filter 中
     加回 pchembl_value__isnull=False 参数，即可只保留有 pChEMBL 定量值的靶点
@@ -616,12 +638,15 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
 
         chembl_id = mols[0]["molecule_chembl_id"]
 
-        # ---- Step 2: 获取全部活性数据（全靶点模式） ----
+        # ---- Step 2: 获取全部活性数据（全靶点模式，仅人类） ----
         # 【全靶点模式】不筛选 pChEMBL 值，取药物全部活性记录，靶点更全。
+        # 【物种限定】organism="Homo sapiens" 在服务端只返回人类实验物种的活性记录，
+        # 减少下载量与后续靶点详情请求数。
         # 后续如需切换为【高置信度模式】，在此 filter 中加回 pchembl_value__isnull=False，
         # 即可只保留有 pChEMBL 定量值的靶点（更少但更可靠）。
         acts = list(new_client.activity.filter(
             molecule_chembl_id=chembl_id,
+            organism="Homo sapiens",
         ))
 
         # ---- Step 3: get target details (cache by target_id) ----
@@ -680,6 +705,9 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
 
             pref_name = t.get("pref_name", "") or ""
             organism = t.get("organism", "") or ""
+            if organism != "Homo sapiens":
+                # 兜底过滤：即使 activity 层 organism 过滤有遗漏，也只保留人类靶点
+                continue
             assay_type = act.get("assay_type", "") or ""
             pchembl_value = act.get("pchembl_value")
 
@@ -733,6 +761,7 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
     ----
     结果持久化为 CSV（Static/data/cache/drug/DGIdb_{drug_name}.csv）。
     """
+    import time
     import config
 
     cache_dir = os.path.join(
@@ -765,13 +794,29 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
     """
 
     try:
-        resp = requests.post(
-            config.DGIDB_GRAPHQL_URL,
-            json={"query": query, "variables": {"names": [drug_name.strip()]}},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
+        # 请求带重试：网络抖动 / 临时 5xx 时按退避重试，避免一次失败就返回空表。
+        # 单次分析仅 1 次请求，用轻量重试次数（2），避免网络不佳时拖慢更新。
+        payload = None
+        for attempt in range(config.LIGHT_API_MAX_RETRIES):
+            try:
+                resp = requests.post(
+                    config.DGIDB_GRAPHQL_URL,
+                    json={"query": query, "variables": {"names": [drug_name.strip()]}},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                break
+            except Exception:
+                logging.exception(
+                    "DGIdb request failed (attempt %d/%d)",
+                    attempt + 1, config.LIGHT_API_MAX_RETRIES,
+                )
+                if attempt < config.LIGHT_API_MAX_RETRIES - 1:
+                    time.sleep(config.API_RETRY_DELAY)
+
+        if payload is None:
+            return pd.DataFrame()
 
         if "errors" in payload or "data" not in payload:
             logging.error("DGIdb query failed: %s", payload.get("errors"))
@@ -866,6 +911,9 @@ def list_cache_files(category: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["File name", "Created time"])
     rows = []
     for name in sorted(os.listdir(cache_dir)):
+        # 跳过更新过程中产生的备份/临时文件（.bak / .tmp），避免残留虚影显示在页面上
+        if name.endswith((".bak", ".tmp")):
+            continue
         path = os.path.join(cache_dir, name)
         if os.path.isfile(path):
             created = datetime.fromtimestamp(os.path.getctime(path)).strftime("%Y-%m-%d %H:%M:%S")

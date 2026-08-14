@@ -48,6 +48,9 @@ API_TIMEOUT = 60
 API_MAX_RETRIES = 5
 API_RETRY_DELAY = 3
 API_REQUEST_DELAY = 0.2
+# DGIdb / Open Targets 请求重试次数：这两个 API 单次分析请求量很小（1~2 次），
+# 重试过多会在网络不佳时显著拖慢来源更新，2 次足矣（配合退避约多等 3s）
+LIGHT_API_MAX_RETRIES = 2
 # 富集请求（g:Profiler / Enrichr）重试次数：服务不可达时单次连接可能空等 20s+，
 # 重试过多会拖慢整个分析，故单独压低
 ENRICHMENT_MAX_RETRIES = 2
