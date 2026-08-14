@@ -1,7 +1,16 @@
 # 全局配置文件
+import os
+from dotenv import load_dotenv
+
+# 自动计算项目根目录（config.py 所在目录，即本地电脑的目录）
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 从 API.env 加载密钥（该文件已被 .gitignore 忽略，不会提交到 git）
+load_dotenv(os.path.join(BASE_DIR, "API.env"))
+
 # API密钥
-DisGeNET_API_KEY = "your_api_key"
-BioGRID_API_KEY = "your_api_key"
+DisGeNET_API_KEY = os.getenv("DisGeNET_API_KEY", "")
+BioGRID_API_KEY = os.getenv("BioGRID_API_KEY", "your_api_key")
 # ======== 主要路径 =========
 # PPI网络路径
 # 版本化基础地址：裸 string-db.org 会随 STRING 版本更新而变化，版本化地址保证分析结果可复现
@@ -12,8 +21,10 @@ STRING_URL = "https://string-db.org/api/json/network"
 STRING_QUERY_LIMIT = 1000
 # STRING 调用方标识（STRING 官方要求标注应用身份，避免被限流）
 STRING_CALLER_IDENTITY = "NetworkPharmacologyPlatform"
-# 疾病靶点路径
-DisGeNET_URL = "https://www.disgenet.org/api/gda/disease"
+# 疾病靶点路径（DisGeNET 新版 REST API；Header: Authorization=<key>，无 Bearer 前缀）
+DisGeNET_URL = "https://api.disgenet.com/api/v1/gda/summary"
+# DGIdb v5 GraphQL 端点（药物-基因交互，无需 key）
+DGIDB_GRAPHQL_URL = "https://dgidb.org/api/graphql"
 # 富集分析路径
 gProfiler_URL = "https://biit.cs.ut.ee/gprofiler/api/gost/profile/"
 # ChEMBL — 药物靶点主数据源
@@ -40,6 +51,12 @@ API_REQUEST_DELAY = 0.2
 # 富集请求（g:Profiler / Enrichr）重试次数：服务不可达时单次连接可能空等 20s+，
 # 重试过多会拖慢整个分析，故单独压低
 ENRICHMENT_MAX_RETRIES = 2
+# DisGeNET 主动限流：低于官方 TRIAL 配额（每分钟 < 50 次、每天 < 25000 次），
+# 发请求前先节流，避免高频请求触发 429 封禁
+DISGENET_RATE_LIMIT_PER_MINUTE = 50
+DISGENET_RATE_LIMIT_PER_DAY = 25000
+# 主动限流等待上限（秒）：每分钟窗口已满时最多等待这么久，超过则拒绝本次请求
+DISGENET_RATE_LIMIT_MAX_WAIT = 60
 # g:Profiler 熔断标记有效期（秒）：gProfiler 连续失败后写入标记，
 # 有效期内直接跳过 g:Profiler 走 Enrichr，避免每次分析都白等连接超时
 GPROFILER_CIRCUIT_TTL_SECONDS = 1800
@@ -47,9 +64,6 @@ GPROFILER_CIRCUIT_TTL_SECONDS = 1800
 # 重新执行同参数分析时重新发请求，以保证拿到最新数据
 CACHE_TTL_SECONDS = 6 * 3600
 # ======== 文件存储路径配置 =========
-import os
-# 自动计算项目根目录（config.py 所在目录本地电脑的目录）
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # cache目录 — 储存 API 返回的原始数据
 CACHE_DIR = os.path.join(BASE_DIR, "Static", "data", "cache")
@@ -62,6 +76,18 @@ ENRICHMENT_CACHE_DIR = os.path.join(CACHE_DIR, "enrichment")
 
 # downloads目录 — 储存分析后的成品文件与 zip 压缩包
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "Static", "data", "downloads")
+
+# drug目录 — 药物靶点原始缓存（ChEMBL / DGIdb）
+DRUG_CACHE_DIR = os.path.join(CACHE_DIR, "drug")
+
+# disease目录 — 疾病靶点原始缓存（Open Targets / DisGeNET）
+DISEASE_CACHE_DIR = os.path.join(CACHE_DIR, "disease")
+
+# merged目录 — 去重整合后的药物/疾病靶点缓存
+MERGED_CACHE_DIR = os.path.join(CACHE_DIR, "merged")
+
+# DisGeNET 主动限流状态文件（持久化请求时间戳，跨 Streamlit rerun 生效）
+DISGENET_RATE_LIMIT_STATE_FILE = os.path.join(CACHE_DIR, "disgenet_rate_limit.json")
 
 # ======== 日志配置 ========
 # 日志目录（WY/Static/log）— 每天一个文件 app_YYYY-MM-DD.log，纯文本 UTF-8

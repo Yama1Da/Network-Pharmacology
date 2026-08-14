@@ -267,6 +267,177 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _acquire_disgenet_rate_limit_slot() -> None:
+    """DisGeNET 主动限流：发请求前节流，保证低于官方配额（每分钟/每天）。
+
+    用时间戳列表（滑动窗口）持久化到 config.DISGENET_RATE_LIMIT_STATE_FILE，
+    Streamlit 每次 rerun 重跑脚本也能共享计数。窗口已满时：
+      - 每分钟窗口：等待至最早一次请求滑出窗口（最多等 DISGENET_RATE_LIMIT_MAX_WAIT 秒）；
+      - 每天窗口：直接抛异常，由调用方降级返回空表。
+    """
+    import json
+    import time
+    import config
+
+    now = time.time()
+    minute_window = 60.0
+    day_window = 24 * 3600.0
+
+    state_file = config.DISGENET_RATE_LIMIT_STATE_FILE
+    timestamps: list[float] = []
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                timestamps = [float(t) for t in json.load(f)]
+        except Exception:
+            logging.warning("Failed to load DisGeNET rate-limit state; resetting")
+
+    # 只保留一天内的请求记录
+    timestamps = [t for t in timestamps if now - t <= day_window]
+
+    # 每日硬上限：等待可能数小时，直接拒绝
+    if len(timestamps) >= config.DISGENET_RATE_LIMIT_PER_DAY:
+        raise RuntimeError(
+            "DisGeNET daily rate limit (%d) reached" % config.DISGENET_RATE_LIMIT_PER_DAY
+        )
+
+    # 每分钟窗口：满了则等到最早一次请求滑出窗口
+    recent = [t for t in timestamps if t > now - minute_window]
+    if len(recent) >= config.DISGENET_RATE_LIMIT_PER_MINUTE:
+        wait = recent[0] + minute_window - now + 0.05
+        if wait > config.DISGENET_RATE_LIMIT_MAX_WAIT:
+            raise RuntimeError(
+                "DisGeNET per-minute rate limit (%d) reached"
+                % config.DISGENET_RATE_LIMIT_PER_MINUTE
+            )
+        logging.warning("DisGeNET per-minute limit reached, waiting %.1fs", wait)
+        time.sleep(wait)
+        now = time.time()
+        timestamps = [t for t in timestamps if now - t <= day_window]
+
+    timestamps.append(now)
+
+    # 原子写入（先写临时文件再替换），避免并发写坏状态文件
+    os.makedirs(os.path.dirname(state_file), exist_ok=True)
+    tmp_file = state_file + ".tmp"
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(timestamps, f)
+    os.replace(tmp_file, state_file)
+
+
+def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
+    """从 DisGeNET 新版 REST API 获取疾病关联基因（gene-disease association, GDA）。
+
+    调用 gda summary 端点，按 disease 参数查询。注意当前 API.env 里的
+    DisGeNET key 为 TRIAL 账号，存在以下限制：
+      - 每页最多 30 条、不支持分页；
+      - 最多查询 10 个标识符；
+      - 请求频率限制严格（频繁调用会返回 429）。
+    因此本函数只取第一页结果，并在遇到 429 时做有限次等待重试。
+
+    Parameters
+    ----------
+    disease_name : str
+        疾病英文名，如 "Alzheimer's Disease"。
+
+    Returns
+    -------
+    pd.DataFrame
+        列: approvedSymbol、entrez_id、ensembl_id、disease_name、
+        disease_umls_cui、disgenet_score、normalized_score、num_pmids 等；
+        无数据或失败时返回空表。
+
+    缓存
+    ----
+    结果持久化为 CSV（Static/data/cache/disease/DisGeNET_{disease_name}.csv）。
+    """
+    import time
+    import config
+
+    cache_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "disease"
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    csv_path = os.path.join(cache_dir, f"DisGeNET_{disease_name}.csv")
+
+    # ---- cache hit: load local ----
+    if os.path.exists(csv_path):
+        logging.info("Loading cached DisGeNET targets for '%s'", disease_name)
+        return pd.read_csv(csv_path)
+
+    if not config.DisGeNET_API_KEY:
+        logging.error("DisGeNET_API_KEY is empty; check API.env")
+        return pd.DataFrame()
+
+    headers = {"Authorization": config.DisGeNET_API_KEY, "accept": "application/json"}
+    # DisGeNET gda summary 端点按疾病查询使用 `disease` 参数（值通常为疾病名或 UMLS CUI）
+    params = {"disease": disease_name.strip()}
+
+    try:
+        # 每次发请求前先过主动限流（每分钟/每天），再请求；429 时按响应头有限重试。
+        resp = None
+        for _ in range(config.ENRICHMENT_MAX_RETRIES + 1):
+            _acquire_disgenet_rate_limit_slot()
+            resp = requests.get(
+                config.DisGeNET_URL, params=params, headers=headers, timeout=config.API_TIMEOUT
+            )
+            if resp.status_code != 429:
+                break
+
+            retry_after = int(
+                resp.headers.get("x-rate-limit-retry-after-seconds", config.API_RETRY_DELAY)
+            )
+            # 若需等待过久（超过最大等待阈值）则直接放弃，避免阻塞界面
+            if retry_after > config.API_RETRY_DELAY * config.ENRICHMENT_MAX_RETRIES * 10:
+                logging.error(
+                    "DisGeNET rate limit requires %ss wait; aborting to avoid blocking", retry_after
+                )
+                return pd.DataFrame()
+            logging.warning("DisGeNET rate-limited (429), retrying after %ss", retry_after)
+            time.sleep(retry_after)
+
+        resp.raise_for_status()
+        payload = resp.json()
+
+        if payload.get("status") != "OK":
+            logging.error("DisGeNET query failed: %s", payload.get("payload"))
+            return pd.DataFrame()
+
+        rows = payload.get("payload", [])
+        if not isinstance(rows, list) or not rows:
+            logging.warning("DisGeNET returned no associations for '%s'", disease_name)
+            return pd.DataFrame()
+
+        records: list[dict] = []
+        for r in rows:
+            ensembl_ids = r.get("geneEnsemblIDs") or []
+            records.append({
+                "approvedSymbol": r.get("symbolOfGene"),
+                "entrez_id": r.get("geneNcbiID"),
+                "ensembl_id": ensembl_ids[0] if ensembl_ids else None,
+                "disease_name": r.get("diseaseName"),
+                "disease_umls_cui": r.get("diseaseUMLSCUI"),
+                "disgenet_score": r.get("score"),
+                "normalized_score": r.get("normalized_score"),
+                "num_pmids": r.get("numPMIDs"),
+                "year_initial": r.get("yearInitial"),
+                "year_final": r.get("yearFinal"),
+            })
+
+        df = (
+            pd.DataFrame(records)
+            .drop_duplicates(subset=["approvedSymbol"])
+            .reset_index(drop=True)
+        )
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        logging.info("DisGeNET '%s': %d targets fetched", disease_name, len(df))
+        return df
+
+    except Exception:
+        logging.exception("fetch_disease_targets_disgenet failed for '%s'", disease_name)
+        return pd.DataFrame()
+
+
 def _search_drug(drug_name: str) -> str | None:
     # 通过Open Targets API搜索药物名称，返回其ChEMBL ID（如果找到），否则返回None
     query = """
@@ -540,6 +711,114 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
         return pd.DataFrame(), None
 
 
+def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
+    """从 DGIdb v5 GraphQL API 获取药物的交互基因（drug-gene interaction）。
+
+    直接通过 requests 调用 DGIdb 的 GraphQL 端点（dgipy 0.1.0 与 gql 4.x
+    存在 execute 签名不兼容的 bug，故弃用第三方库、改用原生 requests）。
+    返回药物与基因的交互记录，含交互分数与来源证据。
+
+    Parameters
+    ----------
+    drug_name : str
+        药物英文名，如 "aspirin"。
+
+    Returns
+    -------
+    pd.DataFrame
+        列: approvedSymbol（基因符号）、drug_name、interaction_score、
+        interaction_sources、interaction_pmids；无数据或失败时返回空表。
+
+    缓存
+    ----
+    结果持久化为 CSV（Static/data/cache/drug/DGIdb_{drug_name}.csv）。
+    """
+    import config
+
+    cache_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "drug"
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    csv_path = os.path.join(cache_dir, f"DGIdb_{drug_name}.csv")
+
+    # ---- cache hit: load local ----
+    if os.path.exists(csv_path):
+        logging.info("Loading cached DGIdb targets for '%s'", drug_name)
+        return pd.read_csv(csv_path)
+
+    query = """
+    query getInteractionsByDrug($names: [String!]) {
+      drugs(names: $names) {
+        nodes {
+          interactions {
+            gene { name longName conceptId }
+            drug { name conceptId approved }
+            interactionScore
+            interactionClaims {
+              publications { pmid }
+              source { sourceDbName }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    try:
+        resp = requests.post(
+            config.DGIDB_GRAPHQL_URL,
+            json={"query": query, "variables": {"names": [drug_name.strip()]}},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+
+        if "errors" in payload or "data" not in payload:
+            logging.error("DGIdb query failed: %s", payload.get("errors"))
+            return pd.DataFrame()
+
+        records: list[dict] = []
+        for node in payload.get("data", {}).get("drugs", {}).get("nodes", []):
+            for inter in node.get("interactions", []):
+                gene = inter.get("gene") or {}
+                drug = inter.get("drug") or {}
+                sources = [
+                    c.get("source", {}).get("sourceDbName")
+                    for c in inter.get("interactionClaims", [])
+                    if c.get("source", {}).get("sourceDbName")
+                ]
+                pmids = [
+                    p.get("pmid")
+                    for c in inter.get("interactionClaims", [])
+                    for p in c.get("publications", [])
+                    if p.get("pmid")
+                ]
+                records.append({
+                    "approvedSymbol": gene.get("name"),
+                    "drug_name": drug.get("name"),
+                    "interaction_score": inter.get("interactionScore"),
+                    "interaction_sources": ";".join(dict.fromkeys(sources)),
+                    "interaction_pmids": ";".join(str(p) for p in dict.fromkeys(pmids)),
+                })
+
+        if not records:
+            logging.warning("DGIdb returned no interactions for '%s'", drug_name)
+            return pd.DataFrame()
+
+        df = (
+            pd.DataFrame(records)
+            .drop_duplicates(subset=["approvedSymbol", "drug_name"])
+            .reset_index(drop=True)
+        )
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        logging.info("DGIdb '%s': %d targets fetched", drug_name, len(df))
+        return df
+
+    except Exception:
+        logging.exception("fetch_drug_targets_dgidb failed for '%s'", drug_name)
+        return pd.DataFrame()
+
+
 #TTL时间修改
 def set_chembl_cache_ttl(hours: int) -> None:
     """调整 chembl_webresource_client 的 HTTP 响应缓存有效期（TTL）。
@@ -649,12 +928,167 @@ def list_log_files() -> pd.DataFrame:
 # ==================== PPI 网络模块 ====================
 
 
+def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
+    """整合 ChEMBL 与 DGIdb 两个来源的药物靶点（并集去重，保留来源证据）。
+
+    两个来源分别抓取（各自独立缓存），按基因符号（approvedSymbol，统一大写）取并集，
+    去重后为每个基因标记来源（source_chmbl / source_dgidb）与来源数量，
+    并保留各来源的分数（score_pchembl / score_dgidb）。
+
+    Parameters
+    ----------
+    drug_name : str
+        药物英文名。
+
+    Returns
+    -------
+    pd.DataFrame
+        列: approvedSymbol、source_chmbl、source_dgidb、source_count、
+        score_pchembl、score_dgidb；两来源均无数据时返回空表。
+
+    缓存
+    ----
+    结果持久化为 CSV（Static/data/cache/merged/merged_drug_{drug_name}.csv）。
+    """
+    import config
+
+    os.makedirs(config.MERGED_CACHE_DIR, exist_ok=True)
+    merged_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_drug_{drug_name}.csv")
+    if os.path.exists(merged_path):
+        logging.info("Loading cached merged drug targets for '%s'", drug_name)
+        return pd.read_csv(merged_path)
+
+    chmbl_df, _ = fetch_drug_targets_chembl(drug_name)
+    dgidb_df = fetch_drug_targets_dgidb(drug_name)
+
+    chmbl_genes = set(chmbl_df["approvedSymbol"].dropna().str.upper()) if not chmbl_df.empty else set()
+    dgidb_genes = set(dgidb_df["approvedSymbol"].dropna().str.upper()) if not dgidb_df.empty else set()
+
+    all_genes = sorted(chmbl_genes | dgidb_genes)
+    if not all_genes:
+        logging.warning("No drug targets from either source for '%s'", drug_name)
+        return pd.DataFrame()
+
+    # 各来源分数聚合（同一基因多条记录取最大值）
+    chmbl_score: dict[str, float] = {}
+    if not chmbl_df.empty and "pchembl_value" in chmbl_df.columns:
+        tmp = chmbl_df.dropna(subset=["approvedSymbol"]).copy()
+        tmp["approvedSymbol"] = tmp["approvedSymbol"].str.upper()
+        tmp["pchembl_value"] = pd.to_numeric(tmp["pchembl_value"], errors="coerce")
+        chmbl_score = tmp.groupby("approvedSymbol")["pchembl_value"].max().to_dict()
+
+    dgidb_score: dict[str, float] = {}
+    if not dgidb_df.empty and "interaction_score" in dgidb_df.columns:
+        tmp = dgidb_df.dropna(subset=["approvedSymbol"]).copy()
+        tmp["approvedSymbol"] = tmp["approvedSymbol"].str.upper()
+        tmp["interaction_score"] = pd.to_numeric(tmp["interaction_score"], errors="coerce")
+        dgidb_score = tmp.groupby("approvedSymbol")["interaction_score"].max().to_dict()
+
+    records: list[dict] = []
+    for g in all_genes:
+        in_chmbl = g in chmbl_genes
+        in_dgidb = g in dgidb_genes
+        records.append({
+            "approvedSymbol": g,
+            "source_chmbl": int(in_chmbl),
+            "source_dgidb": int(in_dgidb),
+            "source_count": int(in_chmbl) + int(in_dgidb),
+            "score_pchembl": chmbl_score.get(g),
+            "score_dgidb": dgidb_score.get(g),
+        })
+
+    merged = pd.DataFrame(records)
+    merged.to_csv(merged_path, index=False, encoding="utf-8-sig")
+    logging.info(
+        "Merged drug '%s': %d targets (ChEMBL %d, DGIdb %d)",
+        drug_name, len(merged), len(chmbl_genes), len(dgidb_genes),
+    )
+    return merged
+
+
+def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
+    """整合 Open Targets 与 DisGeNET 两个来源的疾病靶点（并集去重，保留来源证据）。
+
+    两个来源分别抓取（各自独立缓存），按基因符号（approvedSymbol，统一大写）取并集，
+    去重后为每个基因标记来源（source_ot / source_disgenet）与来源数量，
+    并保留各来源的分数（score_ot / score_disgenet）。
+
+    Parameters
+    ----------
+    disease_name : str
+        疾病英文名。
+
+    Returns
+    -------
+    pd.DataFrame
+        列: approvedSymbol、source_ot、source_disgenet、source_count、
+        score_ot、score_disgenet；两来源均无数据时返回空表。
+
+    缓存
+    ----
+    结果持久化为 CSV（Static/data/cache/merged/merged_disease_{disease_name}.csv）。
+    """
+    import config
+
+    os.makedirs(config.MERGED_CACHE_DIR, exist_ok=True)
+    merged_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_disease_{disease_name}.csv")
+    if os.path.exists(merged_path):
+        logging.info("Loading cached merged disease targets for '%s'", disease_name)
+        return pd.read_csv(merged_path)
+
+    ot_df = get_disease_targets(disease_name)
+    disgenet_df = fetch_disease_targets_disgenet(disease_name)
+
+    ot_genes = set(ot_df["approvedSymbol"].dropna().str.upper()) if not ot_df.empty else set()
+    disgenet_genes = set(disgenet_df["approvedSymbol"].dropna().str.upper()) if not disgenet_df.empty else set()
+
+    all_genes = sorted(ot_genes | disgenet_genes)
+    if not all_genes:
+        logging.warning("No disease targets from either source for '%s'", disease_name)
+        return pd.DataFrame()
+
+    ot_score: dict[str, float] = {}
+    if not ot_df.empty and "association_score" in ot_df.columns:
+        tmp = ot_df.dropna(subset=["approvedSymbol"]).copy()
+        tmp["approvedSymbol"] = tmp["approvedSymbol"].str.upper()
+        ot_score = tmp.groupby("approvedSymbol")["association_score"].max().to_dict()
+
+    disgenet_score: dict[str, float] = {}
+    if not disgenet_df.empty and "disgenet_score" in disgenet_df.columns:
+        tmp = disgenet_df.dropna(subset=["approvedSymbol"]).copy()
+        tmp["approvedSymbol"] = tmp["approvedSymbol"].str.upper()
+        tmp["disgenet_score"] = pd.to_numeric(tmp["disgenet_score"], errors="coerce")
+        disgenet_score = tmp.groupby("approvedSymbol")["disgenet_score"].max().to_dict()
+
+    records: list[dict] = []
+    for g in all_genes:
+        in_ot = g in ot_genes
+        in_dis = g in disgenet_genes
+        records.append({
+            "approvedSymbol": g,
+            "source_ot": int(in_ot),
+            "source_disgenet": int(in_dis),
+            "source_count": int(in_ot) + int(in_dis),
+            "score_ot": ot_score.get(g),
+            "score_disgenet": disgenet_score.get(g),
+        })
+
+    merged = pd.DataFrame(records)
+    merged.to_csv(merged_path, index=False, encoding="utf-8-sig")
+    logging.info(
+        "Merged disease '%s': %d targets (OpenTargets %d, DisGeNET %d)",
+        disease_name, len(merged), len(ot_genes), len(disgenet_genes),
+    )
+    return merged
+
+
 def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> list[str]:
     """
     计算药物靶点与疾病靶点的交集基因列表（PPI 网络输入）。
 
-    复用 fetch_drug_targets_chembl 与 get_disease_targets（自带 CSV 缓存），
-    取两表 approvedSymbol 的交集，按字母序排序并截断到 top_n（默认对齐 STRING 查询上限 1000）。
+    药物靶点整合 ChEMBL + DGIdb（get_drug_targets_merged），
+    疾病靶点整合 Open Targets + DisGeNET（get_disease_targets_merged），
+    再取两表 approvedSymbol 的交集，按字母序排序并截断到 top_n（默认对齐 STRING 查询上限 1000）。
 
     Parameters
     ----------
@@ -670,8 +1104,8 @@ def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> 
     list[str]
         交集基因符号列表；任一来源无数据时返回空列表。
     """
-    drug_df, _ = fetch_drug_targets_chembl(drug_name)
-    disease_df = get_disease_targets(disease_name)
+    drug_df = get_drug_targets_merged(drug_name)
+    disease_df = get_disease_targets_merged(disease_name)
     # 从药物和疾病靶点表中提取基因符号（approvedSymbol），并转换为集合
     drug_set = set(drug_df["approvedSymbol"].dropna()) if not drug_df.empty else set()
     disease_set = set(disease_df["approvedSymbol"].dropna()) if not disease_df.empty else set()

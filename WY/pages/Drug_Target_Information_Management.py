@@ -9,22 +9,54 @@ CACHE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "Static", "data", "cache", "drug",
 )
-PREFIX = "ChEMBL_"
+MERGED_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "Static", "data", "cache", "merged",
+)
+# 展示/更新支持的文件名前缀：两个来源缓存 + 去重整合结果
+PREFIXES = ("ChEMBL_", "DGIdb_", "merged_drug_")
+
+
+def _file_path(filename: str) -> str:
+    """merged_drug_ 前缀的文件位于 merged 目录，其余位于 drug 目录。"""
+    if filename.startswith("merged_drug_"):
+        return os.path.join(MERGED_DIR, filename)
+    return os.path.join(CACHE_DIR, filename)
+
+
+def _invalidate_merged_drug(drug_name: str) -> None:
+    """更新来源文件后删除对应 merged 缓存，避免整合结果与来源不一致。"""
+    path = os.path.join(MERGED_DIR, f"merged_drug_{drug_name}.csv")
+    if os.path.exists(path):
+        os.remove(path)
 
 
 def refresh_file(filename: str, cache_hours: int = 1) -> dict:
-    """删除旧缓存并直接调用 ChEMBL 获取方法，重新生成该文件（更新内容与创建时间）。
+    """按文件名前缀路由到对应抓取/整合函数，重新生成该文件。
 
-    cache_hours : chembl 客户端 HTTP 缓存有效期（小时），单行更新 1h / 全量更新 12h。
+    cache_hours : 仅 ChEMBL 来源生效（chembl 客户端 HTTP 缓存有效期）。
     """
-    drug_name = filename[len(PREFIX):-len(".csv")]
-    # 按调用方式调整 chembl HTTP 缓存 TTL，让更新尽量拿到较新数据
-    Utils.set_chembl_cache_ttl(cache_hours)
-    # 先删除旧文件，使重新生成的文件创建时间更新
-    os.remove(os.path.join(CACHE_DIR, filename))
-    df, csv_path = Utils.fetch_drug_targets_chembl(drug_name)
-    if not df.empty and csv_path:
-        return {"Status": "OK", "Message": f"{len(df)} targets"}
+    os.remove(_file_path(filename))
+
+    if filename.startswith("ChEMBL_"):
+        drug_name = filename[len("ChEMBL_"):-len(".csv")]
+        Utils.set_chembl_cache_ttl(cache_hours)
+        df, csv_path = Utils.fetch_drug_targets_chembl(drug_name)
+        _invalidate_merged_drug(drug_name)
+        if not df.empty and csv_path:
+            return {"Status": "OK", "Message": f"{len(df)} targets"}
+    elif filename.startswith("DGIdb_"):
+        drug_name = filename[len("DGIdb_"):-len(".csv")]
+        df = Utils.fetch_drug_targets_dgidb(drug_name)
+        _invalidate_merged_drug(drug_name)
+        if not df.empty:
+            return {"Status": "OK", "Message": f"{len(df)} targets"}
+    elif filename.startswith("merged_drug_"):
+        drug_name = filename[len("merged_drug_"):-len(".csv")]
+        df = Utils.get_drug_targets_merged(drug_name)
+        if not df.empty:
+            return {"Status": "OK", "Message": f"{len(df)} targets"}
+
     return {"Status": "FAILED", "Message": "fetch failed"}
 
 
@@ -73,7 +105,7 @@ if all_update_clicked:
     with st.spinner("Updating all cached drug targets…"):
         rows = []
         for filename in sorted(os.listdir(CACHE_DIR)):
-            if not filename.startswith(PREFIX) or not filename.endswith(".csv"):
+            if not filename.startswith(PREFIXES) or not filename.endswith(".csv"):
                 continue
             try:
                 rows.append({"File": filename, **refresh_file(filename, cache_hours=12)})
@@ -92,6 +124,9 @@ if all_update_clicked:
 st.divider()
 
 drug_files = Utils.list_cache_files("drug")
+merged_files = Utils.list_cache_files("merged")
+merged_files = merged_files[merged_files["File name"].str.startswith("merged_drug_")]
+drug_files = pd.concat([drug_files, merged_files], ignore_index=True)
 clicked_file = None
 
 if drug_files.empty:
@@ -114,7 +149,7 @@ else:
                 if st.button("Update", key=f"update_{row['File name']}"):
                     clicked_file = row["File name"]
             with col_dl:
-                file_path = os.path.join(CACHE_DIR, row["File name"])
+                file_path = _file_path(row["File name"])
                 if os.path.exists(file_path):
                     with open(file_path, "rb") as f:
                         csv_bytes = f.read()

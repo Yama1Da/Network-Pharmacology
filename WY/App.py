@@ -206,9 +206,10 @@ if analyze_btn:
         st.warning(f"Please enter {' and '.join(errors)}")
     else:
         with st.spinner(f"Querying targets for {drug_name} and {disease_name}…"):
-            drug_df, _ = Utils.fetch_drug_targets_chembl(drug_name)
+            # 药物靶点：ChEMBL + DGIdb 去重整合；疾病靶点：Open Targets + DisGeNET 去重整合
+            drug_df = Utils.get_drug_targets_merged(drug_name)
             drug_targets = drug_df["approvedSymbol"].tolist() if not drug_df.empty else []
-            disease_df = Utils.get_disease_targets(disease_name)
+            disease_df = Utils.get_disease_targets_merged(disease_name)
             # 韦恩图/统计需要基因符号列表，从表格中取出
             disease_targets = disease_df["approvedSymbol"].tolist() if not disease_df.empty else []
 
@@ -241,16 +242,27 @@ if analyze_btn:
         st.pyplot(fig)# 显示Venn图
 
         with st.expander("View target lists", expanded=False):
-            # ----- 第一段：药物靶点（全量，按 pchembl 降序） -----
-            st.markdown(f"**💊 {drug_name} targets** — {len(drug_set)} genes ({len(drug_df)} records, sorted by pChEMBL desc)")
-            st.write(drug_df if not drug_df.empty else "（未获取到药物靶点数据）")
+            # ----- 第一段：药物靶点（ChEMBL + DGIdb 去重整合结果） -----
+            st.markdown(f"**💊 {drug_name} targets** — {len(drug_set)} genes (ChEMBL + DGIdb, deduplicated)")
+            if not drug_df.empty:
+                st.dataframe(
+                    drug_df.sort_values(["source_count", "score_pchembl"],
+                                        ascending=False, na_position="last"),
+                    width="stretch",
+                )
+            else:
+                st.write("（未获取到药物靶点数据）")
 
             st.divider()
 
-            # ----- 第二段：疾病靶点（表格，含 Open Targets 关联指标，按分数降序） -----
-            st.markdown(f"**🦠 {disease_name} targets** — {len(disease_targets)} genes")
+            # ----- 第二段：疾病靶点（Open Targets + DisGeNET 去重整合结果） -----
+            st.markdown(f"**🦠 {disease_name} targets** — {len(disease_set)} genes (Open Targets + DisGeNET, deduplicated)")
             if not disease_df.empty:
-                st.dataframe(disease_df, width="stretch")
+                st.dataframe(
+                    disease_df.sort_values(["source_count", "score_ot"],
+                                           ascending=False, na_position="last"),
+                    width="stretch",
+                )
             else:
                 st.write("（未获取到疾病靶点数据）")
 
