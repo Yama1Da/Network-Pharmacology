@@ -1,4 +1,5 @@
 import os
+import logging
 import streamlit as st
 import pandas as pd
 import Utils
@@ -9,22 +10,82 @@ CACHE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "Static", "data", "cache", "drug",
 )
-PREFIX = "ChEMBL_"
+MERGED_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "Static", "data", "cache", "merged",
+)
+
+
+def _file_path(filename: str) -> str:
+    """merged_drug_ 前缀的文件位于 merged 目录，其余位于 drug 目录。"""
+    if filename.startswith("merged_drug_"):
+        return os.path.join(MERGED_DIR, filename)
+    return os.path.join(CACHE_DIR, filename)
+
+
+def _invalidate_merged_drug(drug_name: str) -> None:
+    """更新来源文件后删除对应 merged 缓存，避免整合结果与来源不一致。"""
+    path = os.path.join(MERGED_DIR, f"merged_drug_{drug_name}.csv")
+    if os.path.exists(path):
+        os.remove(path)
 
 
 def refresh_file(filename: str, cache_hours: int = 1) -> dict:
-    """删除旧缓存并直接调用 ChEMBL 获取方法，重新生成该文件（更新内容与创建时间）。
+    """按文件名前缀路由到对应抓取/整合函数，重新生成该文件。
 
-    cache_hours : chembl 客户端 HTTP 缓存有效期（小时），单行更新 1h / 全量更新 12h。
+    - 来源文件（ChEMBL_ / DGIdb_）：先备份旧文件，抓取成功后才替换；
+      失败时恢复旧文件并返回 FAILED，避免数据丢失。
+    - merged 文件（merged_drug_）：先更新两个来源文件，再重建整合结果；
+      任一来源更新失败则保留旧 merged 并返回 FAILED。
+
+    cache_hours : 仅 ChEMBL 来源生效（chembl 客户端 HTTP 缓存有效期）。
     """
-    drug_name = filename[len(PREFIX):-len(".csv")]
-    # 按调用方式调整 chembl HTTP 缓存 TTL，让更新尽量拿到较新数据
-    Utils.set_chembl_cache_ttl(cache_hours)
-    # 先删除旧文件，使重新生成的文件创建时间更新
-    os.remove(os.path.join(CACHE_DIR, filename))
-    df, csv_path = Utils.fetch_drug_targets_chembl(drug_name)
-    if not df.empty and csv_path:
+    # ===== merged 文件：先更新来源，再重建 =====
+    if filename.startswith("merged_drug_"):
+        drug_name = filename[len("merged_drug_"):-len(".csv")]
+        for source in (f"ChEMBL_{drug_name}.csv", f"DGIdb_{drug_name}.csv"):
+            result = refresh_file(source, cache_hours)
+            if result["Status"] != "OK":
+                return {"Status": "FAILED",
+                        "Message": f"source '{source}' update failed: {result['Message']}"}
+        merged_path = _file_path(filename)
+        if os.path.exists(merged_path):
+            os.remove(merged_path)  # 来源更新时可能已失效删除，这里兜底
+        df = Utils.get_drug_targets_merged(drug_name)
+        if not df.empty:
+            return {"Status": "OK", "Message": f"{len(df)} targets"}
+        return {"Status": "FAILED", "Message": "fetch failed"}
+
+    # ===== 来源文件：备份 → 抓取 → 成功替换 / 失败恢复 =====
+    path = _file_path(filename)
+    backup = path + ".bak"
+    if os.path.exists(path):
+        os.replace(path, backup)
+
+    try:
+        if filename.startswith("ChEMBL_"):
+            drug_name = filename[len("ChEMBL_"):-len(".csv")]
+            Utils.set_chembl_cache_ttl(cache_hours)
+            df, csv_path = Utils.fetch_drug_targets_chembl(drug_name)
+            ok = not df.empty and csv_path and os.path.exists(csv_path)
+        elif filename.startswith("DGIdb_"):
+            drug_name = filename[len("DGIdb_"):-len(".csv")]
+            df = Utils.fetch_drug_targets_dgidb(drug_name)
+            ok = not df.empty and os.path.exists(path)
+        else:
+            raise ValueError(f"unknown file prefix: {filename}")
+    except Exception:
+        logging.exception("refresh_file failed for '%s'", filename)
+        ok = False
+
+    if ok:
+        if os.path.exists(backup):
+            os.remove(backup)
+        _invalidate_merged_drug(drug_name)
         return {"Status": "OK", "Message": f"{len(df)} targets"}
+    # 失败：恢复旧文件，保持旧整合结果有效
+    if os.path.exists(backup):
+        os.replace(backup, path)
     return {"Status": "FAILED", "Message": "fetch failed"}
 
 
@@ -72,13 +133,33 @@ with col_update:
 if all_update_clicked:
     with st.spinner("Updating all cached drug targets…"):
         rows = []
+        # 第一阶段：先更新所有来源文件（ChEMBL_ / DGIdb_）
+        drug_names = set()
         for filename in sorted(os.listdir(CACHE_DIR)):
-            if not filename.startswith(PREFIX) or not filename.endswith(".csv"):
+            if not filename.endswith(".csv"):
                 continue
+            for prefix in ("ChEMBL_", "DGIdb_"):
+                if filename.startswith(prefix):
+                    drug_names.add(filename[len(prefix):-len(".csv")])
+                    try:
+                        rows.append({"File": filename, **refresh_file(filename, cache_hours=12)})
+                    except Exception:
+                        rows.append({"File": filename, "Status": "FAILED", "Message": "update error"})
+                    break
+        # 第二阶段：再重建所有 merged 文件（来源已在第一阶段刷新，此处直接重建）
+        for drug_name in sorted(drug_names):
+            merged_file = f"merged_drug_{drug_name}.csv"
+            merged_path = os.path.join(MERGED_DIR, merged_file)
+            if os.path.exists(merged_path):
+                os.remove(merged_path)
             try:
-                rows.append({"File": filename, **refresh_file(filename, cache_hours=12)})
+                df = Utils.get_drug_targets_merged(drug_name)
+                if not df.empty:
+                    rows.append({"File": merged_file, "Status": "OK", "Message": f"{len(df)} targets"})
+                else:
+                    rows.append({"File": merged_file, "Status": "FAILED", "Message": "fetch failed"})
             except Exception:
-                rows.append({"File": filename, "Status": "FAILED", "Message": "update error"})
+                rows.append({"File": merged_file, "Status": "FAILED", "Message": "update error"})
         results = pd.DataFrame(rows, columns=["File", "Status", "Message"])
     if results.empty:
         st.info("No cached drug target files to update.")
@@ -92,6 +173,9 @@ if all_update_clicked:
 st.divider()
 
 drug_files = Utils.list_cache_files("drug")
+merged_files = Utils.list_cache_files("merged")
+merged_files = merged_files[merged_files["File name"].str.startswith("merged_drug_")]
+drug_files = pd.concat([drug_files, merged_files], ignore_index=True)
 clicked_file = None
 
 if drug_files.empty:
@@ -114,7 +198,7 @@ else:
                 if st.button("Update", key=f"update_{row['File name']}"):
                     clicked_file = row["File name"]
             with col_dl:
-                file_path = os.path.join(CACHE_DIR, row["File name"])
+                file_path = _file_path(row["File name"])
                 if os.path.exists(file_path):
                     with open(file_path, "rb") as f:
                         csv_bytes = f.read()
@@ -127,8 +211,14 @@ else:
                     )
 
 # 更新在容器外执行后再 rerun，避免旧行以残影形式残留在页面上
+# try/except 兜底：refresh_file 内部异常（如整合函数抛错）也会记录结果并 rerun，
+# 避免页面停留在"运行中"的半渲染状态
 if clicked_file:
     with st.spinner(f"Updating {clicked_file}…"):
-        result = refresh_file(clicked_file, cache_hours=1)
+        try:
+            result = refresh_file(clicked_file, cache_hours=1)
+        except Exception:
+            logging.exception("update failed for '%s'", clicked_file)
+            result = {"Status": "FAILED", "Message": "update error"}
     st.session_state["last_update"] = {"File": clicked_file, **result}
     st.rerun()
