@@ -115,15 +115,18 @@ st.markdown("""
         box-shadow: none;
         animation: none;
     }
-    /* Popover 触发按钮（Source Information Management）同色 */
-    .st-key-source_mgmt_popover button {
+    /* Popover 触发按钮（Source Information Management / PPI-Enrichment & Molecular Docking）同色 */
+    .st-key-source_mgmt_popover button,
+    .st-key-docking_mgmt_popover button {
         background-color: #167A9C;
         color: #C6E7F5;
         border: 1px solid #167A9C;
         box-shadow: none;
     }
     .st-key-source_mgmt_popover button:hover,
-    .st-key-source_mgmt_popover button:active {
+    .st-key-source_mgmt_popover button:active,
+    .st-key-docking_mgmt_popover button:hover,
+    .st-key-docking_mgmt_popover button:active {
         background-color: #167A9C;
         color: #C6E7F5;
         border: 1px solid #167A9C;
@@ -133,7 +136,9 @@ st.markdown("""
     .st-key-drug_mgmt_btn button,
     .st-key-disease_mgmt_btn button,
     .st-key-ppi_info_btn button,
-    .st-key-enrichment_info_btn button {
+    .st-key-enrichment_info_btn button,
+    .st-key-data_network_btn button,
+    .st-key-molecular_docking_btn button {
         background-color: #F0F0F0;
         color: #333333;
         border: 1px solid #D0D0D0;
@@ -142,7 +147,9 @@ st.markdown("""
     .st-key-drug_mgmt_btn button:hover,
     .st-key-disease_mgmt_btn button:hover,
     .st-key-ppi_info_btn button:hover,
-    .st-key-enrichment_info_btn button:hover {
+    .st-key-enrichment_info_btn button:hover,
+    .st-key-data_network_btn button:hover,
+    .st-key-molecular_docking_btn button:hover {
         background-color: #B8B8B8;
         color: #000000;
         border-color: #888888;
@@ -176,8 +183,12 @@ with st.container(key="top_left_buttons"):
             st.switch_page("pages/PPI_Information.py")
         if st.button("Enrichment Information", key="enrichment_info_btn", width="stretch"):
             st.switch_page("pages/Enrichment_Information.py")
-    if st.button("Data Network Pharmacology Analysis", key="ppi_mgmt_btn"):
-        st.switch_page("pages/Data_Network.py")
+    # 下拉式菜单：PPI/富集主分析 + 分子对接（分子对接为富集下游页面）
+    with st.popover("PPI-Enrichment & Molecular Docking", key="docking_mgmt_popover"):
+        if st.button("Data Network Pharmacology Analysis", key="data_network_btn", width="stretch"):
+            st.switch_page("pages/Data_Network.py")
+        if st.button("Molecular Docking", key="molecular_docking_btn", width="stretch"):
+            st.switch_page("pages/Molecular_Docking.py")
 
 st.divider()# 水平分隔线，用于分隔管理按钮和搜索栏
 

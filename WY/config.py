@@ -31,8 +31,6 @@ gProfiler_URL = "https://biit.cs.ut.ee/gprofiler/api/gost/profile/"
 ChEMBL_API_BASE_URL = "https://www.ebi.ac.uk/chembl/api/data"
 ChEMBL_MAX_ACTIVITIES = 1000
 # ======== 备选路径 =========
-# PPI网络替补路径
-BioGRID_URL = "https://webservice.thebiogrid.org/interactions"
 # 疾病靶点替补路径
 OpenTargetsPlatform_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 # 富集分析替补路径
@@ -136,3 +134,44 @@ PATHWAY_DISPLAY_NUM = 30
 MIN_DEGREE_FILTER = 3
 # PyVis 物理引擎迭代次数 — 值越大布局越松散，防止节点过度拥挤
 PHYSICS_ITERATIONS = 500
+
+# ======== 分子对接配置（AutoDock Vina v1.2.7） ========
+# Vina 可执行文件目录（可用环境变量 VINA_DIR 覆盖，便于换机器）
+VINA_DIR = os.environ.get("VINA_DIR", r"D:\PythonCode\vina")
+VINA_EXE = os.path.join(VINA_DIR, "vina_1.2.7_win.exe")
+VINA_SPLIT_EXE = os.path.join(VINA_DIR, "vina_split_1.2.7_win.exe")
+
+# 对接算法参数
+EXHAUSTIVENESS = 8          # 搜索深度（越大越充分，耗时越长）
+NUM_MODES = 9               # 输出结合模式数量（--num_modes）
+DOCKING_CPU = 4             # 并行 CPU 核数（--cpu）
+DOCKING_TIMEOUT = 600       # vina subprocess 超时（秒），超时视为失败
+DOCKING_SEED = 0            # vina 随机种子（--seed），固定可复现
+
+# 配体 3D 生成参数（方案 B：ChEMBL SMILES + rdkit 生成时使用）
+LIGAND_PH = 7.4             # 质子化 pH（rdkit）
+LIGAND_3D_SEED = 0          # 构象生成固定种子，保证确定性
+
+# 缓存与归档策略
+DOCKING_CACHE_TTL_DAYS = 7  # pdbqt 中间物 / raw 原始文件过期天数，超期自动清理
+DOCKING_MAX_VERSIONS = 3    # 同一条件（drug_disease_gene）成果最多保留版本数，旧版入 archive
+
+# ======== 分子对接存储路径 ========
+# docking 缓存目录 — 确定性中间物（受体/配体 pdbqt、对接盒），可安全缓存
+DOCKING_CACHE_DIR = os.path.join(CACHE_DIR, "docking")
+DOCKING_RECEPTOR_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "receptor")
+DOCKING_LIGAND_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "ligand")
+DOCKING_BOX_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "box")
+# raw 目录 — 原始 PDB/SDF，用完即删或随 7 天 TTL 清理
+DOCKING_RAW_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "raw")
+
+# 对接成果目录 — 每次分析一个独立时间戳子目录，绝对不覆盖
+MD_RESULT_DIR = os.path.join(DOWNLOADS_DIR, "MDresult")
+# 旧版成果归档目录（超 DOCKING_MAX_VERSIONS 的旧版移入）
+ARCHIVE_DIR = os.path.join(MD_RESULT_DIR, "archive")
+
+# ======== 分子对接数据源 ========
+# RCSB PDB 下载模板（{pdb_id} 占位符，小写 4 位字母）。
+# 说明：受体蛋白 3D 结构只能从 RCSB 下载（pubchempy 只管 PubChem 小分子）；
+#       配体 3D SDF 则统一由 pubchempy.get_sdf(cid, record_type="3d") 获取，无需单独 URL。
+PDB_DOWNLOAD_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
