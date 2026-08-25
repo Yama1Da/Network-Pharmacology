@@ -2279,9 +2279,10 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50) -> pd.Da
         )
         resp.raise_for_status()
         hits = resp.json().get("result_set", [])[:max_hits]
-    except Exception:
+    except Exception as exc:
+        # 搜索失败必须向上抛（带原因），供页面提示；200 空 result_set 才是"无结构"
         logging.exception("RCSB search failed for gene %s", gene_symbol)
-        return pd.DataFrame()
+        raise RuntimeError(f"RCSB 搜索失败（{gene_symbol}）：{exc}") from exc
 
     # 2) RCSB Data API：并发补充元数据（分辨率/方法/标题）
     def _fetch_meta(entry_id: str) -> tuple[str, float | None, str, str]:
@@ -2613,8 +2614,34 @@ def write_docking_metadata(meta_path: str, fields: dict) -> str:
     return path
 
 
-def archive_docking_result(result_dir: str, max_versions: int | None = None) -> str | None:
-    """成果版本控制：同条件（drug_disease_gene）目录超过上限时，最旧版移入归档。
+def star_docking_result(result_dir: str) -> str:
+    """将成果目录完整复制到收藏区（MD_STAR_DIR/star），长期保留（仅可手动删除）。
+
+    收藏副本与原成果互不影响：原成果仍受 prune_docking_results 版本控制，
+    收藏副本独立存在于 star/ 下，不受自动删除影响。
+
+    Parameters
+    ----------
+    result_dir : str
+        本次对接成果目录（MD_RESULT_DIR 下，时间戳命名）。
+
+    Returns
+    -------
+    str
+        收藏区中的目录路径（自动防覆盖）。
+    """
+    import shutil
+    import config
+
+    os.makedirs(config.MD_STAR_DIR, exist_ok=True)
+    dest = _unique_path(os.path.join(config.MD_STAR_DIR, os.path.basename(result_dir)))
+    shutil.copytree(result_dir, dest)
+    logging.info("Starred docking result: %s -> %s", result_dir, dest)
+    return dest
+
+
+def prune_docking_results(result_dir: str, max_versions: int | None = None) -> list[str]:
+    """成果版本控制：同条件（drug_disease_gene）目录超过上限时，直接删除最旧版本。
 
     目录名格式约定：{prefix}_{YYYYMMDD_HHMMSS}，prefix 如 aspirin_cancer_BRCA1。
 
@@ -2627,8 +2654,8 @@ def archive_docking_result(result_dir: str, max_versions: int | None = None) -> 
 
     Returns
     -------
-    str | None
-        本次实际归档的目录路径；无需归档返回 None。
+    list[str]
+        本次实际删除的旧版目录路径列表；无需删除返回空列表。
     """
     import re
     import shutil
@@ -2640,29 +2667,34 @@ def archive_docking_result(result_dir: str, max_versions: int | None = None) -> 
     basename = os.path.basename(result_dir)
     prefix = re.sub(r"_\d{8}_\d{6}$", "", basename)  # 剥离末尾时间戳段
     if prefix == basename:
-        return None  # 目录名不符合命名约定，不做版本控制
+        return []  # 目录名不符合命名约定，不做版本控制
     siblings = sorted(
         d for d in glob.glob(os.path.join(parent, prefix + "_*"))
-        if os.path.isdir(d) and os.path.basename(d) != "archive"
+        if os.path.isdir(d)
     )
-    moved = None
+    removed = []
     while len(siblings) > max_versions:
         oldest = siblings.pop(0)
-        os.makedirs(config.ARCHIVE_DIR, exist_ok=True)
-        dest = _unique_path(os.path.join(config.ARCHIVE_DIR, os.path.basename(oldest)))
-        shutil.move(oldest, dest)
-        moved = dest
-        logging.info("Archived old docking result: %s -> %s", oldest, dest)
-    return moved
+        shutil.rmtree(oldest, ignore_errors=True)
+        removed.append(oldest)
+        logging.info("Pruned old docking result: %s", oldest)
+    return removed
 
 
 def clean_docking_cache(ttl_days: int | None = None) -> int:
-    """清理 docking 缓存目录下超过 TTL 的中间物文件（pdbqt / raw 原始文件）。
+    """清理 docking 缓存目录下超过 TTL 的中间物文件。
+
+    TTL 分级：
+      - raw 子目录（原始 SDF/PDB/vina 输出，可随时重新下载生成）→
+        config.DOCKING_RAW_TTL_DAYS（24 小时）
+      - ligand / receptor / box（加工后的 pdbqt 等确定性产物）→
+        config.DOCKING_CACHE_TTL_DAYS（7 天）
 
     Parameters
     ----------
     ttl_days : int | None
-        过期天数，默认 config.DOCKING_CACHE_TTL_DAYS（7 天）。
+        显式指定时对全部目录统一使用该 TTL（便于手动全清，如传 0）；
+        默认 None 按上面的分级策略清理。
 
     Returns
     -------
@@ -2672,14 +2704,20 @@ def clean_docking_cache(ttl_days: int | None = None) -> int:
     import time
     import config
 
-    ttl_days = ttl_days or config.DOCKING_CACHE_TTL_DAYS
-    cutoff = time.time() - ttl_days * 86400
+    if ttl_days is not None:
+        cache_ttl = raw_ttl = ttl_days
+    else:
+        cache_ttl = config.DOCKING_CACHE_TTL_DAYS
+        raw_ttl = config.DOCKING_RAW_TTL_DAYS
     removed = 0
     if not os.path.isdir(config.DOCKING_CACHE_DIR):
         return 0
+    raw_dir = config.DOCKING_RAW_CACHE_DIR
     for root, _, files in os.walk(config.DOCKING_CACHE_DIR):
         for name in files:
             path = os.path.join(root, name)
+            ttl = raw_ttl if root == raw_dir else cache_ttl
+            cutoff = time.time() - ttl * 86400
             try:
                 if os.path.getmtime(path) < cutoff:
                     os.remove(path)

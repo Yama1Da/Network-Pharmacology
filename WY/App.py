@@ -188,6 +188,7 @@ with st.container(key="top_left_buttons"):
         if st.button("Data Network Pharmacology Analysis", key="data_network_btn", width="stretch"):
             st.switch_page("pages/Data_Network.py")
         if st.button("Molecular Docking", key="molecular_docking_btn", width="stretch"):
+            st.session_state["_docking_entry"] = True  # 通知对接页：从入口进入，重置状态
             st.switch_page("pages/Molecular_Docking.py")
 
 st.divider()# 水平分隔线，用于分隔管理按钮和搜索栏

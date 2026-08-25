@@ -153,8 +153,9 @@ LIGAND_PH = 7.4             # 质子化 pH（rdkit）
 LIGAND_3D_SEED = 0          # 构象生成固定种子，保证确定性
 
 # 缓存与归档策略
-DOCKING_CACHE_TTL_DAYS = 7  # pdbqt 中间物 / raw 原始文件过期天数，超期自动清理
-DOCKING_MAX_VERSIONS = 3    # 同一条件（drug_disease_gene）成果最多保留版本数，旧版入 archive
+DOCKING_CACHE_TTL_DAYS = 7  # ligand/receptor pdbqt 等确定性加工产物过期天数，超期自动清理
+DOCKING_RAW_TTL_DAYS = 1    # raw 原始/过程文件（SDF/PDB/vina 输出）过期天数（24 小时），可随时重新下载生成
+DOCKING_MAX_VERSIONS = 3    # 同一条件（drug_disease_gene）成果最多保留版本数，旧版直接删除
 
 # ======== 分子对接存储路径 ========
 # docking 缓存目录 — 确定性中间物（受体/配体 pdbqt、对接盒），可安全缓存
@@ -167,8 +168,8 @@ DOCKING_RAW_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "raw")
 
 # 对接成果目录 — 每次分析一个独立时间戳子目录，绝对不覆盖
 MD_RESULT_DIR = os.path.join(DOWNLOADS_DIR, "MDresult")
-# 旧版成果归档目录（超 DOCKING_MAX_VERSIONS 的旧版移入）
-ARCHIVE_DIR = os.path.join(MD_RESULT_DIR, "archive")
+# 收藏区 — 用户点击 ☆ 收藏的成果完整复制到此（downloads/star），不受自动删除影响（仅可手动删除）
+MD_STAR_DIR = os.path.join(DOWNLOADS_DIR, "star")
 
 # ======== 分子对接数据源 ========
 # RCSB PDB 下载模板（{pdb_id} 占位符，小写 4 位字母）。
