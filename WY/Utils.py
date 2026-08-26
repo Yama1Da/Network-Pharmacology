@@ -2440,6 +2440,11 @@ def run_vina(
     import subprocess
     import config
 
+    if not os.path.isfile(config.VINA_EXE):
+        raise RuntimeError(
+            f"未找到 AutoDock Vina 可执行文件：{config.VINA_EXE}。"
+            "请设置环境变量 VINA_DIR 指向 vina 所在目录，或将 vina 加入 PATH。")
+
     out_path = out_path or _unique_path(os.path.join(config.MD_RESULT_DIR, "vina_out.pdbqt"))
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 

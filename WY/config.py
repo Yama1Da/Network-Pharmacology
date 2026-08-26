@@ -1,5 +1,6 @@
 # 全局配置文件
 import os
+import shutil
 from dotenv import load_dotenv
 
 # 自动计算项目根目录（config.py 所在目录，即本地电脑的目录）
@@ -10,7 +11,6 @@ load_dotenv(os.path.join(BASE_DIR, "API.env"))
 
 # API密钥
 DisGeNET_API_KEY = os.getenv("DisGeNET_API_KEY", "")
-BioGRID_API_KEY = os.getenv("BioGRID_API_KEY", "your_api_key")
 # ======== 主要路径 =========
 # PPI网络路径
 # 版本化基础地址：裸 string-db.org 会随 STRING 版本更新而变化，版本化地址保证分析结果可复现
@@ -136,8 +136,22 @@ MIN_DEGREE_FILTER = 3
 PHYSICS_ITERATIONS = 500
 
 # ======== 分子对接配置（AutoDock Vina v1.2.7） ========
-# Vina 可执行文件目录（可用环境变量 VINA_DIR 覆盖，便于换机器）
-VINA_DIR = os.environ.get("VINA_DIR", r"D:\PythonCode\vina")
+# Vina 可执行文件目录自动探测：环境变量 VINA_DIR > 本机默认路径 > PATH。
+# 换机器时无需改代码：设置 VINA_DIR 环境变量，或将 vina 所在目录加入 PATH 即可。
+def _find_vina_dir() -> str:
+    exe = "vina_1.2.7_win.exe"
+    env_dir = os.environ.get("VINA_DIR")
+    if env_dir and os.path.isfile(os.path.join(env_dir, exe)):
+        return env_dir  # 1) 环境变量优先
+    if os.path.isfile(os.path.join(r"D:\PythonCode\vina", exe)):
+        return r"D:\PythonCode\vina"  # 2) 本机默认路径
+    found = shutil.which(exe) or shutil.which("vina")
+    if found:
+        return os.path.dirname(found)  # 3) PATH 中能找到（如 vina 已加入 PATH）
+    return r"D:\PythonCode\vina"  # 兜底：找不到时 run_vina 会报错并提示设置 VINA_DIR
+
+
+VINA_DIR = _find_vina_dir()
 VINA_EXE = os.path.join(VINA_DIR, "vina_1.2.7_win.exe")
 VINA_SPLIT_EXE = os.path.join(VINA_DIR, "vina_split_1.2.7_win.exe")
 
