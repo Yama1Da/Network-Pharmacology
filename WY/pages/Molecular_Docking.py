@@ -306,6 +306,14 @@ src_mode = st.radio("数据来源",
                     ["PPI 结果目录（HUB + 富集）", "富集缓存文件（仅富集验证）"],
                     horizontal=True, key="gene_src_mode")
 
+# 切换数据源模式 → 重置数据源状态与全部下游，强制新模式重新读取（避免残留旧文件候选基因）
+if dock.get("gene_src_mode") != src_mode:
+    dock["gene_src_mode"] = src_mode
+    for _k in ("ppi_dir", "enr_file", "hub_genes", "enrichment_genes",
+               "label", "drug", "disease", "genes"):
+        dock.pop(_k, None)
+    _reset_docking_downstream()
+
 if src_mode.startswith("PPI"):
     # 仅列出 PPI 结果目录（*_data 后缀），排除 MDresult 等非分析结果目录
     dirs = Utils.list_download_dirs()
@@ -506,6 +514,11 @@ if dock.get("genes"):
     else:
         st.dataframe(cand, hide_index=True, use_container_width=True)
         pdb_id = st.selectbox("选择 PDB 结构（科研决策点）", cand["pdb_id"].tolist(), key="pdb_sel")
+        # PDB 选择变化 → 作废旧受体与 Step 4 盒/预览（防止 Step 4 残留旧结构的预览图）
+        if dock.get("pdb_sel") != pdb_id:
+            dock["pdb_sel"] = pdb_id
+            for _k in ("rec_pdbqt", "pdb_id", "pdb_path", "box", "result"):
+                dock.pop(_k, None)
         if st.button("下载并准备受体", key="prep_rec"):
             with st.spinner("正在下载 PDB 并转 pdbqt …"):
                 try:
@@ -527,6 +540,85 @@ if dock.get("rec_pdbqt"):
 
 st.divider()
 
+# ==================== Step 4 对接盒辅助 ====================
+
+
+def _parse_hetatm(pdb_path: str) -> list[tuple[str, str, str, tuple]]:
+    """解析 PDB 中非水 HETATM（配体/辅因子）：[(resname, chain, resseq, (x,y,z)), ...]。"""
+    het = []
+    with open(pdb_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.startswith("HETATM"):
+                continue
+            resn = line[17:20].strip()
+            if resn in ("HOH", "H2O", "WAT", "DOD"):
+                continue
+            try:
+                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            except ValueError:
+                continue
+            het.append((resn, line[21], line[22:26].strip(), xyz))
+    return het
+
+
+def _residues_in_box(pdb_path: str, box: dict) -> list[str]:
+    """盒内蛋白残基列表（任意原子落入盒内即计入），返回 ['A123:TYR', ...]。"""
+    c, s = box["center"], box["size"]
+    lo = (c[0] - s[0] / 2, c[1] - s[1] / 2, c[2] - s[2] / 2)
+    hi = (c[0] + s[0] / 2, c[1] + s[1] / 2, c[2] + s[2] / 2)
+    res = set()
+    with open(pdb_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.startswith("ATOM"):
+                continue
+            try:
+                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            except ValueError:
+                continue
+            if lo[0] <= xyz[0] <= hi[0] and lo[1] <= xyz[1] <= hi[1] and lo[2] <= xyz[2] <= hi[2]:
+                res.add(f"{line[21]}{line[22:26].strip()}:{line[17:20].strip()}")
+    return sorted(res)
+
+
+def _render_box_3d(pdb_path: str, box: dict) -> None:
+    """py3Dmol 内嵌：受体卡通 + 共结晶配体（绿色棍状）+ 对接盒（橙色半透明线框）。
+
+    蛋白（ATOM）与配体（HETATM）分成两个 model 渲染，确保配体棍状可靠显示；
+    apo 结构（无 HETATM 配体）时只有蛋白卡通与盒框。
+    """
+    try:
+        import py3Dmol
+    except ImportError:
+        st.info("3D 盒框预览需要 py3Dmol（`pip install py3Dmol`）。")
+        return
+    with open(pdb_path, encoding="utf-8", errors="replace") as f:
+        lines = f.read().splitlines()
+    atom_lines = [ln for ln in lines if ln.startswith(("ATOM", "TER", "END"))]
+    het_lines = [ln for ln in lines
+                 if ln.startswith("HETATM") and ln[17:20].strip() not in ("HOH", "H2O", "WAT", "DOD")]
+
+    c, s = box["center"], box["size"]
+    view = py3Dmol.view(width=900, height=520)
+    view.addModel("\n".join(atom_lines) + "\n", "pdb")  # model 0：蛋白
+    view.setStyle({"model": 0}, {"cartoon": {"color": "spectrum"}})
+    if het_lines:
+        view.addModel("\n".join(het_lines) + "\n", "pdb")  # model 1：共结晶配体
+        view.setStyle({"model": 1}, {"stick": {"colorscheme": "greenCarbon"}})
+    # 对接盒：3Dmol.js 原生 box 图元（橙色半透明线框）
+    view.addBox({
+        "center": {"x": c[0], "y": c[1], "z": c[2]},
+        "dimensions": {"w": s[0], "h": s[1], "d": s[2]},
+        "color": "orange",
+        "opacity": 0.6,
+    })
+    view.zoomTo()
+    try:
+        html = view._make_html()
+    except AttributeError:
+        html = view.write()
+    st.components.v1.html(html, height=540)
+
+
 # ==================== Step 4 对接盒（决策点） ====================
 st.subheader("4️⃣ 对接盒（推断后需人工确认）")
 
@@ -537,16 +629,56 @@ if dock.get("pdb_path"):
         except Exception as exc:
             st.error(f"对接盒推断失败：{exc}")
     if dock.get("box"):
+        # 推断依据说明
+        het = _parse_hetatm(dock["pdb_path"])
+        if het:
+            ligs = sorted({f"{r}（链{c}{n}）" for r, c, n, _ in het})
+            st.caption(f"推断依据：以共结晶配体/辅因子 {', '.join(ligs[:5])} 质心为中心，外扩 8 Å 覆盖口袋。")
+        else:
+            st.caption("推断依据：该结构无共结晶配体（apo），退化为蛋白整体包围盒。建议结合文献/已知活性位点人工调整中心。")
+
+        # 微调指南
+        st.info("微调指南：① 中心对准活性口袋（参考共结晶配体或文献位点）；"
+                "② size 完全包住配体并留出周围残基空间（常见边长 20~25 Å）；"
+                "③ 调整后参考下方「盒内残基」与 3D 盒框，确认覆盖目标残基。")
+
         c, s = dock["box"]["center"], dock["box"]["size"]
-        st.caption("依据 HETATM 配体定位；无配体时退化为蛋白整体盒。可直接微调：")
-        c1, c2, c3 = (st.number_input(f"center_{ax}", value=float(v), step=0.5,
-                                      format="%.3f", key=f"cx_{ax}")
-                      for ax, v in zip("xyz", c))
-        s1, s2, s3 = (st.number_input(f"size_{ax}（Å）", value=float(v), step=1.0,
-                                      format="%.3f", key=f"sx_{ax}")
-                      for ax, v in zip("xyz", s))
-        dock["box"] = {"center": (c1, c2, c3), "size": (s1, s2, s3)}
-        st.code(f"center = {dock['box']['center']}\nsize   = {dock['box']['size']}")
+
+        # 左：3D 盒框预览；右：微调选项（并排，方便边看边调）
+        col_box3d, col_tune = st.columns([2, 1])
+        with col_box3d:
+            st.markdown("**3D 盒框预览（橙色线框 = 对接盒；绿色棍状 = 共结晶配体）**")
+            _render_box_3d(dock["pdb_path"], dock["box"])
+        with col_tune:
+            st.caption("微调对接盒（可手输数值）：")
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                c1 = st.number_input("cx", value=float(c[0]), step=0.5, format="%.3f", key="cx_x")
+            with cc2:
+                c2 = st.number_input("cy", value=float(c[1]), step=0.5, format="%.3f", key="cx_y")
+            with cc3:
+                c3 = st.number_input("cz", value=float(c[2]), step=0.5, format="%.3f", key="cx_z")
+            cs1, cs2, cs3 = st.columns(3)
+            with cs1:
+                s1 = st.number_input("sx", value=float(s[0]), step=1.0, format="%.3f", key="sx_x")
+            with cs2:
+                s2 = st.number_input("sy", value=float(s[1]), step=1.0, format="%.3f", key="sx_y")
+            with cs3:
+                s3 = st.number_input("sz", value=float(s[2]), step=1.0, format="%.3f", key="sx_z")
+            dock["box"] = {"center": (c1, c2, c3), "size": (s1, s2, s3)}
+            st.code(f"center = {dock['box']['center']}\nsize   = {dock['box']['size']}")
+
+        # 盒内残基（辅助判断口袋覆盖；默认只显示前 30 个，避免刷屏）
+        residues = _residues_in_box(dock["pdb_path"], dock["box"])
+        if residues:
+            st.caption(f"当前盒覆盖残基（共 {len(residues)} 个，显示前 30 个）："
+                       + "、".join(residues[:30])
+                       + (" …" if len(residues) > 30 else ""))
+            if len(residues) > 30:
+                with st.expander(f"查看全部 {len(residues)} 个残基"):
+                    st.write("、".join(residues))
+        else:
+            st.caption("当前盒内无蛋白残基——盒可能偏离蛋白，请调整中心使其罩住结合位点。")
 else:
     st.info("请先完成 Step 3 准备受体。")
 
