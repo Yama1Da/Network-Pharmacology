@@ -2,6 +2,7 @@ import os
 import logging
 import logging.handlers
 import hashlib
+import re
 from datetime import datetime
 
 import pandas as pd
@@ -38,6 +39,21 @@ def _opentargets_post(query: str, variables: dict, timeout: int = 30) -> dict | 
             if attempt < config.LIGHT_API_MAX_RETRIES - 1:
                 time.sleep(config.API_RETRY_DELAY)
     return None
+
+
+# ==================== 文件名净化 ====================
+
+
+def safe_name(name: str) -> str:
+    """把用户输入（药物名/疾病名/基因等）净化为可安全用作文件名的字符串。
+
+    将所有非字母/数字/下划线/连字符的字符替换为下划线（与 Data_Network 的
+    prefix 过滤规则一致），阻断 `../`、`..\\`、绝对路径等路径穿越；
+    再去除首尾的 `._-`，空结果退化为 "unnamed"。
+    仅用于构造文件名/目录名，不要用于 API 查询参数（查询仍用原始输入）。
+    """
+    cleaned = re.sub(r"[^\w\-]+", "_", str(name).strip())
+    return cleaned.strip("._-") or "unnamed"
 
 
 # ==================== 日志系统 ====================
@@ -148,7 +164,7 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
         os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "disease"
     )
     os.makedirs(cache_dir, exist_ok=True)
-    csv_path = os.path.join(cache_dir, f"OpenTargets_{disease_name}.csv")
+    csv_path = os.path.join(cache_dir, f"OpenTargets_{safe_name(disease_name)}.csv")
 
     # ---- cache hit: load local ----
     if os.path.exists(csv_path):
@@ -379,7 +395,7 @@ def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
         os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "disease"
     )
     os.makedirs(cache_dir, exist_ok=True)
-    csv_path = os.path.join(cache_dir, f"DisGeNET_{disease_name}.csv")
+    csv_path = os.path.join(cache_dir, f"DisGeNET_{safe_name(disease_name)}.csv")
 
     # ---- cache hit: load local ----
     if os.path.exists(csv_path):
@@ -557,7 +573,7 @@ def fetch_drug_targets_opentargets(drug_name: str) -> tuple[pd.DataFrame, str | 
             os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "drug"
         )
         os.makedirs(cache_dir, exist_ok=True)
-        csv_path = os.path.join(cache_dir, f"OpenTargets_{drug_name}.csv")
+        csv_path = os.path.join(cache_dir, f"OpenTargets_{safe_name(drug_name)}.csv")
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
         return df, csv_path
@@ -611,7 +627,7 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
         os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "drug"
     )
     os.makedirs(cache_dir, exist_ok=True)
-    csv_path = os.path.join(cache_dir, f"ChEMBL_{drug_name}.csv")
+    csv_path = os.path.join(cache_dir, f"ChEMBL_{safe_name(drug_name)}.csv")
 
     # ---- cache hit: load local ----
     if os.path.exists(csv_path):
@@ -768,7 +784,7 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
         os.path.dirname(os.path.abspath(__file__)), "Static", "data", "cache", "drug"
     )
     os.makedirs(cache_dir, exist_ok=True)
-    csv_path = os.path.join(cache_dir, f"DGIdb_{drug_name}.csv")
+    csv_path = os.path.join(cache_dir, f"DGIdb_{safe_name(drug_name)}.csv")
 
     # ---- cache hit: load local ----
     if os.path.exists(csv_path):
@@ -1001,7 +1017,7 @@ def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
     import config
 
     os.makedirs(config.MERGED_CACHE_DIR, exist_ok=True)
-    merged_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_drug_{drug_name}.csv")
+    merged_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_drug_{safe_name(drug_name)}.csv")
     if os.path.exists(merged_path):
         logging.info("Loading cached merged drug targets for '%s'", drug_name)
         return pd.read_csv(merged_path)
@@ -1079,7 +1095,7 @@ def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
     import config
 
     os.makedirs(config.MERGED_CACHE_DIR, exist_ok=True)
-    merged_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_disease_{disease_name}.csv")
+    merged_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_disease_{safe_name(disease_name)}.csv")
     if os.path.exists(merged_path):
         logging.info("Loading cached merged disease targets for '%s'", disease_name)
         return pd.read_csv(merged_path)
@@ -1161,16 +1177,6 @@ def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> 
     return sorted(drug_set & disease_set)[:top_n]
 
 
-def _ppi_cache_key(genes: list[str], species: str, score: float, network_type: str) -> str:
-    # 根据基因列表与查询参数生成 PPI 缓存文件名（md5）：相同输入命中同一缓存文件。
-    #该函数作为后续存储为CSV文件的辅助函数，确保每个查询结果对应一个唯一的文件名
-    payload = (
-        "\r".join(sorted(set(genes)))
-        + f"|{species}|{int(score * 1000)}|{network_type}"
-    )
-    return hashlib.md5(payload.encode("utf-8")).hexdigest()
-
-
 def _read_cache_csv(cache_file: str) -> pd.DataFrame:
     # 读取本地缓存 CSV（兼容旧版带 # 元数据头的md5文件；新文件为纯数据 CSV）
     return pd.read_csv(cache_file, encoding="utf-8-sig", comment="#")
@@ -1227,6 +1233,7 @@ def fetch_string_ppi(
     score: float = 0.7,
     network_type: str = "full",
     label: str | None = None,
+    min_degree: int = 3,
 ) -> pd.DataFrame:
     """
     通过 STRING API 获取基因列表的蛋白互作边表。
@@ -1237,9 +1244,12 @@ def fetch_string_ppi(
       2. network：用映射后的 STRING ID 获取相互作用边，按 required_score
          （= score×1000）过滤低置信度连接。
 
-    结果缓存在 Static/data/cache/ppi 下，文件名为 StringPPI_{label}_{md5}.csv
-    （label 为来源标识，如 药物名_疾病名；无 label 时退化为 StringPPI_{md5}.csv），
-    缓存首行为 # 元数据注释头（记录 label/物种/阈值等），命中缓存直接读本地，不访问远端 API。
+    结果缓存在 Static/data/cache/ppi 下，文件名为
+    StringPPI_{label}_{STRING confidence}_{min_degree}.csv
+    （label 为来源标识，如 药物名_疾病名；无 label 时退化为 StringPPI_{confidence}_{min_degree}.csv）。
+    手动基因模式（label="manual"）额外附加基因列表短指纹（md5 前 8 位）参与键。
+    相同参数组合固定同名，重新生成时直接覆盖旧文件，不在缓存目录堆积；
+    TTL 内命中缓存直接读本地，不访问远端 API。
 
     Parameters
     ----------
@@ -1253,6 +1263,8 @@ def fetch_string_ppi(
         "full"（功能关联，默认）或 "physical"（仅物理结合）。
     label : str | None
         来源标识（如 "aspirin_cancer" 或 "manual"），用于缓存文件名前缀，便于用户识别。
+    min_degree : int
+        Hub 筛选的度数阈值（mark_hub_genes 用），仅参与缓存文件命名，默认 3。
 
     Returns
     -------
@@ -1269,8 +1281,18 @@ def fetch_string_ppi(
         genes = genes[:config.STRING_QUERY_LIMIT]
 
     os.makedirs(config.PPI_CACHE_DIR, exist_ok=True)
-    md5 = _ppi_cache_key(genes, species, score, network_type)
-    name = f"StringPPI_{label}_{md5}.csv" if label else f"StringPPI_{md5}.csv"
+    # 命名规则：StringPPI_{药物名_疾病名}_{STRING confidence}_{Min degree}.csv
+    # 相同参数组合固定同名，重新生成时 to_csv 直接覆盖旧文件。
+    if label:
+        label_part = safe_name(label)
+        name = f"StringPPI_{label_part}_{score:g}_{int(min_degree)}.csv"
+        if label_part == "manual":
+            # 手动基因模式：基因列表不由药物/疾病名决定，附加短指纹（md5 前 8 位）
+            # 参与缓存键，防止 TTL 内不同基因列表互相污染缓存
+            gene_fp = hashlib.md5("\r".join(genes).encode("utf-8")).hexdigest()[:8]
+            name = f"StringPPI_manual_{score:g}_{int(min_degree)}_{gene_fp}.csv"
+    else:
+        name = f"StringPPI_{score:g}_{int(min_degree)}.csv"
     cache_file = os.path.join(config.PPI_CACHE_DIR, name)
 
     # ---- cache hit: load local (若超过 TTL 视为过期，重新请求) ----
@@ -2677,6 +2699,11 @@ def prune_docking_results(result_dir: str, max_versions: int | None = None) -> l
         d for d in glob.glob(os.path.join(parent, prefix + "_*"))
         if os.path.isdir(d)
     )
+    # 越界防护：prefix 异常时 glob 可能匹配到 MD_RESULT_DIR 之外，
+    # 删除前校验候选目录确在 MD_RESULT_DIR 内，阻断路径穿越删除
+    md_root = os.path.realpath(config.MD_RESULT_DIR)
+    siblings = [d for d in siblings
+                if os.path.realpath(d).startswith(md_root + os.sep)]
     removed = []
     while len(siblings) > max_versions:
         oldest = siblings.pop(0)

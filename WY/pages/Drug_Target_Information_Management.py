@@ -71,7 +71,9 @@ def refresh_file(filename: str, cache_hours: int = 1) -> dict:
         elif filename.startswith("DGIdb_"):
             drug_name = filename[len("DGIdb_"):-len(".csv")]
             df = Utils.fetch_drug_targets_dgidb(drug_name)
-            ok = not df.empty and os.path.exists(path)
+            # 新缓存一律以净化命名落盘，存在性判断须与 Utils.safe_name 一致
+            ok = not df.empty and os.path.exists(
+                _file_path(f"DGIdb_{Utils.safe_name(drug_name)}.csv"))
         else:
             raise ValueError(f"unknown file prefix: {filename}")
     except Exception:

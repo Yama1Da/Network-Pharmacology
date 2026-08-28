@@ -220,6 +220,7 @@ def _extract_model(out_pdbqt: str, mode: int, out_path: str) -> str:
 def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, box: dict,
                          out_pdbqt: str, scores: pd.DataFrame, conclusion: str) -> str:
     """成果归档：MDresult/{prefix}_{ts}/ 下写 summary / best pose / meta，并做版本控制与缓存清理。"""
+    gene = Utils.safe_name(gene)  # gene 可能来自手动输入，进入文件名前需净化
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = os.path.join(config.MD_RESULT_DIR, f"{prefix}_{ts}")
     os.makedirs(result_dir, exist_ok=True)
