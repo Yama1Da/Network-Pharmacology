@@ -94,7 +94,7 @@ DISGENET_RATE_LIMIT_STATE_FILE = os.path.join(CACHE_DIR, "disgenet_rate_limit.js
 # 日志目录（WY/Static/log）— 每天一个文件 app_YYYY-MM-DD.log，纯文本 UTF-8
 LOG_DIR = os.path.join(BASE_DIR, "Static", "log")
 # 日志保留天数：超过该天数的 .log 文件在应用启动时自动删除
-LOG_RETENTION_DAYS = 730
+LOG_RETENTION_DAYS = 365
 # 日志格式：时间 | 级别 | 函数名 | 消息体
 # 消息体目标长度 20~120 字（不强制填充/截断，仅作为书写规范）
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(funcName)s | %(message)s"

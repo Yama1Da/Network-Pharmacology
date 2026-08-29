@@ -437,35 +437,42 @@ default_disease = dock.get("disease", "")
 lig_source = st.radio("配体来源", ["A. PubChem 现成 3D（默认）", "B. SMILES + RDKit 生成 3D"],
                       horizontal=True, key="lig_source")
 if lig_source.startswith("A"):
-    lig_query = st.text_input("药物名或 PubChem CID", value=default_drug, key="lig_query")
-    # 自动获取：已解析出药物名且尚未准备配体时自动执行一次
+    # 自动获取：已解析出药物名且尚未准备配体时自动执行一次（先执行后渲染，便于按结果决定是否显示手动输入）
     if default_drug and not dock.get("lig_pdbqt") and not dock.get("lig_auto_done"):
         with st.spinner(f"自动获取 {default_drug} 的 3D 结构并准备配体 …"):
             cid = _resolve_cid(default_drug)
             if cid is None:
                 dock["lig_auto_done"] = True
-                st.error(f"PubChem 未找到 {default_drug}，可在上方手动输入 CID 重试")
+                st.error(f"PubChem 未找到 {default_drug}，请在下方输入药物名或 CID 手动获取")
             else:
                 sdf_path = Utils.fetch_ligand_sdf_3d(cid)
                 if not sdf_path:
                     dock["lig_auto_done"] = True
-                    st.error(f"CID {cid} 无 3D 结构，可在上方手动输入其他药物")
+                    st.error(f"CID {cid} 无 3D 结构，请在下方输入其他药物名或 CID 重试")
                 else:
                     dock["cid"] = cid
                     dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
-    if st.button("获取并准备配体", key="prep_lig"):
-        dock["lig_auto_done"] = True  # 手动指定后不再自动覆盖
-        with st.spinner("正在从 PubChem 获取 3D 结构并转 pdbqt …"):
-            cid = _resolve_cid(lig_query)
-            if cid is None:
-                st.error(f"PubChem 未找到化合物：{lig_query}，请检查名称或直接输入 CID")
-            else:
-                sdf_path = Utils.fetch_ligand_sdf_3d(cid)
-                if not sdf_path:
-                    st.error(f"CID {cid} 无 3D 结构，换一个药物试试")
+
+    # 手动输入框仅在自动获取失败（或未识别到药物名）时显示，其余情况隐藏以免用户误输入
+    lig_ready = bool(dock.get("lig_pdbqt"))
+    show_lig_input = not lig_ready and (not default_drug or dock.get("lig_auto_done"))
+    if show_lig_input:
+        if not default_drug:
+            st.caption("未从数据来源识别到药物名，请手动输入药物名或 PubChem CID。")
+        lig_query = st.text_input("药物名或 PubChem CID（手动获取）", value=default_drug, key="lig_query")
+        if st.button("获取并准备配体", key="prep_lig"):
+            dock["lig_auto_done"] = True  # 手动指定后不再自动覆盖
+            with st.spinner("正在从 PubChem 获取 3D 结构并转 pdbqt …"):
+                cid = _resolve_cid(lig_query)
+                if cid is None:
+                    st.error(f"PubChem 未找到化合物：{lig_query}，请检查名称或直接输入 CID")
                 else:
-                    dock["cid"] = cid
-                    dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+                    sdf_path = Utils.fetch_ligand_sdf_3d(cid)
+                    if not sdf_path:
+                        st.error(f"CID {cid} 无 3D 结构，换一个药物试试")
+                    else:
+                        dock["cid"] = cid
+                        dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
 else:
     smiles = st.text_area("SMILES", height=90, key="lig_smiles",
                           placeholder="如阿司匹林：CC(=O)Oc1ccccc1C(=O)O")
