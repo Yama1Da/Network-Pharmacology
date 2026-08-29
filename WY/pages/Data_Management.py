@@ -33,6 +33,9 @@ with col_back:
 st.divider()
 
 dirs_df = Utils.list_download_dirs()
+# 排除分子对接成果区与收藏区：它们由 Molecular_Docking / Star Management 页管理，不在此提供整包下载
+excluded = {os.path.basename(config.MD_RESULT_DIR), os.path.basename(config.MD_STAR_DIR)}
+dirs_df = dirs_df[~dirs_df["Directory"].isin(excluded)]
 if dirs_df.empty:
     st.info("No downloaded result groups yet. Run a PPI analysis first.")
 else:
