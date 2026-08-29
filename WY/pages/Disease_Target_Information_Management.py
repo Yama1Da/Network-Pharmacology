@@ -66,11 +66,14 @@ def refresh_file(filename: str) -> dict:
             # 绕过 st.cache_data，强制重新请求 API
             Utils.get_disease_targets.clear()
             df = Utils.get_disease_targets(disease_name)
-            ok = not df.empty and os.path.exists(path)
+            # 新缓存一律以净化命名落盘，存在性判断须与 Utils.safe_name 一致
+            ok = not df.empty and os.path.exists(
+                _file_path(f"OpenTargets_{Utils.safe_name(disease_name)}.csv"))
         elif filename.startswith("DisGeNET_"):
             disease_name = filename[len("DisGeNET_"):-len(".csv")]
             df = Utils.fetch_disease_targets_disgenet(disease_name)
-            ok = not df.empty and os.path.exists(path)
+            ok = not df.empty and os.path.exists(
+                _file_path(f"DisGeNET_{Utils.safe_name(disease_name)}.csv"))
         else:
             raise ValueError(f"unknown file prefix: {filename}")
     except Exception:
