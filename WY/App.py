@@ -1,6 +1,6 @@
 import streamlit as st
 import Utils
-from i18n import t
+from i18n import t, set_lang, get_lang
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
@@ -58,7 +58,7 @@ st.markdown("""
     [data-testid="stSidebar"] {
         display: none;
     }
-    /* Top-right corner Logs button (fixed overlay) */
+    /* Top-right corner language + Logs buttons (fixed overlay) */
     div.st-key-top_right_logs {
         position: fixed;
         top: 3.5rem;
@@ -68,11 +68,26 @@ st.markdown("""
         display: flex;
         flex-direction: row;
         justify-content: flex-end;
+        gap: 0.5rem;
         pointer-events: none;
     }
     /* 容器不拦截点击，按钮自身恢复可点击 */
     div.st-key-top_right_logs .stButton {
         pointer-events: auto;
+    }
+    /* Language toggle button: #4A90D9 blue, white text */
+    .st-key-lang_btn button {
+        background-color: #4A90D9;
+        color: #FFFFFF;
+        border: 1px solid #4A90D9;
+        box-shadow: none;
+    }
+    .st-key-lang_btn button:hover,
+    .st-key-lang_btn button:active {
+        background-color: #4A90D9;
+        color: #FFFFFF;
+        border: 1px solid #4A90D9;
+        box-shadow: none;
     }
     /* Logs button: #909399 background, white text */
     div.st-key-top_right_logs .stButton button {
@@ -167,8 +182,11 @@ st.markdown("""
 st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtitle")}</p></div>',
             unsafe_allow_html=True)
 
-# ---------- Logs button (fixed top-right, open full-screen Logs page) ----------
+# ---------- Language toggle + Logs button (fixed top-right) ----------
 with st.container(key="top_right_logs"):
+    if st.button("中文" if get_lang() == "en" else "English", key="lang_btn"):
+        set_lang("zh" if get_lang() == "en" else "en")
+        st.rerun()
     if st.button(t("app.logs_btn"), key="logs_btn"):
         st.switch_page("pages/Logs.py")
 

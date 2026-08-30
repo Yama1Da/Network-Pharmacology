@@ -8,9 +8,10 @@ import streamlit as st
 
 import config
 import Utils
-from i18n import t
+from i18n import t, render_lang_toggle
 
 st.set_page_config(page_title=t("dock.page_title"), layout="wide")
+render_lang_toggle()
 
 ENRICHMENT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

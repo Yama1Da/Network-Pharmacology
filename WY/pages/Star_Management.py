@@ -6,9 +6,10 @@ import streamlit as st
 
 import config
 import Utils
-from i18n import t
+from i18n import t, render_lang_toggle
 
 st.set_page_config(page_title=t("star.page_title"), layout="wide")
+render_lang_toggle()
 
 # ---------- Hide auto navigation sidebar for full-screen display ----------
 st.markdown("""
