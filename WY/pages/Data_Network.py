@@ -6,8 +6,9 @@ import streamlit as st
 
 import config
 import Utils
+from i18n import t
 
-st.set_page_config(page_title="Data Network Pharmacology Analysis", layout="wide")
+st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
 # ---------- Hide auto navigation sidebar for full-screen display ----------
 st.markdown("""
@@ -30,39 +31,40 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🌐 Data Network Pharmacology Analysis")
-st.caption("Common targets → STRING interactions → topology analysis → GO/KEGG enrichment → visualization & export")
+st.title(t("net.title"))
+st.caption(t("net.caption"))
 
 col_back, col_mgmt = st.columns([1, 1])
 with col_back:
-    if st.button("← Back to Main", key="back_btn"):
+    if st.button(t("common.back_main"), key="back_btn"):
         st.switch_page("App.py")
 with col_mgmt:
-    if st.button("Data Management", key="data_mgmt_btn"):
+    if st.button(t("net.data_mgmt"), key="data_mgmt_btn"):
         st.switch_page("pages/Data_Management.py")
 
 st.divider()
 
 # ---------- 输入区 ----------
 input_mode = st.radio(
-    "Input mode",
-    ["Drug + Disease names", "Paste gene list"],
+    t("net.input_mode"),
+    ["names", "genes"],
+    format_func=lambda v: t("net.mode_names") if v == "names" else t("net.mode_genes"),
     horizontal=True,
 )
 
 col_input, col_params = st.columns([2, 1])
 with col_input:
-    if input_mode == "Drug + Disease names":
+    if input_mode == "names":
         col_drug, col_dis = st.columns(2)
         with col_drug:
-            drug_name = st.text_input("Drug name", value="aspirin")
+            drug_name = st.text_input(t("net.drug_label"), value="aspirin")
         with col_dis:
-            disease_name = st.text_input("Disease name", value="cancer")
+            disease_name = st.text_input(t("net.disease_label"), value="cancer")
         gene_text = ""
     else:
         drug_name, disease_name = "", ""
         gene_text = st.text_area(
-            "Gene symbols (one per line or comma-separated)",
+            t("net.gene_text_label"),
             placeholder="TP53\nBRCA1\nEGFR",
             height=140,
         )
@@ -72,11 +74,12 @@ with col_params:
     # 多物种支持待后续优化后再开放（届时把下面选项恢复为
     # list(config.SPECIES_MAP.keys())，并同步处理疾病靶点数据源
     # Open Targets 只有人类数据的问题）。
-    species_label = st.selectbox("Species", ["Human"])
-    score = st.slider("STRING confidence", 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
-    min_degree = st.number_input("Min degree (hub)", 1, 20, config.MIN_DEGREE_FILTER, 1)
+    # 注意：选项值 "Human" 同时是 config.SPECIES_MAP 的键，不参与翻译。
+    species_label = st.selectbox(t("net.species"), ["Human"])
+    score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
+    min_degree = st.number_input(t("net.min_degree"), 1, 20, config.MIN_DEGREE_FILTER, 1)
 
-run_btn = st.button("Build Report", key="run_btn", type="primary", width="stretch")
+run_btn = st.button(t("net.build_report"), key="run_btn", type="primary", width="stretch")
 
 
 # ---------- 分析执行 ----------
@@ -90,7 +93,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     # （如接入 DisGeNET / MGI / RGD 等，并处理人-鼠同源映射）。
     # =====================================================
     # Step 0: 确定输入基因列表
-    if mode == "Drug + Disease names":
+    if mode == "names":
         genes = Utils.get_common_targets(drug_name, disease_name, top_n=config.STRING_QUERY_LIMIT)
         # 结果目录/文件前缀：药物名_疾病名（save_ppi_results 会生成 <prefix>_data 目录）
         prefix = re.sub(r"[^\w\-]+", "_", f"{drug_name}_{disease_name}")
@@ -161,10 +164,10 @@ current_params = (
 )
 
 if run_btn:
-    if input_mode == "Drug + Disease names" and (not drug_name.strip() or not disease_name.strip()):
-        st.warning("Please enter both drug and disease names")
+    if input_mode == "names" and (not drug_name.strip() or not disease_name.strip()):
+        st.warning(t("net.warn_missing"))
     else:
-        with st.spinner("Building Report…"):
+        with st.spinner(t("net.spinner_build")):
             st.session_state.ppi = _run_ppi_analysis(
                 input_mode,
                 drug_name.strip(),
@@ -181,7 +184,7 @@ if run_btn:
 ppi = st.session_state.ppi
 if ppi is not None:
     if current_params != ppi["params"]:
-        st.info("Parameters have changed — click Build PPI Network to re-analyze.")
+        st.info(t("net.params_changed"))
 
     genes = ppi["genes"]
     edges_df = ppi["edges_df"]
@@ -193,87 +196,86 @@ if ppi is not None:
     prefix = ppi["prefix"]
 
     if not genes:
-        st.warning("No common targets found between the two datasets.")
+        st.warning(t("net.no_common"))
     elif edges_df.empty:
-        st.error("STRING returned no interactions above the confidence threshold.")
+        st.error(t("net.no_interactions"))
     else:
-        st.info(f"Input: {len(genes)} target genes")
+        st.info(t("net.input_genes", n=len(genes)))
 
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        col_m1.metric("Input targets", len(genes))
-        col_m2.metric("Network nodes", len(metrics_df))
-        col_m3.metric("Edges", len(edges_df))
-        col_m4.metric("Hub genes", len(hub_df))
+        col_m1.metric(t("net.metric_input"), len(genes))
+        col_m2.metric(t("net.metric_nodes"), len(metrics_df))
+        col_m3.metric(t("net.metric_edges"), len(edges_df))
+        col_m4.metric(t("net.metric_hubs"), len(hub_df))
 
         st.divider()
 
-        st.subheader(f"⭐ Hub genes (degree > median, degree ≥ {int(min_degree)})")
+        st.subheader(t("net.hub_subheader", d=int(min_degree)))
         if hub_df.empty:
-            st.info("No hub genes met the threshold.")
+            st.info(t("net.no_hubs"))
         else:
             st.dataframe(hub_df, width="stretch", hide_index=True)
 
-        st.subheader("🕸️ Interactive network (drag / zoom)")
+        st.subheader(t("net.interactive"))
         st.iframe(html_content, height=640)
 
-        st.subheader("📊 Static network")
+        st.subheader(t("net.static"))
         st.pyplot(static_fig)
 
         # ---------- 富集分析展示 ----------
         st.divider()
-        st.subheader("🧪 Enrichment analysis")
+        st.subheader(t("net.enrich_subheader"))
         enrichment_df = ppi["enrichment_df"]
         enrichment_source = ppi["enrichment_source"]
         enrichment_bar_fig = ppi["enrichment_bar_fig"]
         enrichment_dot_fig = ppi["enrichment_dot_fig"]
         if enrichment_df is None or enrichment_df.empty:
-            st.info("No significant enrichment terms (adjusted p < 0.05) — try lowering the confidence threshold.")
+            st.info(t("net.no_enrich"))
         else:
             st.caption(
-                f"Source: **{enrichment_source}** · {len(enrichment_df)} significant terms "
-                f"(GO:BP / GO:MF / GO:CC / KEGG) · inputs: {len(genes)} common targets"
+                t("net.enrich_caption", src=enrichment_source, n=len(enrichment_df), m=len(genes))
             )
             display_cols = ["source", "term_id", "term_name", "adjusted_p_value",
                             "intersection_size", "query_size"]
             st.dataframe(enrichment_df[display_cols], width="stretch", hide_index=True)
             if enrichment_bar_fig is not None:
-                st.caption("Bar plot: top terms per source, length = -log10(adjusted p-value)")
+                st.caption(t("net.bar_caption"))
                 st.pyplot(enrichment_bar_fig)
             if enrichment_dot_fig is not None:
-                st.caption("Bubble plot: bubble size = hit count, color = adjusted p-value")
+                st.caption(t("net.bubble_caption"))
                 st.pyplot(enrichment_dot_fig)
 
         # ---------- 下载区 ----------
-        with st.expander("Download results"):
+        with st.expander(t("net.download_expander")):
             col_d1, col_d2, col_d3 = st.columns(3)
             with col_d1:
                 st.download_button(
-                    "⬇️ Nodes CSV",
+                    t("net.dl_nodes"),
                     metrics_df.to_csv(index=False).encode("utf-8-sig"),
                     f"{prefix}_nodes.csv", "text/csv", width="stretch",
                 )
             with col_d2:
                 st.download_button(
-                    "⬇️ Edges CSV",
+                    t("net.dl_edges"),
                     edges_df.to_csv(index=False).encode("utf-8-sig"),
                     f"{prefix}_edges.csv", "text/csv", width="stretch",
                 )
             with col_d3:
                 st.download_button(
-                    "⬇️ Network HTML",
+                    t("net.dl_html"),
                     html_content,
                     f"{prefix}_network.html", "text/html", width="stretch",
                 )
             col_d4, col_d5, col_d6 = st.columns(3)
             with col_d4:
                 st.download_button(
-                    "⬇️ GraphML (Cytoscape)",
+                    t("net.dl_graphml"),
                     open(saved["graphml"], "rb").read(),
                     f"{prefix}_graph.graphml", "application/xml", width="stretch",
                 )
             with col_d5:
                 st.download_button(
-                    "⬇️ SVG (vector)",
+                    t("net.dl_svg"),
                     open(saved["svg"], "rb").read(),
                     f"{prefix}_network.svg", "image/svg+xml", width="stretch",
                 )
@@ -281,7 +283,7 @@ if ppi is not None:
                 # 富集气泡图（与 ZIP 换位到第二行第三列；有富集结果时显示）
                 if "enrichment_csv" in saved:
                     st.download_button(
-                        "⬇️ Enrichment Bubble",
+                        t("net.dl_bubble"),
                         open(saved["enrichment_dot_png"], "rb").read(),
                         f"{prefix}_enrichment_dot.png", "image/png", width="stretch",
                     )
@@ -290,24 +292,24 @@ if ppi is not None:
             if "enrichment_csv" in saved:
                 with col_e1:
                     st.download_button(
-                        "⬇️ Enrichment CSV",
+                        t("net.dl_enrich_csv"),
                         open(saved["enrichment_csv"], "rb").read(),
                         f"{prefix}_enrichment.csv", "text/csv", width="stretch",
                     )
                 with col_e2:
                     st.download_button(
-                        "⬇️ Enrichment Bar",
+                        t("net.dl_enrich_bar"),
                         open(saved["enrichment_bar_png"], "rb").read(),
                         f"{prefix}_enrichment_bar.png", "image/png", width="stretch",
                     )
             with col_e3:
                 st.download_button(
-                    "⬇️ All results (ZIP)",
+                    t("net.dl_zip"),
                     Utils.make_ppi_zip(saved),
                     f"{prefix}_results.zip", "application/zip", width="stretch",
                 )
             st.caption(
-                f"All files of this analysis are grouped in: `{saved['directory']}`"
+                t("net.files_grouped", dir=saved["directory"])
             )
 
-        st.success("✅ Report analysis complete")
+        st.success(t("net.success"))
