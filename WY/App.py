@@ -1,5 +1,6 @@
 import streamlit as st
 import Utils
+from i18n import t
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
@@ -8,7 +9,7 @@ from matplotlib_venn import venn2
 Utils.setup_logging()
 
 #页面布局
-st.set_page_config(page_title="Network Pharmacology Platform", layout="centered")
+st.set_page_config(page_title=t("app.page_title"), layout="centered")
 
 # ---------- Custom Minimal CSS ----------
 st.markdown("""
@@ -163,31 +164,31 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------- Title ----------
-st.markdown('<div class="title-area"><h1>🧬 Network Pharmacology Analysis Platform</h1><p>Input drug and disease names to analyze overlapping targets</p></div>',
+st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtitle")}</p></div>',
             unsafe_allow_html=True)
 
 # ---------- Logs button (fixed top-right, open full-screen Logs page) ----------
 with st.container(key="top_right_logs"):
-    if st.button("📜 Logs", key="logs_btn"):
+    if st.button(t("app.logs_btn"), key="logs_btn"):
         st.switch_page("pages/Logs.py")
 
 # ---------- Management buttons (fixed top-left, open full-screen pages) ----------
 with st.container(key="top_left_buttons"):
     # 下拉式菜单：四个信息管理页面的前往按钮（不含 Data Management）
-    with st.popover("Source Information Management", key="source_mgmt_popover"):
-        if st.button("Drug Target Information Management", key="drug_mgmt_btn", width="stretch"):
+    with st.popover(t("app.popover_source"), key="source_mgmt_popover"):
+        if st.button(t("app.btn_drug_mgmt"), key="drug_mgmt_btn", width="stretch"):
             st.switch_page("pages/Drug_Target_Information_Management.py")
-        if st.button("Disease Target Information Management", key="disease_mgmt_btn", width="stretch"):
+        if st.button(t("app.btn_disease_mgmt"), key="disease_mgmt_btn", width="stretch"):
             st.switch_page("pages/Disease_Target_Information_Management.py")
-        if st.button("PPI Information", key="ppi_info_btn", width="stretch"):
+        if st.button(t("app.btn_ppi_info"), key="ppi_info_btn", width="stretch"):
             st.switch_page("pages/PPI_Information.py")
-        if st.button("Enrichment Information", key="enrichment_info_btn", width="stretch"):
+        if st.button(t("app.btn_enrichment_info"), key="enrichment_info_btn", width="stretch"):
             st.switch_page("pages/Enrichment_Information.py")
     # 下拉式菜单：PPI/富集主分析 + 分子对接（分子对接为富集下游页面）
-    with st.popover("PPI-Enrichment & Molecular Docking", key="docking_mgmt_popover"):
-        if st.button("Data Network Pharmacology Analysis", key="data_network_btn", width="stretch"):
+    with st.popover(t("app.popover_docking"), key="docking_mgmt_popover"):
+        if st.button(t("app.btn_data_network"), key="data_network_btn", width="stretch"):
             st.switch_page("pages/Data_Network.py")
-        if st.button("Molecular Docking", key="molecular_docking_btn", width="stretch"):
+        if st.button(t("app.btn_molecular_docking"), key="molecular_docking_btn", width="stretch"):
             st.session_state["_docking_entry"] = True  # 通知对接页：从入口进入，重置状态
             st.switch_page("pages/Molecular_Docking.py")
 
@@ -196,28 +197,28 @@ st.divider()# 水平分隔线，用于分隔管理按钮和搜索栏
 # ---------- Search bar ----------
 col_drug, col_disease = st.columns(2)# 两个列，用于输入药物名称和疾病名称
 with col_drug:
-    drug_name = st.text_input("Drug name", value="aspirin",
+    drug_name = st.text_input(t("app.drug_label"), value="aspirin",
                                label_visibility="collapsed",
-                               placeholder="Drug name, e.g. aspirin")
+                               placeholder=t("app.drug_placeholder"))
 with col_disease:
-    disease_name = st.text_input("Disease name", value="cancer",
+    disease_name = st.text_input(t("app.disease_label"), value="cancer",
                                   label_visibility="collapsed",
-                                  placeholder="Disease name, e.g. cancer")
+                                  placeholder=t("app.disease_placeholder"))
 
-analyze_btn = st.button("Analyze", type="primary", width="stretch")
+analyze_btn = st.button(t("app.analyze_btn"), type="primary", width="stretch")
 
 # ---------- Results ----------
 if analyze_btn:
     errors = []
     if not drug_name.strip():
-        errors.append("drug name")
+        errors.append(t("app.err_drug"))
     if not disease_name.strip():
-        errors.append("disease name")
+        errors.append(t("app.err_disease"))
 
     if errors:
-        st.warning(f"Please enter {' and '.join(errors)}")
+        st.warning(t("app.warn_missing", fields=t("app.and_join").join(errors)))
     else:
-        with st.spinner(f"Querying targets for {drug_name} and {disease_name}…"):
+        with st.spinner(t("app.spinner_query", drug=drug_name, disease=disease_name)):
             # 药物靶点：ChEMBL + DGIdb 去重整合；疾病靶点：Open Targets + DisGeNET 去重整合
             drug_df = Utils.get_drug_targets_merged(drug_name)
             drug_targets = drug_df["approvedSymbol"].tolist() if not drug_df.empty else []
@@ -231,13 +232,13 @@ if analyze_btn:
         disease_set = set(disease_targets)
 
         col_a, col_b, col_c = st.columns([1, 1, 1])
-        col_a.metric("Drug", drug_name)
-        col_b.metric("Targets", len(drug_set))
-        col_c.metric("Disease targets", len(disease_set))
+        col_a.metric(t("app.metric_drug"), drug_name)
+        col_b.metric(t("app.metric_targets"), len(drug_set))
+        col_c.metric(t("app.metric_disease_targets"), len(disease_set))
 
         common = drug_set & disease_set
 
-        st.metric("🎯 Common targets", len(common))
+        st.metric(t("app.metric_common"), len(common))
 
         # ----- Venn diagram -----
         fig, ax = plt.subplots(figsize=(6, 4))# 创建一个6x4英寸的子图
@@ -245,17 +246,17 @@ if analyze_btn:
             subsets=(len(drug_set - disease_set),
                      len(disease_set - drug_set),
                      len(common)),
-            set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
+            set_labels=(t("app.targets_of", name=drug_name), t("app.targets_of", name=disease_name)),
             ax=ax,
         )# 绘制Venn图
         if v and v.get_label_by_id("11"):
             v.get_label_by_id("11").set_fontsize(12)# 设置Venn图中“交集”的字体大小
-        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)# 设置Venn图的标题
+        ax.set_title(t("app.venn_title", drug=drug_name, disease=disease_name), fontsize=14)# 设置Venn图的标题
         st.pyplot(fig)# 显示Venn图
 
-        with st.expander("View target lists", expanded=False):
+        with st.expander(t("app.expander_targets"), expanded=False):
             # ----- 第一段：药物靶点（ChEMBL + DGIdb 去重整合结果） -----
-            st.markdown(f"**💊 {drug_name} targets** — {len(drug_set)} genes (ChEMBL + DGIdb, deduplicated)")
+            st.markdown(t("app.drug_targets_md", name=drug_name, count=len(drug_set)))
             if not drug_df.empty:
                 st.dataframe(
                     drug_df.sort_values(["source_count", "score_pchembl"],
@@ -263,12 +264,12 @@ if analyze_btn:
                     width="stretch",
                 )
             else:
-                st.write("(No drug target data retrieved)")
+                st.write(t("app.no_drug_data"))
 
             st.divider()
 
             # ----- 第二段：疾病靶点（Open Targets + DisGeNET 去重整合结果） -----
-            st.markdown(f"**🦠 {disease_name} targets** — {len(disease_set)} genes (Open Targets + DisGeNET, deduplicated)")
+            st.markdown(t("app.disease_targets_md", name=disease_name, count=len(disease_set)))
             if not disease_df.empty:
                 st.dataframe(
                     disease_df.sort_values(["source_count", "score_ot"],
@@ -276,10 +277,10 @@ if analyze_btn:
                     width="stretch",
                 )
             else:
-                st.write("（未获取到疾病靶点数据）")
+                st.write(t("app.no_disease_data"))
 
         st.markdown('</div>', unsafe_allow_html=True)
 
-        st.success("✅ Analysis complete")
+        st.success(t("app.success_done"))
 else:
-    st.info("💡 Enter drug and disease names above and click Analyze")
+    st.info(t("app.info_hint"))

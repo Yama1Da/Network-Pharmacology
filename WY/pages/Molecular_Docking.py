@@ -33,7 +33,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("⚗️ Molecular Docking")
-st.caption("AutoDock Vina v1.2.7 · 配体 pubchempy/rdkit · 受体 openbabel · 成果归档不覆盖")
+st.caption("AutoDock Vina v1.2.7 · ligand pubchempy/rdkit · receptor openbabel · results archived without overwrite")
 
 col_back, col_star = st.columns([1, 1])
 with col_back:
@@ -166,7 +166,7 @@ def _smiles_to_sdf_3d(smiles: str, out_path: str, seed: int = 0, n_confs: int = 
     params.randomSeed = seed
     cids = AllChem.EmbedMultipleConfs(mol, numConfs=n_confs, params=params)
     if not cids:
-        raise RuntimeError("RDKit 3D 构象生成失败")
+        raise RuntimeError("RDKit failed to generate 3D conformers")
     best_cid, best_e = None, None
     for cid in cids:
         ff = AllChem.MMFFGetMoleculeForceField(mol, confId=cid)
@@ -211,7 +211,7 @@ def _extract_model(out_pdbqt: str, mode: int, out_path: str) -> str:
             elif current is not None:
                 current.append(line)
     if not (1 <= mode <= len(blocks)):
-        raise RuntimeError(f"mode {mode} 超出范围（共 {len(blocks)} 个）")
+        raise RuntimeError(f"mode {mode} out of range ({len(blocks)} total)")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("".join(blocks[mode - 1]))
     return out_path
@@ -264,8 +264,8 @@ def _render_3d(pdb_path: str, pose_pdbqt: str) -> None:
     try:
         import py3Dmol
     except ImportError:
-        st.info("3D 内嵌可视化需要 py3Dmol（`pip install py3Dmol`）。当前可直接下载 pose 文件，"
-                "用 PyMOL / ChimeraX / VMD 打开查看。")
+        st.info("3D inline visualization requires py3Dmol (`pip install py3Dmol`). "
+                "Meanwhile, download the pose file and open it with PyMOL / ChimeraX / VMD.")
         return
     from openbabel import openbabel as ob
 
@@ -301,10 +301,10 @@ def _cached_pdb_candidates(gene: str) -> pd.DataFrame:
 
 
 # ==================== Step 1 候选基因筛选（HUB ∩ 富集验证 ∩ 结构可用性） ====================
-st.subheader("1️⃣ 候选基因筛选（HUB ∩ 富集验证 ∩ 结构可用性）")
+st.subheader("1️⃣ Candidate gene filtering (HUB ∩ enrichment-validated ∩ structure-available)")
 
-src_mode = st.radio("数据来源",
-                    ["PPI 结果目录（HUB + 富集）", "富集缓存文件（仅富集验证）"],
+src_mode = st.radio("Data source",
+                    ["PPI result directory (HUB + enrichment)", "Enrichment cache file (enrichment only)"],
                     horizontal=True, key="gene_src_mode")
 
 # 切换数据源模式 → 重置数据源状态与全部下游，强制新模式重新读取（避免残留旧文件候选基因）
@@ -320,10 +320,10 @@ if src_mode.startswith("PPI"):
     dirs = Utils.list_download_dirs()
     ppi_dirs = dirs[dirs["Directory"].str.endswith("_data", na=False)] if not dirs.empty else dirs
     if ppi_dirs.empty:
-        st.warning("未发现 PPI 结果目录（downloads/*_data/）。请先运行 Data Network 分析，或改用富集缓存。")
+        st.warning("No PPI result directories found (downloads/*_data/). Run the Data Network analysis first, or switch to the enrichment cache.")
     else:
-        sel_dir = st.selectbox("选择 PPI 结果目录", ppi_dirs["Directory"].tolist(), key="sel_ppi_dir",
-                               index=None, placeholder="请选择 PPI 结果目录…")
+        sel_dir = st.selectbox("Select PPI result directory", ppi_dirs["Directory"].tolist(), key="sel_ppi_dir",
+                               index=None, placeholder="Select a PPI result directory…")
         # 自动读取：目录变化即加载（无需点按钮）；选择为空时跳过，避免误读旧值
         if sel_dir and dock.get("ppi_dir") != sel_dir:
             dock["ppi_dir"] = sel_dir
@@ -340,8 +340,8 @@ else:
     if enr_files.empty:
         st.warning("No enrichment cache files found. Run the enrichment analysis first, or enter genes manually.")
     else:
-        sel_file = st.selectbox("选择富集结果文件", enr_files["File name"], key="sel_enr",
-                                index=None, placeholder="请选择富集结果文件…")
+        sel_file = st.selectbox("Select enrichment result file", enr_files["File name"], key="sel_enr",
+                                index=None, placeholder="Select an enrichment result file…")
         # 自动读取：文件变化即加载；选择为空时跳过
         if sel_file and dock.get("enr_file") != sel_file:
             dock["enr_file"] = sel_file
@@ -372,12 +372,12 @@ if dock.get("enrichment_genes") is not None:
         st.warning("No intersection between HUB genes and enrichment-validated genes; the candidate list is empty. Switch the PPI result directory / enrichment file, or enter genes manually.")
 
     # 结构可用性筛选（默认开启；RCSB 查询失败/漏检时用户可取消，保留全部候选）
-    st.markdown("**结构可用性筛选（RCSB 人类结构）**")
-    use_struct = st.checkbox("启用结构可用性筛选", key="use_struct",
+    st.markdown("**Structure availability filter (RCSB human structures)**")
+    use_struct = st.checkbox("Enable structure availability filter", key="use_struct",
                              disabled=not candidate, value=True)
     if use_struct:
-        if st.button("逐基因检查 RCSB 结构（较慢）", key="check_struct"):
-            with st.spinner("正在逐基因查询 RCSB …"):
+        if st.button("Check RCSB structures gene by gene (slow)", key="check_struct"):
+            with st.spinner("Querying RCSB gene by gene…"):
                 try:
                     found: dict[str, int] = {}
                     progress = st.progress(0)
@@ -390,30 +390,30 @@ if dock.get("enrichment_genes") is not None:
                 except Exception as exc:
                     # 中途失败：保留已查结果，明确提示错误原因
                     dock.pop("gene_structures", None)
-                    st.error(f"发生错误：{exc}")
+                    st.error(f"Error: {exc}")
         if dock.get("gene_structures") is not None:
             struct_ok = sorted(dock["gene_structures"])
             dock["genes"] = struct_ok
             no_struct = [g for g in candidate if g not in dock["gene_structures"]]
-            st.success(f"有可用结构的基因（{len(struct_ok)}）："
+            st.success(f"Genes with available structures ({len(struct_ok)}): "
                        + ", ".join(struct_ok[:40]) + (" …" if len(struct_ok) > 40 else ""))
             if no_struct:
-                st.caption(f"无结构被剔除（{len(no_struct)}）："
+                st.caption(f"Excluded (no structure found) ({len(no_struct)}): "
                            + ", ".join(no_struct[:40]) + (" …" if len(no_struct) > 40 else ""))
         else:
             dock.pop("genes", None)
-            st.info("点击上方按钮执行结构可用性检查。")
+            st.info("Click the button above to run the structure availability check.")
     else:
         # 未启用结构筛选 → 直接确定候选（空也赋值，避免 Step 3 误报"未完成 Step 1"）
         dock["genes"] = candidate
         if candidate:
-            st.caption(f"最终候选基因（{len(candidate)} 个）："
-                       + "、".join(candidate[:60]) + (" …" if len(candidate) > 60 else ""))
+            st.caption(f"Final candidate genes ({len(candidate)}): "
+                       + ", ".join(candidate[:60]) + (" …" if len(candidate) > 60 else ""))
 
 # 未加载任何 PPI/富集数据时，提供手动输入兜底
 if dock.get("enrichment_genes") is None:
-    manual = st.text_area("或手动输入基因（逗号 / 空格分隔）", key="manual_genes")
-    if st.button("使用手动基因", key="load_genes_manual"):
+    manual = st.text_area("Or enter genes manually (comma / space separated)", key="manual_genes")
+    if st.button("Use manual genes", key="load_genes_manual"):
         dock["genes"] = sorted({g.strip().upper() for g in re.split(r"[,;\s]+", manual) if g.strip()})
         dock["label"] = ""
         dock["drug"] = ""
@@ -428,13 +428,13 @@ if dock.get("genes"):
 st.divider()
 
 # ==================== Step 2 配体 ====================
-st.subheader("2️⃣ 配体准备")
+st.subheader("2️⃣ Ligand preparation")
 
 # 药物名/疾病名取自 Step 1 所选 {药物名}_{疾病名}_data 目录（或富集 label）
 default_drug = dock.get("drug", "")
 default_disease = dock.get("disease", "")
 
-lig_source = st.radio("配体来源", ["A. PubChem 现成 3D（默认）", "B. SMILES + RDKit 生成 3D"],
+lig_source = st.radio("Ligand source", ["A. Ready-made 3D from PubChem (default)", "B. SMILES + RDKit generated 3D"],
                       horizontal=True, key="lig_source")
 if lig_source.startswith("A"):
     # 自动获取：已解析出药物名且尚未准备配体时自动执行一次（先执行后渲染，便于按结果决定是否显示手动输入）
@@ -458,26 +458,26 @@ if lig_source.startswith("A"):
     show_lig_input = not lig_ready and (not default_drug or dock.get("lig_auto_done"))
     if show_lig_input:
         if not default_drug:
-            st.caption("未从数据来源识别到药物名，请手动输入药物名或 PubChem CID。")
-        lig_query = st.text_input("药物名或 PubChem CID（手动获取）", value=default_drug, key="lig_query")
-        if st.button("获取并准备配体", key="prep_lig"):
+            st.caption("No drug name recognized from the data source. Enter a drug name or PubChem CID manually.")
+        lig_query = st.text_input("Drug name or PubChem CID (manual fetch)", value=default_drug, key="lig_query")
+        if st.button("Fetch & prepare ligand", key="prep_lig"):
             dock["lig_auto_done"] = True  # 手动指定后不再自动覆盖
-            with st.spinner("正在从 PubChem 获取 3D 结构并转 pdbqt …"):
+            with st.spinner("Fetching 3D structure from PubChem and converting to pdbqt…"):
                 cid = _resolve_cid(lig_query)
                 if cid is None:
-                    st.error(f"PubChem 未找到化合物：{lig_query}，请检查名称或直接输入 CID")
+                    st.error(f"PubChem returned no compound for: {lig_query}. Check the name or enter a CID directly.")
                 else:
                     sdf_path = Utils.fetch_ligand_sdf_3d(cid)
                     if not sdf_path:
-                        st.error(f"CID {cid} 无 3D 结构，换一个药物试试")
+                        st.error(f"CID {cid} has no 3D structure. Try another drug.")
                     else:
                         dock["cid"] = cid
                         dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
 else:
     smiles = st.text_area("SMILES", height=90, key="lig_smiles",
-                          placeholder="如阿司匹林：CC(=O)Oc1ccccc1C(=O)O")
-    if st.button("生成并准备配体", key="prep_lig_b"):
-        with st.spinner("RDKit 生成 3D 构象并转 pdbqt …"):
+                          placeholder="e.g. aspirin: CC(=O)Oc1ccccc1C(=O)O")
+    if st.button("Generate & prepare ligand", key="prep_lig_b"):
+        with st.spinner("Generating 3D conformers with RDKit and converting to pdbqt…"):
             try:
                 tmp_dir = config.DOCKING_RAW_CACHE_DIR
                 os.makedirs(tmp_dir, exist_ok=True)
@@ -487,19 +487,19 @@ else:
                 dock["cid"] = None
                 dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
             except Exception as exc:
-                st.error(f"配体准备失败：{exc}")
+                st.error(f"Ligand preparation failed: {exc}")
 
 if dock.get("lig_pdbqt"):
-    st.success(f"✅ 配体 pdbqt：`{dock['lig_pdbqt']}`"
-               + (f"（CID {dock.get('cid')}）" if dock.get("cid") else "（SMILES 生成）"))
+    st.success(f"✅ Ligand pdbqt: `{dock['lig_pdbqt']}`"
+               + (f" (CID {dock.get('cid')})" if dock.get("cid") else " (generated from SMILES)"))
 
 st.divider()
 
 # ==================== Step 3 受体（基因 + PDB，决策点） ====================
-st.subheader("3️⃣ 受体选择（选基因 → 自动查询候选 PDB → 选结构）")
+st.subheader("3️⃣ Receptor selection (pick gene → auto-query candidate PDBs → pick structure)")
 
 if dock.get("genes"):
-    gene = st.selectbox("选择靶基因（受体蛋白）", dock["genes"], key="gene_sel")
+    gene = st.selectbox("Target gene (receptor protein)", dock["genes"], key="gene_sel")
     # 基因变化 → 清空旧受体/盒/对接结果
     if dock.get("gene") != gene:
         dock["gene"] = gene
@@ -527,8 +527,8 @@ if dock.get("genes"):
             dock["pdb_sel"] = pdb_id
             for _k in ("rec_pdbqt", "pdb_id", "pdb_path", "box", "result"):
                 dock.pop(_k, None)
-        if st.button("下载并准备受体", key="prep_rec"):
-            with st.spinner("正在下载 PDB 并转 pdbqt …"):
+        if st.button("Download & prepare receptor", key="prep_rec"):
+            with st.spinner("Downloading PDB and converting to pdbqt…"):
                 try:
                     pdb_path = _download_pdb(pdb_id)
                     dock["pdb_id"] = pdb_id
@@ -597,7 +597,7 @@ def _render_box_3d(pdb_path: str, box: dict) -> None:
     try:
         import py3Dmol
     except ImportError:
-        st.info("3D 盒框预览需要 py3Dmol（`pip install py3Dmol`）。")
+        st.info("3D box preview requires py3Dmol (`pip install py3Dmol`).")
         return
     with open(pdb_path, encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
@@ -628,37 +628,37 @@ def _render_box_3d(pdb_path: str, box: dict) -> None:
 
 
 # ==================== Step 4 对接盒（决策点） ====================
-st.subheader("4️⃣ 对接盒（推断后需人工确认）")
+st.subheader("4️⃣ Docking box (manual confirmation required after inference)")
 
 if dock.get("pdb_path"):
-    if st.button("依据配体/辅因子推断对接盒", key="infer_box"):
+    if st.button("Infer docking box from ligand/cofactor", key="infer_box"):
         try:
             dock["box"] = Utils.infer_box_from_cofactor(dock["pdb_path"])
         except Exception as exc:
-            st.error(f"对接盒推断失败：{exc}")
+            st.error(f"Docking box inference failed: {exc}")
     if dock.get("box"):
         # 推断依据说明
         het = _parse_hetatm(dock["pdb_path"])
         if het:
-            ligs = sorted({f"{r}（链{c}{n}）" for r, c, n, _ in het})
-            st.caption(f"推断依据：以共结晶配体/辅因子 {', '.join(ligs[:5])} 质心为中心，外扩 8 Å 覆盖口袋。")
+            ligs = sorted({f"{r} (chain {c}{n})" for r, c, n, _ in het})
+            st.caption(f"Inferred from: centroid of co-crystallized ligand/cofactor {', '.join(ligs[:5])}, expanded by 8 Å to cover the pocket.")
         else:
-            st.caption("推断依据：该结构无共结晶配体（apo），退化为蛋白整体包围盒。建议结合文献/已知活性位点人工调整中心。")
+            st.caption("Inferred from: no co-crystallized ligand (apo structure), falling back to a bounding box of the whole protein. Adjust the center manually based on literature / known active sites.")
 
         # 微调指南
-        st.info("微调指南：① 中心对准活性口袋（参考共结晶配体或文献位点）；"
-                "② size 完全包住配体并留出周围残基空间（常见边长 20~25 Å）；"
-                "③ 调整后参考下方「盒内残基」与 3D 盒框，确认覆盖目标残基。")
+        st.info("Fine-tuning guide: ① center on the active pocket (see the co-crystal ligand or literature sites); "
+                "② size should fully enclose the ligand plus surrounding residues (typical edge length 20–25 Å); "
+                "③ after adjusting, check \"Residues in box\" below and the 3D box preview to confirm coverage of target residues.")
 
         c, s = dock["box"]["center"], dock["box"]["size"]
 
         # 左：3D 盒框预览；右：微调选项（并排，方便边看边调）
         col_box3d, col_tune = st.columns([2, 1])
         with col_box3d:
-            st.markdown("**3D 盒框预览（橙色线框 = 对接盒；绿色棍状 = 共结晶配体）**")
+            st.markdown("**3D box preview (orange wireframe = docking box; green sticks = co-crystal ligand)**")
             _render_box_3d(dock["pdb_path"], dock["box"])
         with col_tune:
-            st.caption("微调对接盒（可手输数值）：")
+            st.caption("Fine-tune the docking box (values are editable):")
             cc1, cc2, cc3 = st.columns(3)
             with cc1:
                 c1 = st.number_input("cx", value=float(c[0]), step=0.5, format="%.3f", key="cx_x")
@@ -693,14 +693,14 @@ else:
 st.divider()
 
 # ==================== Step 5 运行对接 ====================
-st.subheader("5️⃣ 运行 AutoDock Vina")
+st.subheader("5️⃣ Run AutoDock Vina")
 
 if dock.get("rec_pdbqt") and dock.get("lig_pdbqt") and dock.get("box"):
-    st.caption(f"当前参数：exhaustiveness={config.EXHAUSTIVENESS} · "
+    st.caption(f"Current parameters: exhaustiveness={config.EXHAUSTIVENESS} · "
                f"num_modes={config.NUM_MODES} · cpu={config.DOCKING_CPU} · "
                f"seed={config.DOCKING_SEED} · timeout={config.DOCKING_TIMEOUT}s")
-    if st.button("🚀 运行对接", key="run_dock"):
-        with st.spinner("Vina 搜索中（随机搜索，需数分钟）…"):
+    if st.button("🚀 Run docking", key="run_dock"):
+        with st.spinner("Vina searching (stochastic, may take several minutes)…"):
             try:
                 out_pdbqt = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                          f"vina_out_{datetime.now():%Y%m%d_%H%M%S}.pdbqt")
@@ -710,15 +710,15 @@ if dock.get("rec_pdbqt") and dock.get("lig_pdbqt") and dock.get("box"):
                 scores = Utils.parse_vina_scores(out_pdbqt)
                 dock["result"] = {"proc": proc, "out": out_pdbqt, "poses": poses, "scores": scores}
             except Exception as exc:
-                st.error(f"对接失败：{exc}")
+                st.error(f"Docking failed: {exc}")
 
     if dock.get("result"):
         res = dock["result"]
-        st.caption("Vina 运行日志（尾部）")
+        st.caption("Vina run log (tail)")
         st.code((res["proc"].stdout or "")[-1500:], language="text")
         st.dataframe(res["scores"], use_container_width=True, hide_index=True)
 else:
-    st.info("请先完成配体、受体与对接盒准备。")
+    st.info("Complete ligand, receptor, and docking box preparation first.")
 
 st.divider()
 
@@ -741,7 +741,7 @@ if dock.get("result"):
 
         col_save, col_star = st.columns([3, 1])
         with col_save:
-            if st.button("💾 保存结果并归档", key="save_result"):
+            if st.button("💾 Save & archive result", key="save_result"):
                 gene = dock.get("gene", "gene")
                 prefix = f"{drug}_{disease}_{gene}".strip("_").replace(" ", "_")
                 try:
@@ -750,14 +750,14 @@ if dock.get("result"):
                         dock["box"], dock["result"]["out"], scores, conclusion)
                     dock["result_dir"] = result_dir
                     dock.pop("starred", None)  # 新成果 → 重置收藏状态
-                    st.success("✅ 保存并归档成功")
+                    st.success("✅ Saved and archived")
                 except Exception as exc:
-                    st.error(f"保存并归档失败：{exc}")
+                    st.error(f"Save & archive failed: {exc}")
         with col_star:
             # ☆/★ 收藏切换：☆ 收藏到 star/（不受自动删除影响）；★ 点击即取消收藏（删除副本）
             if dock.get("result_dir"):
                 if dock.get("starred"):
-                    if st.button("★ 已收藏", key="star_on"):
+                    if st.button("★ Starred", key="star_on"):
                         try:
                             star_base = os.path.basename(dock["result_dir"])
                             import glob
@@ -767,9 +767,9 @@ if dock.get("result"):
                             dock.pop("starred", None)
                             st.rerun()  # 立即更新图标为 ☆
                         except Exception as exc:
-                            st.error(f"取消收藏失败：{exc}")
+                            st.error(f"Unstar failed: {exc}")
                 else:
-                    if st.button("☆ 收藏", key="star_off"):
+                    if st.button("☆ Star", key="star_off"):
                         try:
                             Utils.star_docking_result(dock["result_dir"])
                             dock["starred"] = True
@@ -785,7 +785,7 @@ if dock.get("result"):
                                mime="application/zip", key="dl_zip")
 
         # 3D 内嵌可视化（py3Dmol 可选），渲染用户选择的 pose
-        st.markdown("**3D 结构预览**")
+        st.markdown("**3D structure preview**")
         if dock.get("pdb_path"):
             try:
                 pose_path = os.path.join(config.DOCKING_RAW_CACHE_DIR,
@@ -798,7 +798,7 @@ else:
     st.info("Run a docking to interpret and archive results here.")
 
 st.divider()
-st.caption("缓存策略：raw 原始文件（SDF/PDB/vina 输出）按 24 小时 TTL 自动清理；"
-           "ligand/receptor pdbqt 加工产物按 7 天 TTL 清理；成果在 "
-           "downloads/MDresult 下按条件最多保留 3 版，旧版自动删除。"
-           "收藏的成果可在 Star Management 页面查看与管理。")
+st.caption("Cache policy: raw files (SDF/PDB/vina output) are auto-cleaned with a 24-hour TTL; "
+           "processed ligand/receptor pdbqt files with a 7-day TTL; results under "
+           "downloads/MDresult keep at most 3 versions (oldest auto-deleted). "
+           "Starred results can be viewed and managed on the Star Management page.")

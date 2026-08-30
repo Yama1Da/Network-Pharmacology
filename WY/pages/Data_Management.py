@@ -4,8 +4,9 @@ import pandas as pd
 
 import config
 import Utils
+from i18n import t
 
-st.set_page_config(page_title="Data Management", layout="wide")
+st.set_page_config(page_title=t("data_mgmt.page_title"), layout="wide")
 
 # ---------- Hide auto navigation sidebar for full-screen display ----------
 st.markdown("""
@@ -22,12 +23,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📁 Data Management")
-st.caption("Downloaded result groups under Static/data/downloads")
+st.title(t("data_mgmt.title"))
+st.caption(t("data_mgmt.caption"))
 
 col_back, _ = st.columns([1, 4])
 with col_back:
-    if st.button("← Back to Network", key="back_btn"):
+    if st.button(t("data_mgmt.back"), key="back_btn"):
         st.switch_page("pages/Data_Network.py")
 
 st.divider()
@@ -37,13 +38,13 @@ dirs_df = Utils.list_download_dirs()
 excluded = {os.path.basename(config.MD_RESULT_DIR), os.path.basename(config.MD_STAR_DIR)}
 dirs_df = dirs_df[~dirs_df["Directory"].isin(excluded)]
 if dirs_df.empty:
-    st.info("No downloaded result groups yet. Run a PPI analysis first.")
+    st.info(t("data_mgmt.empty"))
 else:
     # 表头
     col_h_name, col_h_time, col_h_btn = st.columns([3, 2, 1])
-    col_h_name.markdown("**Directory**")
-    col_h_time.markdown("**Created time**")
-    col_h_btn.markdown("**Download**")
+    col_h_name.markdown(t("common.col_directory"))
+    col_h_time.markdown(t("common.col_created"))
+    col_h_btn.markdown(t("common.col_download"))
 
     # 每行一个 Download 按钮，打包并下载该行目录的 zip
     with st.container(key="dir_rows"):
@@ -54,7 +55,7 @@ else:
             col_time.write(row["Created time"])
             with col_btn:
                 st.download_button(
-                    "Download",
+                    t("common.download"),
                     Utils.make_dir_zip(dir_path),
                     f"{row['Directory']}.zip",
                     "application/zip",
