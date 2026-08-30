@@ -2,10 +2,9 @@ import os
 import streamlit as st
 import pandas as pd
 import Utils
-from i18n import t, render_lang_toggle
+from i18n import t
 
 st.set_page_config(page_title=t("enrich_info.page_title"), layout="wide")
-render_lang_toggle()
 
 CACHE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

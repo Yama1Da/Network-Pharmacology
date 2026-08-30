@@ -4,13 +4,12 @@ import streamlit as st
 
 import config
 import Utils
-from i18n import t, render_lang_toggle
+from i18n import t
 
 # 初始化日志系统（幂等：直接访问本页 URL 时也保证日志就绪）
 Utils.setup_logging()
 
 st.set_page_config(page_title=t("logs.page_title"), layout="wide")
-render_lang_toggle()
 
 # ---------- Hide auto navigation sidebar for full-screen display ----------
 st.markdown("""

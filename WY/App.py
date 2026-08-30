@@ -75,20 +75,6 @@ st.markdown("""
     div.st-key-top_right_logs .stButton {
         pointer-events: auto;
     }
-    /* Language toggle button: #4A90D9 blue, white text */
-    .st-key-lang_btn button {
-        background-color: #4A90D9;
-        color: #FFFFFF;
-        border: 1px solid #4A90D9;
-        box-shadow: none;
-    }
-    .st-key-lang_btn button:hover,
-    .st-key-lang_btn button:active {
-        background-color: #4A90D9;
-        color: #FFFFFF;
-        border: 1px solid #4A90D9;
-        box-shadow: none;
-    }
     /* Logs button: #909399 background, white text */
     div.st-key-top_right_logs .stButton button {
         background-color: #909399;
@@ -102,6 +88,46 @@ st.markdown("""
         color: #FFFFFF;
         border: 1px solid #909399;
         box-shadow: none;
+    }
+    /* Language sliding switch: knob left = 中文, knob right = English */
+    .st-key-lang_switch [data-baseweb="checkbox"] {
+        position: relative;
+    }
+    .st-key-lang_switch [data-baseweb="checkbox"]::before {
+        content: "中文";
+        position: absolute;
+        right: calc(100% + 8px);
+        top: 50%;
+        transform: translateY(-50%);
+        color: #909399;
+        font-size: 0.9rem;
+        white-space: nowrap;
+    }
+    .st-key-lang_switch [data-baseweb="checkbox"]::after {
+        content: "English";
+        position: absolute;
+        left: calc(100% + 8px);
+        top: 50%;
+        transform: translateY(-50%);
+        color: #909399;
+        font-size: 0.9rem;
+        white-space: nowrap;
+    }
+    /* 当前语言一侧文字高亮（深色加粗），另一侧灰色 */
+    .st-key-lang_switch [data-baseweb="checkbox"]:not(:has(input:checked))::before {
+        color: #1F2937;
+        font-weight: 600;
+    }
+    .st-key-lang_switch [data-baseweb="checkbox"]:has(input:checked)::after {
+        color: #1F2937;
+        font-weight: 600;
+    }
+    /* 轨道颜色随状态：中文 = 灰，English = 蓝 */
+    .st-key-lang_switch [data-baseweb="checkbox"] > div {
+        background-color: #909399;
+    }
+    .st-key-lang_switch [data-baseweb="checkbox"]:has(input:checked) > div {
+        background-color: #4A90D9;
     }
     /* Top-left corner management buttons (fixed overlay, no card background) */
     div.st-key-top_left_buttons {
@@ -182,10 +208,14 @@ st.markdown("""
 st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtitle")}</p></div>',
             unsafe_allow_html=True)
 
-# ---------- Language toggle + Logs button (fixed top-right) ----------
+# ---------- Language sliding switch + Logs button (fixed top-right) ----------
 with st.container(key="top_right_logs"):
-    if st.button("中文" if get_lang() == "en" else "English", key="lang_btn"):
-        set_lang("zh" if get_lang() == "en" else "en")
+    # 滑动开关：滑块居左 = 中文，居右 = English；点击一次滑动切换
+    is_en = get_lang() == "en"
+    switched = st.toggle("Language", value=is_en, label_visibility="collapsed",
+                         key="lang_switch")
+    if switched != is_en:
+        set_lang("en" if switched else "zh")
         st.rerun()
     if st.button(t("app.logs_btn"), key="logs_btn"):
         st.switch_page("pages/Logs.py")
