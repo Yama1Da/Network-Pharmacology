@@ -160,7 +160,7 @@ def _smiles_to_sdf_3d(smiles: str, out_path: str, seed: int = 0, n_confs: int = 
 
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        raise ValueError(f"无效 SMILES: {smiles}")
+        raise ValueError(f"Invalid SMILES: {smiles}")
     mol = Chem.AddHs(mol)
     params = AllChem.ETKDGv3()
     params.randomSeed = seed
@@ -274,7 +274,7 @@ def _render_3d(pdb_path: str, pose_pdbqt: str) -> None:
     conv.SetInAndOutFormats("pdbqt", "pdb")
     mol = ob.OBMol()
     if not (conv.ReadFile(mol, pose_pdbqt) and conv.WriteFile(mol, pose_pdb)):
-        st.warning("pose 转 PDB 失败，跳过 3D 展示")
+        st.warning("Pose-to-PDB conversion failed; skipping 3D display")
         return
     with open(pdb_path, encoding="utf-8", errors="replace") as f:
         receptor_pdb = f.read()
@@ -338,7 +338,7 @@ if src_mode.startswith("PPI"):
 else:
     enr_files = Utils.list_cache_files("enrichment")
     if enr_files.empty:
-        st.warning("未发现富集缓存文件。请先运行富集分析，或手动输入基因。")
+        st.warning("No enrichment cache files found. Run the enrichment analysis first, or enter genes manually.")
     else:
         sel_file = st.selectbox("选择富集结果文件", enr_files["File name"], key="sel_enr",
                                 index=None, placeholder="请选择富集结果文件…")
@@ -363,13 +363,13 @@ if dock.get("enrichment_genes") is not None:
     dock["candidate_pre"] = candidate
 
     col_h, col_e, col_c = st.columns(3)
-    col_h.metric("HUB 基因", len(hub_set))
-    col_e.metric("富集验证基因", len(enr_set))
-    col_c.metric("交集候选", len(candidate))
+    col_h.metric("HUB genes", len(hub_set))
+    col_e.metric("Enrichment-validated genes", len(enr_set))
+    col_c.metric("Intersection candidates", len(candidate))
     if candidate:
-        st.write("、".join(candidate[:60]) + (" …" if len(candidate) > 60 else ""))
+        st.write(", ".join(candidate[:60]) + (" …" if len(candidate) > 60 else ""))
     else:
-        st.warning("HUB 基因与富集验证基因无交集，候选为空。请更换 PPI 结果目录 / 富集文件，或手动输入基因。")
+        st.warning("No intersection between HUB genes and enrichment-validated genes; the candidate list is empty. Switch the PPI result directory / enrichment file, or enter genes manually.")
 
     # 结构可用性筛选（默认开启；RCSB 查询失败/漏检时用户可取消，保留全部候选）
     st.markdown("**结构可用性筛选（RCSB 人类结构）**")
@@ -423,7 +423,7 @@ if dock.get("enrichment_genes") is None:
 
 if dock.get("genes"):
     shown = ", ".join(dock["genes"][:60]) + (" …" if len(dock["genes"]) > 60 else "")
-    st.info(f"✅ 已确定候选基因（{len(dock['genes'])} 个）：{shown}")
+    st.info(f"✅ Candidate genes confirmed ({len(dock['genes'])}): {shown}")
 
 st.divider()
 
@@ -439,16 +439,16 @@ lig_source = st.radio("配体来源", ["A. PubChem 现成 3D（默认）", "B. S
 if lig_source.startswith("A"):
     # 自动获取：已解析出药物名且尚未准备配体时自动执行一次（先执行后渲染，便于按结果决定是否显示手动输入）
     if default_drug and not dock.get("lig_pdbqt") and not dock.get("lig_auto_done"):
-        with st.spinner(f"自动获取 {default_drug} 的 3D 结构并准备配体 …"):
+        with st.spinner(f"Auto-fetching 3D structure of {default_drug} and preparing ligand…"):
             cid = _resolve_cid(default_drug)
             if cid is None:
                 dock["lig_auto_done"] = True
-                st.error(f"PubChem 未找到 {default_drug}，请在下方输入药物名或 CID 手动获取")
+                st.error(f"PubChem returned no results for {default_drug}. Enter a drug name or CID below to fetch manually.")
             else:
                 sdf_path = Utils.fetch_ligand_sdf_3d(cid)
                 if not sdf_path:
                     dock["lig_auto_done"] = True
-                    st.error(f"CID {cid} 无 3D 结构，请在下方输入其他药物名或 CID 重试")
+                    st.error(f"CID {cid} has no 3D structure. Try another drug name or CID below.")
                 else:
                     dock["cid"] = cid
                     dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
@@ -513,15 +513,15 @@ if dock.get("genes"):
     try:
         cand = _cached_pdb_candidates(gene)
     except Exception as exc:
-        st.warning(f"发生错误：{exc}（可稍后重试或换一个基因）")
+        st.warning(f"Error: {exc} (retry later or pick another gene)")
         cand = None
     if cand is None:
         pass  # 已提示错误
     elif cand.empty:
-        st.warning(f"RCSB 未找到 {gene} 的人类结构，请换一个基因")
+        st.warning(f"No human structure found on RCSB for {gene}. Pick another gene.")
     else:
         st.dataframe(cand, hide_index=True, use_container_width=True)
-        pdb_id = st.selectbox("选择 PDB 结构（科研决策点）", cand["pdb_id"].tolist(), key="pdb_sel")
+        pdb_id = st.selectbox("Select PDB structure (research decision point)", cand["pdb_id"].tolist(), key="pdb_sel")
         # PDB 选择变化 → 作废旧受体与 Step 4 盒/预览（防止 Step 4 残留旧结构的预览图）
         if dock.get("pdb_sel") != pdb_id:
             dock["pdb_sel"] = pdb_id
@@ -536,15 +536,15 @@ if dock.get("genes"):
                     dock["rec_pdbqt"] = Utils.prepare_receptor_pdbqt(pdb_path)
                     dock.pop("result", None)
                 except Exception as exc:
-                    st.error(f"受体准备失败：{exc}")
+                    st.error(f"Receptor preparation failed: {exc}")
 else:
     if dock.get("genes") is None:
-        st.info("请先完成 Step 1：选择 PPI 结果目录 / 富集文件（选择后点击逐基因检查RCSB结构）。")
+        st.info("Complete Step 1 first: select a PPI result directory / enrichment file (then run the gene-by-gene RCSB structure check).")
     else:
-        st.warning("候选基因为空（HUB 与富集验证无交集，或结构筛选后无可用结构），无法选择受体。请回 Step 1 调整数据源。")
+        st.warning("The candidate gene list is empty (no HUB/enrichment intersection, or no structures passed the filter); a receptor cannot be selected. Return to Step 1 to adjust the data source.")
 
 if dock.get("rec_pdbqt"):
-    st.success(f"✅ 受体 pdbqt：`{dock['rec_pdbqt']}`（PDB: {dock.get('pdb_id')}）")
+    st.success(f"✅ Receptor pdbqt: `{dock['rec_pdbqt']}` (PDB: {dock.get('pdb_id')})")
 
 st.divider()
 
@@ -679,16 +679,16 @@ if dock.get("pdb_path"):
         # 盒内残基（辅助判断口袋覆盖；默认只显示前 30 个，避免刷屏）
         residues = _residues_in_box(dock["pdb_path"], dock["box"])
         if residues:
-            st.caption(f"当前盒覆盖残基（共 {len(residues)} 个，显示前 30 个）："
-                       + "、".join(residues[:30])
+            st.caption(f"Residues covered by the current box ({len(residues)} total, showing first 30): "
+                       + ", ".join(residues[:30])
                        + (" …" if len(residues) > 30 else ""))
             if len(residues) > 30:
-                with st.expander(f"查看全部 {len(residues)} 个残基"):
-                    st.write("、".join(residues))
+                with st.expander(f"View all {len(residues)} residues"):
+                    st.write(", ".join(residues))
         else:
-            st.caption("当前盒内无蛋白残基——盒可能偏离蛋白，请调整中心使其罩住结合位点。")
+            st.caption("No protein residues inside the current box — it may be off the protein. Adjust the center to cover the binding site.")
 else:
-    st.info("请先完成 Step 3 准备受体。")
+    st.info("Complete Step 3 to prepare the receptor first.")
 
 st.divider()
 
@@ -723,21 +723,21 @@ else:
 st.divider()
 
 # ==================== Step 6 结果解读与归档（决策点） ====================
-st.subheader("6️⃣ 结果解读与归档")
+st.subheader("6️⃣ Result interpretation & archiving")
 
 if dock.get("result"):
     scores = dock["result"]["scores"]
     if scores.empty:
-        st.warning("未解析到结合模式，无法归档")
+        st.warning("No binding modes parsed; cannot archive")
     else:
-        pose_sel = st.selectbox("选择要保存的 pose（默认最佳）",
+        pose_sel = st.selectbox("Select pose to save (best by default)",
                                 scores["mode"].tolist(), index=0, key="pose_sel")
-        conclusion = st.text_area("结论（科研解读，将写入元数据与 summary）",
+        conclusion = st.text_area("Conclusion (scientific interpretation, written to metadata and summary)",
                                   key="conclusion", height=90,
-                                  placeholder=f"如：与 {dock.get('gene', '靶蛋白')} 形成稳定氢键，"
-                                              f"预测结合亲和力 {scores.iloc[0]['affinity']:.2f} kcal/mol …")
-        drug = st.text_input("Drug（归档前缀用）", value=default_drug, key="drug_name")
-        disease = st.text_input("Disease（归档前缀用）", value=default_disease, key="disease_name")
+                                  placeholder=f"e.g. forms stable hydrogen bonds with {dock.get('gene', 'the target protein')}, "
+                                              f"predicted binding affinity {scores.iloc[0]['affinity']:.2f} kcal/mol …")
+        drug = st.text_input("Drug (used as archive prefix)", value=default_drug, key="drug_name")
+        disease = st.text_input("Disease (used as archive prefix)", value=default_disease, key="disease_name")
 
         col_save, col_star = st.columns([3, 1])
         with col_save:
@@ -775,11 +775,11 @@ if dock.get("result"):
                             dock["starred"] = True
                             st.rerun()  # 立即更新图标为 ★
                         except Exception as exc:
-                            st.error(f"收藏失败：{exc}")
+                            st.error(f"Starring failed: {exc}")
 
         if dock.get("result_dir"):
-            st.write(f"成果目录：`{dock['result_dir']}`")
-            st.download_button("⬇️ 下载全部成果（zip）",
+            st.write(f"Result directory: `{dock['result_dir']}`")
+            st.download_button("⬇️ Download all results (zip)",
                                data=Utils.make_dir_zip(dock["result_dir"]),
                                file_name=os.path.basename(dock["result_dir"]) + ".zip",
                                mime="application/zip", key="dl_zip")
@@ -793,9 +793,9 @@ if dock.get("result"):
                 _extract_model(dock["result"]["out"], int(pose_sel), pose_path)
                 _render_3d(dock["pdb_path"], pose_path)
             except Exception as exc:
-                st.warning(f"3D 预览失败：{exc}")
+                st.warning(f"3D preview failed: {exc}")
 else:
-    st.info("运行对接后可在此解读并归档。")
+    st.info("Run a docking to interpret and archive results here.")
 
 st.divider()
 st.caption("缓存策略：raw 原始文件（SDF/PDB/vina 输出）按 24 小时 TTL 自动清理；"

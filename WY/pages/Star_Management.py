@@ -49,7 +49,7 @@ def confirm_delete() -> None:
     st.write(f"确定要删除收藏「{name}」吗？删除后不可恢复。")
     col_yes, col_no = st.columns(2)
     with col_yes:
-        if st.button("是", key="dlg_yes", width="stretch"):
+        if st.button("Yes", key="dlg_yes", width="stretch"):
             shutil.rmtree(path, ignore_errors=True)
             st.session_state["_star_deleted"] = name
             st.rerun()  # rerun 关闭对话框并刷新列表
@@ -68,7 +68,7 @@ if not os.path.isdir(star_dir) or not any(
 else:
     names = sorted(n for n in os.listdir(star_dir)
                    if os.path.isdir(os.path.join(star_dir, n)))
-    st.caption(f"共 {len(names)} 份收藏。下载到本地保存，删除后不可恢复。")
+    st.caption(f"{len(names)} starred result(s) in total. Download to keep local copies; deletion is irreversible.")
 
     # 表头
     col_h_name, col_h_time, col_h_dl, col_h_del = st.columns([4, 2, 1, 1])

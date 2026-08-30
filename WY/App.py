@@ -263,7 +263,7 @@ if analyze_btn:
                     width="stretch",
                 )
             else:
-                st.write("（未获取到药物靶点数据）")
+                st.write("(No drug target data retrieved)")
 
             st.divider()
 
