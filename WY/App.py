@@ -13,13 +13,6 @@ st.set_page_config(page_title=t("app.page_title"), layout="centered")
 
 is_en = get_lang() == "en"
 
-# ---------- Language switch colors (injected per current language) ----------
-# 分段开关配色：当前语言按钮高亮（中文=红 / English=蓝），另一侧灰显
-zh_btn_css = "background-color:#E53E3E;color:#FFFFFF;border:1px solid #E53E3E;" if not is_en \
-    else "background-color:#F0F0F0;color:#909399;border:1px solid #D0D0D0;"
-en_btn_css = "background-color:#3B82F6;color:#FFFFFF;border:1px solid #3B82F6;" if is_en \
-    else "background-color:#F0F0F0;color:#909399;border:1px solid #D0D0D0;"
-
 # ---------- Custom Minimal CSS ----------
 st.markdown("""
 <style>
@@ -85,12 +78,17 @@ st.markdown("""
     div.st-key-top_right_logs .stButton {
         pointer-events: auto;
     }
-    /* Logs button: #909399 background, white text */
+    /* Logs button: #909399 background, white text；高度与蓝色按钮一致（40px、单行） */
     div.st-key-top_right_logs .stButton button {
         background-color: #909399;
         color: #FFFFFF;
         border: 1px solid #909399;
         box-shadow: none;
+        height: 40px;
+        padding: 4px 12px;
+        font-size: 16px;
+        line-height: 1;
+        white-space: nowrap;
     }
     div.st-key-top_right_logs .stButton button:hover,
     div.st-key-top_right_logs .stButton button:active {
@@ -99,17 +97,69 @@ st.markdown("""
         border: 1px solid #909399;
         box-shadow: none;
     }
-    /* Language segmented switch: 中文(left) | English(right)，切换时颜色平滑过渡 */
-    .st-key-lang_zh button {
-        border-radius: 20px 0 0 20px !important;
-        margin-right: -1px !important;
-        transition: background-color 0.2s ease, color 0.2s ease;
-        box-shadow: none !important;
+    /* 语言切换：iOS 风格滑动开关，文本直接嵌在开关轨道内
+       （左=中文红 / 右=English蓝，文字始终位于滑块对侧） */
+    .st-key-lang_switch_wrap {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.5rem !important;
+        /* 在上层纵向布局中靠右对齐，且宽度收缩为内容宽 */
+        align-self: flex-end;
     }
-    .st-key-lang_en button {
-        border-radius: 0 20px 20px 0 !important;
-        transition: background-color 0.2s ease, color 0.2s ease;
-        box-shadow: none !important;
+    /* fixed 容器默认不拦截点击，语言开关整体恢复可点击 */
+    div.st-key-top_right_logs .st-key-lang_switch_wrap {
+        pointer-events: auto;
+    }
+    /* 轨道：显式放大为带文字的宽开关。Streamlit 1.62 开关结构：
+       轨道是 label 内第一个 div，选中态在 label[data-selected] 上 */
+    .st-key-lang_switch_wrap label > div:first-of-type {
+        position: relative;
+        width: 80px !important;
+        height: 26px !important;
+        padding: 0 !important;
+    }
+    /* 轨道配色：未选中（中文模式）=红；选中（English模式）=蓝 */
+    .st-key-lang_switch_wrap label:not([data-selected="true"]) > div:first-of-type {
+        background-color: #E53E3E !important;
+        border-color: #E53E3E !important;
+    }
+    .st-key-lang_switch_wrap label[data-selected="true"] > div:first-of-type {
+        background-color: #3B82F6 !important;
+        border-color: #3B82F6 !important;
+    }
+    /* 滑块：绝对定位（20x20，3px 内边距），选中时滑到右端 */
+    .st-key-lang_switch_wrap label > div:first-of-type > div {
+        position: absolute !important;
+        top: 3px !important;
+        left: 3px !important;
+        width: 20px !important;
+        height: 20px !important;
+        transform: translateX(0) !important;
+    }
+    .st-key-lang_switch_wrap label[data-selected="true"] > div:first-of-type > div {
+        transform: translateX(54px) !important;
+    }
+    /* 轨道内文字：显示当前语言，位于滑块对侧 */
+    .st-key-lang_switch_wrap label > div:first-of-type::after {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: 0.3px;
+        color: #FFFFFF;
+        pointer-events: none;
+    }
+    .st-key-lang_switch_wrap label:not([data-selected="true"]) > div:first-of-type::after {
+        content: "中文";
+        right: 8px;
+    }
+    .st-key-lang_switch_wrap label[data-selected="true"] > div:first-of-type::after {
+        content: "English";
+        left: 8px;
     }
     /* Top-left corner management buttons (fixed overlay, no card background) */
     div.st-key-top_left_buttons {
@@ -186,36 +236,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- Language switch active colors (red = 中文, blue = English) ----------
-st.markdown(f"""
-<style>
-    div.st-key-top_right_logs .st-key-lang_zh button {{
-        {zh_btn_css}
-    }}
-    div.st-key-top_right_logs .st-key-lang_en button {{
-        {en_btn_css}
-    }}
-    div.st-key-top_right_logs .st-key-lang_zh button:hover,
-    div.st-key-top_right_logs .st-key-lang_en button:hover {{
-        filter: brightness(1.05);
-    }}
-</style>
-""", unsafe_allow_html=True)
-
 # ---------- Title ----------
 st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtitle")}</p></div>',
             unsafe_allow_html=True)
 
-# ---------- Language segmented switch + Logs button (fixed top-right) ----------
+# ---------- Language sliding switch + Logs button (fixed top-right) ----------
 with st.container(key="top_right_logs"):
-    # 分段开关：左侧「中文」右侧「English」，当前语言高亮（中文=红 / English=蓝），
-    # 点击另一侧即切换，全站即时生效。
-    if st.button("中文", key="lang_zh"):
-        set_lang("zh")
-        st.rerun()
-    if st.button("English", key="lang_en"):
-        set_lang("en")
-        st.rerun()
+    # iOS 式滑动开关：左=中文（红色）/ 右=English（蓝色），
+    # 「中文 / English」文字由 CSS 嵌在开关轨道内、位于滑块对侧，切换即时生效。
+    with st.container(key="lang_switch_wrap"):
+        # 语言若在其它页面被切换过，则让开关跟随语言状态（语言为准）
+        if st.session_state.get("_lang_switch_synced") != get_lang():
+            st.session_state["_lang_switch"] = is_en
+            st.session_state["_lang_switch_synced"] = get_lang()
+        lang_is_en = st.toggle("Language", value=is_en, key="_lang_switch",
+                               label_visibility="collapsed")
+        if lang_is_en != is_en:
+            set_lang("en" if lang_is_en else "zh")
+            st.session_state["_lang_switch_synced"] = get_lang()
+            st.rerun()
     if st.button(t("app.logs_btn"), key="logs_btn"):
         st.switch_page("pages/Logs.py")
 
