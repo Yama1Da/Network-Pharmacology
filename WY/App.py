@@ -11,6 +11,15 @@ Utils.setup_logging()
 #页面布局
 st.set_page_config(page_title=t("app.page_title"), layout="centered")
 
+is_en = get_lang() == "en"
+
+# ---------- Language switch colors (injected per current language) ----------
+# 分段开关配色：当前语言按钮高亮（中文=红 / English=蓝），另一侧灰显
+zh_btn_css = "background-color:#E53E3E;color:#FFFFFF;border:1px solid #E53E3E;" if not is_en \
+    else "background-color:#F0F0F0;color:#909399;border:1px solid #D0D0D0;"
+en_btn_css = "background-color:#3B82F6;color:#FFFFFF;border:1px solid #3B82F6;" if is_en \
+    else "background-color:#F0F0F0;color:#909399;border:1px solid #D0D0D0;"
+
 # ---------- Custom Minimal CSS ----------
 st.markdown("""
 <style>
@@ -68,6 +77,7 @@ st.markdown("""
         display: flex;
         flex-direction: row;
         justify-content: flex-end;
+        align-items: center;
         gap: 0.5rem;
         pointer-events: none;
     }
@@ -89,45 +99,17 @@ st.markdown("""
         border: 1px solid #909399;
         box-shadow: none;
     }
-    /* Language sliding switch: knob left = 中文, knob right = English */
-    .st-key-lang_switch [data-baseweb="checkbox"] {
-        position: relative;
+    /* Language segmented switch: 中文(left) | English(right)，切换时颜色平滑过渡 */
+    .st-key-lang_zh button {
+        border-radius: 20px 0 0 20px !important;
+        margin-right: -1px !important;
+        transition: background-color 0.2s ease, color 0.2s ease;
+        box-shadow: none !important;
     }
-    .st-key-lang_switch [data-baseweb="checkbox"]::before {
-        content: "中文";
-        position: absolute;
-        right: calc(100% + 8px);
-        top: 50%;
-        transform: translateY(-50%);
-        color: #909399;
-        font-size: 0.9rem;
-        white-space: nowrap;
-    }
-    .st-key-lang_switch [data-baseweb="checkbox"]::after {
-        content: "English";
-        position: absolute;
-        left: calc(100% + 8px);
-        top: 50%;
-        transform: translateY(-50%);
-        color: #909399;
-        font-size: 0.9rem;
-        white-space: nowrap;
-    }
-    /* 当前语言一侧文字高亮（深色加粗），另一侧灰色 */
-    .st-key-lang_switch [data-baseweb="checkbox"]:not(:has(input:checked))::before {
-        color: #1F2937;
-        font-weight: 600;
-    }
-    .st-key-lang_switch [data-baseweb="checkbox"]:has(input:checked)::after {
-        color: #1F2937;
-        font-weight: 600;
-    }
-    /* 轨道颜色随状态：中文 = 灰，English = 蓝 */
-    .st-key-lang_switch [data-baseweb="checkbox"] > div {
-        background-color: #909399;
-    }
-    .st-key-lang_switch [data-baseweb="checkbox"]:has(input:checked) > div {
-        background-color: #4A90D9;
+    .st-key-lang_en button {
+        border-radius: 0 20px 20px 0 !important;
+        transition: background-color 0.2s ease, color 0.2s ease;
+        box-shadow: none !important;
     }
     /* Top-left corner management buttons (fixed overlay, no card background) */
     div.st-key-top_left_buttons {
@@ -204,18 +186,35 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ---------- Language switch active colors (red = 中文, blue = English) ----------
+st.markdown(f"""
+<style>
+    div.st-key-top_right_logs .st-key-lang_zh button {{
+        {zh_btn_css}
+    }}
+    div.st-key-top_right_logs .st-key-lang_en button {{
+        {en_btn_css}
+    }}
+    div.st-key-top_right_logs .st-key-lang_zh button:hover,
+    div.st-key-top_right_logs .st-key-lang_en button:hover {{
+        filter: brightness(1.05);
+    }}
+</style>
+""", unsafe_allow_html=True)
+
 # ---------- Title ----------
 st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtitle")}</p></div>',
             unsafe_allow_html=True)
 
-# ---------- Language sliding switch + Logs button (fixed top-right) ----------
+# ---------- Language segmented switch + Logs button (fixed top-right) ----------
 with st.container(key="top_right_logs"):
-    # 滑动开关：滑块居左 = 中文，居右 = English；点击一次滑动切换
-    is_en = get_lang() == "en"
-    switched = st.toggle("Language", value=is_en, label_visibility="collapsed",
-                         key="lang_switch")
-    if switched != is_en:
-        set_lang("en" if switched else "zh")
+    # 分段开关：左侧「中文」右侧「English」，当前语言高亮（中文=红 / English=蓝），
+    # 点击另一侧即切换，全站即时生效。
+    if st.button("中文", key="lang_zh"):
+        set_lang("zh")
+        st.rerun()
+    if st.button("English", key="lang_en"):
+        set_lang("en")
         st.rerun()
     if st.button(t("app.logs_btn"), key="logs_btn"):
         st.switch_page("pages/Logs.py")
