@@ -139,16 +139,28 @@ PHYSICS_ITERATIONS = 500
 # Vina 可执行文件目录自动探测：环境变量 VINA_DIR > 本机默认路径 > PATH。
 # 换机器时无需改代码：设置 VINA_DIR 环境变量，或将 vina 所在目录加入 PATH 即可。
 def _find_vina_dir() -> str:
+    """探测 Vina 可执行文件所在目录（Windows 专用）。
+
+    VINA_DIR / PATH 里填“目录”（如 D:\\PythonCode\\vina）即可，
+    代码会自行拼接 vina_1.2.7_win.exe；也兼容误填可执行文件全路径的情况。
+    """
     exe = "vina_1.2.7_win.exe"
+
+    # 1) 环境变量优先
     env_dir = os.environ.get("VINA_DIR")
-    if env_dir and os.path.isfile(os.path.join(env_dir, exe)):
-        return env_dir  # 1) 环境变量优先
-    if os.path.isfile(os.path.join(r"D:\PythonCode\vina", exe)):
-        return r"D:\PythonCode\vina"  # 2) 本机默认路径
-    found = shutil.which(exe) or shutil.which("vina")
-    if found:
-        return os.path.dirname(found)  # 3) PATH 中能找到（如 vina 已加入 PATH）
-    return r"D:\PythonCode\vina"  # 兜底：找不到时 run_vina 会报错并提示设置 VINA_DIR
+    if env_dir:
+        if os.path.isfile(env_dir):                                   # 填的是 exe 全路径
+            return os.path.dirname(env_dir)
+        if os.path.isfile(os.path.join(env_dir, exe)):                # 填的是目录
+            return env_dir
+
+    # 2) PATH 中能找到（vina 已加入 PATH）
+    for name in (exe, "vina"):
+        found = shutil.which(name)
+        if found:
+            return os.path.dirname(found)
+
+    return default_dir  # 兜底：找不到时 run_vina 会报错并提示设置 VINA_DIR
 
 
 VINA_DIR = _find_vina_dir()
