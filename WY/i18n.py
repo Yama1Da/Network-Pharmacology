@@ -87,6 +87,40 @@ TEXT: dict[str, dict[str, str]] = {
         "star.col_name": "**Name**",
         "star.col_time": "**Starred time**",
         "star.col_delete": "**Delete**",
+        # ---- 公共扩展（信息管理页） ----
+        "common.col_file_name": "**File name**",
+        "common.col_update": "**Update**",
+        "common.update": "Update",
+        "common.all_updates": "All Updates",
+        "common.file_updated": "✅ {file} updated ({msg})",
+        "common.file_update_failed": "❌ {file} update failed: {msg}",
+        "common.updating_file": "Updating {file}…",
+        "common.all_complete": "✅ All updates complete",
+        "common.some_failed": "Some files failed to update",
+        # ---- PPI_Information.py ----
+        "ppi_info.page_title": "PPI Information",
+        "ppi_info.title": "🕸️ PPI Information",
+        "ppi_info.caption": "Cached STRING interaction files under Static/data/cache/ppi",
+        "ppi_info.empty": "No cached PPI files. Run a Data Network analysis first.",
+        # ---- Enrichment_Information.py ----
+        "enrich_info.page_title": "Enrichment Information",
+        "enrich_info.title": "🧪 Enrichment Information",
+        "enrich_info.caption": "Cached enrichment result files under Static/data/cache/enrichment",
+        "enrich_info.empty": "No cached enrichment files. Run a Data Network analysis first.",
+        # ---- Drug_Target_Information_Management.py ----
+        "drug_mgmt.page_title": "Drug Target Information Management",
+        "drug_mgmt.title": "💊 Drug Target Information Management",
+        "drug_mgmt.caption": "Cached files under Static/data/cache/drug",
+        "drug_mgmt.updating_all": "Updating all cached drug targets…",
+        "drug_mgmt.no_files_to_update": "No cached drug target files to update.",
+        "drug_mgmt.no_files": "No cached drug target files.",
+        # ---- Disease_Target_Information_Management.py ----
+        "disease_mgmt.page_title": "Disease Target Information Management",
+        "disease_mgmt.title": "🦠 Disease Target Information Management",
+        "disease_mgmt.caption": "Cached files under Static/data/cache/disease",
+        "disease_mgmt.updating_all": "Updating all cached disease targets…",
+        "disease_mgmt.no_files_to_update": "No cached disease target files to update.",
+        "disease_mgmt.no_files": "No cached disease target files.",
     },
     # ==================== 中文 ====================
     "zh": {
@@ -162,6 +196,40 @@ TEXT: dict[str, dict[str, str]] = {
         "star.col_name": "**收藏名称**",
         "star.col_time": "**收藏时间**",
         "star.col_delete": "**删除**",
+        # ---- 公共扩展（信息管理页） ----
+        "common.col_file_name": "**文件名**",
+        "common.col_update": "**更新**",
+        "common.update": "更新",
+        "common.all_updates": "全部更新",
+        "common.file_updated": "✅ {file} 已更新（{msg}）",
+        "common.file_update_failed": "❌ {file} 更新失败：{msg}",
+        "common.updating_file": "正在更新 {file}…",
+        "common.all_complete": "✅ 全部更新完成",
+        "common.some_failed": "部分文件更新失败",
+        # ---- PPI_Information.py ----
+        "ppi_info.page_title": "PPI 信息",
+        "ppi_info.title": "🕸️ PPI 信息",
+        "ppi_info.caption": "Static/data/cache/ppi 下的 STRING 互作缓存文件",
+        "ppi_info.empty": "暂无 PPI 缓存文件。请先运行数据网络药理学分析。",
+        # ---- Enrichment_Information.py ----
+        "enrich_info.page_title": "富集信息",
+        "enrich_info.title": "🧪 富集信息",
+        "enrich_info.caption": "Static/data/cache/enrichment 下的富集结果缓存文件",
+        "enrich_info.empty": "暂无富集缓存文件。请先运行数据网络药理学分析。",
+        # ---- Drug_Target_Information_Management.py ----
+        "drug_mgmt.page_title": "药物靶点信息管理",
+        "drug_mgmt.title": "💊 药物靶点信息管理",
+        "drug_mgmt.caption": "Static/data/cache/drug 下的缓存文件",
+        "drug_mgmt.updating_all": "正在更新所有药物靶点缓存…",
+        "drug_mgmt.no_files_to_update": "没有可更新的药物靶点缓存文件。",
+        "drug_mgmt.no_files": "暂无药物靶点缓存文件。",
+        # ---- Disease_Target_Information_Management.py ----
+        "disease_mgmt.page_title": "疾病靶点信息管理",
+        "disease_mgmt.title": "🦠 疾病靶点信息管理",
+        "disease_mgmt.caption": "Static/data/cache/disease 下的缓存文件",
+        "disease_mgmt.updating_all": "正在更新所有疾病靶点缓存…",
+        "disease_mgmt.no_files_to_update": "没有可更新的疾病靶点缓存文件。",
+        "disease_mgmt.no_files": "暂无疾病靶点缓存文件。",
     },
 }
 
