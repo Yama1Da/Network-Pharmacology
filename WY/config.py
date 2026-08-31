@@ -168,6 +168,29 @@ GSEA_TOP_DISPLAY = 20
 # 页面显著性筛选阈值（经典 GSEA 惯例 FDR<0.25；仅用于展示，完整表走 CSV）
 GSEA_FDR_SCREEN = 0.25
 
+# ======== 背景互作组（STRING v12.0 全网络本地缓存，M2 地基） ========
+# 版本与 STRING API（STRING_BASE_URL 的 version-12-0 子域）保持一致，
+# 保证"查询型 PPI"与"全网络背景计算"（邻近度 Z-score / RWR / DIAMOnD）同版本背景。
+STRING_VERSION = "v12.0"
+# 官方版本化下载站（已 HEAD 验证可达；Human links.gz 约 83MB、info.gz 约 2MB）
+STRING_DOWNLOAD_BASE = "https://stringdb-downloads.org/download"
+# 中国镜像（cn.string-db.org，路径结构与官方一致，实测快约一个数量级）。
+# 下载顺序：镜像优先、官方兜底；镜像不可达自动回落，无需手工切换。
+STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"
+# 互作组缓存目录（边表 parquet + 度数表 CSV + 构建元数据 JSON；.gitignore 已覆盖 cache/）
+INTERACTOME_CACHE_DIR = os.path.join(CACHE_DIR, "interactome")
+# 置信度换算唯一入口：PPI_CONFIDENCE 是 0-1 小数（STRING API 用），
+# 全网络 combined_score 是 0-1000 整数——两套单位绝不可混用，换算只允许经此一处
+INTERACTOME_CONFIDENCE = int(PPI_CONFIDENCE * 1000)  # 0.7 -> 700
+# M2 仅构建人类；Mouse/Rat 待需要时在构建脚本 --species 放开（数据量约 ×3，代码已兼容）
+INTERACTOME_ENABLED_SPECIES = ("Human",)
+# 背景网络"陈旧提醒"阈值（天）。注意语义：不是到期自动重下载——STRING 同版本文件
+# 是冻结的（实测 v12.0 服务端 Last-Modified 2023-05-16，三年未变），重下同版本拿不到
+# 任何新数据；真正的更新 = STRING 发新版本时改 STRING_VERSION 后重建。超过该天数
+# 仅在 UI 提示"背景网络较旧，建议检查新版本"，不阻断分析（旧而一致 > 无背景）。
+# 取值依据：STRING 大版本约 1.5~2 年一更，1 年内提示无意义，故取 365。
+INTERACTOME_STALE_DAYS = 365
+
 # ======== 分子对接配置（AutoDock Vina v1.2.7） ========
 # Vina 可执行文件目录自动探测：环境变量 VINA_DIR > 本机默认路径 > PATH。
 # 换机器时无需改代码：设置 VINA_DIR 环境变量，或将 vina 所在目录加入 PATH 即可。

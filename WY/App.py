@@ -328,16 +328,19 @@ if analyze_btn:
 
         # ----- Venn diagram -----
         fig, ax = plt.subplots(figsize=(6, 4))# 创建一个6x4英寸的子图
+        # 图内文字刻意保持英文（不走 i18n）：matplotlib 默认字体（DejaVu Sans）
+        # 不含 CJK 字形，中文会渲染成方框；如需中文图注，先给 matplotlib
+        # 配置中文字体（如 SimHei）再改回 t()。
         v = venn2(
             subsets=(len(drug_set - disease_set),
                      len(disease_set - drug_set),
                      len(common)),
-            set_labels=(t("app.targets_of", name=drug_name), t("app.targets_of", name=disease_name)),
+            set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
             ax=ax,
         )# 绘制Venn图
         if v and v.get_label_by_id("11"):
             v.get_label_by_id("11").set_fontsize(12)# 设置Venn图中“交集”的字体大小
-        ax.set_title(t("app.venn_title", drug=drug_name, disease=disease_name), fontsize=14)# 设置Venn图的标题
+        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)# 设置Venn图的标题
         st.pyplot(fig)# 显示Venn图
 
         with st.expander(t("app.expander_targets"), expanded=False):
