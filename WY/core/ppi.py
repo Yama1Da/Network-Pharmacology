@@ -228,13 +228,35 @@ def mark_hub_genes(metrics_df: pd.DataFrame, min_degree: int = 3) -> pd.DataFram
     return df
 
 
-def render_pyvis_html(graph: "nx.Graph", metrics_df: pd.DataFrame) -> str:
+# 模块着色调色板（12 色循环，与 hub 金色/普通淡蓝区分度足够）
+_MODULE_PALETTE = [
+    "#4E79A7", "#F28E2B", "#59A14F", "#E15759", "#76B7B2", "#EDC948",
+    "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC", "#86BCB6", "#D37295",
+]
+
+
+def render_pyvis_html(
+    graph: "nx.Graph",
+    metrics_df: pd.DataFrame,
+    module_map: dict | None = None,
+) -> str:
     """
     用 PyVis 生成交互式 PPI 网络 HTML。
 
     - 节点大小 ∝ degree，Hub 基因金色高亮、普通节点淡蓝；
+    - 传入 module_map 时改为按模块着色（基因→模块ID；不在多基因模块中的
+      节点着浅灰，tooltip 追加 module 信息），Hub 与否在 tooltip 中仍可查看；
     - 边宽 ∝ 置信度分数；
     - 物理引擎迭代次数取 config.PHYSICS_ITERATIONS，防止节点过度拥挤。
+
+    Parameters
+    ----------
+    graph : networkx.Graph
+        PPI 网络。
+    metrics_df : pd.DataFrame
+        拓扑指标表（需含 gene / degree / is_hub 列）。
+    module_map : dict | None
+        基因 → 模块ID 映射；None 时保持默认着色（行为与旧版本完全一致）。
 
     Returns
     -------
@@ -248,14 +270,25 @@ def render_pyvis_html(graph: "nx.Graph", metrics_df: pd.DataFrame) -> str:
     degree_map = dict(zip(metrics_df["gene"], metrics_df["degree"]))
     max_deg = max(metrics_df["degree"].max(), 1)
 
+    module_color: dict[int, str] = {}
+    if module_map:
+        mids = sorted({int(v) for v in module_map.values() if int(v) > 0})
+        module_color = {mid: _MODULE_PALETTE[(mid - 1) % len(_MODULE_PALETTE)] for mid in mids}
+
     nt = Network(height="600px", width="100%", directed=False, notebook=False)
     for node in graph.nodes():
         deg = degree_map.get(node, 0)
         size = 10 + int(40 * deg / max_deg)
-        color = "#F5C518" if node in hub_set else "#64B5F6"
+        if module_map:
+            mid = int(module_map.get(node, 0))
+            color = module_color.get(mid, "#D9D9D9")  # 不在任何多基因模块中的节点
+            title = f"{node}<br>degree: {deg}<br>module: {mid if mid > 0 else '-'}"
+        else:
+            color = "#F5C518" if node in hub_set else "#64B5F6"
+            title = f"{node}<br>degree: {deg}"
         nt.add_node(
             node, label=node, size=size, color=color,
-            title=f"{node}<br>degree: {deg}",
+            title=title,
         )
     for u, v, data in graph.edges(data=True):
         s = float(data.get("score", 0))

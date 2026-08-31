@@ -14,3 +14,5 @@
 !WY/Static/data/cache/readme
 !WY/Static/data/downloads/readme
 /WY/Static/log/
+/.venv/
+/WY/scripts/

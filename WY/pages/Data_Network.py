@@ -7,6 +7,8 @@ import streamlit as st
 import config
 import Utils
 from i18n import t
+from core.network_algorithms import detect_louvain_modules, enrich_modules
+from core.ppi import render_pyvis_html
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
@@ -244,6 +246,121 @@ if ppi is not None:
             if enrichment_dot_fig is not None:
                 st.caption(t("net.bubble_caption"))
                 st.pyplot(enrichment_dot_fig)
+
+        # ---------- 蛋白模块检测（Louvain + 模块富集） ----------
+        # 基于 session_state 中已构建的 PPI 图，独立按钮触发；结果连同其依赖的
+        # 主分析参数指纹一起存 session_state——主分析参数变更后模块结果自动标记过期。
+        st.divider()
+        with st.expander(t("net.modules_subheader")):
+            st.caption(t("net.modules_caption",
+                         min_size=config.LOUVAIN_MIN_MODULE_SIZE,
+                         top_n=config.LOUVAIN_MAX_ENRICH_MODULES))
+            if "ppi_modules" not in st.session_state:
+                st.session_state.ppi_modules = None
+
+            if st.button(t("net.modules_run"), key="modules_run_btn", width="stretch"):
+                if current_params != ppi["params"]:
+                    # 防呆：主分析参数已变，图与旧结果不对应，先重跑主分析
+                    st.warning(t("net.params_changed"))
+                else:
+                    with st.spinner(t("net.modules_spinner_detect")):
+                        modules = detect_louvain_modules(
+                            graph,
+                            resolution=config.LOUVAIN_RESOLUTION,
+                            seed=config.LOUVAIN_SEED,
+                        )
+                        summary_df = pd.DataFrame([
+                            {
+                                "module_id": m["module_id"],
+                                "size": m["size"],
+                                "avg_degree": m["avg_degree"],
+                                "genes_preview": ", ".join(m["genes"][:8]) + ("…" if m["size"] > 8 else ""),
+                            }
+                            for m in modules if m["size"] >= 2
+                        ])
+                        # 仅多基因模块参与着色；单点模块节点渲染为浅灰
+                        module_map = {
+                            gene: m["module_id"]
+                            for m in modules if m["size"] >= 2
+                            for gene in m["genes"]
+                        }
+                        # params[5] = organism（见上方 current_params 的元组顺序）
+                        long_df, failures, no_sig = enrich_modules(
+                            modules,
+                            organism=current_params[5],
+                            min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
+                            top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
+                        )
+                        st.session_state.ppi_modules = {
+                            "modules": modules,
+                            "summary_df": summary_df,
+                            "module_map": module_map,
+                            "long_df": long_df,
+                            "failures": failures,
+                            "no_sig": no_sig,
+                            "ppi_params": ppi["params"],
+                        }
+                    st.rerun()
+
+            mods_res = st.session_state.ppi_modules
+            if mods_res is not None:
+                if mods_res["ppi_params"] != ppi["params"]:
+                    st.info(t("net.params_changed"))
+                else:
+                    summary_df = mods_res["summary_df"]
+                    if summary_df.empty:
+                        st.info(t("net.modules_none"))
+                    else:
+                        # 退化防护：最大模块吞掉大多数节点时提示调参
+                        total_nodes = len(metrics_df)
+                        if total_nodes and mods_res["modules"]:
+                            ratio = mods_res["modules"][0]["size"] / total_nodes
+                            if ratio > config.LOUVAIN_MAX_MODULE_RATIO:
+                                st.warning(t("net.modules_degenerate", ratio=ratio))
+                        n_singles = sum(1 for m in mods_res["modules"] if m["size"] < 2)
+                        st.markdown(t("net.modules_summary", n_singles=n_singles))
+                        st.dataframe(summary_df, width="stretch", hide_index=True)
+
+                        # 按模块着色的网络视图（默认关，避免重复渲染大图）
+                        if st.toggle(t("net.modules_color_toggle"), key="modules_color_toggle"):
+                            colored_html = render_pyvis_html(
+                                graph, metrics_df, module_map=mods_res["module_map"])
+                            st.iframe(colored_html, height=620)
+
+                    # ---- 模块富集结果（失败→错误提示；无显著→一般提示） ----
+                    long_df = mods_res["long_df"]
+                    failures = mods_res["failures"]
+                    no_sig = mods_res["no_sig"]
+                    if failures:
+                        ids = ", ".join(f"#{f['module_id']}" for f in failures)
+                        st.error(t("net.modules_fail", ids=ids))
+                    if no_sig:
+                        ids = ", ".join(f"#{mid}" for mid in no_sig)
+                        st.info(t("net.modules_nosig", ids=ids))
+                    if long_df is not None and not long_df.empty:
+                        k = config.LOUVAIN_TOP_TERMS_PER_MODULE
+                        show_df = long_df.groupby("module_id", group_keys=False).head(k)
+                        st.markdown(t("net.modules_enrich_subheader"))
+                        st.caption(t("net.modules_enrich_caption",
+                                     n=len(long_df), m=long_df["module_id"].nunique(), k=k))
+                        cols = ["module_id", "source", "term_id", "term_name",
+                                "adjusted_p_value", "intersection_size", "query_size"]
+                        st.dataframe(show_df[cols], width="stretch", hide_index=True)
+                        col_ms, col_me = st.columns(2)
+                        with col_ms:
+                            st.download_button(
+                                t("net.dl_module_summary_csv"),
+                                summary_df.to_csv(index=False).encode("utf-8-sig"),
+                                f"{prefix}_modules.csv", "text/csv", width="stretch",
+                            )
+                        with col_me:
+                            st.download_button(
+                                t("net.dl_module_enrich_csv"),
+                                long_df.to_csv(index=False).encode("utf-8-sig"),
+                                f"{prefix}_module_enrichment.csv", "text/csv", width="stretch",
+                            )
+                    elif not failures and not no_sig and not summary_df.empty:
+                        st.info(t("net.modules_enrich_empty"))
 
         # ---------- 下载区 ----------
         with st.expander(t("net.download_expander")):

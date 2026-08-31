@@ -135,9 +135,23 @@ MIN_DEGREE_FILTER = 3
 # PyVis 物理引擎迭代次数 — 值越大布局越松散，防止节点过度拥挤
 PHYSICS_ITERATIONS = 500
 
+# ======== 蛋白模块检测（Louvain + 模块富集） ========
+# Louvain 分辨率与随机种子（种子固定保证同一网络两次检测结果一致）
+LOUVAIN_RESOLUTION = 1.0
+LOUVAIN_SEED = 0
+# 参与富集的模块规模下限与数量上限：小模块（基因过少）统计功效不足，富集无意义
+LOUVAIN_MIN_MODULE_SIZE = 5
+LOUVAIN_MAX_ENRICH_MODULES = 10
+# 每个模块在页面展示的富集条目数上限（完整结果走 CSV 下载）
+LOUVAIN_TOP_TERMS_PER_MODULE = 5
+# 退化防护：最大模块节点占比超过该阈值视为分辨率不当，页面提示调高 resolution
+LOUVAIN_MAX_MODULE_RATIO = 0.6
+
 # ======== 分子对接配置（AutoDock Vina v1.2.7） ========
 # Vina 可执行文件目录自动探测：环境变量 VINA_DIR > 本机默认路径 > PATH。
 # 换机器时无需改代码：设置 VINA_DIR 环境变量，或将 vina 所在目录加入 PATH 即可。
+# 兜底默认目录：探测全部失败时返回该值（run_vina 会据此报错并提示设置 VINA_DIR）
+default_dir = r"D:\PythonCode\vina"
 def _find_vina_dir() -> str:
     """探测 Vina 可执行文件所在目录（Windows 专用）。
 
