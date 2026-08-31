@@ -449,3 +449,47 @@ def save_ppi_results(
 
     paths["directory"] = subdir
     return paths
+
+
+def save_module_results(
+    directory: str,
+    prefix: str,
+    summary_df: pd.DataFrame,
+    enrichment_df: pd.DataFrame | None = None,
+) -> dict:
+    """
+    将蛋白模块检测结果追加保存到既有分析目录（save_ppi_results 生成的 <prefix>_data）。
+
+    与 save_ppi_results 的约定一致：空表不落盘（避免无效空文件进入成果目录与 ZIP）。
+    文件名：
+      - {prefix}_modules.csv            模块汇总表（summary_df 非空时）
+      - {prefix}_module_enrichment.csv  模块富集长表（enrichment_df 非空时）
+
+    Parameters
+    ----------
+    directory : str
+        目标目录（save_ppi_results 返回的 saved["directory"]）。
+    prefix : str
+        文件名前缀，如 "aspirin_cancer"。
+    summary_df : pd.DataFrame
+        模块汇总表。
+    enrichment_df : pd.DataFrame | None
+        模块富集长表；None 或空表时不落盘。
+
+    Returns
+    -------
+    dict
+        实际写出的文件路径（空表对应的键不存在）。调用方应把返回值并入
+        saved 字典，使 make_ppi_zip 打包时自动包含这些文件。
+    """
+    os.makedirs(directory, exist_ok=True)
+    paths: dict = {}
+    if summary_df is not None and not summary_df.empty:
+        paths["modules_csv"] = os.path.join(directory, f"{prefix}_modules.csv")
+        summary_df.to_csv(paths["modules_csv"], index=False, encoding="utf-8-sig")
+    if enrichment_df is not None and not enrichment_df.empty:
+        paths["module_enrichment_csv"] = os.path.join(directory, f"{prefix}_module_enrichment.csv")
+        enrichment_df.to_csv(paths["module_enrichment_csv"], index=False, encoding="utf-8-sig")
+    if paths:
+        logging.info("Module results saved to %s (%d files)", directory, len(paths))
+    return paths

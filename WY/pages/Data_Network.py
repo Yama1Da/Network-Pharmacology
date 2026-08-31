@@ -8,7 +8,7 @@ import config
 import Utils
 from i18n import t
 from core.network_algorithms import detect_louvain_modules, enrich_modules
-from core.ppi import render_pyvis_html
+from core.ppi import render_pyvis_html, save_module_results
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
@@ -190,6 +190,7 @@ if ppi is not None:
 
     genes = ppi["genes"]
     edges_df = ppi["edges_df"]
+    graph = ppi["graph"]  # 模块检测与按模块着色渲染需要原图对象
     metrics_df = ppi["metrics_df"]
     hub_df = ppi["hub_df"]
     html_content = ppi["html_content"]
@@ -291,6 +292,12 @@ if ppi is not None:
                             min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
                             top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
                         )
+                        # 结果落盘到本次分析目录（<prefix>_data），空表不落盘；
+                        # saved 即 session_state 中的字典，追加后页面 ZIP 自动包含模块文件，
+                        # Data Management 的整目录 zip 也会一并打包。
+                        mod_saved = save_module_results(
+                            saved["directory"], prefix, summary_df, long_df)
+                        saved.update(mod_saved)
                         st.session_state.ppi_modules = {
                             "modules": modules,
                             "summary_df": summary_df,
@@ -298,6 +305,7 @@ if ppi is not None:
                             "long_df": long_df,
                             "failures": failures,
                             "no_sig": no_sig,
+                            "saved_paths": mod_saved,
                             "ppi_params": ppi["params"],
                         }
                     st.rerun()
@@ -359,6 +367,8 @@ if ppi is not None:
                                 long_df.to_csv(index=False).encode("utf-8-sig"),
                                 f"{prefix}_module_enrichment.csv", "text/csv", width="stretch",
                             )
+                        if mods_res.get("saved_paths"):
+                            st.caption(t("net.modules_saved", dir=saved["directory"]))
                     elif not failures and not no_sig and not summary_df.empty:
                         st.info(t("net.modules_enrich_empty"))
 

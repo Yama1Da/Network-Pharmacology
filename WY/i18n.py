@@ -183,6 +183,7 @@ TEXT: dict[str, dict[str, str]] = {
         "net.modules_color_toggle": "Color network by module",
         "net.dl_module_summary_csv": "⬇️ Modules CSV",
         "net.dl_module_enrich_csv": "⬇️ Module Enrichment CSV",
+        "net.modules_saved": "💾 Module results saved to the analysis folder and included in the ZIP download: `{dir}`",
         # ---- Molecular_Docking.py ----
         "dock.page_title": "Molecular Docking",
         "dock.title": "⚗️ Molecular Docking",
@@ -462,6 +463,7 @@ TEXT: dict[str, dict[str, str]] = {
         "net.modules_color_toggle": "网络按模块着色",
         "net.dl_module_summary_csv": "⬇️ 模块 CSV",
         "net.dl_module_enrich_csv": "⬇️ 模块富集 CSV",
+        "net.modules_saved": "💾 模块结果已保存到本次分析目录并纳入 ZIP 下载：`{dir}`",
         # ---- Molecular_Docking.py ----
         "dock.page_title": "分子对接",
         "dock.title": "⚗️ 分子对接",
