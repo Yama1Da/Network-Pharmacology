@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 
@@ -8,7 +9,13 @@ import config
 import Utils
 from i18n import t
 from core.network_algorithms import detect_louvain_modules, enrich_modules
-from core.ppi import render_pyvis_html, save_module_results
+from core.enrichment import (
+    build_ranked_list,
+    fetch_enrichment_gsea_prerank,
+    gsea_gene_sets,
+    render_gsea_plot,
+)
+from core.ppi import render_pyvis_html, save_gsea_results, save_module_results
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
@@ -124,6 +131,37 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     if not enrichment_df.empty:
         enrichment_bar_fig, enrichment_dot_fig = Utils.render_enrichment_plots(enrichment_df)
 
+    # Step 4.6: 排序富集（GSEA prerank，仅 names 模式）——Build Report 自动跑
+    # 药物侧（pChEMBL 排秩）与疾病侧（OT 关联分排秩），CSV 由 save_gsea_results
+    # 落入 <prefix>_data 目录并随后纳入 ZIP。整段 try/except 兜底：GSEA 出任何
+    # 意外都不能拖垮主报告链路（主分析已有缓存，此时只会少两份 CSV）。
+    gsea_results: dict = {}
+    gsea_drug_df = gsea_disease_df = None
+    if mode == "names":
+        try:
+            libs = gsea_gene_sets()
+            for side_label, src_df, score_col in (
+                ("drug", Utils.get_drug_targets_merged(drug_name.strip()), "score_pchembl"),
+                ("disease", Utils.get_disease_targets_merged(disease_name.strip()), "score_ot"),
+            ):
+                rnk, rstats = build_ranked_list(src_df, "approvedSymbol", score_col)
+                gsea_status: dict = {}
+                gdf = fetch_enrichment_gsea_prerank(
+                    rnk, libs=libs, label=f"{prefix}_{side_label}", status=gsea_status)
+                gsea_results[side_label] = {
+                    "df": gdf,
+                    "stats": rstats,
+                    "reason": gsea_status.get("reason", ""),
+                }
+                if side_label == "drug":
+                    gsea_drug_df = gdf if not gdf.empty else None
+                else:
+                    gsea_disease_df = gdf if not gdf.empty else None
+        except Exception:
+            logging.exception("GSEA step failed during report build — skipped gracefully")
+            gsea_results = {}
+            gsea_drug_df = gsea_disease_df = None
+
     # Step 5: 保存到 DOWNLOADS_DIR（替代式：同 prefix 旧目录会被替换）
     saved = Utils.save_ppi_results(
         graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix,
@@ -131,6 +169,9 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         enrichment_bar_fig=enrichment_bar_fig,
         enrichment_dot_fig=enrichment_dot_fig,
     )
+    # GSEA 结果 CSV 落盘进 <prefix>_data（空表不落盘），并入 saved 使 ZIP 自动包含
+    gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
+    saved.update(gsea_saved)
 
     return {
         "genes": genes,
@@ -144,6 +185,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         "enrichment_source": enrichment_source,
         "enrichment_bar_fig": enrichment_bar_fig,
         "enrichment_dot_fig": enrichment_dot_fig,
+        "gsea": gsea_results,
         "saved": saved,
         "prefix": prefix,
         "params": (mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree),
@@ -170,7 +212,7 @@ if run_btn:
         st.warning(t("net.warn_missing"))
     else:
         with st.spinner(t("net.spinner_build")):
-            st.session_state.ppi = _run_ppi_analysis(
+            ppi_result = _run_ppi_analysis(
                 input_mode,
                 drug_name.strip(),
                 disease_name.strip(),
@@ -180,6 +222,13 @@ if run_btn:
                 score,
                 int(min_degree),
             )
+            st.session_state.ppi = ppi_result
+            # Build Report 已自动跑完 GSEA 双侧 → 直接作为交互区的初始结果
+            # （按侧存储；缓存键相同，交互区重跑同侧也是秒级命中）。
+            st.session_state.ppi_gsea = {
+                side: {**info, "ppi_params": ppi_result["params"]}
+                for side, info in ppi_result.get("gsea", {}).items()
+            }
         st.rerun()
 
 # ---------- 结果展示（读取 session_state，不重新分析） ----------
@@ -247,6 +296,104 @@ if ppi is not None:
             if enrichment_dot_fig is not None:
                 st.caption(t("net.bubble_caption"))
                 st.pyplot(enrichment_dot_fig)
+
+        # ---------- 排序富集（GSEA prerank，仅智人） ----------
+        # Build Report 已自动跑双侧并落盘 ZIP；此交互区可换参数/换侧重跑。
+        # 会话状态按"侧"存储（ppi_gsea[side]）：切换药物/疾病单选只会显示
+        # 对应侧的结果，不会误展示另一侧的旧结果。
+        st.divider()
+        with st.expander(t("net.gsea_subheader")):
+            st.caption(t("net.gsea_caption", libs="、".join(config.GSEA_ENRICHR_LIBS)))
+            # 按侧存储；兼容清理旧版（单结果字典含 "side" 键）的会话残留
+            if ("ppi_gsea" not in st.session_state
+                    or not isinstance(st.session_state.ppi_gsea, dict)
+                    or "side" in st.session_state.ppi_gsea):
+                st.session_state.ppi_gsea = {}
+            if "gsea_drug_csv" in saved or "gsea_disease_csv" in saved:
+                st.caption(t("net.gsea_in_report", dir=saved["directory"]))
+
+            if input_mode == "genes":
+                st.info(t("net.gsea_manual_unsupported"))
+            else:
+                gsea_side = st.radio(
+                    t("net.gsea_side"), ["drug", "disease"],
+                    format_func=lambda v: (t("net.gsea_side_drug") if v == "drug"
+                                           else t("net.gsea_side_disease")),
+                    horizontal=True, key="gsea_side",
+                )
+                if st.button(t("net.gsea_run"), key="gsea_run_btn", width="stretch"):
+                    if current_params != ppi["params"]:
+                        # 防呆：主分析参数已变，先重跑主分析再 GSEA
+                        st.warning(t("net.params_changed"))
+                    else:
+                        with st.spinner(t("net.gsea_spinner")):
+                            if gsea_side == "drug":
+                                src_df = Utils.get_drug_targets_merged(drug_name.strip())
+                                score_col = "score_pchembl"
+                            else:
+                                src_df = Utils.get_disease_targets_merged(disease_name.strip())
+                                score_col = "score_ot"
+                            rnk, rstats = build_ranked_list(src_df, "approvedSymbol", score_col)
+                            gsea_status: dict = {}
+                            gsea_df = fetch_enrichment_gsea_prerank(
+                                rnk,
+                                libs=gsea_gene_sets(),
+                                label=f"{prefix}_{gsea_side}",
+                                status=gsea_status,
+                            )
+                            st.session_state.ppi_gsea[gsea_side] = {
+                                "df": gsea_df,
+                                "stats": rstats,
+                                "reason": gsea_status.get("reason", ""),
+                                "ppi_params": ppi["params"],
+                            }
+                        st.rerun()
+
+                gsea_res = st.session_state.ppi_gsea.get(gsea_side)
+                if gsea_res is not None:
+                    if gsea_res["ppi_params"] != ppi["params"]:
+                        st.info(t("net.params_changed"))
+                    else:
+                        stats = gsea_res["stats"]
+                        gsea_df = gsea_res["df"]
+                        reason = gsea_res.get("reason", "")
+                        side_txt = (t("net.gsea_side_drug") if gsea_side == "drug"
+                                    else t("net.gsea_side_disease"))
+                        # 打分缺失去除是多源合并的预期行为（如仅 DGIdb 收录的靶点无
+                        # pChEMBL），作中性说明而非预警
+                        if stats.get("n_dropped", 0) > 0:
+                            st.caption(t("net.gsea_drop_note",
+                                         n=stats.get("n_dropped", 0),
+                                         m=stats.get("n_input", 0)))
+                        if reason == "insufficient_input":
+                            st.info(t("net.gsea_insufficient",
+                                      n=stats.get("n_kept", 0), min_n=config.GSEA_MIN_RANKED_GENES))
+                        elif reason == "request_failed":
+                            st.error(t("net.gsea_fail", reason=reason))
+                        elif gsea_df is None or gsea_df.empty:
+                            st.info(t("net.gsea_none", thr=config.GSEA_FDR_SCREEN))
+                        else:
+                            st.caption(t("net.gsea_result_side", side=side_txt,
+                                         n_in=stats.get("n_input", 0), n_kept=stats.get("n_kept", 0)))
+                            screened = gsea_df[gsea_df["fdr_q_value"] < config.GSEA_FDR_SCREEN]
+                            if screened.empty:
+                                st.info(t("net.gsea_none", thr=config.GSEA_FDR_SCREEN))
+                            else:
+                                st.caption(t("net.gsea_table_caption", n=len(gsea_df),
+                                             m=len(screened), thr=config.GSEA_FDR_SCREEN))
+                                show_cols = ["source", "term_name", "nes", "fdr_q_value",
+                                             "nominal_p_value", "tag_pct", "gene_pct"]
+                                st.dataframe(screened[show_cols], width="stretch", hide_index=True)
+                                gsea_fig = render_gsea_plot(screened)
+                                if gsea_fig is not None:
+                                    st.caption(t("net.gsea_bar_caption"))
+                                    st.pyplot(gsea_fig)
+                            st.download_button(
+                                t("net.dl_gsea_csv"),
+                                gsea_df.to_csv(index=False).encode("utf-8-sig"),
+                                f"{prefix}_gsea_{gsea_side}.csv", "text/csv",
+                                width="stretch",
+                            )
 
         # ---------- 蛋白模块检测（Louvain + 模块富集） ----------
         # 基于 session_state 中已构建的 PPI 图，独立按钮触发；结果连同其依赖的

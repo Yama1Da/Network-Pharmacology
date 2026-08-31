@@ -505,3 +505,308 @@ def render_enrichment_plots(df: pd.DataFrame) -> tuple:
     fig_dot.tight_layout()
 
     return fig_bar, fig_dot
+
+
+# ---------- 排序富集（GSEA prerank，仅智人） ----------
+# 与 ORA 的区别：输入是"基因|分数"排序列表（如 pChEMBL 亲和力、Open Targets 关联分），
+# 而非二元基因列表，能利用打分信息检验"高分靶点整体偏向哪些通路"。
+# 基因集来自 Enrichr 库的本地 GMT 快照（首次使用时下载一次，之后永不重复联网）；
+# 失败语义与 ORA 链路一致：失败返回空表 + status，且绝不把失败结果写进缓存。
+
+
+def _gsea_gmt_path(lib: str) -> str | None:
+    """返回该 Enrichr 库的本地 GMT 快照路径；无快照时下载一次并写盘，失败返回 None。
+
+    快照命名 {lib}_Human_{YYYY-MM-DD}.gmt，取字典序最新（即最近下载）的一份；
+    快照存在则永不重新下载，删除 GSEA_GMT_DIR 目录即可强制重建。
+    """
+    import glob
+    import config
+
+    os.makedirs(config.GSEA_GMT_DIR, exist_ok=True)
+    snaps = sorted(glob.glob(os.path.join(config.GSEA_GMT_DIR, f"{lib}_Human_*.gmt")))
+    if snaps:
+        return snaps[-1]
+
+    import gseapy
+
+    try:
+        lib_dict = gseapy.get_library(lib, organism="Human")
+    except Exception:
+        logging.exception("Failed to download Enrichr library %s for GSEA", lib)
+        return None
+    if not lib_dict:
+        logging.warning("Enrichr library %s downloaded empty", lib)
+        return None
+    from datetime import date
+
+    path = os.path.join(config.GSEA_GMT_DIR, f"{lib}_Human_{date.today().isoformat()}.gmt")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            for term, gene_set in lib_dict.items():
+                f.write("\t".join([str(term), "na", *[str(g) for g in gene_set]]) + "\n")
+    except Exception:
+        logging.exception("Failed to write GMT snapshot for %s", lib)
+        return None
+    logging.info("GSEA GMT snapshot saved: %s (%d gene sets)",
+                 os.path.basename(path), len(lib_dict))
+    return path
+
+
+def gsea_gene_sets() -> dict[str, str]:
+    """返回可用的 {库名: GMT路径}；单库缺失自动降级跳过，全部缺失时返回空 dict。"""
+    import config
+
+    out: dict[str, str] = {}
+    for lib in config.GSEA_ENRICHR_LIBS:
+        path = _gsea_gmt_path(lib)
+        if path:
+            out[lib] = path
+        else:
+            logging.warning("GSEA gene set library unavailable, skipped: %s", lib)
+    return out
+
+
+def build_ranked_list(targets_df: pd.DataFrame, gene_col: str, score_col: str) -> tuple[pd.DataFrame, dict]:
+    """
+    把带打分的靶点表转为 gseapy.prerank 的输入（gene | score，按分数降序）。
+
+    规则：基因统一大写去空白；同基因多行取最高分；打分缺失的行剔除（不补零，
+    补零会制造假尾部信号）。drop_ratio = 被剔除行数 / 输入行数，供页面预警。
+
+    Returns
+    -------
+    tuple[pd.DataFrame, dict]
+        (rnk: 两列 DataFrame[gene, score]，按 score 降序,
+         stats: n_input / n_kept / n_dropped / drop_ratio / missing_cols)
+    """
+    if targets_df is None or targets_df.empty:
+        return pd.DataFrame(columns=["gene", "score"]), {
+            "n_input": 0, "n_kept": 0, "n_dropped": 0, "drop_ratio": 0.0,
+            "missing_cols": [c for c in (gene_col, score_col)],
+        }
+    missing_cols = [c for c in (gene_col, score_col) if c not in targets_df.columns]
+    if missing_cols:
+        return pd.DataFrame(columns=["gene", "score"]), {
+            "n_input": len(targets_df), "n_kept": 0, "n_dropped": len(targets_df),
+            "drop_ratio": 1.0, "missing_cols": missing_cols,
+        }
+
+    df = targets_df[[gene_col, score_col]].rename(columns={gene_col: "gene", score_col: "score"})
+    n_input = len(df)
+    df["gene"] = df["gene"].astype(str).str.strip().str.upper()
+    df = df[df["gene"] != ""]
+    df["score"] = pd.to_numeric(df["score"], errors="coerce")
+    df = df.dropna(subset=["score"])
+    df = df.groupby("gene", as_index=False)["score"].max()  # 同基因取最高分
+    df = df.sort_values("score", ascending=False).reset_index(drop=True)
+    n_kept = len(df)
+    stats = {
+        "n_input": n_input,
+        "n_kept": n_kept,
+        "n_dropped": n_input - n_kept,
+        "drop_ratio": (n_input - n_kept) / n_input if n_input else 0.0,
+        "missing_cols": [],
+    }
+    logging.info("Ranked list built: %d inputs -> %d scored genes (drop_ratio=%.2f)",
+                 n_input, n_kept, stats["drop_ratio"])
+    return df, stats
+
+
+def _normalize_enrichment_gsea(res2d: pd.DataFrame) -> pd.DataFrame:
+    """
+    把 gseapy prerank 的 res2d 整理为统一列。
+
+    gseapy 1.x 列名：Term / ES / NES / NOM p-val / FDR q-val / Tag % / Gene % / Lead_genes；
+    这里按"大小写不敏感精确匹配 → 包含子串"两级查找，兼容后续版本的更名。
+    """
+    if res2d is None or res2d.empty:
+        return pd.DataFrame()
+    cols = list(res2d.columns)
+
+    def pick(*cands: str) -> str | None:
+        for c in cands:  # 先精确（大小写不敏感）
+            for col in cols:
+                if col.lower() == c.lower():
+                    return col
+        for c in cands:  # 再子串
+            for col in cols:
+                if c.lower() in col.lower():
+                    return col
+        return None
+
+    name_of = {
+        "term_name": pick("Term"),
+        "es": pick("ES"),
+        "nes": pick("NES"),
+        "nominal_p_value": pick("NOM p-val", "NOM p"),
+        "fdr_q_value": pick("FDR q-val", "FDR q", "FDR"),
+        "tag_pct": pick("Tag %"),
+        "gene_pct": pick("Gene %"),
+        "lead_genes": pick("Lead_genes", "Lead genes"),
+    }
+    if name_of["term_name"] is None or name_of["nes"] is None:
+        logging.warning("GSEA res2d missing expected columns: %s", cols)
+        return pd.DataFrame()
+
+    out = pd.DataFrame({
+        "term_name": res2d[name_of["term_name"]].astype(str),
+        "es": pd.to_numeric(res2d[name_of["es"]], errors="coerce") if name_of["es"] else pd.NA,
+        "nes": pd.to_numeric(res2d[name_of["nes"]], errors="coerce"),
+        "nominal_p_value": (pd.to_numeric(res2d[name_of["nominal_p_value"]], errors="coerce")
+                            if name_of["nominal_p_value"] else pd.NA),
+        "fdr_q_value": (pd.to_numeric(res2d[name_of["fdr_q_value"]], errors="coerce")
+                        if name_of["fdr_q_value"] else pd.NA),
+        "tag_pct": res2d[name_of["tag_pct"]] if name_of["tag_pct"] else "",
+        "gene_pct": res2d[name_of["gene_pct"]] if name_of["gene_pct"] else "",
+        "lead_genes": res2d[name_of["lead_genes"]].fillna("") if name_of["lead_genes"] else "",
+        "source": res2d["source"],
+    })
+    out = out.dropna(subset=["term_name", "nes"])
+    # 统一按 |NES| 降序（页面再按 FDR 筛选展示）
+    out = out.reindex(out["nes"].abs().sort_values(ascending=False).index)
+    return out.reset_index(drop=True)
+
+
+def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None) -> str:
+    """GSEA 结果缓存路径：键 = 排序基因+分数 + 库快照文件名 + 全部计算参数。"""
+    import hashlib
+    import config
+
+    gene_part = "\r".join(rnk["gene"].astype(str))
+    score_part = "\r".join(f"{v:.6g}" for v in rnk["score"].astype(float))
+    libs_part = "|".join(f"{k}:{os.path.basename(v)}" for k, v in sorted(libs.items()))
+    payload = (gene_part + "||" + score_part + "||" + libs_part
+               + f"|{config.GSEA_SET_MIN_SIZE}|{config.GSEA_SET_MAX_SIZE}"
+               + f"|{config.GSEA_PERMUTATION_NUM}|{config.GSEA_SEED}")
+    md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
+    name = f"GSEA_{label}_{md5}.csv" if label else f"GSEA_{md5}.csv"
+    return os.path.join(config.ENRICHMENT_CACHE_DIR, name)
+
+
+def fetch_enrichment_gsea_prerank(
+    rnk: pd.DataFrame,
+    libs: dict[str, str] | None = None,
+    label: str | None = None,
+    status: dict | None = None,
+) -> pd.DataFrame:
+    """
+    GSEA prerank 主入口（gseapy 本地计算，逐库运行以标记 source）。
+
+    Parameters
+    ----------
+    rnk : pd.DataFrame
+        build_ranked_list 的输出（gene | score 两列，降序）。
+    libs : dict[str, str] | None
+        {库名: GMT路径}；None 时自动取 gsea_gene_sets()。
+    label : str | None
+        缓存文件名前缀（如 aspirin_cancer_drug）。
+    status : dict | None
+        可选出参，语义与 fetch_enrichment_gprofiler 一致：
+          success / no_significant / cache / request_failed（GMT 全缺或计算异常）/
+          insufficient_input（打分基因少于 GSEA_MIN_RANKED_GENES）/ empty_input
+
+    Returns
+    -------
+    pd.DataFrame
+        统一列结果表（source / term_name / es / nes / nominal_p_value /
+        fdr_q_value / tag_pct / gene_pct / lead_genes），按 |NES| 降序；
+        失败或无显著结果时返回空 DataFrame（失败不写缓存）。
+    """
+    import config
+
+    if libs is None:
+        libs = gsea_gene_sets()
+    if rnk is None or len(rnk) == 0:
+        if status is not None:
+            status.update(ok=False, reason="empty_input")
+        return pd.DataFrame()
+    if len(rnk) < config.GSEA_MIN_RANKED_GENES:
+        logging.info("GSEA skipped: only %d scored genes (< %d)",
+                     len(rnk), config.GSEA_MIN_RANKED_GENES)
+        if status is not None:
+            status.update(ok=False, reason="insufficient_input")
+        return pd.DataFrame()
+    if not libs:
+        logging.warning("GSEA skipped: no gene set library available")
+        if status is not None:
+            status.update(ok=False, reason="request_failed")
+        return pd.DataFrame()
+
+    os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
+    cache_file = _gsea_cache_file(rnk, libs, label)
+    if _is_cache_fresh(cache_file):
+        logging.info("Loading cached GSEA prerank result for %d genes", len(rnk))
+        if status is not None:
+            status.update(ok=True, reason="cache")
+        return _read_cache_csv(cache_file)
+
+    import gseapy
+
+    frames: list[pd.DataFrame] = []
+    try:
+        for lib, gmt_path in libs.items():
+            res = gseapy.prerank(
+                rnk=rnk, gene_sets=gmt_path, outdir=None, verbose=False,
+                min_size=config.GSEA_SET_MIN_SIZE, max_size=config.GSEA_SET_MAX_SIZE,
+                permutation_num=config.GSEA_PERMUTATION_NUM, seed=config.GSEA_SEED,
+            )
+            r2d = res.res2d
+            if r2d is not None and len(r2d) > 0:
+                frames.append(r2d.assign(source=lib))
+    except Exception:
+        logging.exception("GSEA prerank failed (%d genes, libs=%s)", len(rnk), list(libs))
+        if status is not None:
+            status.update(ok=False, reason="request_failed")
+        return pd.DataFrame()
+
+    if not frames:
+        # 各库都算完但没有（通过规模窗口的）显著基因集
+        logging.info("GSEA prerank: no gene sets passed for %d genes", len(rnk))
+        if status is not None:
+            status.update(ok=True, reason="no_significant")
+        return pd.DataFrame()
+
+    raw = pd.concat(frames, ignore_index=True)
+    df = _normalize_enrichment_gsea(raw)
+    if df.empty:
+        # 防御：归一化清零不写缓存（避免异常空表被 TTL 命中）
+        logging.warning("GSEA result normalized to empty — skip caching (%d genes)", len(rnk))
+        if status is not None:
+            status.update(ok=False, reason="normalize_empty")
+        return df
+    if status is not None:
+        status.update(ok=True, reason="success")
+    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    logging.info("GSEA prerank for %d genes: %d terms cached", len(rnk), len(df))
+    return df
+
+
+def render_gsea_plot(df: pd.DataFrame) -> "matplotlib.figure.Figure | None":
+    """
+    绘制 GSEA 结果条形图：按 |NES| 取前 N 条基因集，
+    NES > 0 红色（高分靶点中富集/激活）、NES < 0 蓝色（抑制）。
+
+    Returns
+    -------
+    matplotlib.figure.Figure | None
+        df 无有效行时返回 None。
+    """
+    import matplotlib.pyplot as plt
+    import config
+
+    df = df[df["nes"].notna()].copy()
+    if df.empty:
+        return None
+    top = df.reindex(df["nes"].abs().sort_values(ascending=False).index)
+    top = top.head(config.GSEA_TOP_DISPLAY)
+    colors = ["#C44E52" if v > 0 else "#4C72B0" for v in top["nes"]]
+    fig, ax = plt.subplots(figsize=(9, max(4, 0.3 * len(top))))
+    ax.barh(top["term_name"], top["nes"], color=colors, height=0.6)
+    ax.axvline(0, color="#888888", linewidth=0.8)
+    ax.invert_yaxis()
+    ax.set_xlabel("NES (normalized enrichment score)")
+    ax.set_title("GSEA prerank (red = enriched in high-score targets)")
+    ax.tick_params(axis="y", labelsize=7)
+    fig.tight_layout()
+    return fig

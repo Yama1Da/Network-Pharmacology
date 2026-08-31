@@ -147,6 +147,27 @@ LOUVAIN_TOP_TERMS_PER_MODULE = 5
 # 退化防护：最大模块节点占比超过该阈值视为分辨率不当，页面提示调高 resolution
 LOUVAIN_MAX_MODULE_RATIO = 0.6
 
+# ======== 排序富集（GSEA prerank，仅智人） ========
+# Enrichr 基因集库（首次使用经 gseapy 下载并写本地 GMT 快照，之后永不重复下载，
+# 删除 gmt 快照目录即可重建）。默认只取 Hallmark + KEGG：GO:BP 集合数过大（数千条），
+# 同步 UI 下 prerank 耗时不可控，且 GO 三类已由 ORA 链路覆盖；需要时自行追加库名。
+GSEA_ENRICHR_LIBS = ("MSigDB_Hallmark_2020", "KEGG_2021_Human")
+# GMT 快照目录
+GSEA_GMT_DIR = os.path.join(CACHE_DIR, "gmt")
+# 基因集规模窗口（gseapy prerank 的 min_size/max_size）
+GSEA_SET_MIN_SIZE = 15
+GSEA_SET_MAX_SIZE = 500
+# 置换次数：同步 UI 下保持轻量；结果已缓存，如需更稳的 p 值可调高后重跑
+GSEA_PERMUTATION_NUM = 1000
+# prerank 随机种子（保证可复现）
+GSEA_SEED = 0
+# 排序列表最少基因数，低于则拒绝计算（结果无统计意义）
+GSEA_MIN_RANKED_GENES = 30
+# 页面展示条数（按 |NES| 排序）
+GSEA_TOP_DISPLAY = 20
+# 页面显著性筛选阈值（经典 GSEA 惯例 FDR<0.25；仅用于展示，完整表走 CSV）
+GSEA_FDR_SCREEN = 0.25
+
 # ======== 分子对接配置（AutoDock Vina v1.2.7） ========
 # Vina 可执行文件目录自动探测：环境变量 VINA_DIR > 本机默认路径 > PATH。
 # 换机器时无需改代码：设置 VINA_DIR 环境变量，或将 vina 所在目录加入 PATH 即可。
