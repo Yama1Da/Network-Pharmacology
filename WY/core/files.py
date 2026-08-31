@@ -5,8 +5,6 @@ from datetime import datetime
 
 import pandas as pd
 
-from .paths import BASE_DIR
-
 
 def list_cache_files(category: str) -> pd.DataFrame:
     """列出 Static/data/cache/<category> 目录下缓存文件的文件名与创建时间。
@@ -21,7 +19,9 @@ def list_cache_files(category: str) -> pd.DataFrame:
     pd.DataFrame
         含 "File name"、"Created time" 两列；目录不存在或为空时返回空表。
     """
-    cache_dir = os.path.join(BASE_DIR, "Static", "data", "cache", category)
+    import config
+
+    cache_dir = os.path.join(config.CACHE_DIR, category)
     if not os.path.isdir(cache_dir):
         return pd.DataFrame(columns=["File name", "Created time"])
     rows = []

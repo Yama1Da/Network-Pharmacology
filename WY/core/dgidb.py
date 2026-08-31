@@ -6,7 +6,6 @@ import os
 import pandas as pd
 import requests
 
-from .paths import BASE_DIR
 from .text_utils import safe_name
 
 
@@ -35,7 +34,7 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
     import time
     import config
 
-    cache_dir = os.path.join(BASE_DIR, "Static", "data", "cache", "drug")
+    cache_dir = config.DRUG_CACHE_DIR
     os.makedirs(cache_dir, exist_ok=True)
     csv_path = os.path.join(cache_dir, f"DGIdb_{safe_name(drug_name)}.csv")
 

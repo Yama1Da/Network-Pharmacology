@@ -3,8 +3,8 @@
 模块与依赖方向（上层引下层，禁止反向）：
     ppi / enrichment / docking / targets / files
         → opentargets / disgenet / chembl / dgidb
-        → http_client / caching / text_utils / logging_setup / paths
-        → config
+        → http_client / caching / text_utils / logging_setup
+        → config（路径常量统一见 config.py：CACHE_DIR / DRUG_CACHE_DIR 等）
 
 对外入口是 WY/Utils.py 门面（re-export），页面代码无需直接 import 本包。
 """

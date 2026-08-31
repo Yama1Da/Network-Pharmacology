@@ -6,7 +6,6 @@ import os
 import pandas as pd
 import streamlit as st
 
-from .paths import BASE_DIR
 from .text_utils import safe_name
 
 
@@ -50,7 +49,9 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
          organism, assay_type, pchembl_value] sorted by pchembl_value desc,
          path to the cached CSV file, or None if the request failed).
     """
-    cache_dir = os.path.join(BASE_DIR, "Static", "data", "cache", "drug")
+    import config
+
+    cache_dir = config.DRUG_CACHE_DIR
     os.makedirs(cache_dir, exist_ok=True)
     csv_path = os.path.join(cache_dir, f"ChEMBL_{safe_name(drug_name)}.csv")
 

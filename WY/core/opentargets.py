@@ -8,7 +8,6 @@ import requests
 import streamlit as st
 
 from .http_client import OPENTARGETS_API_URL, _opentargets_post
-from .paths import BASE_DIR
 from .text_utils import _safe_round, safe_name
 
 
@@ -42,7 +41,9 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
     结果持久化为 CSV（Static/data/cache/disease/OpenTargets_{disease_name}.csv），
     命中缓存时直接读取本地文件，不访问远端 API。
     """
-    cache_dir = os.path.join(BASE_DIR, "Static", "data", "cache", "disease")
+    import config
+
+    cache_dir = config.DISEASE_CACHE_DIR
     os.makedirs(cache_dir, exist_ok=True)
     csv_path = os.path.join(cache_dir, f"OpenTargets_{safe_name(disease_name)}.csv")
 
@@ -278,7 +279,9 @@ def fetch_drug_targets_opentargets(drug_name: str) -> tuple[pd.DataFrame, str | 
         df = pd.DataFrame(rows).drop_duplicates(subset=["ensembl_id"]).reset_index(drop=True)
 
         # ---- cache to CSV ----
-        cache_dir = os.path.join(BASE_DIR, "Static", "data", "cache", "drug")
+        import config
+
+        cache_dir = config.DRUG_CACHE_DIR
         os.makedirs(cache_dir, exist_ok=True)
         csv_path = os.path.join(cache_dir, f"OpenTargets_{safe_name(drug_name)}.csv")
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")

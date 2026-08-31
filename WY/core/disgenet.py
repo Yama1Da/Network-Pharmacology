@@ -6,7 +6,6 @@ import os
 import pandas as pd
 import requests
 
-from .paths import BASE_DIR
 from .text_utils import safe_name
 
 
@@ -97,7 +96,7 @@ def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
     import time
     import config
 
-    cache_dir = os.path.join(BASE_DIR, "Static", "data", "cache", "disease")
+    cache_dir = config.DISEASE_CACHE_DIR
     os.makedirs(cache_dir, exist_ok=True)
     csv_path = os.path.join(cache_dir, f"DisGeNET_{safe_name(disease_name)}.csv")
 

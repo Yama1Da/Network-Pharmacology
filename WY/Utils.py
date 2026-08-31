@@ -5,7 +5,6 @@
     core/http_client.py     远端 API 公共层（重试 POST、端点常量）
     core/text_utils.py      safe_name / _safe_round 等小工具
     core/logging_setup.py   日志系统（控制台 + 按天轮转）
-    core/paths.py           BASE_DIR 路径锚点
     core/caching.py         CSV 缓存读写与 TTL 判断
     core/opentargets.py     Open Targets（疾病/药物靶点）
     core/disgenet.py        DisGeNET（疾病靶点 + 主动限流）
