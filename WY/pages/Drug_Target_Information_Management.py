@@ -3,8 +3,9 @@ import logging
 import streamlit as st
 import pandas as pd
 import Utils
+from i18n import t
 
-st.set_page_config(page_title="Drug Target Information Management", layout="wide")
+st.set_page_config(page_title=t("drug_mgmt.page_title"), layout="wide")
 
 CACHE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -114,26 +115,26 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("💊 Drug Target Information Management")
-st.caption("Cached files under Static/data/cache/drug")
+st.title(t("drug_mgmt.title"))
+st.caption(t("drug_mgmt.caption"))
 
 # 单文件更新结果（st.rerun 后仍展示）
 last_update = st.session_state.pop("last_update", None)
 if last_update:
     if last_update["Status"] == "OK":
-        st.success(f"✅ {last_update['File']} updated ({last_update['Message']})")
+        st.success(t("common.file_updated", file=last_update["File"], msg=last_update["Message"]))
     else:
-        st.error(f"❌ {last_update['File']} update failed: {last_update['Message']}")
+        st.error(t("common.file_update_failed", file=last_update["File"], msg=last_update["Message"]))
 
 col_back, col_update = st.columns([1, 1])
 with col_back:
-    if st.button("← Back to Main", key="back_btn"):
+    if st.button(t("common.back_main"), key="back_btn"):
         st.switch_page("App.py")
 with col_update:
-    all_update_clicked = st.button("All Updates", key="update_btn")
+    all_update_clicked = st.button(t("common.all_updates"), key="update_btn")
 
 if all_update_clicked:
-    with st.spinner("Updating all cached drug targets…"):
+    with st.spinner(t("drug_mgmt.updating_all")):
         rows = []
         # 第一阶段：先更新所有来源文件（ChEMBL_ / DGIdb_）
         drug_names = set()
@@ -164,13 +165,13 @@ if all_update_clicked:
                 rows.append({"File": merged_file, "Status": "FAILED", "Message": "update error"})
         results = pd.DataFrame(rows, columns=["File", "Status", "Message"])
     if results.empty:
-        st.info("No cached drug target files to update.")
+        st.info(t("drug_mgmt.no_files_to_update"))
     else:
         st.dataframe(results, width="stretch", hide_index=True)
         if results["Status"].eq("OK").all():
-            st.success("✅ All updates complete")
+            st.success(t("common.all_complete"))
         else:
-            st.warning("Some files failed to update")
+            st.warning(t("common.some_failed"))
 
 st.divider()
 
@@ -181,14 +182,14 @@ drug_files = pd.concat([drug_files, merged_files], ignore_index=True)
 clicked_file = None
 
 if drug_files.empty:
-    st.info("No cached drug target files.")
+    st.info(t("drug_mgmt.no_files"))
 else:
     # 表头
     col_h_name, col_h_time, col_h_btn, col_h_dl = st.columns([3, 2, 1, 1])
-    col_h_name.markdown("**File name**")
-    col_h_time.markdown("**Created time**")
-    col_h_btn.markdown("**Update**")
-    col_h_dl.markdown("**Download**")
+    col_h_name.markdown(t("common.col_file_name"))
+    col_h_time.markdown(t("common.col_created"))
+    col_h_btn.markdown(t("common.col_update"))
+    col_h_dl.markdown(t("common.col_download"))
 
     # 每行：Update（只更新该文件）+ Download（下载磁盘上的 CSV，保证持久化）
     with st.container(key="file_rows"):
@@ -197,7 +198,7 @@ else:
             col_name.write(row["File name"])
             col_time.write(row["Created time"])
             with col_btn:
-                if st.button("Update", key=f"update_{row['File name']}"):
+                if st.button(t("common.update"), key=f"update_{row['File name']}"):
                     clicked_file = row["File name"]
             with col_dl:
                 file_path = _file_path(row["File name"])
@@ -205,7 +206,7 @@ else:
                     with open(file_path, "rb") as f:
                         csv_bytes = f.read()
                     st.download_button(
-                        "Download",
+                        t("common.download"),
                         data=csv_bytes,
                         file_name=row["File name"],
                         mime="text/csv",
@@ -216,7 +217,7 @@ else:
 # try/except 兜底：refresh_file 内部异常（如整合函数抛错）也会记录结果并 rerun，
 # 避免页面停留在"运行中"的半渲染状态
 if clicked_file:
-    with st.spinner(f"Updating {clicked_file}…"):
+    with st.spinner(t("common.updating_file", file=clicked_file)):
         try:
             result = refresh_file(clicked_file, cache_hours=1)
         except Exception:

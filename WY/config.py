@@ -135,20 +135,123 @@ MIN_DEGREE_FILTER = 3
 # PyVis 物理引擎迭代次数 — 值越大布局越松散，防止节点过度拥挤
 PHYSICS_ITERATIONS = 500
 
+# ======== 蛋白模块检测（Louvain + 模块富集） ========
+# Louvain 分辨率与随机种子（种子固定保证同一网络两次检测结果一致）
+LOUVAIN_RESOLUTION = 1.0
+LOUVAIN_SEED = 0
+# 参与富集的模块规模下限与数量上限：小模块（基因过少）统计功效不足，富集无意义
+LOUVAIN_MIN_MODULE_SIZE = 5
+LOUVAIN_MAX_ENRICH_MODULES = 10
+# 每个模块在页面展示的富集条目数上限（完整结果走 CSV 下载）
+LOUVAIN_TOP_TERMS_PER_MODULE = 5
+# 退化防护：最大模块节点占比超过该阈值视为分辨率不当，页面提示调高 resolution
+LOUVAIN_MAX_MODULE_RATIO = 0.6
+
+# ======== 排序富集（GSEA prerank，仅智人） ========
+# Enrichr 基因集库（首次使用经 gseapy 下载并写本地 GMT 快照，之后永不重复下载，
+# 删除 gmt 快照目录即可重建）。默认只取 Hallmark + KEGG：GO:BP 集合数过大（数千条），
+# 同步 UI 下 prerank 耗时不可控，且 GO 三类已由 ORA 链路覆盖；需要时自行追加库名。
+GSEA_ENRICHR_LIBS = ("MSigDB_Hallmark_2020", "KEGG_2021_Human")
+# GMT 快照目录
+GSEA_GMT_DIR = os.path.join(CACHE_DIR, "gmt")
+# 基因集规模窗口（gseapy prerank 的 min_size/max_size）
+GSEA_SET_MIN_SIZE = 15
+GSEA_SET_MAX_SIZE = 500
+# 置换次数：同步 UI 下保持轻量；结果已缓存，如需更稳的 p 值可调高后重跑
+GSEA_PERMUTATION_NUM = 1000
+# prerank 随机种子（保证可复现）
+GSEA_SEED = 0
+# 排序列表最少基因数，低于则拒绝计算（结果无统计意义）
+GSEA_MIN_RANKED_GENES = 30
+# 页面展示条数（按 |NES| 排序）
+GSEA_TOP_DISPLAY = 20
+# 页面显著性筛选阈值（经典 GSEA 惯例 FDR<0.25；仅用于展示，完整表走 CSV）
+GSEA_FDR_SCREEN = 0.25
+
+# ======== 背景互作组（STRING v12.0 全网络本地缓存，M2 地基） ========
+# 版本与 STRING API（STRING_BASE_URL 的 version-12-0 子域）保持一致，
+# 保证"查询型 PPI"与"全网络背景计算"（邻近度 Z-score / RWR / DIAMOnD）同版本背景。
+STRING_VERSION = "v12.0"
+# 官方版本化下载站（已 HEAD 验证可达；Human links.gz 约 83MB、info.gz 约 2MB）
+STRING_DOWNLOAD_BASE = "https://stringdb-downloads.org/download"
+# 中国镜像（cn.string-db.org，路径结构与官方一致，实测快约一个数量级）。
+# 下载顺序：镜像优先、官方兜底；镜像不可达自动回落，无需手工切换。
+STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"
+# 互作组缓存目录（边表 parquet + 度数表 CSV + 构建元数据 JSON；.gitignore 已覆盖 cache/）
+INTERACTOME_CACHE_DIR = os.path.join(CACHE_DIR, "interactome")
+# 置信度换算唯一入口：PPI_CONFIDENCE 是 0-1 小数（STRING API 用），
+# 全网络 combined_score 是 0-1000 整数——两套单位绝不可混用，换算只允许经此一处
+INTERACTOME_CONFIDENCE = int(PPI_CONFIDENCE * 1000)  # 0.7 -> 700
+# M2 仅构建人类；Mouse/Rat 待需要时在构建脚本 --species 放开（数据量约 ×3，代码已兼容）
+INTERACTOME_ENABLED_SPECIES = ("Human",)
+# 背景网络"陈旧提醒"阈值（天）。注意语义：不是到期自动重下载——STRING 同版本文件
+# 是冻结的（实测 v12.0 服务端 Last-Modified 2023-05-16，三年未变），重下同版本拿不到
+# 任何新数据；真正的更新 = STRING 发新版本时改 STRING_VERSION 后重建。超过该天数
+# 仅在 UI 提示"背景网络较旧，建议检查新版本"，不阻断分析（旧而一致 > 无背景）。
+# 取值依据：STRING 大版本约 1.5~2 年一更，1 年内提示无意义，故取 365。
+INTERACTOME_STALE_DAYS = 365
+
+# ======== 网络邻近度检验（M3，依赖背景互作组） ========
+# 度匹配随机化置换次数：稀疏 BFS 下 200 次约数秒；结果已缓存，要更稳的分布可调高
+PROXIMITY_N_PERM = 200
+# 随机种子（结果可复现）
+PROXIMITY_SEED = 0
+# 度匹配分箱宽度：度值落在 [k*bin, (k+1)*bin) 的节点视为同箱可替换
+# （论文 Algorithm 1 的分箱实现；箱空时向度数最近的非空箱扩散）
+PROXIMITY_DEGREE_BIN_SIZE = 100
+# 药物/疾病靶点入网率低于该比例时拒绝计算（防"带病结果"）
+PROXIMITY_MIN_COVERAGE = 0.3
+# 邻近度结果缓存目录（成功才落盘，失败不落缓存，语义与富集链路一致）
+PROXIMITY_CACHE_DIR = os.path.join(CACHE_DIR, "proximity")
+
+# ======== RWR 靶点优先级排序（M4，依赖背景互作组） ========
+# 重启概率 α：r = α·W·r + (1-α)·p，1-α 为回到种子的概率——α 越大游走越远、
+# 排序越"全局"，越小越贴近种子邻域。0.7 是网络药理学常用取值。
+RWR_ALPHA = 0.7
+# L1 收敛阈值与幂迭代上限（LCC 内通常几十轮内收敛）
+RWR_TOL = 1e-8
+RWR_MAX_ITER = 200
+# 页面展示的非种子基因数量（种子行单独全量展示，不计入）
+RWR_TOP_N = 50
+# 缓存中保留的"非种子"排名行数——注意种子全量另存、不占此窗口
+# （种子数可能很大，如 aspirin 247 个靶点；混窗口会把非种子全部挤出）
+RWR_CACHE_TOP_N = 500
+# RWR 度匹配校正（标注集富集检验）：置换次数与随机种子。
+# 检验"标注集平均游走得分是否显著高于度匹配随机基因集"，
+# 回答"Top 排名是否只是枢纽度数假象"——复用邻近度的分箱抽样基建。
+RWR_NULL_PERMS = 200
+RWR_NULL_SEED = 0
+# RWR 结果缓存目录（成功才落盘，失败不落缓存）
+RWR_CACHE_DIR = os.path.join(CACHE_DIR, "rwr")
+
 # ======== 分子对接配置（AutoDock Vina v1.2.7） ========
 # Vina 可执行文件目录自动探测：环境变量 VINA_DIR > 本机默认路径 > PATH。
 # 换机器时无需改代码：设置 VINA_DIR 环境变量，或将 vina 所在目录加入 PATH 即可。
+# 兜底默认目录：探测全部失败时返回该值（run_vina 会据此报错并提示设置 VINA_DIR）
+default_dir = r"D:\PythonCode\vina"
 def _find_vina_dir() -> str:
+    """探测 Vina 可执行文件所在目录（Windows 专用）。
+
+    VINA_DIR / PATH 里填“目录”（如 D:\\PythonCode\\vina）即可，
+    代码会自行拼接 vina_1.2.7_win.exe；也兼容误填可执行文件全路径的情况。
+    """
     exe = "vina_1.2.7_win.exe"
+
+    # 1) 环境变量优先
     env_dir = os.environ.get("VINA_DIR")
-    if env_dir and os.path.isfile(os.path.join(env_dir, exe)):
-        return env_dir  # 1) 环境变量优先
-    if os.path.isfile(os.path.join(r"D:\PythonCode\vina", exe)):
-        return r"D:\PythonCode\vina"  # 2) 本机默认路径
-    found = shutil.which(exe) or shutil.which("vina")
-    if found:
-        return os.path.dirname(found)  # 3) PATH 中能找到（如 vina 已加入 PATH）
-    return r"D:\PythonCode\vina"  # 兜底：找不到时 run_vina 会报错并提示设置 VINA_DIR
+    if env_dir:
+        if os.path.isfile(env_dir):                                   # 填的是 exe 全路径
+            return os.path.dirname(env_dir)
+        if os.path.isfile(os.path.join(env_dir, exe)):                # 填的是目录
+            return env_dir
+
+    # 2) PATH 中能找到（vina 已加入 PATH）
+    for name in (exe, "vina"):
+        found = shutil.which(name)
+        if found:
+            return os.path.dirname(found)
+
+    return default_dir  # 兜底：找不到时 run_vina 会报错并提示设置 VINA_DIR
 
 
 VINA_DIR = _find_vina_dir()
@@ -190,3 +293,39 @@ MD_STAR_DIR = os.path.join(DOWNLOADS_DIR, "star")
 # 说明：受体蛋白 3D 结构只能从 RCSB 下载（pubchempy 只管 PubChem 小分子）；
 #       配体 3D SDF 则统一由 pubchempy.get_sdf(cid, record_type="3d") 获取，无需单独 URL。
 PDB_DOWNLOAD_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
+
+# ======== 分子对接：AlphaFold 预测结构兜底（M6） ========
+# 部署级总开关（页面另有默认关闭的 toggle；两者都开才走 AF 兜底）
+ALPHAFOLD_ENABLED = True
+# 当前 AlphaFold DB 模型版本：实测 v2-v5 均已 404、v6 为现行版本。
+# AlphaFold 升级时只改这里，旧缓存文件（文件名含版本）自然失效。
+ALPHAFOLD_MODEL_VERSION = "v6"
+# 文件直链模板（已实测 200；accession 为 UniProt reviewed 主条目号，不含 isoform 后缀）
+ALPHAFOLD_FILE_URL_TEMPLATE = "https://alphafold.ebi.ac.uk/files/AF-{accession}-F1-model_{version}.pdb"
+# 基因→UniProt 主条目查询源链（依次尝试；基因名做客户端精确过滤，跳过 isoform 后缀）
+# - ebi:     EBI Proteins API（与 AlphaFold 文件同域族，实测可达性更好，放首位）
+# - uniprot: UniProt REST 官方（gene_exact 精确匹配；部分网络不可达，自动跳过）
+UNIPROT_LOOKUP_SOURCES = ("ebi", "uniprot")
+EBI_PROTEINS_API_URL = "https://www.ebi.ac.uk/proteins/api/proteins"
+UNIPROT_SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
+# 基因→UniProt 查询永久缓存文件（确定性映射含负缓存，无 TTL；网络失败不缓存）
+UNIPROT_LOOKUP_CACHE = os.path.join(DOCKING_CACHE_DIR, "uniprot_gene_map.json")
+# AF 兜底对接盒：AF 结构无共晶配体，初始盒=整蛋白包围盒；任一边超此上限(Å)时
+# 以质心为中心收拢（仅为可跑的起始值，页面强制提示人工确认口袋覆盖并微调）
+DOCKING_BOX_MAX_SIZE_AF = 40.0
+# RCSB Search 失败重试次数；RCSB Data 元数据并发池大小（原 8 并发过高，降为 4）
+RCSB_SEARCH_MAX_RETRIES = 3
+RCSB_DATA_MAX_WORKERS = 4
+
+# ======== 主机级主动限速（M6 后续审计成果） ========
+# 每主机最小请求间隔（秒），缺省主机 = 不限。核心原则：**高频连发才值得主动节流，
+# 单次调用靠重试就够**——因此 DisGeNET（独立配额限流器）、g:Profiler（重试+熔断）、
+# Open Targets / DGIdb / STRING（单次调用+轻量重试）、ChEMBL（已有请求间隔）、
+# PubChem / RxNorm / RCSB 文件下载（每次分析仅 1 次）均不进表，加节流只增延迟无增益。
+HOST_MIN_REQUEST_INTERVAL = {
+    "rcsb_search": 1.0,   # RCSB Search：Step1 逐基因连发，实测触发限流（返回非JSON）
+    "rcsb_data": 0.25,    # RCSB Data：候选元数据并发池调用的节流
+    "ebi_proteins": 1.1,  # EBI 官方建议 ≤1 次/秒（UniProt 基因查询）
+    "alphafold": 1.1,     # AlphaFold 文件下载（EBI 同域）
+    "uniprot": 1.1,       # UniProt REST 兜底
+}
