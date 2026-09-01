@@ -2,8 +2,9 @@ import os
 import streamlit as st
 import pandas as pd
 import Utils
+from i18n import t
 
-st.set_page_config(page_title="PPI Information", layout="wide")
+st.set_page_config(page_title=t("ppi_info.page_title"), layout="wide")
 
 CACHE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -26,25 +27,25 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🕸️ PPI Information")
-st.caption("Cached STRING interaction files under Static/data/cache/ppi")
+st.title(t("ppi_info.title"))
+st.caption(t("ppi_info.caption"))
 
 col_back, _ = st.columns([1, 4])
 with col_back:
-    if st.button("← Back to Main", key="back_btn"):
+    if st.button(t("common.back_main"), key="back_btn"):
         st.switch_page("App.py")
 
 st.divider()
 
 ppi_files = Utils.list_cache_files("ppi")
 if ppi_files.empty:
-    st.info("No cached PPI files. Run a Data Network analysis first.")
+    st.info(t("ppi_info.empty"))
 else:
     # 表头
     col_h_name, col_h_time, col_h_dl = st.columns([4, 2, 1])
-    col_h_name.markdown("**File name**")
-    col_h_time.markdown("**Created time**")
-    col_h_dl.markdown("**Download**")
+    col_h_name.markdown(t("common.col_file_name"))
+    col_h_time.markdown(t("common.col_created"))
+    col_h_dl.markdown(t("common.col_download"))
 
     # 每行一个 Download 按钮，下载磁盘上的缓存 CSV（文件名含来源标识，如 StringPPI_aspirin_cancer_xxx.csv）
     with st.container(key="file_rows"):
@@ -58,7 +59,7 @@ else:
                     with open(file_path, "rb") as f:
                         csv_bytes = f.read()
                     st.download_button(
-                        "Download",
+                        t("common.download"),
                         data=csv_bytes,
                         file_name=row["File name"],
                         mime="text/csv",
