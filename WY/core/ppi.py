@@ -1,4 +1,4 @@
-"""PPI 网络模块：STRING 边表抓取、networkx 建图与拓扑指标、PyVis/静态图渲染、结果落盘。"""
+"""PPI 网络分析:从 STRING 获取蛋白互作边表,构建网络并计算拓扑指标,绘图并保存结果。"""
 
 import hashlib
 import logging
@@ -12,9 +12,9 @@ from .text_utils import safe_name
 
 
 def _string_post(endpoint: str, params: dict) -> requests.Response | None:
-    """对 STRING API 发送 POST 请求，带超时与重试；最终失败返回 None。
+    """向 STRING 数据库发送请求,失败时返回 None。
 
-    STRING 对"提交的标识符全部无法解析"的请求返回 404，这里视为空结果而非错误。
+    如果提交的基因在 STRING 中一个都识别不出来,不算错误,按空结果处理。
     """
     import time
     import config
@@ -47,41 +47,15 @@ def fetch_string_ppi(
     min_degree: int = 3,
 ) -> pd.DataFrame:
     """
-    通过 STRING API 获取基因列表的蛋白互作边表。
+    从 STRING 数据库获取基因列表的蛋白互作边表。
 
-    请求逻辑分两步（STRING 官方最佳实践）：
-      1. get_string_ids：把基因符号映射为 STRING 蛋白 ID，同时过滤掉
-         STRING 不认识的基因（映射成功的才算数）；
-      2. network：用映射后的 STRING ID 获取相互作用边，按 required_score
-         （= score×1000）过滤低置信度连接。
+    分两步:先把基因符号映射为 STRING 蛋白 ID(STRING 不认识的基因被剔除),
+    再按置信度阈值 score(0~1)筛选互作边。network_type 默认 "full" 为功能关联,
+    "physical" 仅保留有物理结合证据的互作;species 为物种编号,人类是 "9606"。
+    基因列表会自动去重排序,最多取 1000 个。
 
-    结果缓存在 Static/data/cache/ppi 下，文件名为
-    StringPPI_{label}_{STRING confidence}_{min_degree}.csv
-    （label 为来源标识，如 药物名_疾病名；无 label 时退化为 StringPPI_{confidence}_{min_degree}.csv）。
-    手动基因模式（label="manual"）额外附加基因列表短指纹（md5 前 8 位）参与键。
-    相同参数组合固定同名，重新生成时直接覆盖旧文件，不在缓存目录堆积；
-    TTL 内命中缓存直接读本地，不访问远端 API。
-
-    Parameters
-    ----------
-    genes : list[str]
-        基因符号列表（如 ["TP53", "BRCA1"]），会自动去重排序并截断到 1000。
-    species : str
-        NCBI taxon id，如 "9606"（人类）。
-    score : float
-        置信度阈值（0~1），映射为 STRING 的 required_score（0~1000）。
-    network_type : str
-        "full"（功能关联，默认）或 "physical"（仅物理结合）。
-    label : str | None
-        来源标识（如 "aspirin_cancer" 或 "manual"），用于缓存文件名前缀，便于用户识别。
-    min_degree : int
-        Hub 筛选的度数阈值（mark_hub_genes 用），仅参与缓存文件命名，默认 3。
-
-    Returns
-    -------
-    pd.DataFrame
-        每行一条相互作用边，含 protein_A / protein_B / score 及各证据分数列；
-        请求失败、全部基因不被识别或没有符合阈值的边时返回空 DataFrame。
+    相同参数的结果存为本地缓存,有效期内直接复用,不再重复请求。
+    请求失败、基因全部不被识别或没有达到阈值的边时,返回空表。
     """
     import config
 
@@ -92,26 +66,26 @@ def fetch_string_ppi(
         genes = genes[:config.STRING_QUERY_LIMIT]
 
     os.makedirs(config.PPI_CACHE_DIR, exist_ok=True)
-    # 命名规则：StringPPI_{药物名_疾病名}_{STRING confidence}_{Min degree}.csv
-    # 相同参数组合固定同名，重新生成时 to_csv 直接覆盖旧文件。
+    # 缓存文件名由来源标识、置信度阈值、度数阈值拼成。
+    # 相同参数组合固定同名,重新生成时直接覆盖旧文件。
     if label:
         label_part = safe_name(label)
         name = f"StringPPI_{label_part}_{score:g}_{int(min_degree)}.csv"
         if label_part == "manual":
-            # 手动基因模式：基因列表不由药物/疾病名决定，附加短指纹（md5 前 8 位）
-            # 参与缓存键，防止 TTL 内不同基因列表互相污染缓存
+            # 手动基因模式的基因列表无法从名字区分,附加基因列表短指纹作缓存标识,
+            # 避免不同基因列表混用同一份缓存
             gene_fp = hashlib.md5("\r".join(genes).encode("utf-8")).hexdigest()[:8]
             name = f"StringPPI_manual_{score:g}_{int(min_degree)}_{gene_fp}.csv"
     else:
         name = f"StringPPI_{score:g}_{int(min_degree)}.csv"
     cache_file = os.path.join(config.PPI_CACHE_DIR, name)
 
-    # ---- cache hit: load local (若超过 TTL 视为过期，重新请求) ----
+    # ---- 命中有效期内的缓存:直接读本地文件 ----
     if _is_cache_fresh(cache_file):
         logging.info("Loading cached STRING PPI for %d genes", len(genes))
         return _read_cache_csv(cache_file)
 
-    # ---- Step 1: 标识符映射（基因符号 → STRING ID） ----
+    # ---- 第一步:把基因符号映射为 STRING 蛋白 ID ----
     id_resp = _string_post("get_string_ids", {
         "identifiers": "\r".join(genes),
         "species": species,
@@ -130,7 +104,7 @@ def fetch_string_ppi(
         logging.warning("STRING: none of %d genes were recognized", len(genes))
         return pd.DataFrame()
 
-    # ---- Step 2: 获取相互作用边 ----
+    # ---- 第二步:获取蛋白相互作用边 ----
     net_resp = _string_post("network", {
         "identifiers": "\r".join(string_ids),
         "species": species,
@@ -151,7 +125,7 @@ def fetch_string_ppi(
         logging.info("STRING: no edges above score %s for %d genes", score, len(genes))
         return df
 
-    # 只保留输入基因内部的边（大小写不敏感），整理列名
+    # 只保留两端都是输入基因的边,并统一列名
     gene_set = {g.upper() for g in genes}
     df = df[
         df["preferredName_A"].str.upper().isin(gene_set)
@@ -162,7 +136,7 @@ def fetch_string_ppi(
             "ascore", "escore", "dscore", "tscore"]
     df = df[[c for c in keep if c in df.columns]]
 
-    # ---- cache to CSV ----
+    # ---- 结果存入本地缓存 ----
     df.to_csv(cache_file, index=False, encoding="utf-8-sig")
     logging.info("STRING PPI for %d genes: %d edges cached", len(genes), len(df))
     return df
@@ -170,11 +144,10 @@ def fetch_string_ppi(
 
 def build_ppi_graph(edges_df: pd.DataFrame, all_genes: list[str]) -> "nx.Graph":
     """
-    用 STRING 边表构建 networkx 无向图。
+    用 STRING 边表构建蛋白互作网络图。
 
-    - 全部输入基因都作为节点（无边的基因为孤立节点，degree=0）；
-    - 去除自环与重复边（同一对基因保留置信度最高的一条）；
-    - 边附带 score（STRING 原始分 0~1000）与 weight（归一化 0~1）。
+    所有输入基因都作为节点(没有互作关系的基因成为孤立节点);同一对基因的
+    重复边只保留置信度最高的一条。
     """
     import networkx as nx
 
@@ -197,9 +170,9 @@ def build_ppi_graph(edges_df: pd.DataFrame, all_genes: list[str]) -> "nx.Graph":
 
 def compute_ppi_metrics(graph: "nx.Graph") -> pd.DataFrame:
     """
-    计算网络节点的拓扑指标：degree / betweenness / closeness。
+    计算每个节点的拓扑指标:度(degree)、介数中心性、接近中心性。
 
-    孤立节点（degree=0）的中心性为 0；结果按 degree 降序排列。
+    孤立节点各项为 0;结果按度数从高到低排列。
     """
     import networkx as nx
 
@@ -218,9 +191,9 @@ def compute_ppi_metrics(graph: "nx.Graph") -> pd.DataFrame:
 
 def mark_hub_genes(metrics_df: pd.DataFrame, min_degree: int = 3) -> pd.DataFrame:
     """
-    标记 Hub 基因：degree 大于全部节点 degree 的中位数，且 degree ≥ min_degree（兜底阈值）。
+    标记 Hub 基因:连接数高于全部节点中位数、且不低于 min_degree 的节点。
 
-    返回原表并新增 is_hub 布尔列。
+    在原表基础上新增 is_hub 一列(True 为 Hub 基因)。
     """
     df = metrics_df.copy()
     threshold = df["degree"].median()
@@ -228,7 +201,7 @@ def mark_hub_genes(metrics_df: pd.DataFrame, min_degree: int = 3) -> pd.DataFram
     return df
 
 
-# 模块着色调色板（12 色循环，与 hub 金色/普通淡蓝区分度足够）
+# 模块着色用的 12 种颜色,循环使用
 _MODULE_PALETTE = [
     "#4E79A7", "#F28E2B", "#59A14F", "#E15759", "#76B7B2", "#EDC948",
     "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC", "#86BCB6", "#D37295",
@@ -241,27 +214,11 @@ def render_pyvis_html(
     module_map: dict | None = None,
 ) -> str:
     """
-    用 PyVis 生成交互式 PPI 网络 HTML。
+    生成交互式 PPI 网络网页(HTML 文本)。
 
-    - 节点大小 ∝ degree，Hub 基因金色高亮、普通节点淡蓝；
-    - 传入 module_map 时改为按模块着色（基因→模块ID；不在多基因模块中的
-      节点着浅灰，tooltip 追加 module 信息），Hub 与否在 tooltip 中仍可查看；
-    - 边宽 ∝ 置信度分数；
-    - 物理引擎迭代次数取 config.PHYSICS_ITERATIONS，防止节点过度拥挤。
-
-    Parameters
-    ----------
-    graph : networkx.Graph
-        PPI 网络。
-    metrics_df : pd.DataFrame
-        拓扑指标表（需含 gene / degree / is_hub 列）。
-    module_map : dict | None
-        基因 → 模块ID 映射；None 时保持默认着色（行为与旧版本完全一致）。
-
-    Returns
-    -------
-    str
-        HTML 内容字符串（可直接用 st.iframe 内嵌或保存为 .html 文件）。
+    节点大小代表连接数多少,连线粗细代表置信度高低;默认 Hub 基因金色、
+    其余节点淡蓝。传入 module_map(基因→模块ID)时改为按模块着色,不属于
+    任何多基因模块的节点为浅灰;鼠标悬停节点可查看度数、模块等信息。
     """
     import config
     from pyvis.network import Network
@@ -362,13 +319,10 @@ def save_ppi_results(
     enrichment_dot_fig: "matplotlib.figure.Figure | None" = None,
 ) -> dict:
     """
-    将一次 PPI 分析的全部结果保存到 DOWNLOADS_DIR/<prefix>_data/ 目录（替代式）。
+    把一次 PPI 分析的全部结果保存到结果目录下的 <prefix>_data 文件夹。
 
-    目录名 = <prefix>_data（prefix 如 药物名_疾病名，例如 aspirin_cancer_data），
-    文件名 = <prefix>_xxx（如 aspirin_cancer_nodes.csv）。
-
-    【替代式保存】：保存前会删除同 prefix 的旧目录（含历史时间戳目录），
-    同一 prefix（同一药物+疾病）始终只保留最新一次分析，不会堆积。
+    保存前会删除同 prefix 的旧文件夹(含历史结果),同一药物+疾病组合只保留
+    最新一次分析,不会越积越多。prefix 为文件名前缀(如 aspirin_cancer)。
 
     目录内容：
       - {prefix}_nodes.csv      节点拓扑指标表（含 is_hub 列）
@@ -380,29 +334,8 @@ def save_ppi_results(
       - {prefix}_enrichment_bar.png/.svg  富集柱状图（有富集数据时）
       - {prefix}_enrichment_dot.png/.svg  富集气泡图（有富集数据时）
 
-    Parameters
-    ----------
-    graph : networkx.Graph
-        分析构建的网络图，用于 GraphML 导出。
-    static_fig : matplotlib.figure.Figure
-        静态网络图，用于 SVG 导出。
-    nodes_df : pd.DataFrame
-        节点拓扑指标表。
-    edges_df : pd.DataFrame
-        边表。
-    html_content : str
-        交互式网络的 HTML 内容。
-    prefix : str
-        文件名/目录名前缀，如 "aspirin_cancer"（目录会追加 "_data" 后缀）。
-    enrichment_df : pd.DataFrame | None
-        富集结果表（统一列）；None 表示本次分析无富集数据。
-    enrichment_bar_fig / enrichment_dot_fig : Figure | None
-        富集柱状图 / 气泡图；None 表示无富集数据。
-
-    Returns
-    -------
-    dict
-        各文件路径与目录路径（含可选富集文件路径）。
+    传入富集结果表/图时才保存对应的富集文件,不传则跳过。
+    返回各文件的保存路径(含目录路径)。
     """
     import glob
     import shutil
@@ -411,7 +344,7 @@ def save_ppi_results(
 
     os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
 
-    # 替代式保存：删除同前缀的旧目录（含历史时间戳目录），只保留本次最新分析
+    # 删除同前缀的旧结果文件夹,只保留本次分析
     for old in glob.glob(os.path.join(config.DOWNLOADS_DIR, f"{prefix}_data*")):
         if os.path.isdir(old):
             shutil.rmtree(old)
@@ -432,7 +365,7 @@ def save_ppi_results(
     nx.write_graphml(graph, paths["graphml"])
     static_fig.savefig(paths["svg"], format="svg", bbox_inches="tight")
 
-    # 富集文件（可选）
+    # 富集结果文件(没有则不保存)
     if enrichment_df is not None and not enrichment_df.empty:
         paths["enrichment_csv"] = os.path.join(subdir, f"{prefix}_enrichment.csv")
         enrichment_df.to_csv(paths["enrichment_csv"], index=False, encoding="utf-8-sig")
@@ -458,29 +391,11 @@ def save_module_results(
     enrichment_df: pd.DataFrame | None = None,
 ) -> dict:
     """
-    将蛋白模块检测结果追加保存到既有分析目录（save_ppi_results 生成的 <prefix>_data）。
+    把蛋白模块检测结果追加保存到既有分析目录(<prefix>_data)。
 
-    与 save_ppi_results 的约定一致：空表不落盘（避免无效空文件进入成果目录与 ZIP）。
-    文件名：
-      - {prefix}_modules.csv            模块汇总表（summary_df 非空时）
-      - {prefix}_module_enrichment.csv  模块富集长表（enrichment_df 非空时）
-
-    Parameters
-    ----------
-    directory : str
-        目标目录（save_ppi_results 返回的 saved["directory"]）。
-    prefix : str
-        文件名前缀，如 "aspirin_cancer"。
-    summary_df : pd.DataFrame
-        模块汇总表。
-    enrichment_df : pd.DataFrame | None
-        模块富集长表；None 或空表时不落盘。
-
-    Returns
-    -------
-    dict
-        实际写出的文件路径（空表对应的键不存在）。调用方应把返回值并入
-        saved 字典，使 make_ppi_zip 打包时自动包含这些文件。
+    包括模块汇总表({prefix}_modules.csv)和模块富集长表
+    ({prefix}_module_enrichment.csv)。约定:空表不落盘,避免产生无意义的空文件。
+    返回实际写出的文件路径,调用方会并入结果字典,打包下载时自动包含。
     """
     os.makedirs(directory, exist_ok=True)
     paths: dict = {}
@@ -502,27 +417,11 @@ def save_gsea_results(
     disease_df: pd.DataFrame | None = None,
 ) -> dict:
     """
-    将 GSEA prerank 结果追加保存到既有分析目录（save_ppi_results 生成的 <prefix>_data）。
+    把 GSEA prerank 结果追加保存到既有分析目录(<prefix>_data)。
 
-    约定与 save_module_results 一致：空表不落盘（避免无效空文件进入成果目录与 ZIP）。
-    文件名：
-      - {prefix}_gsea_drug.csv     药物靶点排秩 GSEA（drug_df 非空时）
-      - {prefix}_gsea_disease.csv  疾病靶点排秩 GSEA（disease_df 非空时）
-
-    Parameters
-    ----------
-    directory : str
-        目标目录（save_ppi_results 返回的 saved["directory"]）。
-    prefix : str
-        文件名前缀，如 "aspirin_cancer"。
-    drug_df / disease_df : pd.DataFrame | None
-        两侧 GSEA 结果表；None 或空表时不落盘。
-
-    Returns
-    -------
-    dict
-        实际写出的文件路径（空表对应的键不存在）。调用方应把返回值并入
-        saved 字典，使 make_ppi_zip 打包时自动包含这些文件。
+    包括药物靶点排秩结果({prefix}_gsea_drug.csv)和疾病靶点排秩结果
+    ({prefix}_gsea_disease.csv)。约定与模块结果相同:空表不落盘。
+    返回实际写出的文件路径,调用方会并入结果字典,打包下载时自动包含。
     """
     os.makedirs(directory, exist_ok=True)
     paths: dict = {}
@@ -546,28 +445,11 @@ def save_rwr_results(
     drug_df: pd.DataFrame | None = None,
 ) -> dict:
     """
-    将 RWR 靶点优先级排序结果追加保存到既有分析目录（<prefix>_data）。
+    把 RWR 靶点优先级排序结果追加保存到既有分析目录(<prefix>_data)。
 
-    约定与 save_gsea_results / save_module_results 一致：空表不落盘
-    （避免无效空文件进入成果目录与 ZIP）。
-    文件名：
-      - {prefix}_rwr_disease_seeds.csv  种子=疾病靶点的排序表（disease_df 非空时）
-      - {prefix}_rwr_drug_seeds.csv     种子=药物靶点的排序表（drug_df 非空时）
-
-    Parameters
-    ----------
-    directory : str
-        目标目录（save_ppi_results 返回的 saved["directory"]）。
-    prefix : str
-        文件名前缀，如 "aspirin_cancer"。
-    disease_df / drug_df : pd.DataFrame | None
-        两侧排序表（gene / score / is_seed / annotated 列）；None 或空表时不落盘。
-
-    Returns
-    -------
-    dict
-        实际写出的文件路径（空表对应的键不存在）。调用方应把返回值并入
-        saved 字典，使 make_ppi_zip 打包时自动包含这些文件。
+    包括以疾病靶点为种子的排序表({prefix}_rwr_disease_seeds.csv)和以药物
+    靶点为种子的排序表({prefix}_rwr_drug_seeds.csv)。约定同前:空表不落盘。
+    返回实际写出的文件路径,调用方会并入结果字典,打包下载时自动包含。
     """
     os.makedirs(directory, exist_ok=True)
     paths: dict = {}

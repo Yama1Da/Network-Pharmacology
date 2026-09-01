@@ -1,22 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""一次性构建 STRING 全互作组本地缓存（M2，仅 CLI，勿接入 Streamlit 流程）。
+"""命令行脚本:从 STRING 数据库下载并构建全蛋白背景互作网络的本地缓存。
 
 用法（在 WY 目录下）：
     python scripts/build_interactome.py                 # 构建 Human（默认参数）
     python scripts/build_interactome.py --force         # 已构建也强制重建
     python scripts/build_interactome.py --confidence 700
-    python scripts/build_interactome.py --keep-raw      # 保留原始 gz（调试用）
+    python scripts/build_interactome.py --keep-raw      # 保留原始下载文件（调试用）
 
-构建内容（写入 config.INTERACTOME_CACHE_DIR）：
-    边表 parquet（protein_a / protein_b / score 0-1000，已过滤/去自环/去重保最高分）
-    度数表 CSV（gene / degree）
-    构建元数据 JSON（含实际文件名，加载侧以 meta 为准）
-
-说明：
-    - 下载约 83MB（Human links.gz）+ 2MB（info.gz），成功后默认删除原始 gz；
-    - 同参数重跑幂等（覆盖同名文件）；
-    - 构建完成后可用 scripts/selfcheck_network.py 验证（含缓存加载与覆盖守卫）。
+产物为背景网络的边表(基因对 + 互作得分)、基因连接数表和构建记录。
+同参数重跑会覆盖原文件;构建成功后默认删除原始下载文件。
 """
 
 import argparse

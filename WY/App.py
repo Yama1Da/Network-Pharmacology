@@ -5,7 +5,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
 
-# 初始化日志系统（幂等：每天一个文件、保留两年、四级全录）
+# 初始化日志:每天一个日志文件,保留两年。
 Utils.setup_logging()
 
 #页面布局
@@ -242,10 +242,9 @@ st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtit
 
 # ---------- Language sliding switch + Logs button (fixed top-right) ----------
 with st.container(key="top_right_logs"):
-    # iOS 式滑动开关：左=中文（红色）/ 右=English（蓝色），
-    # 「中文 / English」文字由 CSS 嵌在开关轨道内、位于滑块对侧，切换即时生效。
+    # 语言切换开关:左为中文(红色),右为英文(蓝色),文字显示在开关轨道上。
     with st.container(key="lang_switch_wrap"):
-        # 语言若在其它页面被切换过，则让开关跟随语言状态（语言为准）
+        # 若语言在其它页面被切换过,让开关跟随当前语言。
         if st.session_state.get("_lang_switch_synced") != get_lang():
             st.session_state["_lang_switch"] = is_en
             st.session_state["_lang_switch_synced"] = get_lang()
@@ -260,7 +259,7 @@ with st.container(key="top_right_logs"):
 
 # ---------- Management buttons (fixed top-left, open full-screen pages) ----------
 with st.container(key="top_left_buttons"):
-    # 下拉式菜单：四个信息管理页面的前往按钮（不含 Data Management）
+    # 下拉菜单:跳转到四个信息管理页面。
     with st.popover(t("app.popover_source"), key="source_mgmt_popover"):
         if st.button(t("app.btn_drug_mgmt"), key="drug_mgmt_btn", width="stretch"):
             st.switch_page("pages/Drug_Target_Information_Management.py")
@@ -270,18 +269,18 @@ with st.container(key="top_left_buttons"):
             st.switch_page("pages/PPI_Information.py")
         if st.button(t("app.btn_enrichment_info"), key="enrichment_info_btn", width="stretch"):
             st.switch_page("pages/Enrichment_Information.py")
-    # 下拉式菜单：PPI/富集主分析 + 分子对接（分子对接为富集下游页面）
+    # 下拉菜单:主分析(PPI/富集)与分子对接入口。
     with st.popover(t("app.popover_docking"), key="docking_mgmt_popover"):
         if st.button(t("app.btn_data_network"), key="data_network_btn", width="stretch"):
             st.switch_page("pages/Data_Network.py")
         if st.button(t("app.btn_molecular_docking"), key="molecular_docking_btn", width="stretch"):
-            st.session_state["_docking_entry"] = True  # 通知对接页：从入口进入，重置状态
+            st.session_state["_docking_entry"] = True  # 通知对接页:从入口进入并重置状态
             st.switch_page("pages/Molecular_Docking.py")
 
-st.divider()# 水平分隔线，用于分隔管理按钮和搜索栏
+st.divider()# 分隔管理按钮和搜索栏
 
 # ---------- Search bar ----------
-col_drug, col_disease = st.columns(2)# 两个列，用于输入药物名称和疾病名称
+col_drug, col_disease = st.columns(2)# 两列分别输入药物名称和疾病名称
 with col_drug:
     drug_name = st.text_input(t("app.drug_label"), value="aspirin",
                                label_visibility="collapsed",
@@ -305,11 +304,11 @@ if analyze_btn:
         st.warning(t("app.warn_missing", fields=t("app.and_join").join(errors)))
     else:
         with st.spinner(t("app.spinner_query", drug=drug_name, disease=disease_name)):
-            # 药物靶点：ChEMBL + DGIdb 去重整合；疾病靶点：Open Targets + DisGeNET 去重整合
+            # 药物靶点来自 ChEMBL + DGIdb,疾病靶点来自 Open Targets + DisGeNET,均已去重
             drug_df = Utils.get_drug_targets_merged(drug_name)
             drug_targets = drug_df["approvedSymbol"].tolist() if not drug_df.empty else []
             disease_df = Utils.get_disease_targets_merged(disease_name)
-            # 韦恩图/统计需要基因符号列表，从表格中取出
+            # 从表格取出基因符号列表,供韦恩图和统计使用
             disease_targets = disease_df["approvedSymbol"].tolist() if not disease_df.empty else []
 
         st.markdown('<div class="result-card">', unsafe_allow_html=True)
@@ -327,24 +326,22 @@ if analyze_btn:
         st.metric(t("app.metric_common"), len(common))
 
         # ----- Venn diagram -----
-        fig, ax = plt.subplots(figsize=(6, 4))# 创建一个6x4英寸的子图
-        # 图内文字刻意保持英文（不走 i18n）：matplotlib 默认字体（DejaVu Sans）
-        # 不含 CJK 字形，中文会渲染成方框；如需中文图注，先给 matplotlib
-        # 配置中文字体（如 SimHei）再改回 t()。
+        fig, ax = plt.subplots(figsize=(6, 4))# 创建 6x4 英寸画布
+        # 图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。
         v = venn2(
             subsets=(len(drug_set - disease_set),
                      len(disease_set - drug_set),
                      len(common)),
             set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
             ax=ax,
-        )# 绘制Venn图
+        )# 绘制韦恩图
         if v and v.get_label_by_id("11"):
-            v.get_label_by_id("11").set_fontsize(12)# 设置Venn图中“交集”的字体大小
-        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)# 设置Venn图的标题
-        st.pyplot(fig)# 显示Venn图
+            v.get_label_by_id("11").set_fontsize(12)# 设置交集区域字号
+        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)# 设置图标题
+        st.pyplot(fig)# 显示韦恩图
 
         with st.expander(t("app.expander_targets"), expanded=False):
-            # ----- 第一段：药物靶点（ChEMBL + DGIdb 去重整合结果） -----
+            # ----- 药物靶点表 -----
             st.markdown(t("app.drug_targets_md", name=drug_name, count=len(drug_set)))
             if not drug_df.empty:
                 st.dataframe(
@@ -357,7 +354,7 @@ if analyze_btn:
 
             st.divider()
 
-            # ----- 第二段：疾病靶点（Open Targets + DisGeNET 去重整合结果） -----
+            # ----- 疾病靶点表 -----
             st.markdown(t("app.disease_targets_md", name=disease_name, count=len(disease_set)))
             if not disease_df.empty:
                 st.dataframe(
