@@ -53,6 +53,8 @@ TEXT: dict[str, dict[str, str]] = {
         "app.no_drug_data": "(No drug target data retrieved)",
         "app.disease_targets_md": "**🦠 {name} targets** — {count} genes (Open Targets + DisGeNET, deduplicated)",
         "app.no_disease_data": "(No disease target data retrieved)",
+        "app.common_targets_md": "**🎯 {drug} ∩ {disease} common targets** — {count} genes (drug ∩ disease intersection)",
+        "app.no_common_data": "(No common targets between drug and disease)",
         "app.success_done": "✅ Analysis complete",
         "app.info_hint": "💡 Enter drug and disease names above and click Analyze",
         # ---- Logs.py ----
@@ -407,6 +409,8 @@ TEXT: dict[str, dict[str, str]] = {
         "app.no_drug_data": "（未获取到药物靶点数据）",
         "app.disease_targets_md": "**🦠 {name} 靶点** — {count} 个基因（Open Targets + DisGeNET，去重）",
         "app.no_disease_data": "（未获取到疾病靶点数据）",
+        "app.common_targets_md": "**🎯 {drug} ∩ {disease} 交集靶点** — {count} 个基因（药物与疾病共有）",
+        "app.no_common_data": "（药物与疾病没有交集靶点）",
         "app.success_done": "✅ 分析完成",
         "app.info_hint": "💡 在上方输入药物与疾病名称，然后点击「分析」",
         # ---- Logs.py ----

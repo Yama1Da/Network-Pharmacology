@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 import Utils
 from i18n import t, set_lang, get_lang
@@ -364,6 +365,30 @@ if analyze_btn:
                 )
             else:
                 st.write(t("app.no_disease_data"))
+
+            st.divider()
+
+            # ----- 交集靶点表 -----
+            st.markdown(t("app.common_targets_md", drug=drug_name, disease=disease_name,
+                          count=len(common)))
+            if common:
+                # 合并两侧信息：每个交集基因保留药物侧和疾病侧的数据库来源与分数
+                common_df = pd.merge(
+                    drug_df.drop(columns=["source_count"]),
+                    disease_df.drop(columns=["source_count"]),
+                    on="approvedSymbol", how="inner",
+                )
+                # 两侧共 4 个数据库，支持的数据库越多排序越靠前
+                common_df["source_total"] = common_df[
+                    ["source_chmbl", "source_dgidb", "source_ot", "source_disgenet"]
+                ].sum(axis=1)
+                st.dataframe(
+                    common_df.sort_values(["source_total", "score_pchembl", "score_ot"],
+                                          ascending=False, na_position="last"),
+                    width="stretch",
+                )
+            else:
+                st.write(t("app.no_common_data"))
 
         st.markdown('</div>', unsafe_allow_html=True)
 
