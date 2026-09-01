@@ -373,6 +373,7 @@ def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: 
     nodes, idx, Mt, degree_map = ctx
     result: dict = {
         "ok": False, "error": None, "d_c": None, "z": None, "p_empirical": None,
+        "d_c_excl": None, "z_excl": None, "p_excl": None, "n_excl": None,
         "n_perm": int(n_perm), "seed": int(seed),
         "mean_random": None, "std_random": None,
         "lcc_nodes": len(nodes), "cached": False,
@@ -400,13 +401,29 @@ def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: 
     dist_obs = _multi_source_bfs(Mt, a_idx)
     d_obs = float(dist_obs[b_idx].mean())
 
+    # ---- 去交集版本：d_c(A, B\A)，检验"超越直接作用"的邻近性 ----
+    # 共享靶点距离为 0 会直接拉低 d_c；剔除后若 Z 仍 < 0，说明邻近性并非仅由
+    # "药物直接作用于疾病基因"贡献。观测值复用同一次 BFS（零额外开销），
+    # 置换零分布同步应用排除（B'_rand \ A'_rand，与观测口径一致）。
+    a_set = set(d_lcc)
+    b_only = [g for g in s_lcc if g not in a_set]
+    result["n_excl"] = len(b_only)
+    d_obs_excl = float(dist_obs[[idx[g] for g in b_only]].mean()) if b_only else None
+    rand_excl = np.full(n_perm, np.nan)
+
     rand = np.empty(n_perm, dtype=float)
     for i in range(n_perm):
         ra = degree_matched_sample(degree_map, d_lcc, bin_size, rng)
         rb = degree_matched_sample(degree_map, s_lcc, bin_size, rng)
         ra_idx = np.array([idx[g] for g in ra])
         rb_idx = np.array([idx[g] for g in rb])
-        rand[i] = float(_multi_source_bfs(Mt, ra_idx)[rb_idx].mean())
+        dist_r = _multi_source_bfs(Mt, ra_idx)
+        rand[i] = float(dist_r[rb_idx].mean())
+        if b_only:
+            ra_set = set(ra)
+            rb_only_idx = [idx[g] for g in rb if g not in ra_set]
+            if rb_only_idx:
+                rand_excl[i] = float(dist_r[np.array(rb_only_idx)].mean())
 
     mu = float(rand.mean())
     sd = float(rand.std())
@@ -414,6 +431,18 @@ def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: 
     p_emp = (1 + int((rand <= d_obs).sum())) / (n_perm + 1)
     result.update(ok=True, d_c=d_obs, z=float(z), p_empirical=float(p_emp),
                   mean_random=mu, std_random=sd)
+
+    if d_obs_excl is not None:
+        valid = rand_excl[~np.isnan(rand_excl)]
+        if len(valid) > 0 and float(valid.std()) > 0:
+            mu_e, sd_e = float(valid.mean()), float(valid.std())
+            z_e = (d_obs_excl - mu_e) / sd_e
+            p_e = (1 + int((valid <= d_obs_excl).sum())) / (len(valid) + 1)
+            result.update(d_c_excl=d_obs_excl, z_excl=float(z_e), p_excl=float(p_e),
+                          mean_random_excl=mu_e)
+        else:
+            # 零分布退化（如去交集后随机对全为同距离）：不输出误导性的 z/p
+            result.update(d_c_excl=d_obs_excl, z_excl=None, p_excl=None)
     return result
 
 
@@ -470,7 +499,8 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
     payload = ("\r".join(_norm(drug_genes)) + "||" + "\r".join(_norm(disease_genes))
                + f"|{species}|{config.PROXIMITY_N_PERM}|{config.PROXIMITY_SEED}"
                + f"|{config.PROXIMITY_DEGREE_BIN_SIZE}"
-               + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}")
+               + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}"
+               + "|v2-excl")  # v2：结果新增去交集字段，旧缓存（v1）自动失效重算
     md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
     name = f"proximity_{label}_{md5}.json" if label else f"proximity_{md5}.json"
     os.makedirs(config.PROXIMITY_CACHE_DIR, exist_ok=True)
@@ -500,4 +530,247 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
     if result.get("ok"):
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False)
+    return result
+
+
+# ---------- RWR 靶点优先级排序（M4，依赖 core.interactome 的背景互作组） ----------
+# 方法学：Random Walk with Restart（个性化 PageRank）——从种子集合出发在 LCC 上
+# 随机游走，r = α·W·r + (1-α)·p（W 列随机转移矩阵，p 为种子上的均匀分布）。
+# 稳态得分高的非种子基因 = 种子模块网络邻域内的候选基因。
+# 实现要点：
+# - scipy 稀疏幂迭代（每次毫秒级），不用 networkx.pagerank（纯 Python 循环过慢）；
+# - W 的归一化方向是本算法最易出错的点：列归一化（列=出发点），sum(r)≈1 是
+#   方向正确性的硬校验（行归一化会让总质量随度数放大），自检已锁定。
+
+
+def build_sparse_adj(graph: "nx.Graph") -> tuple:
+    """
+    0-1 邻接 → 列随机转移矩阵 W（W[j,i] = P(i→j)，每列和为 1）。
+
+    节点序固定为 sorted(graph.nodes())。度为 0 的节点对应全零列（吸收态，
+    会永久截留概率质量）——调用方必须保证图连通（如限制在 LCC 内），
+    本模块的 RWR 链路经 _lcc_context 天然满足。
+    """
+    import networkx as nx
+    import numpy as np
+    import scipy.sparse as sp
+
+    nodes = sorted(graph.nodes())
+    adj = nx.to_scipy_sparse_array(graph, nodelist=nodes, weight=None, format="csr")
+    col_deg = np.asarray(adj.sum(axis=0)).ravel()
+    if (col_deg == 0).any():
+        raise ValueError("zero-degree nodes in graph; restrict to a connected component")
+    # 右乘对角阵 = 按列缩放：W[:, i] = adj[:, i] / deg(i)
+    W = adj @ sp.diags(1.0 / col_deg)
+    return W, nodes
+
+
+def _rwr_power_iteration(W, seed_idx: list, alpha: float, tol: float, max_iter: int) -> tuple:
+    """幂迭代求解 r = α·W·r + (1-α)·p。返回 (得分向量, 迭代轮数, 是否收敛)。"""
+    import numpy as np
+
+    n = W.shape[0]
+    p = np.zeros(n)
+    p[np.asarray(seed_idx, dtype=int)] = 1.0 / len(seed_idx)
+    r = (1.0 - alpha) * p.copy()
+    converged = False
+    iters = 0
+    for iters in range(1, max_iter + 1):
+        r_new = alpha * (W @ r) + (1.0 - alpha) * p
+        if float(np.abs(r_new - r).sum()) < tol:
+            r = r_new
+            converged = True
+            break
+        r = r_new
+    return r, iters, converged
+
+
+def rwr_prioritize(graph: "nx.Graph", seed_genes: list, alpha: float = 0.7,
+                   tol: float = 1e-8, max_iter: int = 200) -> pd.DataFrame:
+    """
+    参考入口（直接吃 networkx 图）：返回全节点 RWR 打分表。
+
+    图需连通（建议 LCC）；表中不在图内的种子被忽略。
+    DataFrame 列：gene / score / is_seed，按 score 降序。
+    """
+    W, nodes = build_sparse_adj(graph)
+    idx = {g: i for i, g in enumerate(nodes)}
+    seeds = sorted({str(g) for g in seed_genes if g in idx})
+    if not seeds:
+        raise ValueError("rwr_prioritize: no seed gene present in graph")
+    scores, iters, converged = _rwr_power_iteration(
+        W, [idx[g] for g in seeds], alpha, tol, max_iter)
+    seed_set = set(seeds)
+    out = pd.DataFrame({
+        "gene": nodes,
+        "score": scores,
+        "is_seed": [g in seed_set for g in nodes],
+    })
+    logging.info("RWR done: %d seeds, %d iters, converged=%s", len(seeds), iters, converged)
+    return out.sort_values("score", ascending=False).reset_index(drop=True)
+
+
+def _rwr_from_context(ctx: tuple, seed_genes: list, alpha: float,
+                      tol: float, max_iter: int, top_nonseed: int | None = None,
+                      annotate: set | None = None, null_perms: int | None = None,
+                      null_seed: int = 0, bin_size: int = 100) -> dict:
+    """
+    给定 LCC 上下文的 RWR 快路径（复用 _lcc_context 的邻接与度数表）。
+
+    annotate 非空时附加两样东西：
+      1. seeds / top_nonseed 行的 "annotated" 标注；
+      2. "enrichment" 度匹配校正检验——固定种子的 RWR 得分向量下，标注集的
+         平均得分 vs 度匹配随机基因集（复用邻近度的分箱抽样）的平均得分，
+         输出 z 与单侧经验 p。回答"排序是否只是枢纽度数假象"：
+         z 显著 > 0 说明标注集的高分超越其度数所能解释的水平。
+    """
+    import numpy as np
+    import scipy.sparse as sp
+
+    nodes, idx, Mt, degree_map = ctx
+    result: dict = {
+        "ok": False, "error": None, "top": [], "alpha": float(alpha),
+        "n_iter": None, "converged": None, "seed_mass": None,
+        "n_seeds": None, "lcc_nodes": len(nodes), "cached": False,
+        "coverage": {}, "enrichment": None,
+    }
+    # 无向图邻接对称：Mt 与 M 相同；列和 = 度 → 列归一化得转移矩阵
+    col_deg = np.array([degree_map[g] for g in nodes], dtype=float)
+    W = Mt @ sp.diags(1.0 / col_deg)
+
+    seeds_in = sorted({g for g in seed_genes if g in idx})
+    result["coverage"] = {"seed_in_lcc": len(seeds_in), "seed_total": len(seed_genes)}
+    if not seeds_in:
+        result["error"] = "empty_after_filter"
+        return result
+
+    seed_idx = [idx[g] for g in seeds_in]
+    scores, iters, converged = _rwr_power_iteration(W, seed_idx, alpha, tol, max_iter)
+    seed_set = set(seeds_in)
+    order = np.argsort(-scores)
+    # 种子与非种子分列表返回：种子全量保留（种子数可能很大，如 aspirin 247 个靶点），
+    # 非种子单独按分数截断 top_nonseed。两者混在同一截断窗口会让大种子集把非种子
+    # 全部挤出缓存——页面"非种子 Top-N"表随之变空/残缺（M4 上线当日实际事故）。
+    seeds_rows = [{"gene": nodes[i], "score": float(scores[i])}
+                  for i in order if nodes[i] in seed_set]
+    nonseed_rows = [{"gene": nodes[i], "score": float(scores[i])}
+                    for i in order if nodes[i] not in seed_set]
+    if top_nonseed is not None:
+        nonseed_rows = nonseed_rows[:int(top_nonseed)]
+    result.update(
+        ok=True,
+        n_seeds=len(seeds_in),
+        n_iter=int(iters),
+        converged=bool(converged),
+        seed_mass=float(scores[seed_idx].sum()),   # 质量留在种子上的比例（信息量指标）
+        total_mass=float(scores.sum()),            # 质量守恒校验（连通图应≈1.0）
+        seeds=seeds_rows,
+        top_nonseed=nonseed_rows,
+    )
+
+    # ---- 度匹配校正：标注集富集检验（零分布 = 度匹配随机基因集的平均得分） ----
+    if annotate:
+        ann = sorted({str(g).strip().upper() for g in annotate
+                      if g and str(g).strip().upper() in idx})
+        if ann:
+            ann_idx = np.array([idx[g] for g in ann])
+            obs_mean = float(scores[ann_idx].mean())
+            rng = np.random.default_rng(null_seed)
+            perms = int(null_perms) if null_perms else 0
+            null_means = np.full(max(perms, 0), np.nan)
+            for i in range(perms):
+                sample = degree_matched_sample(degree_map, ann, bin_size, rng)
+                s_idx = np.array([idx[g] for g in sample])
+                null_means[i] = float(scores[s_idx].mean())
+            valid = null_means[~np.isnan(null_means)]
+            enrichment = {
+                "n_annotated": len(ann),
+                "obs_mean": obs_mean,
+                "null_mean": float(valid.mean()) if len(valid) else None,
+                "n_perms": int(len(valid)),
+                "z": None, "p": None,
+            }
+            if len(valid) > 0 and float(valid.std()) > 0:
+                mu_n, sd_n = float(valid.mean()), float(valid.std())
+                enrichment["z"] = float((obs_mean - mu_n) / sd_n)
+                # 单侧经验 p：极端方向是 obs 偏大（富集），故数 null >= obs。
+                # （注意与邻近度相反——那边的极端方向是 d_c 偏小。）
+                enrichment["p"] = float((1 + int((valid >= obs_mean).sum())) / (len(valid) + 1))
+            result["enrichment"] = enrichment
+            # 行级标注（种子行不含——种子本身即查询集合，标注无信息量）
+            ann_set = set(ann)
+            for row in nonseed_rows:
+                row["annotated"] = row["gene"] in ann_set
+    return result
+
+
+def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None = None,
+                   annotate: set | None = None) -> dict:
+    """
+    RWR 入口（带文件缓存）：成功才落盘 JSON，失败/未构建即时返回不缓存。
+
+    缓存键 = 种子基因集 + 标注集 + 物种 + α/tol/max_iter + 校正置换参数
+    + 背景网络版本/阈值。标注集参与键是必须的：度匹配校正（enrichment）
+    依赖全量得分向量，只能在计算期完成，不能命中旧缓存后补算。
+    非种子行数截断为 config.RWR_CACHE_TOP_N。
+    """
+    import hashlib
+    import json
+    import os
+
+    import config
+
+    from .caching import _is_cache_fresh
+    from . import interactome as itx
+
+    seeds_norm = sorted({str(g).strip().upper() for g in seed_genes if g and str(g).strip()})
+    ann_norm = sorted({str(g).strip().upper() for g in annotate
+                       if g and str(g).strip()}) if annotate else []
+    payload = ("\r".join(seeds_norm) + "||" + "\r".join(ann_norm)
+               + f"|{species}|{config.RWR_ALPHA}|{config.RWR_TOL}|{config.RWR_MAX_ITER}"
+               + f"|{config.RWR_NULL_PERMS}|{config.RWR_NULL_SEED}"
+               + f"|{config.PROXIMITY_DEGREE_BIN_SIZE}"
+               + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}")
+    md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
+    name = f"rwr_{label}_{md5}.json" if label else f"rwr_{md5}.json"
+    os.makedirs(config.RWR_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(config.RWR_CACHE_DIR, name)
+
+    result = None
+    if _is_cache_fresh(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                result = json.load(f)
+            if "top_nonseed" not in result or "seeds" not in result:
+                # 旧版混合窗口 schema 的残留缓存：按损坏处理清除重算
+                raise ValueError("outdated RWR cache schema")
+            result["cached"] = True
+            logging.info("RWR cache hit: %s", name)
+        except Exception:
+            # 损坏/过期缓存按"不存在"处理并清除（同 M1 空缓存清理语义）
+            logging.exception("RWR cache unreadable, removing: %s", cache_path)
+            try:
+                os.remove(cache_path)
+            except OSError:
+                pass
+            result = None
+
+    if result is None:
+        try:
+            ctx = _lcc_context(species)
+            result = _rwr_from_context(
+                ctx, seeds_norm,
+                alpha=config.RWR_ALPHA, tol=config.RWR_TOL, max_iter=config.RWR_MAX_ITER,
+                top_nonseed=config.RWR_CACHE_TOP_N,
+                annotate=annotate,
+                null_perms=config.RWR_NULL_PERMS, null_seed=config.RWR_NULL_SEED,
+                bin_size=config.PROXIMITY_DEGREE_BIN_SIZE)
+        except itx.InteractomeNotBuiltError:
+            logging.warning("RWR skipped: interactome not built")
+            return {"ok": False, "error": "not_built", "seeds": [], "top_nonseed": [],
+                    "coverage": {}, "cached": False}
+        if result.get("ok"):
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False)
+            result["cached"] = False
     return result

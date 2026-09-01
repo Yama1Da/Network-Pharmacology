@@ -8,14 +8,19 @@ import streamlit as st
 import config
 import Utils
 from i18n import t
-from core.network_algorithms import detect_louvain_modules, enrich_modules, run_proximity_cached
+from core.network_algorithms import (
+    detect_louvain_modules,
+    enrich_modules,
+    run_proximity_cached,
+    run_rwr_cached,
+)
 from core.enrichment import (
     build_ranked_list,
     fetch_enrichment_gsea_prerank,
     gsea_gene_sets,
     render_gsea_plot,
 )
-from core.ppi import render_pyvis_html, save_gsea_results, save_module_results
+from core.ppi import render_pyvis_html, save_gsea_results, save_module_results, save_rwr_results
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
@@ -179,6 +184,23 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
             logging.exception("Proximity step failed during report build — skipped gracefully")
             proximity_result = {"ok": False, "error": "exception", "coverage": {}, "cached": False}
 
+    # Step 4.8: RWR 靶点优先级排序（M4，仅 names 模式）——双侧种子各跑一次
+    # （幂迭代毫秒级，计算近零成本）。标注集（is_drug/is_disease）与缓存解耦，
+    # 由 run_rwr_cached 在缓存命中后按当前对侧靶点集附加。
+    # CSV 落盘放在 Step 5 saved 生成之后（与 GSEA 落盘并排），避免前向引用。
+    rwr_results: dict = {}
+    if mode == "names":
+        try:
+            drug_syms = {str(g).strip().upper() for g in drug_df_full["approvedSymbol"]}
+            disease_syms = {str(g).strip().upper() for g in disease_df_full["approvedSymbol"]}
+            rwr_results["disease_seeds"] = run_rwr_cached(
+                list(disease_syms), label=f"{prefix}_disease_seeds", annotate=drug_syms)
+            rwr_results["drug_seeds"] = run_rwr_cached(
+                list(drug_syms), label=f"{prefix}_drug_seeds", annotate=disease_syms)
+        except Exception:
+            logging.exception("RWR step failed during report build — skipped gracefully")
+            rwr_results = {}
+
     # Step 5: 保存到 DOWNLOADS_DIR（替代式：同 prefix 旧目录会被替换）
     saved = Utils.save_ppi_results(
         graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix,
@@ -189,6 +211,18 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     # GSEA 结果 CSV 落盘进 <prefix>_data（空表不落盘），并入 saved 使 ZIP 自动包含
     gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
     saved.update(gsea_saved)
+    # RWR 结果 CSV 落盘（空表/失败不落盘），并入 saved 使 ZIP 自动包含
+    if rwr_results:
+
+        def _rwr_df(r: dict):
+            return pd.DataFrame(r["top"]) if r.get("ok") and r.get("top") else None
+
+        rwr_saved = save_rwr_results(
+            saved["directory"], prefix,
+            disease_df=_rwr_df(rwr_results.get("disease_seeds", {})),
+            drug_df=_rwr_df(rwr_results.get("drug_seeds", {})),
+        )
+        saved.update(rwr_saved)
 
     return {
         "genes": genes,
@@ -204,6 +238,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         "enrichment_dot_fig": enrichment_dot_fig,
         "gsea": gsea_results,
         "proximity": proximity_result,
+        "rwr": rwr_results,
         "saved": saved,
         "prefix": prefix,
         "params": (mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree),
@@ -329,6 +364,84 @@ if ppi is not None:
                              s_in=cov.get("disease_in_lcc", 0), s_tot=cov.get("disease_total", 0),
                              n_perm=proximity_result.get("n_perm"),
                              cached=t("net.prox_cached") if proximity_result.get("cached") else ""))
+                # 去交集版本：剔除共同靶点后仍显著，才能排除"纯属直接作用"的解释
+                if proximity_result.get("d_c_excl") is not None:
+                    st.caption(t("net.prox_excl_caption", n=proximity_result.get("n_excl") or 0))
+                    col_q1, col_q2, col_q3 = st.columns(3)
+                    col_q1.metric(t("net.prox_dc_excl"), f"{proximity_result['d_c_excl']:.3f}")
+                    col_q2.metric(t("net.prox_z_excl"),
+                                  f"{proximity_result['z_excl']:.3f}"
+                                  if proximity_result.get("z_excl") is not None else "—")
+                    col_q3.metric(t("net.prox_p_excl"),
+                                  f"{proximity_result['p_excl']:.4f}"
+                                  if proximity_result.get("p_excl") is not None else "—")
+                elif proximity_result.get("ok"):
+                    st.caption(t("net.prox_excl_unavailable"))
+
+        # ---------- 靶点优先级排序（RWR，M4，仅 names 模式） ----------
+        # 随主分析自动计算双侧（种子=疾病 / 种子=药物）；radio 仅切换展示，无需重算。
+        rwr_results = ppi.get("rwr") or {}
+        if rwr_results and input_mode == "names":
+            st.divider()
+            with st.expander(t("net.rwr_subheader")):
+                st.caption(t("net.rwr_caption", alpha=config.RWR_ALPHA))
+                rwr_side = st.radio(
+                    t("net.rwr_side"), ["disease_seeds", "drug_seeds"],
+                    format_func=lambda v: (t("net.rwr_side_disease") if v == "disease_seeds"
+                                           else t("net.rwr_side_drug")),
+                    horizontal=True, key="rwr_side",
+                )
+                rwr_res = rwr_results.get(rwr_side) or {}
+                rwr_err = rwr_res.get("error")
+                if rwr_err == "not_built":
+                    st.warning(t("net.rwr_not_built"))
+                elif rwr_err:
+                    st.error(t("net.rwr_fail", reason=rwr_err))
+                elif rwr_res.get("ok"):
+                    cov = rwr_res.get("coverage", {})
+                    conv_txt = t("net.rwr_conv_yes") if rwr_res.get("converged") else t("net.rwr_conv_no")
+                    anno_label = (t("net.rwr_col_is_drug") if rwr_side == "disease_seeds"
+                                  else t("net.rwr_col_is_disease"))
+                    st.caption(t("net.rwr_stats",
+                                 alpha=rwr_res.get("alpha"), iters=rwr_res.get("n_iter"),
+                                 conv=conv_txt,
+                                 n_seed=cov.get("seed_in_lcc", 0), n_tot=cov.get("seed_total", 0),
+                                 lcc=rwr_res.get("lcc_nodes"), mass=rwr_res.get("seed_mass", 0.0),
+                                 cached=t("net.rwr_cached") if rwr_res.get("cached") else ""))
+                    # 度匹配校正：标注集平均得分 vs 度匹配随机集（排除枢纽度数假象）
+                    enr = rwr_res.get("enrichment")
+                    if enr and enr.get("z") is not None:
+                        if enr.get("p") is not None and enr["p"] < 0.05:
+                            st.success(t("net.rwr_enrich_sig",
+                                         n=enr.get("n_annotated", 0), z=enr["z"], p=enr["p"]))
+                        else:
+                            st.info(t("net.rwr_enrich_nosig",
+                                      n=enr.get("n_annotated", 0), z=enr["z"], p=enr["p"]))
+                    top_df = pd.concat([
+                        pd.DataFrame(rwr_res.get("seeds", [])).assign(is_seed=True),
+                        pd.DataFrame(rwr_res.get("top_nonseed", [])).assign(is_seed=False),
+                    ], ignore_index=True) if (rwr_res.get("seeds") or rwr_res.get("top_nonseed")) else pd.DataFrame()
+                    if top_df.empty:
+                        st.info(t("net.rwr_none"))
+                    else:
+                        top_df = top_df.sort_values("score", ascending=False).reset_index(drop=True)
+                        seeds_df = top_df[top_df["is_seed"]]
+                        nonseed_df = top_df[~top_df["is_seed"]].head(config.RWR_TOP_N)
+                        st.markdown(t("net.rwr_top_header", n=len(nonseed_df)))
+                        show_df = nonseed_df[["gene", "score"]].copy()
+                        if "annotated" in nonseed_df.columns:
+                            show_df[anno_label] = nonseed_df["annotated"]
+                        st.dataframe(show_df, width="stretch", hide_index=True)
+                        with st.expander(t("net.rwr_seeds_header", n=len(seeds_df))):
+                            st.dataframe(seeds_df[["gene", "score"]],
+                                         width="stretch", hide_index=True)
+                        st.download_button(
+                            t("net.dl_rwr_csv"),
+                            top_df.to_csv(index=False).encode("utf-8-sig"),
+                            f"{prefix}_rwr_{rwr_side}.csv", "text/csv", width="stretch",
+                        )
+                        if "rwr_disease_csv" in saved or "rwr_drug_csv" in saved:
+                            st.caption(t("net.rwr_in_report", dir=saved["directory"]))
 
         # ---------- 富集分析展示 ----------
         st.divider()

@@ -537,3 +537,48 @@ def save_gsea_results(
     if paths:
         logging.info("GSEA results saved to %s (%d files)", directory, len(paths))
     return paths
+
+
+def save_rwr_results(
+    directory: str,
+    prefix: str,
+    disease_df: pd.DataFrame | None = None,
+    drug_df: pd.DataFrame | None = None,
+) -> dict:
+    """
+    将 RWR 靶点优先级排序结果追加保存到既有分析目录（<prefix>_data）。
+
+    约定与 save_gsea_results / save_module_results 一致：空表不落盘
+    （避免无效空文件进入成果目录与 ZIP）。
+    文件名：
+      - {prefix}_rwr_disease_seeds.csv  种子=疾病靶点的排序表（disease_df 非空时）
+      - {prefix}_rwr_drug_seeds.csv     种子=药物靶点的排序表（drug_df 非空时）
+
+    Parameters
+    ----------
+    directory : str
+        目标目录（save_ppi_results 返回的 saved["directory"]）。
+    prefix : str
+        文件名前缀，如 "aspirin_cancer"。
+    disease_df / drug_df : pd.DataFrame | None
+        两侧排序表（gene / score / is_seed / annotated 列）；None 或空表时不落盘。
+
+    Returns
+    -------
+    dict
+        实际写出的文件路径（空表对应的键不存在）。调用方应把返回值并入
+        saved 字典，使 make_ppi_zip 打包时自动包含这些文件。
+    """
+    os.makedirs(directory, exist_ok=True)
+    paths: dict = {}
+    for key, name, df in (
+        ("rwr_disease_csv", f"{prefix}_rwr_disease_seeds.csv", disease_df),
+        ("rwr_drug_csv", f"{prefix}_rwr_drug_seeds.csv", drug_df),
+    ):
+        if df is not None and not df.empty:
+            path = os.path.join(directory, name)
+            df.to_csv(path, index=False, encoding="utf-8-sig")
+            paths[key] = path
+    if paths:
+        logging.info("RWR results saved to %s (%d files)", directory, len(paths))
+    return paths

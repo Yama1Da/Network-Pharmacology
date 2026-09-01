@@ -38,9 +38,12 @@ from core.network_algorithms import (
     _lcc_context,
     _multi_source_bfs,
     _proximity_zscore_from_context,
+    build_sparse_adj,
     degree_matched_sample,
     network_proximity,
+    rwr_prioritize,
     run_proximity_cached,
+    run_rwr_cached,
 )
 
 
@@ -542,11 +545,188 @@ def t_prox_real_and_cached():
     res1 = run_proximity_cached(drug, disease, label="selfcheck_prox")
     assert res1["ok"], res1
     assert all(isinstance(res1[k], float) for k in ("d_c", "z", "p_empirical"))
+    # v2：去交集字段。该药物/疾病对无共享靶点 → n_excl = 疾病集全部 5 个，
+    # d_c_excl 应与 d_c 完全相等（剔除的是空集）
+    assert res1.get("n_excl") == 5, res1.get("n_excl")
+    assert res1.get("d_c_excl") is not None
+    assert abs(res1["d_c_excl"] - res1["d_c"]) < 1e-12
+    assert res1.get("z_excl") is not None
     res2 = run_proximity_cached(drug, disease, label="selfcheck_prox")
     assert res2.get("cached") is True, "second call must hit cache"
     assert abs(res2["z"] - res1["z"]) < 1e-12
     print(f"      [real interactome] d_c={res1['d_c']:.3f} z={res1['z']:.3f} "
-          f"p={res1['p_empirical']:.4f} ({res1['n_perm']} perms)")
+          f"p={res1['p_empirical']:.4f} | excl d_c={res1['d_c_excl']:.3f} "
+          f"z={res1['z_excl']:.3f} ({res1['n_perm']} perms)")
+
+
+# ---------- M4：RWR 靶点优先级排序 ----------
+
+def t_rwr_direction_and_mass():
+    """方向锁定：列随机转移（列=出发点）。星形图中心注入质量 → 一次迭代后
+    每片叶子 0.25、总和≈1（行归一化的错误实现会让叶子各得 1.0、总和=4）。"""
+    import scipy.sparse as sp
+
+    G = nx.star_graph(4)  # 节点0为中心，度4；叶1..4度1
+    G = nx.relabel_nodes(G, {i: f"N{i}" for i in G.nodes()})
+    W, nodes = build_sparse_adj(G)
+    # 列随机性：每列和为 1
+    col_sum = np.asarray(W.sum(axis=0)).ravel()
+    assert np.allclose(col_sum, 1.0), col_sum
+    # 中心注入 → 一次扩散后叶子各 0.25
+    idx = {g: i for i, g in enumerate(nodes)}
+    r = np.zeros(len(nodes))
+    r[idx["N0"]] = 1.0
+    r1 = W @ r
+    for leaf in ("N1", "N2", "N3", "N4"):
+        assert abs(r1[idx[leaf]] - 0.25) < 1e-12, (leaf, r1[idx[leaf]])
+    assert abs(r1.sum() - 1.0) < 1e-12, r1.sum()
+
+
+def t_rwr_alpha0_returns_seeds():
+    """α=0（无游走）时稳态解 r = p：质量精确落在种子上。"""
+    G = nx.barabasi_albert_graph(30, 2, seed=1)
+    G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
+    df = rwr_prioritize(G, ["N00", "N05"], alpha=0.0, tol=1e-12, max_iter=50)
+    seed_rows = df[df["is_seed"]]
+    nonseed = df[~df["is_seed"]]
+    assert len(seed_rows) == 2
+    assert set(seed_rows["gene"]) == {"N00", "N05"}
+    assert seed_rows["score"].round(12).tolist() == [0.5, 0.5]
+    assert (nonseed["score"].abs() < 1e-12).all(), "non-seeds must have zero mass at alpha=0"
+
+
+def t_rwr_prioritize_basic():
+    """α=0.7 幂迭代：总质量守恒（连通图）、按 score 降序、is_seed 标注正确。"""
+    G = nx.barabasi_albert_graph(50, 2, seed=3)
+    G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
+    df = rwr_prioritize(G, ["N00", "N03", "NOT_IN_GRAPH"], alpha=0.7)
+    assert abs(df["score"].sum() - 1.0) < 1e-6, df["score"].sum()
+    assert df["score"].is_monotonic_decreasing
+    assert df["is_seed"].sum() == 2
+    # 枢纽节点（度最高的 N00 是 BA 图最早节点）应排在前列
+    assert df.iloc[0]["gene"] in ("N00", "N03") or df.iloc[0]["score"] > 0.01
+
+
+def t_rwr_from_context_guard_and_annotate():
+    """覆盖率守卫（种子全不在 LCC → 拒算）+ 纯结果不含标注字段（标注与缓存解耦，
+    由 run_rwr_cached 在缓存命中后按当前 annotate 集附加——见 t_rwr_real_and_cached）。"""
+    G = _karate()
+    ctx = _graph_context(G)  # 复用 M3 的打包函数
+    res = na._rwr_from_context(ctx, ["NOPE1", "NOPE2"], alpha=0.7, tol=1e-8, max_iter=50)
+    assert res["error"] == "empty_after_filter" and not res["ok"]
+    known = list(G.nodes())[:5]
+    res2 = na._rwr_from_context(ctx, known, alpha=0.7, tol=1e-8, max_iter=50)
+    assert res2["ok"] and res2["n_seeds"] == 5 and res2["converged"]
+    assert all("annotated" not in row for row in res2["top_nonseed"])
+    assert all("annotated" not in row for row in res2["seeds"])
+
+
+def t_prox_excl_overlap():
+    """去交集 d_c：共享靶点（距离 0）被剔除后 d_c 只会变大或不变；
+    疾病集被药物集完全覆盖时 excl 不可用（None）且不报错。"""
+    G = _karate()
+    ctx = _graph_context(G)
+    nodes = list(G.nodes())
+    A = nodes[:8]
+    B = nodes[4:16]  # 与 A 共享 4 个基因
+    res = _proximity_zscore_from_context(ctx, A, B, n_perm=30, seed=0, bin_size=100,
+                                         drug_ratio=0.0, disease_ratio=0.0)
+    assert res["ok"] and res["n_excl"] == 8
+    assert res["d_c_excl"] is not None and res["d_c_excl"] >= res["d_c"]
+    assert res["z_excl"] is not None and res["p_excl"] is not None
+    # B ⊆ A：去交集后为空 → excl 字段为 None（不可用）
+    res2 = _proximity_zscore_from_context(ctx, nodes[:10], nodes[:5], n_perm=10, seed=0,
+                                          bin_size=100, drug_ratio=0.0, disease_ratio=0.0)
+    assert res2["ok"] and res2["d_c_excl"] is None and res2["n_excl"] == 0
+
+
+def t_rwr_enrich_synthetic():
+    """标注集富集：种子=枢纽、标注=同一批枢纽 → 标注集平均得分显著高于度匹配随机
+    （z 明显为正、p 小）；行级 annotated 标志与标注集严格一致。"""
+    G = nx.barabasi_albert_graph(120, 3, seed=7)
+    G = nx.relabel_nodes(G, {i: f"N{i:03d}" for i in G.nodes()})
+    degrees = dict(G.degree())
+    by_deg = sorted(degrees, key=degrees.get, reverse=True)
+    hubs = by_deg[:8]
+    mid = by_deg[8:12]  # 次高度节点（大概率落在非种子 Top 窗口内）
+    ctx = _graph_context(G)
+    ann = set(hubs) | set(mid)
+    res = na._rwr_from_context(ctx, hubs, alpha=0.7, tol=1e-8, max_iter=100,
+                               annotate=ann, null_perms=100, null_seed=0,
+                               bin_size=100, top_nonseed=20)
+    assert res["ok"] and res["enrichment"] is not None
+    enr = res["enrichment"]
+    assert enr["n_annotated"] == 12 and enr["z"] > 1.0, enr
+    assert enr["p"] is not None and enr["p"] <= 0.05
+    for r in res["top_nonseed"]:
+        assert r.get("annotated") == (r["gene"] in ann), r
+
+
+def t_rwr_real_and_cached():
+    """真实互作组端到端（未构建则跳过）：分列表结构、收敛、缓存命中、标注解耦。"""
+    if not itx.is_built("Human"):
+        return  # SKIP
+    import glob
+    import config
+
+    # 幂等：清理历史运行留下的测试缓存（cached-False 断言需要一次全新计算）
+    for old in glob.glob(os.path.join(config.RWR_CACHE_DIR, "rwr_selfcheck_rwr_*.json")):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+
+    seeds = ["TP53", "EGFR", "AKT1", "MYC", "STAT3"]
+    res1 = run_rwr_cached(seeds, label="selfcheck_rwr")
+    assert res1["ok"], res1
+    assert res1["converged"] and res1["n_iter"] >= 1
+    # 质量守恒校验的是全节点总质量（连通图≈1.0）；seed_mass 是"质量留在种子上的
+    # 比例"，属于信息量指标（5 个种子占 31% 即显著集中），两者语义不可混淆
+    assert abs(res1["total_mass"] - 1.0) < 1e-6, res1["total_mass"]
+    assert 0.0 < res1["seed_mass"] < 1.0, res1["seed_mass"]
+    # 分列表：种子全量（5 个），非种子独立截断为缓存窗口，且不含任何种子
+    assert len(res1["seeds"]) == 5, len(res1["seeds"])
+    assert {r["gene"] for r in res1["seeds"]} == {"TP53", "EGFR", "AKT1", "MYC", "STAT3"}
+    assert len(res1["top_nonseed"]) == config.RWR_CACHE_TOP_N, len(res1["top_nonseed"])
+    seed_names = {r["gene"] for r in res1["seeds"]}
+    assert all(r["gene"] not in seed_names for r in res1["top_nonseed"])
+    assert res1["top_nonseed"][0]["score"] >= res1["top_nonseed"][-1]["score"]
+    # 标注集进缓存键：带 annotate 的调用是全新计算（行级标注 + enrichment 随计算生成）
+    first_ns = res1["top_nonseed"][0]["gene"]
+    res2 = run_rwr_cached(seeds, label="selfcheck_rwr", annotate={first_ns})
+    assert res2["ok"] and res2.get("cached") is False
+    row0 = res2["top_nonseed"][0]
+    assert row0["gene"] == first_ns and row0["annotated"] is True
+    assert not any(r.get("annotated") for r in res2["top_nonseed"][1:])
+    enr = res2.get("enrichment")
+    assert enr and enr["n_annotated"] == 1 and enr["z"] is not None and enr["p"] is not None
+    res3 = run_rwr_cached(seeds, label="selfcheck_rwr", annotate={first_ns})
+    assert res3.get("cached") is True
+    assert abs(res3["top_nonseed"][0]["score"] - row0["score"]) < 1e-15
+    print(f"      [real interactome] iters={res1['n_iter']} converged={res1['converged']} "
+          f"seeds={len(res1['seeds'])} top_nonseed={len(res1['top_nonseed'])} "
+          f"top5={[r['gene'] for r in res1['top_nonseed'][:5]]} "
+          f"enrich_z={enr['z']:.2f} enrich_p={enr['p']:.4f}")
+
+
+def t_rwr_truncation_guarantee():
+    """回归：种子数很大时（甚至超过缓存窗口），非种子 Top-N 不得被种子挤出、
+    种子表必须全量保留——M4 上线当日实际事故（aspirin 247 种子 → 非种子仅剩
+    12 个 / 疾病侧非种子为空）的锁定测试。"""
+    G = nx.barabasi_albert_graph(60, 2, seed=5)
+    G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
+    ctx = _graph_context(G)
+    nodes = ctx[0]
+    many_seeds = list(nodes[:45])  # 60 节点中 45 个种子（窗口只有 5）
+    res = na._rwr_from_context(ctx, many_seeds, alpha=0.7, tol=1e-8, max_iter=100,
+                               top_nonseed=5)
+    assert res["ok"]
+    assert len(res["seeds"]) == 45, f"seeds must be kept in full, got {len(res['seeds'])}"
+    assert len(res["top_nonseed"]) == 5, f"non-seed window must stay full, got {len(res['top_nonseed'])}"
+    seed_set = set(many_seeds)
+    assert all(r["gene"] not in seed_set for r in res["top_nonseed"])
+    scores = [r["score"] for r in res["top_nonseed"]]
+    assert scores == sorted(scores, reverse=True), "non-seed rows must be score-desc"
 
 
 def main():
@@ -573,7 +753,15 @@ def main():
         ("prox zscore synthetic sign test", t_prox_zscore_synthetic),
         ("prox coverage guard", t_prox_coverage_guard),
         ("prox sparse vs reference d_c", t_prox_reference_impl_consistency),
+        ("prox excl-overlap variant", t_prox_excl_overlap),
         ("prox real interactome + cache (skip if not built)", t_prox_real_and_cached),
+        ("rwr direction & mass conservation", t_rwr_direction_and_mass),
+        ("rwr alpha=0 returns seeds", t_rwr_alpha0_returns_seeds),
+        ("rwr prioritize basic", t_rwr_prioritize_basic),
+        ("rwr coverage guard + annotation decoupling", t_rwr_from_context_guard_and_annotate),
+        ("rwr enrichment synthetic", t_rwr_enrich_synthetic),
+        ("rwr real interactome + cache (skip if not built)", t_rwr_real_and_cached),
+        ("rwr truncation guarantee (large seed set)", t_rwr_truncation_guarantee),
     ]
     print(f"==== network_algorithms selfcheck: {len(tests)} tests ====")
     ok = all([check(name, fn) for name, fn in tests])
