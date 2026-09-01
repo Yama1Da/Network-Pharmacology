@@ -97,6 +97,54 @@ run_btn = st.button(t("net.build_report"), key="run_btn", type="primary", width=
 
 
 # ---------- 分析执行 ----------
+def _compute_ppi_modules(graph, organism, saved, prefix) -> dict:
+    """Louvain 模块检测 + 模块富集 + 落盘，返回交互区展示所需的完整结果字典。
+
+    Build Report 自动执行与交互区手动重跑共用本函数，保证两条路径产出一致。
+    """
+    modules = detect_louvain_modules(
+        graph,
+        resolution=config.LOUVAIN_RESOLUTION,
+        seed=config.LOUVAIN_SEED,
+    )
+    summary_df = pd.DataFrame([
+        {
+            "module_id": m["module_id"],
+            "size": m["size"],
+            "avg_degree": m["avg_degree"],
+            "genes_preview": ", ".join(m["genes"][:8]) + ("…" if m["size"] > 8 else ""),
+        }
+        for m in modules if m["size"] >= 2
+    ])
+    # 仅多基因模块参与着色；单点模块节点渲染为浅灰
+    module_map = {
+        gene: m["module_id"]
+        for m in modules if m["size"] >= 2
+        for gene in m["genes"]
+    }
+    long_df, failures, no_sig = enrich_modules(
+        modules,
+        organism=organism,
+        min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
+        top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
+    )
+    # 结果落盘到本次分析目录（<prefix>_data），空表不落盘；
+    # saved 即 session_state 中的字典，追加后页面 ZIP 自动包含模块文件，
+    # Data Management 的整目录 zip 也会一并打包。
+    mod_saved = save_module_results(
+        saved["directory"], prefix, summary_df, long_df)
+    saved.update(mod_saved)
+    return {
+        "modules": modules,
+        "summary_df": summary_df,
+        "module_map": module_map,
+        "long_df": long_df,
+        "failures": failures,
+        "no_sig": no_sig,
+        "saved_paths": mod_saved,
+    }
+
+
 def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree) -> dict:
     """执行完整分析（交集→STRING→建图→指标→Hub→富集→可视化→保存），返回结果字典。"""
     # ============ 物种策略说明（待优化时确认） ============
@@ -235,6 +283,17 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         )
         saved.update(rwr_saved)
 
+    # Step 5.5: 蛋白模块检测（Louvain + 模块富集）——Build Report 自动跑。
+    # 仅依赖 PPI 图，names / genes 两种模式均可用；需在 Step 5 之后执行
+    # （落盘目录由 saved 生成）。整段 try/except 兜底：模块检测出任何
+    # 意外都不能拖垮主报告链路（主分析结果仍完整，仅少两份模块 CSV）。
+    modules_result: dict | None = None
+    try:
+        modules_result = _compute_ppi_modules(graph, organism, saved, prefix)
+    except Exception:
+        logging.exception("Module detection step failed during report build — skipped gracefully")
+        modules_result = None
+
     return {
         "genes": genes,
         "edges_df": edges_df,
@@ -250,6 +309,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         "gsea": gsea_results,
         "proximity": proximity_result,
         "rwr": rwr_results,
+        "modules": modules_result,
         "saved": saved,
         "prefix": prefix,
         "params": (mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree),
@@ -293,6 +353,13 @@ if run_btn:
                 side: {**info, "ppi_params": ppi_result["params"]}
                 for side, info in ppi_result.get("gsea", {}).items()
             }
+            # Build Report 已自动跑完模块检测 → 直接作为交互区的初始结果
+            # （检测失败时置 None，交互区仅保留手动重跑按钮作兜底）。
+            mods_auto = ppi_result.get("modules")
+            st.session_state.ppi_modules = (
+                {**mods_auto, "ppi_params": ppi_result["params"]}
+                if mods_auto is not None else None
+            )
         st.rerun()
 
 # ---------- 结果展示（读取 session_state，不重新分析） ----------
@@ -576,8 +643,9 @@ if ppi is not None:
                             )
 
         # ---------- 蛋白模块检测（Louvain + 模块富集） ----------
-        # 基于 session_state 中已构建的 PPI 图，独立按钮触发；结果连同其依赖的
-        # 主分析参数指纹一起存 session_state——主分析参数变更后模块结果自动标记过期。
+        # Build Report 已随主分析自动跑完，结果连同其依赖的主分析参数指纹一起存
+        # session_state——主分析参数变更后模块结果自动标记过期。此处按钮用于
+        # 手动重跑（如自动步骤失败时的兜底入口）。
         st.divider()
         with st.expander(t("net.modules_subheader")):
             st.caption(t("net.modules_caption",
@@ -592,47 +660,9 @@ if ppi is not None:
                     st.warning(t("net.params_changed"))
                 else:
                     with st.spinner(t("net.modules_spinner_detect")):
-                        modules = detect_louvain_modules(
-                            graph,
-                            resolution=config.LOUVAIN_RESOLUTION,
-                            seed=config.LOUVAIN_SEED,
-                        )
-                        summary_df = pd.DataFrame([
-                            {
-                                "module_id": m["module_id"],
-                                "size": m["size"],
-                                "avg_degree": m["avg_degree"],
-                                "genes_preview": ", ".join(m["genes"][:8]) + ("…" if m["size"] > 8 else ""),
-                            }
-                            for m in modules if m["size"] >= 2
-                        ])
-                        # 仅多基因模块参与着色；单点模块节点渲染为浅灰
-                        module_map = {
-                            gene: m["module_id"]
-                            for m in modules if m["size"] >= 2
-                            for gene in m["genes"]
-                        }
                         # params[5] = organism（见上方 current_params 的元组顺序）
-                        long_df, failures, no_sig = enrich_modules(
-                            modules,
-                            organism=current_params[5],
-                            min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
-                            top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
-                        )
-                        # 结果落盘到本次分析目录（<prefix>_data），空表不落盘；
-                        # saved 即 session_state 中的字典，追加后页面 ZIP 自动包含模块文件，
-                        # Data Management 的整目录 zip 也会一并打包。
-                        mod_saved = save_module_results(
-                            saved["directory"], prefix, summary_df, long_df)
-                        saved.update(mod_saved)
                         st.session_state.ppi_modules = {
-                            "modules": modules,
-                            "summary_df": summary_df,
-                            "module_map": module_map,
-                            "long_df": long_df,
-                            "failures": failures,
-                            "no_sig": no_sig,
-                            "saved_paths": mod_saved,
+                            **_compute_ppi_modules(graph, current_params[5], saved, prefix),
                             "ppi_params": ppi["params"],
                         }
                     st.rerun()

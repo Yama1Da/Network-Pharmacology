@@ -183,8 +183,8 @@ TEXT: dict[str, dict[str, str]] = {
         "net.success": "✅ Report analysis complete",
         # ---- 蛋白模块检测（Louvain） ----
         "net.modules_subheader": "🧩 Protein module detection (Louvain)",
-        "net.modules_caption": "Partitions the PPI network into functional modules. Modules with ≥ {min_size} genes (largest {top_n}) are sent to enrichment (g:Profiler first, Enrichr fallback).",
-        "net.modules_run": "🧩 Run module detection & enrichment",
+        "net.modules_caption": "Runs automatically when Build Report is clicked. Partitions the PPI network into functional modules. Modules with ≥ {min_size} genes (largest {top_n}) are sent to enrichment (g:Profiler first, Enrichr fallback).",
+        "net.modules_run": "🧩 Re-run module detection & enrichment",
         "net.modules_spinner_detect": "Detecting Louvain modules and running module enrichment…",
         "net.modules_summary": "**Module summary** (hidden {n_singles} single-gene modules)",
         "net.modules_none": "No multi-gene module detected — try lowering the confidence threshold.",
@@ -537,8 +537,8 @@ TEXT: dict[str, dict[str, str]] = {
         "net.success": "✅ 报告分析完成",
         # ---- 蛋白模块检测（Louvain） ----
         "net.modules_subheader": "🧩 蛋白模块检测（Louvain）",
-        "net.modules_caption": "将 PPI 网络划分为功能模块；规模 ≥ {min_size} 的前 {top_n} 个模块将送入富集分析（g:Profiler 优先、Enrichr 降级）。",
-        "net.modules_run": "🧩 运行模块检测与富集",
+        "net.modules_caption": "点击生成报告后自动运行；将 PPI 网络划分为功能模块，规模 ≥ {min_size} 的前 {top_n} 个模块将送入富集分析（g:Profiler 优先、Enrichr 降级）。",
+        "net.modules_run": "🧩 重新运行模块检测与富集",
         "net.modules_spinner_detect": "正在进行 Louvain 模块检测与模块富集…",
         "net.modules_summary": "**模块汇总**（已隐藏 {n_singles} 个单基因模块）",
         "net.modules_none": "未检测到多基因模块——可尝试降低置信度阈值。",
