@@ -293,3 +293,39 @@ MD_STAR_DIR = os.path.join(DOWNLOADS_DIR, "star")
 # 说明：受体蛋白 3D 结构只能从 RCSB 下载（pubchempy 只管 PubChem 小分子）；
 #       配体 3D SDF 则统一由 pubchempy.get_sdf(cid, record_type="3d") 获取，无需单独 URL。
 PDB_DOWNLOAD_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
+
+# ======== 分子对接：AlphaFold 预测结构兜底（M6） ========
+# 部署级总开关（页面另有默认关闭的 toggle；两者都开才走 AF 兜底）
+ALPHAFOLD_ENABLED = True
+# 当前 AlphaFold DB 模型版本：实测 v2-v5 均已 404、v6 为现行版本。
+# AlphaFold 升级时只改这里，旧缓存文件（文件名含版本）自然失效。
+ALPHAFOLD_MODEL_VERSION = "v6"
+# 文件直链模板（已实测 200；accession 为 UniProt reviewed 主条目号，不含 isoform 后缀）
+ALPHAFOLD_FILE_URL_TEMPLATE = "https://alphafold.ebi.ac.uk/files/AF-{accession}-F1-model_{version}.pdb"
+# 基因→UniProt 主条目查询源链（依次尝试；基因名做客户端精确过滤，跳过 isoform 后缀）
+# - ebi:     EBI Proteins API（与 AlphaFold 文件同域族，实测可达性更好，放首位）
+# - uniprot: UniProt REST 官方（gene_exact 精确匹配；部分网络不可达，自动跳过）
+UNIPROT_LOOKUP_SOURCES = ("ebi", "uniprot")
+EBI_PROTEINS_API_URL = "https://www.ebi.ac.uk/proteins/api/proteins"
+UNIPROT_SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
+# 基因→UniProt 查询永久缓存文件（确定性映射含负缓存，无 TTL；网络失败不缓存）
+UNIPROT_LOOKUP_CACHE = os.path.join(DOCKING_CACHE_DIR, "uniprot_gene_map.json")
+# AF 兜底对接盒：AF 结构无共晶配体，初始盒=整蛋白包围盒；任一边超此上限(Å)时
+# 以质心为中心收拢（仅为可跑的起始值，页面强制提示人工确认口袋覆盖并微调）
+DOCKING_BOX_MAX_SIZE_AF = 40.0
+# RCSB Search 失败重试次数；RCSB Data 元数据并发池大小（原 8 并发过高，降为 4）
+RCSB_SEARCH_MAX_RETRIES = 3
+RCSB_DATA_MAX_WORKERS = 4
+
+# ======== 主机级主动限速（M6 后续审计成果） ========
+# 每主机最小请求间隔（秒），缺省主机 = 不限。核心原则：**高频连发才值得主动节流，
+# 单次调用靠重试就够**——因此 DisGeNET（独立配额限流器）、g:Profiler（重试+熔断）、
+# Open Targets / DGIdb / STRING（单次调用+轻量重试）、ChEMBL（已有请求间隔）、
+# PubChem / RxNorm / RCSB 文件下载（每次分析仅 1 次）均不进表，加节流只增延迟无增益。
+HOST_MIN_REQUEST_INTERVAL = {
+    "rcsb_search": 1.0,   # RCSB Search：Step1 逐基因连发，实测触发限流（返回非JSON）
+    "rcsb_data": 0.25,    # RCSB Data：候选元数据并发池调用的节流
+    "ebi_proteins": 1.1,  # EBI 官方建议 ≤1 次/秒（UniProt 基因查询）
+    "alphafold": 1.1,     # AlphaFold 文件下载（EBI 同域）
+    "uniprot": 1.1,       # UniProt REST 兜底
+}

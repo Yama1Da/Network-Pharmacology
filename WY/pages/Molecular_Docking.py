@@ -9,6 +9,7 @@ import streamlit as st
 import config
 import Utils
 from i18n import t
+from core.docking import clamp_box, fetch_alphafold_receptor
 
 st.set_page_config(page_title=t("dock.page_title"), layout="wide")
 
@@ -219,7 +220,8 @@ def _extract_model(out_pdbqt: str, mode: int, out_path: str) -> str:
 
 
 def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, box: dict,
-                         out_pdbqt: str, scores: pd.DataFrame, conclusion: str) -> str:
+                         out_pdbqt: str, scores: pd.DataFrame, conclusion: str,
+                         receptor_source: str = "experiment") -> str:
     """成果归档：MDresult/{prefix}_{ts}/ 下写 summary / best pose / meta，并做版本控制与缓存清理。"""
     gene = Utils.safe_name(gene)  # gene 可能来自手动输入，进入文件名前需净化
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -243,6 +245,7 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
         "disease": prefix.split("_", 1)[1] if "_" in prefix else "",
         "gene": gene,
         "pdb_id": pdb_id,
+        "receptor_source": receptor_source,
         "cid": cid or "",
         "box_center": str(box["center"]),
         "box_size": str(box["size"]),
@@ -295,9 +298,13 @@ def _render_3d(pdb_path: str, pose_pdbqt: str) -> None:
 
 
 @st.cache_data(ttl=3600)
-def _cached_pdb_candidates(gene: str) -> pd.DataFrame:
-    """RCSB 候选结构查询缓存 1 小时，避免每次 rerun 重复请求。"""
-    return Utils.fetch_receptor_pdb_candidates(gene, max_hits=20)
+def _cached_pdb_candidates(gene: str, allow_alphafold: bool = False) -> pd.DataFrame:
+    """候选结构查询缓存 1 小时（参数参与缓存键），避免每次 rerun 重复请求。
+
+    allow_alphafold=True 时，RCSB 无实验结构的基因追加一行 AFDB:{acc} 预测结构。
+    """
+    return Utils.fetch_receptor_pdb_candidates(gene, max_hits=20,
+                                               allow_alphafold=allow_alphafold)
 
 
 # ==================== Step 1 候选基因筛选（HUB ∩ 富集验证 ∩ 结构可用性） ====================
@@ -376,6 +383,9 @@ if dock.get("enrichment_genes") is not None:
     st.markdown(t("dock.struct_filter_title"))
     use_struct = st.checkbox(t("dock.enable_struct_filter"), key="use_struct",
                              disabled=not candidate, value=True)
+    # AlphaFold 兜底开关（默认关）：开启后无实验结构的候选基因也能被 AF 预测结构覆盖
+    allow_af = config.ALPHAFOLD_ENABLED and st.checkbox(
+        t("dock.af_toggle"), key="allow_af", value=False, help=t("dock.af_toggle_help"))
     if use_struct:
         if st.button(t("dock.check_struct_btn"), key="check_struct"):
             with st.spinner(t("dock.checking_rcsb")):
@@ -383,7 +393,7 @@ if dock.get("enrichment_genes") is not None:
                     found: dict[str, int] = {}
                     progress = st.progress(0)
                     for i, g in enumerate(candidate):
-                        cand = _cached_pdb_candidates(g)
+                        cand = _cached_pdb_candidates(g, allow_alphafold=allow_af)
                         if not cand.empty:
                             found[g] = len(cand)
                         progress.progress((i + 1) / len(candidate))
@@ -511,10 +521,13 @@ if dock.get("genes"):
         dock.pop("pdb_id", None)
         dock.pop("box", None)
         dock.pop("result", None)
+        dock.pop("receptor_source", None)
 
-    # 自动查询该基因的 RCSB 候选结构（@st.cache_data 命中时零请求）
+    # 自动查询该基因的候选结构（@st.cache_data 命中时零请求）；
+    # AF 兜底开关存于会话（Step 1 的 toggle），手动基因模式下未渲染时视为关闭
+    allow_af = st.session_state.get("allow_af", False) and config.ALPHAFOLD_ENABLED
     try:
-        cand = _cached_pdb_candidates(gene)
+        cand = _cached_pdb_candidates(gene, allow_alphafold=allow_af)
     except Exception as exc:
         st.warning(t("dock.rcsb_error", exc=exc))
         cand = None
@@ -528,18 +541,31 @@ if dock.get("genes"):
         # PDB 选择变化 → 作废旧受体与 Step 4 盒/预览（防止 Step 4 残留旧结构的预览图）
         if dock.get("pdb_sel") != pdb_id:
             dock["pdb_sel"] = pdb_id
-            for _k in ("rec_pdbqt", "pdb_id", "pdb_path", "box", "result"):
+            for _k in ("rec_pdbqt", "pdb_id", "pdb_path", "box", "result", "receptor_source"):
                 dock.pop(_k, None)
         if st.button(t("dock.dl_receptor_btn"), key="prep_rec"):
             with st.spinner(t("dock.dl_pdb_spinner")):
                 try:
-                    pdb_path = _download_pdb(pdb_id)
-                    dock["pdb_id"] = pdb_id
+                    if pdb_id.startswith("AFDB:"):
+                        # AlphaFold 兜底：基因 → reviewed UniProt 主条目 → AF 模型 PDB
+                        pdb_path, af_acc = fetch_alphafold_receptor(
+                            gene, taxon=int(config.SPECIES_MAP["Human"]["ncbi_taxon"]))
+                        dock["pdb_id"] = f"AFDB:{af_acc}"
+                        dock["receptor_source"] = "alphafold"
+                    else:
+                        pdb_path = _download_pdb(pdb_id)
+                        dock["pdb_id"] = pdb_id
+                        dock["receptor_source"] = "experiment"
                     dock["pdb_path"] = pdb_path
                     dock["rec_pdbqt"] = Utils.prepare_receptor_pdbqt(pdb_path)
                     dock.pop("result", None)
                 except Exception as exc:
                     st.error(t("dock.receptor_failed", exc=exc))
+        if dock.get("receptor_source") == "alphafold" and dock.get("rec_pdbqt"):
+            # 科学边界免责声明：AF 受体常驻展示，不随 rerun 消失
+            st.warning(t("dock.af_disclaimer",
+                         acc=str(dock.get("pdb_id", "")).split(":", 1)[-1],
+                         version=config.ALPHAFOLD_MODEL_VERSION))
 else:
     if dock.get("genes") is None:
         st.info(t("dock.complete_step1"))
@@ -637,6 +663,11 @@ if dock.get("pdb_path"):
     if st.button(t("dock.infer_box_btn"), key="infer_box"):
         try:
             dock["box"] = Utils.infer_box_from_cofactor(dock["pdb_path"])
+            # AF 预测结构无共晶配体 → 走整蛋白包围盒；超上限时以质心收拢为可跑起始值
+            if (dock.get("receptor_source") == "alphafold"
+                    and max(dock["box"]["size"]) > config.DOCKING_BOX_MAX_SIZE_AF):
+                dock["box"] = clamp_box(dock["box"], config.DOCKING_BOX_MAX_SIZE_AF)
+                st.warning(t("dock.af_box_clamped", m=config.DOCKING_BOX_MAX_SIZE_AF))
         except Exception as exc:
             st.error(t("dock.box_infer_failed", exc=exc))
     if dock.get("box"):
@@ -748,7 +779,8 @@ if dock.get("result"):
                 try:
                     result_dir = _save_docking_result(
                         prefix, gene, dock.get("pdb_id", ""), dock.get("cid"),
-                        dock["box"], dock["result"]["out"], scores, conclusion)
+                        dock["box"], dock["result"]["out"], scores, conclusion,
+                        receptor_source=dock.get("receptor_source", "experiment"))
                     dock["result_dir"] = result_dir
                     dock.pop("starred", None)  # 新成果 → 重置收藏状态
                     st.success(t("dock.saved"))

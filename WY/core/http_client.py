@@ -1,10 +1,39 @@
-"""远端 API 的 HTTP 公共层：端点常量 + 带重试的请求封装。"""
+"""远端 API 的 HTTP 公共层：端点常量 + 带重试的请求封装 + 主机级主动限速。"""
 
 import logging
+import threading
 
 import requests
 
 OPENTARGETS_API_URL = "https://api.platform.opentargets.org/api/v4/graphql"
+
+# 主机级限速状态（进程内）：键 = config.HOST_MIN_REQUEST_INTERVAL 的主机名，
+# 值 = 该主机下一次允许发起请求的 monotonic 时间。
+_throttle_lock = threading.Lock()
+_next_allowed_at: dict[str, float] = {}
+
+
+def throttle(host_key: str) -> None:
+    """主机级最小请求间隔（主动限速）。
+
+    并发场景下在锁内预约时间槽、锁外睡眠：任意主机的请求始终以不小于
+    config.HOST_MIN_REQUEST_INTERVAL[host_key] 的间隔串行发出，线程不会
+    同时睡醒后连发。未知主机键 = 不限速，直接返回。
+    """
+    import time
+
+    import config
+
+    interval = float(config.HOST_MIN_REQUEST_INTERVAL.get(host_key, 0.0))
+    if interval <= 0:
+        return
+    with _throttle_lock:
+        now = time.monotonic()
+        prev = _next_allowed_at.get(host_key, 0.0)
+        wait = max(0.0, prev - now)
+        _next_allowed_at[host_key] = max(now, prev) + interval
+    if wait > 0:
+        time.sleep(wait)
 
 
 def _opentargets_post(query: str, variables: dict, timeout: int = 30) -> dict | None:

@@ -189,19 +189,29 @@ def prepare_ligand_pdbqt(sdf_path: str, out_path: str | None = None) -> str:
 # -------------------- 受体链 --------------------
 
 
-def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50) -> pd.DataFrame:
-    """按基因符号查询 RCSB PDB 候选蛋白结构。
+def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
+                                  allow_alphafold: bool = False,
+                                  taxon: int = 9606) -> pd.DataFrame:
+    """按基因符号查询 RCSB PDB 候选蛋白结构（可选 AlphaFold 预测结构兜底）。
 
     实现说明：RCSB Search API 已不再对 gene/organism 类 attribute 开放 text 检索
     （"search is not enabled"），故改用 full-text 精确短语匹配基因符号，再经
     RCSB Data API 并发补充每个条目的分辨率/方法/标题。
 
+    AlphaFold 兜底：allow_alphafold=True 且 RCSB 无实验结构时，追加一行
+    pdb_id="AFDB:{accession}" 的预测结构（source=alphafold）。查无 reviewed
+    UniProt 条目或查询失败时静默跳过（保持返回实验结构空表，由页面提示）。
+
     Returns
     -------
     pd.DataFrame
-        列：pdb_id / resolution / method / title；查询失败或无结果返回空表。
+        列：pdb_id / resolution / method / title / source
+        （source: "experiment" | "alphafold"）；查询失败或无结果返回空表。
     """
+    import time
+
     import config
+    from .http_client import throttle
 
     # 1) RCSB Search API：full-text 精确短语匹配基因符号
     query = {
@@ -213,47 +223,86 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50) -> pd.Da
         "return_type": "entry",
         "request_options": {"return_all_hits": True},
     }
-    try:
-        resp = requests.post(
-            "https://search.rcsb.org/rcsbsearch/v2/query",
-            json=query, timeout=config.API_TIMEOUT,
-            headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
-        )
-        resp.raise_for_status()
-        hits = resp.json().get("result_set", [])[:max_hits]
-    except Exception as exc:
+    # 主动限速 + 重试：Step1 会对候选基因逐个连发本查询，实测触发 RCSB 限流
+    # （返回非 JSON 文本）。每次尝试前经主机级节流，失败退避重试；重试耗尽仍失败
+    # 才向上抛（带原因）。注意 200 空 result_set 是"无结构"，不算失败。
+    hits, last_exc = None, None
+    for attempt in range(1, config.RCSB_SEARCH_MAX_RETRIES + 1):
+        try:
+            throttle("rcsb_search")
+            resp = requests.post(
+                "https://search.rcsb.org/rcsbsearch/v2/query",
+                json=query, timeout=config.API_TIMEOUT,
+                headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
+            )
+            resp.raise_for_status()
+            hits = resp.json().get("result_set", [])[:max_hits]
+            break
+        except Exception as exc:
+            last_exc = exc
+            logging.warning("RCSB search failed for %s (attempt %d/%d)",
+                            gene_symbol, attempt, config.RCSB_SEARCH_MAX_RETRIES)
+            if attempt < config.RCSB_SEARCH_MAX_RETRIES:
+                time.sleep(config.API_RETRY_DELAY)
+    if hits is None:
         # 搜索失败必须向上抛（带原因），供页面提示；200 空 result_set 才是"无结构"
         logging.exception("RCSB search failed for gene %s", gene_symbol)
-        raise RuntimeError(f"RCSB 搜索失败（{gene_symbol}）：{exc}") from exc
+        raise RuntimeError(f"RCSB 搜索失败（{gene_symbol}）：{last_exc}")
 
-    # 2) RCSB Data API：并发补充元数据（分辨率/方法/标题）
+    # 2) RCSB Data API：并发补充元数据（分辨率/方法/标题），节流 + 失败重试 1 次
     def _fetch_meta(entry_id: str) -> tuple[str, float | None, str, str]:
-        try:
-            d = requests.get(
-                f"https://data.rcsb.org/rest/v1/core/entry/{entry_id}",
-                timeout=15, headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
-            ).json()
-            res = d.get("rcsb_entry_info", {}).get("resolution_combined")
-            res = res[0] if isinstance(res, list) and res else res
-            method = ", ".join(m.get("method", "") for m in (d.get("exptl") or [])) or ""
-            title = (d.get("struct") or {}).get("title", "") or ""
-            return entry_id, res, method, title
-        except Exception:
-            return entry_id, None, "", ""
+        for attempt in range(2):
+            try:
+                throttle("rcsb_data")
+                d = requests.get(
+                    f"https://data.rcsb.org/rest/v1/core/entry/{entry_id}",
+                    timeout=15, headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
+                ).json()
+                res = d.get("rcsb_entry_info", {}).get("resolution_combined")
+                res = res[0] if isinstance(res, list) and res else res
+                method = ", ".join(m.get("method", "") for m in (d.get("exptl") or [])) or ""
+                title = (d.get("struct") or {}).get("title", "") or ""
+                return entry_id, res, method, title
+            except Exception:
+                if attempt == 0:
+                    time.sleep(1)
+        return entry_id, None, "", ""
 
     ids = [hit.get("identifier", "") for hit in hits if hit.get("identifier")]
     meta = {}
     if ids:
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=config.RCSB_DATA_MAX_WORKERS) as pool:
             for eid, res, method, title in pool.map(_fetch_meta, ids):
                 meta[eid] = (res, method, title)
 
     rows = []
     for eid in ids:
         res, method, title = meta.get(eid, (None, "", ""))
-        rows.append({"pdb_id": eid, "resolution": res, "method": method, "title": title})
-    return pd.DataFrame(rows)
+        rows.append({"pdb_id": eid, "resolution": res, "method": method,
+                     "title": title, "source": "experiment"})
+    df = pd.DataFrame(rows)
+
+    # 3) AlphaFold 兜底：仅当无实验结构且开关开启时追加预测结构行
+    if allow_alphafold and config.ALPHAFOLD_ENABLED and df.empty:
+        try:
+            acc = fetch_uniprot_accession(gene_symbol, taxon=taxon)
+            if acc:
+                df = pd.DataFrame([{
+                    "pdb_id": f"AFDB:{acc}",
+                    "resolution": None,
+                    "method": f"AlphaFold predicted ({config.ALPHAFOLD_MODEL_VERSION})",
+                    "title": f"AlphaFold {config.ALPHAFOLD_MODEL_VERSION} monomer model "
+                             f"for {gene_symbol.strip().upper()}",
+                    "source": "alphafold",
+                }])
+        except Exception:
+            # AF 兜底失败（查无条目/网络）不影响实验结构空表的正常返回
+            logging.exception("AlphaFold fallback lookup failed for gene %s", gene_symbol)
+    if df.empty:
+        # 空表也保持规范列（下游访问列名不会 KeyError）
+        df = pd.DataFrame(columns=["pdb_id", "resolution", "method", "title", "source"])
+    return df
 
 
 def prepare_receptor_pdbqt(pdb_path: str, out_path: str | None = None) -> str:
@@ -679,3 +728,178 @@ def clean_docking_cache(ttl_days: int | None = None) -> int:
     if removed:
         logging.info("Docking cache cleaned: %d files removed", removed)
     return removed
+
+
+# -------------------- AlphaFold 预测结构兜底（M6） --------------------
+# 场景：候选靶点在 RCSB 无实验结构时，用 AlphaFold DB 单体预测模型兜底。
+# 科学边界（页面已强制展示免责说明）：
+#   - 预测模型无共晶配体/辅因子，对接盒只能从整蛋白包围盒起步（infer_box_from_cofactor
+#     的 apo 分支自动生效），必须人工确认/微调口袋；
+#   - 侧链构象为预测值（pLDDT 置信度在 B-factor 列），打分仅作初筛参考。
+
+
+def _gene_names_from_ebi_entry(entry: dict) -> set:
+    """解析 EBI Proteins API 条目的基因名集合（name.value + synonyms[].value，大写）。"""
+    names: set = set()
+    for g in entry.get("gene") or []:
+        name = (g.get("name") or {}).get("value")
+        if name:
+            names.add(str(name).upper())
+        for s in g.get("synonyms") or []:
+            v = (s or {}).get("value")
+            if v:
+                names.add(str(v).upper())
+    return names
+
+
+def _lookup_uniprot_ebi(gene_symbol: str, taxon: int) -> str:
+    """EBI Proteins API：reviewed + taxid 检索后客户端精确过滤基因名。
+
+    API 的 gene 参数是模糊匹配（TP53 会经同源名 TP53I5 命中 ANO9），因此必须
+    在结果里做精确基因名过滤；accession 含 "-" 的 isoform 条目跳过，只取主条目。
+    """
+    import config
+    from .http_client import throttle
+
+    throttle("ebi_proteins")
+    resp = requests.get(
+        config.EBI_PROTEINS_API_URL,
+        params={"gene": gene_symbol, "taxid": taxon, "reviewed": "true", "format": "json"},
+        timeout=config.API_TIMEOUT, headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
+    )
+    resp.raise_for_status()
+    for entry in resp.json():
+        acc = str(entry.get("accession", ""))
+        if "-" in acc:  # isoform（如 P04637-2）不作 AF 兜底
+            continue
+        if gene_symbol.strip().upper() in _gene_names_from_ebi_entry(entry):
+            return acc
+    return ""
+
+
+def _lookup_uniprot_rest(gene_symbol: str, taxon: int) -> str:
+    """UniProt REST 官方查询（gene_exact 精确匹配；部分网络不可达，失败向上抛由链处理）。"""
+    import config
+    from .http_client import throttle
+
+    throttle("uniprot")
+    query = f"gene_exact:{gene_symbol} AND organism_id:{taxon} AND reviewed:true"
+    resp = requests.get(
+        config.UNIPROT_SEARCH_URL,
+        params={"query": query, "format": "tsv", "fields": "accession,id", "size": "10"},
+        timeout=config.API_TIMEOUT, headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
+    )
+    resp.raise_for_status()
+    for line in resp.text.strip().splitlines()[1:]:  # 首行为表头
+        acc = line.split("\t")[0].strip()
+        if acc and "-" not in acc:  # 跳过 isoform
+            return acc
+    return ""
+
+
+def fetch_uniprot_accession(gene_symbol: str, taxon: int = 9606) -> str:
+    """
+    基因符号 → reviewed UniProt 主条目号（按 config.UNIPROT_LOOKUP_SOURCES 依序尝试）。
+
+    结果（含"查无"的负缓存 ""）永久写入 config.UNIPROT_LOOKUP_CACHE——确定性映射
+    无 TTL；**网络失败不缓存**（避免把抖动固化为"查无"）。所有源都网络失败时抛
+    RuntimeError；确认查无返回 ""。
+    """
+    import json
+
+    import config
+
+    gene = gene_symbol.strip().upper()
+    cache_file = config.UNIPROT_LOOKUP_CACHE
+    os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
+    db: dict = {}
+    try:
+        with open(cache_file, "r", encoding="utf-8") as f:
+            db = json.load(f)
+    except Exception:
+        db = {}
+    key = f"{gene}_{taxon}"
+    if key in db:
+        return str(db[key])
+
+    lookup = {"ebi": _lookup_uniprot_ebi, "uniprot": _lookup_uniprot_rest}
+    acc, last_exc, definitive = "", None, False
+    for src in config.UNIPROT_LOOKUP_SOURCES:
+        fn = lookup.get(src)
+        if fn is None:
+            continue
+        try:
+            acc = fn(gene, taxon)
+            definitive = True  # 请求完成（无论是否命中）即为确定性结论
+            if acc:
+                break
+        except Exception as exc:
+            last_exc = exc
+            logging.exception("UniProt lookup via %s failed for %s", src, gene)
+    if not acc and not definitive and last_exc is not None:
+        raise RuntimeError(f"UniProt lookup failed for {gene} (all sources): {last_exc}")
+
+    db[key] = acc
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(db, f, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        logging.exception("Failed to write UniProt lookup cache: %s", cache_file)
+    if acc:
+        logging.info("UniProt lookup: %s (taxon %s) -> %s", gene, taxon, acc)
+    else:
+        logging.warning("UniProt lookup: %s (taxon %s) has no reviewed entry", gene, taxon)
+    return acc
+
+
+def fetch_alphafold_pdb(accession: str) -> str:
+    """
+    下载 AlphaFold 单体模型 PDB（确定性缓存：accession + 模型版本唯一确定）。
+
+    缓存于 config.DOCKING_RECEPTOR_CACHE_DIR（随对接缓存 TTL 清理）；版本升级后
+    文件名自然更换。内容异常（过小/无 ATOM 行）抛 RuntimeError，不落盘。
+    """
+    import requests
+
+    import config
+    from .http_client import throttle
+
+    acc = accession.strip()
+    version = config.ALPHAFOLD_MODEL_VERSION
+    os.makedirs(config.DOCKING_RECEPTOR_CACHE_DIR, exist_ok=True)
+    path = os.path.join(config.DOCKING_RECEPTOR_CACHE_DIR, f"AF_{acc}_{version}.pdb")
+    if os.path.exists(path) and os.path.getsize(path) > 1024:
+        logging.info("Reusing cached AlphaFold model: %s", path)
+        return path
+    throttle("alphafold")
+    url = config.ALPHAFOLD_FILE_URL_TEMPLATE.format(accession=acc, version=version)
+    resp = requests.get(url, timeout=config.API_TIMEOUT,
+                        headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"})
+    resp.raise_for_status()
+    if len(resp.text) < 1024 or "\nATOM" not in resp.text:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        raise RuntimeError(f"AlphaFold PDB unexpected content for {acc}: {url}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(resp.text)
+    logging.info("Fetched AlphaFold model %s -> %s", url, path)
+    return path
+
+
+def fetch_alphafold_receptor(gene_symbol: str, taxon: int = 9606) -> tuple:
+    """基因 → (AlphaFold PDB 路径, UniProt accession)。查无 reviewed 条目抛 RuntimeError。"""
+    acc = fetch_uniprot_accession(gene_symbol, taxon=taxon)
+    if not acc:
+        raise RuntimeError(
+            f"no reviewed UniProt entry for gene {gene_symbol} (taxon {taxon}) — "
+            "cannot fetch AlphaFold model")
+    return fetch_alphafold_pdb(acc), acc
+
+
+def clamp_box(box: dict, max_size: float) -> dict:
+    """
+    对接盒边长超限时长以质心为中心收拢到上限（AF 整蛋白盒的起始值处理）。
+
+    收拢后口袋覆盖必须经页面 3D 预览人工确认——此函数只保证"能跑"，不保证"对位"。
+    """
+    size = tuple(round(min(float(v), float(max_size)), 4) for v in box["size"])
+    return {"center": tuple(round(float(v), 4) for v in box["center"]), "size": size}

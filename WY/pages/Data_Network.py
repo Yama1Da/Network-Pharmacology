@@ -211,11 +211,22 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     # GSEA 结果 CSV 落盘进 <prefix>_data（空表不落盘），并入 saved 使 ZIP 自动包含
     gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
     saved.update(gsea_saved)
-    # RWR 结果 CSV 落盘（空表/失败不落盘），并入 saved 使 ZIP 自动包含
+    # RWR 结果 CSV 落盘（空表/失败不落盘），并入 saved 使 ZIP 自动包含。
+    # 注意 result 结构为 seeds（全量）+ top_nonseed（截断）两个分列表——
+    # 两者合并为一张表落盘，is_seed 列区分；annotated 仅非种子行携带。
     if rwr_results:
 
         def _rwr_df(r: dict):
-            return pd.DataFrame(r["top"]) if r.get("ok") and r.get("top") else None
+            if not r.get("ok"):
+                return None
+            frames = []
+            if r.get("seeds"):
+                frames.append(pd.DataFrame(r["seeds"]).assign(is_seed=True))
+            if r.get("top_nonseed"):
+                frames.append(pd.DataFrame(r["top_nonseed"]).assign(is_seed=False))
+            if not frames:
+                return None
+            return pd.concat(frames, ignore_index=True)
 
         rwr_saved = save_rwr_results(
             saved["directory"], prefix,

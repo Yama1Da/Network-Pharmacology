@@ -259,6 +259,11 @@ TEXT: dict[str, dict[str, str]] = {
         "dock.page_title": "Molecular Docking",
         "dock.title": "⚗️ Molecular Docking",
         "dock.caption": "AutoDock Vina v1.2.7 · ligand pubchempy/rdkit · receptor openbabel · results archived without overwrite",
+        # ---- AlphaFold 预测结构兜底（M6） ----
+        "dock.af_toggle": "Allow AlphaFold predicted structure as fallback (when no experimental structure)",
+        "dock.af_toggle_help": "Predicted models have no co-crystallized ligand and predicted side-chain conformers (pLDDT confidence in B-factor). Experimental structures are always preferred; predicted ones are used only when no experimental structure exists.",
+        "dock.af_disclaimer": "⚠️ AlphaFold predicted receptor (AFDB:{acc}, model {version}): no co-crystal ligand, predicted side-chain conformers, pLDDT confidence stored in B-factor. Docking scores are screening-level evidence only and require experimental validation.",
+        "dock.af_box_clamped": "AF structure has no co-crystal ligand — initial box = whole-protein bounding box, clamped to ≤{m} Å per side around the centroid. Please confirm pocket coverage in the 3D preview and adjust manually.",
         "dock.star_mgmt": "Star Management",
         "dock.err_invalid_smiles": "Invalid SMILES: {s}",
         "dock.err_rdkit_3d": "RDKit failed to generate 3D conformers",
@@ -608,6 +613,11 @@ TEXT: dict[str, dict[str, str]] = {
         "dock.page_title": "分子对接",
         "dock.title": "⚗️ 分子对接",
         "dock.caption": "AutoDock Vina v1.2.7 · 配体 pubchempy/rdkit · 受体 openbabel · 成果归档不覆盖",
+        # ---- AlphaFold 预测结构兜底（M6） ----
+        "dock.af_toggle": "允许 AlphaFold 预测结构兜底（无实验结构时）",
+        "dock.af_toggle_help": "预测模型无共晶配体、侧链构象为预测值（pLDDT 置信度在 B-factor 列）。实验结构永远优先；仅当无实验结构时才使用预测结构。",
+        "dock.af_disclaimer": "⚠️ AlphaFold 预测受体（AFDB:{acc}，模型 {version}）：无共晶配体、侧链构象为预测值、pLDDT 置信度在 B-factor 列。对接打分仅作初筛证据，需实验验证。",
+        "dock.af_box_clamped": "AF 结构无共晶配体——初始盒取整蛋白包围盒，并按上限 {m} Å/边以质心为中心收拢。请在 3D 预览中人工确认口袋覆盖并微调。",
         "dock.star_mgmt": "收藏管理",
         "dock.err_invalid_smiles": "无效 SMILES：{s}",
         "dock.err_rdkit_3d": "RDKit 3D 构象生成失败",
