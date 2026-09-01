@@ -191,6 +191,19 @@ INTERACTOME_ENABLED_SPECIES = ("Human",)
 # 取值依据：STRING 大版本约 1.5~2 年一更，1 年内提示无意义，故取 365。
 INTERACTOME_STALE_DAYS = 365
 
+# ======== 网络邻近度检验（M3，依赖背景互作组） ========
+# 度匹配随机化置换次数：稀疏 BFS 下 200 次约数秒；结果已缓存，要更稳的分布可调高
+PROXIMITY_N_PERM = 200
+# 随机种子（结果可复现）
+PROXIMITY_SEED = 0
+# 度匹配分箱宽度：度值落在 [k*bin, (k+1)*bin) 的节点视为同箱可替换
+# （论文 Algorithm 1 的分箱实现；箱空时向度数最近的非空箱扩散）
+PROXIMITY_DEGREE_BIN_SIZE = 100
+# 药物/疾病靶点入网率低于该比例时拒绝计算（防"带病结果"）
+PROXIMITY_MIN_COVERAGE = 0.3
+# 邻近度结果缓存目录（成功才落盘，失败不落缓存，语义与富集链路一致）
+PROXIMITY_CACHE_DIR = os.path.join(CACHE_DIR, "proximity")
+
 # ======== 分子对接配置（AutoDock Vina v1.2.7） ========
 # Vina 可执行文件目录自动探测：环境变量 VINA_DIR > 本机默认路径 > PATH。
 # 换机器时无需改代码：设置 VINA_DIR 环境变量，或将 vina 所在目录加入 PATH 即可。

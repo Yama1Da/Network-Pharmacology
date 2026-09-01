@@ -8,7 +8,7 @@ import streamlit as st
 import config
 import Utils
 from i18n import t
-from core.network_algorithms import detect_louvain_modules, enrich_modules
+from core.network_algorithms import detect_louvain_modules, enrich_modules, run_proximity_cached
 from core.enrichment import (
     build_ranked_list,
     fetch_enrichment_gsea_prerank,
@@ -162,6 +162,23 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
             gsea_results = {}
             gsea_drug_df = gsea_disease_df = None
 
+    # Step 4.7: 网络邻近度检验（M3，仅 names 模式）——依赖背景互作组本地缓存
+    # （未构建时返回 not_built 提示，不阻断）；结果带文件缓存（同参数秒级复用）。
+    # 整段 try/except 兜底：邻近度出任何意外都不能拖垮主报告链路。
+    proximity_result: dict | None = None
+    if mode == "names":
+        try:
+            drug_df_full = Utils.get_drug_targets_merged(drug_name.strip())
+            disease_df_full = Utils.get_disease_targets_merged(disease_name.strip())
+            proximity_result = run_proximity_cached(
+                drug_df_full["approvedSymbol"].tolist(),
+                disease_df_full["approvedSymbol"].tolist(),
+                label=prefix,
+            )
+        except Exception:
+            logging.exception("Proximity step failed during report build — skipped gracefully")
+            proximity_result = {"ok": False, "error": "exception", "coverage": {}, "cached": False}
+
     # Step 5: 保存到 DOWNLOADS_DIR（替代式：同 prefix 旧目录会被替换）
     saved = Utils.save_ppi_results(
         graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix,
@@ -186,6 +203,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         "enrichment_bar_fig": enrichment_bar_fig,
         "enrichment_dot_fig": enrichment_dot_fig,
         "gsea": gsea_results,
+        "proximity": proximity_result,
         "saved": saved,
         "prefix": prefix,
         "params": (mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree),
@@ -273,6 +291,44 @@ if ppi is not None:
 
         st.subheader(t("net.static"))
         st.pyplot(static_fig)
+
+        # ---------- 网络邻近度检验（M3，仅 names 模式） ----------
+        # 随主分析自动计算（文件缓存后秒级复用）；genes 模式无药物/疾病分侧，不展示。
+        proximity_result = ppi.get("proximity")
+        if proximity_result is not None and input_mode == "names":
+            st.divider()
+            st.subheader(t("net.prox_subheader"))
+            st.caption(t("net.prox_caption", n_perm=config.PROXIMITY_N_PERM,
+                         seed=config.PROXIMITY_SEED,
+                         bin_size=config.PROXIMITY_DEGREE_BIN_SIZE))
+            prox_err = proximity_result.get("error")
+            if prox_err == "not_built":
+                st.warning(t("net.prox_not_built"))
+            elif prox_err in ("low_coverage_drug", "low_coverage_disease", "empty_after_filter"):
+                cov = proximity_result.get("coverage", {})
+                st.warning(t("net.prox_low_coverage",
+                             d_in=cov.get("drug_in_lcc", 0), d_tot=cov.get("drug_total", 0),
+                             s_in=cov.get("disease_in_lcc", 0), s_tot=cov.get("disease_total", 0),
+                             thr=config.PROXIMITY_MIN_COVERAGE))
+            elif prox_err:
+                st.error(t("net.prox_fail", reason=prox_err))
+            elif proximity_result.get("ok"):
+                col_p1, col_p2, col_p3 = st.columns(3)
+                col_p1.metric(t("net.prox_dc"), f"{proximity_result['d_c']:.3f}")
+                col_p2.metric(t("net.prox_z"), f"{proximity_result['z']:.3f}")
+                col_p3.metric(t("net.prox_p"), f"{proximity_result['p_empirical']:.4f}")
+                if proximity_result["z"] < 0:
+                    st.success(t("net.prox_support"))
+                else:
+                    st.info(t("net.prox_nosupport"))
+                cov = proximity_result.get("coverage", {})
+                st.caption(t("net.prox_coverage",
+                             ver=config.STRING_VERSION, conf=config.INTERACTOME_CONFIDENCE,
+                             lcc=proximity_result.get("lcc_nodes"),
+                             d_in=cov.get("drug_in_lcc", 0), d_tot=cov.get("drug_total", 0),
+                             s_in=cov.get("disease_in_lcc", 0), s_tot=cov.get("disease_total", 0),
+                             n_perm=proximity_result.get("n_perm"),
+                             cached=t("net.prox_cached") if proximity_result.get("cached") else ""))
 
         # ---------- 富集分析展示 ----------
         st.divider()

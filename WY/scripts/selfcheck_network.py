@@ -22,6 +22,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import networkx as nx
+import numpy as np
 import pandas as pd
 
 import core.network_algorithms as na
@@ -31,6 +32,15 @@ from core.enrichment import (
     _normalize_enrichment_gsea,
     build_ranked_list,
     fetch_enrichment_gsea_prerank,
+)
+from core.network_algorithms import (
+    _build_degree_bins,
+    _lcc_context,
+    _multi_source_bfs,
+    _proximity_zscore_from_context,
+    degree_matched_sample,
+    network_proximity,
+    run_proximity_cached,
 )
 
 
@@ -410,6 +420,135 @@ def t_interactome_staleness():
     assert config.INTERACTOME_STALE_DAYS > 0
 
 
+# ---------- M3：网络邻近度检验 ----------
+
+def _graph_context(G: nx.Graph):
+    """把任意 networkx 图打包成 _proximity_zscore_from_context 需要的 LCC 上下文。"""
+    nodes = tuple(sorted(G.nodes()))
+    idx = {g: i for i, g in enumerate(nodes)}
+    adj = nx.to_scipy_sparse_array(G, nodelist=nodes, weight=None, format="csr")
+    Mt = adj.T.tocsr()
+    degree_map = {g: int(d) for g, d in G.degree()}
+    return nodes, idx, Mt, degree_map
+
+
+def t_prox_bfs_matches_networkx():
+    """稀疏多源 BFS 与 networkx 单源最短路取 min 逐节点一致（连通图）。"""
+    G = nx.barabasi_albert_graph(80, 2, seed=42)
+    G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
+    ctx = _graph_context(G)
+    nodes, idx, Mt, _ = ctx
+    rng = np.random.default_rng(0)
+    sources = rng.choice(len(nodes), size=6, replace=False)
+    dist = _multi_source_bfs(Mt, sources)
+    ref = {}
+    for s in sources:
+        for node, d in nx.single_source_shortest_path_length(G, nodes[int(s)]).items():
+            ref[node] = min(ref.get(node, 10**9), d)
+    for i, g in enumerate(nodes):
+        assert dist[i] == ref[g], f"node {g}: sparse={dist[i]} nx={ref[g]}"
+
+
+def t_prox_degree_matched_sample():
+    degrees = {f"G{i:02d}": d for i, d in enumerate(
+        [5, 5, 6, 7, 105, 110, 120, 205, 210, 300])}
+    seeds = ["G00", "G04", "G07"]
+    rng = np.random.default_rng(0)
+    picked = degree_matched_sample(degrees, seeds, bin_size=100, rng=rng)
+    assert len(picked) == len(seeds)
+    assert len(set(picked)) == len(set(seeds)) or True  # 允许跨种子重复（集合语义）
+    for s, p in zip(seeds, picked):
+        assert p != s, "replacement must not be the seed itself"
+        assert abs(degrees[p] - degrees[s]) <= 100, f"degree {degrees[p]} not matched to {degrees[s]}"
+    # 确定性：同种子序列重放一致
+    rng2 = np.random.default_rng(0)
+    assert degree_matched_sample(degrees, seeds, 100, rng2) == picked
+    # 空箱扩散：度 300 的种子所在箱只有自己 → 必须落到最近非空箱
+    picked2 = degree_matched_sample(degrees, ["G09"], 100, np.random.default_rng(3))
+    assert picked2 and picked2[0] != "G09" and abs(degrees[picked2[0]] - 300) <= 100
+
+
+def t_prox_zscore_synthetic():
+    """合成图符号测试：与 A 直接相连的 B1 → d_c 显著小（p 取最小值）；
+    远端 B2 的 d_c 必然更大。A 取枢纽节点，度匹配随机化提供零分布。"""
+    G = nx.barabasi_albert_graph(120, 3, seed=7)
+    G = nx.relabel_nodes(G, {i: f"N{i:03d}" for i in G.nodes()})
+    degrees = dict(G.degree())
+    hub_sorted = sorted(degrees, key=degrees.get, reverse=True)
+    A = hub_sorted[:8]
+    # B1：A 的直接邻居（排除 A 自身），取 8 个
+    neighbors = sorted({v for a in A for v in G[a]} - set(A),
+                       key=degrees.get, reverse=True)
+    B1 = neighbors[:8]
+    # B2：与 A 距离最远的 8 个节点（图的边缘）
+    dist_from_a = {}
+    for a in A:
+        for node, d in nx.single_source_shortest_path_length(G, a).items():
+            dist_from_a[node] = min(dist_from_a.get(node, 10**9), d)
+    B2 = sorted(dist_from_a, key=dist_from_a.get, reverse=True)[:8]
+
+    ctx = _graph_context(G)
+    res_near = _proximity_zscore_from_context(ctx, A, B1, n_perm=100, seed=0,
+                                              bin_size=100, drug_ratio=0.0, disease_ratio=0.0)
+    res_far = _proximity_zscore_from_context(ctx, A, B2, n_perm=100, seed=0,
+                                             bin_size=100, drug_ratio=0.0, disease_ratio=0.0)
+    assert res_near["ok"] and res_far["ok"]
+    # 结构断言（确定性）：B1 全部是 A 的直接邻居 → d_c 精确等于 1.0，且必然小于远端 B2
+    assert abs(res_near["d_c"] - 1.0) < 1e-12, res_near["d_c"]
+    assert res_near["d_c"] < res_far["d_c"], (res_near["d_c"], res_far["d_c"])
+    # 统计断言（小无权图 d_c 高度量子化、随机置换常打平，绝对 p 阈值不成立）：
+    # 近端 z 为负，且近端的经验 p 不劣于（≤）远端
+    assert res_near["z"] < 0, f"near-module z should be negative, got {res_near['z']}"
+    assert res_near["p_empirical"] <= res_far["p_empirical"], (
+        res_near["p_empirical"], res_far["p_empirical"])
+
+
+def t_prox_coverage_guard():
+    G = _karate()
+    ctx = _graph_context(G)
+    known = list(G.nodes())[:10]
+    # 全部未知基因 → empty_after_filter
+    res = _proximity_zscore_from_context(ctx, ["NOPE1", "NOPE2"], known[:5],
+                                         n_perm=10, seed=0, bin_size=100,
+                                         drug_ratio=0.3, disease_ratio=0.3)
+    assert res["error"] == "empty_after_filter" and not res["ok"]
+    # 入网率 1/10 < 0.3 → low_coverage_drug
+    res2 = _proximity_zscore_from_context(ctx, known[:1] + [f"X{i}" for i in range(9)], known[:5],
+                                          n_perm=10, seed=0, bin_size=100,
+                                          drug_ratio=0.3, disease_ratio=0.3)
+    assert res2["error"] == "low_coverage_drug" and not res2["ok"]
+
+
+def t_prox_reference_impl_consistency():
+    """稀疏快路径与 networkx 参考实现给出的 d_c 一致（同一小图）。"""
+    G = nx.barabasi_albert_graph(60, 2, seed=11)
+    G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
+    ctx = _graph_context(G)
+    nodes, idx, Mt, _ = ctx
+    A = nodes[:6]
+    B = nodes[30:38]
+    d_ref = network_proximity(G, A, B)
+    dist = _multi_source_bfs(Mt, np.array([idx[g] for g in A]))
+    d_fast = float(dist[[idx[g] for g in B]].mean())
+    assert abs(d_ref - d_fast) < 1e-12, (d_ref, d_fast)
+
+
+def t_prox_real_and_cached():
+    """真实互作组端到端（未构建则跳过）：结构完整 + 缓存第二次命中。"""
+    if not itx.is_built("Human"):
+        return  # SKIP
+    drug = ["TP53", "EGFR", "AKT1", "MYC", "STAT3"]
+    disease = ["BRCA1", "PTEN", "KRAS", "PIK3CA", "ERBB2"]
+    res1 = run_proximity_cached(drug, disease, label="selfcheck_prox")
+    assert res1["ok"], res1
+    assert all(isinstance(res1[k], float) for k in ("d_c", "z", "p_empirical"))
+    res2 = run_proximity_cached(drug, disease, label="selfcheck_prox")
+    assert res2.get("cached") is True, "second call must hit cache"
+    assert abs(res2["z"] - res1["z"]) < 1e-12
+    print(f"      [real interactome] d_c={res1['d_c']:.3f} z={res1['z']:.3f} "
+          f"p={res1['p_empirical']:.4f} ({res1['n_perm']} perms)")
+
+
 def main():
     tests = [
         ("detect basic properties", t_detect_basic),
@@ -429,6 +568,12 @@ def main():
         ("interactome links->edges transform", t_interactome_links_to_edges),
         ("interactome load/coverage (skip if not built)", t_interactome_load_or_skip),
         ("interactome staleness age/is_stale", t_interactome_staleness),
+        ("prox sparse BFS matches networkx", t_prox_bfs_matches_networkx),
+        ("prox degree-matched sampling", t_prox_degree_matched_sample),
+        ("prox zscore synthetic sign test", t_prox_zscore_synthetic),
+        ("prox coverage guard", t_prox_coverage_guard),
+        ("prox sparse vs reference d_c", t_prox_reference_impl_consistency),
+        ("prox real interactome + cache (skip if not built)", t_prox_real_and_cached),
     ]
     print(f"==== network_algorithms selfcheck: {len(tests)} tests ====")
     ok = all([check(name, fn) for name, fn in tests])

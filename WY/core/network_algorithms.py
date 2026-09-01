@@ -11,6 +11,7 @@
   用户看到的空表永远只可能是"真无显著项"。
 """
 
+import functools
 import logging
 import os
 
@@ -230,3 +231,273 @@ def enrich_modules(
     logging.info("Module enrichment done: %d modules, %d succeeded, %d failed, %d no-significant",
                  len(candidates), len(frames), len(failures), len(no_sig))
     return long_df, failures, no_sig
+
+
+# ---------- 网络邻近度检验（M3，依赖 core.interactome 的背景互作组） ----------
+# 方法学：Guney et al. 2016（Nat Commun）的 proximity 框架 / 论文 2.1.4 节。
+# d_c(A,B) = mean_{b∈B} min_{a∈A} d(a,b)；Z = (d_obs - μ_rand) / σ_rand，
+# Z<0 表示药物靶点与疾病蛋白的网络距离显著近于度匹配随机期望。
+# 实现要点：
+# - 全部计算限制在背景互作组的最大连通分量（LCC）内——跨分量距离无定义，
+#   这是 Guney 框架的标准处理，同时天然规避不可达特判；
+# - 置换随机化用 scipy 稀疏矩阵"级别同步 BFS"（每次毫秒级），networkx 纯 Python
+#   参考实现 network_proximity() 保留给小图与自检交叉验证。
+
+
+def _multi_source_bfs(Mt, source_idx) -> "np.ndarray":
+    """稀疏邻接（已转置 CSR）上的多源 BFS 距离；节点全在 LCC 内，必然可达（>=0）。"""
+    import numpy as np
+
+    n = Mt.shape[0]
+    dist = np.full(n, -1, dtype=np.int64)
+    reached = np.zeros(n, dtype=bool)
+    frontier = np.zeros(n, dtype=bool)
+    source_idx = np.asarray(source_idx, dtype=int)
+    frontier[source_idx] = True
+    dist[source_idx] = 0  # 源节点自身距离为 0——缺失会让 A∩B 的节点以 -1 混入均值
+    reached |= frontier
+    depth = 0
+    while True:
+        depth += 1
+        nxt = Mt.dot(frontier) > 0  # 布尔向量过稀疏矩阵 → 一步可达集合
+        nxt &= ~reached
+        if not nxt.any():
+            break
+        dist[nxt] = depth
+        reached |= nxt
+        frontier = nxt
+    return dist
+
+
+@functools.lru_cache(maxsize=2)
+def _lcc_context(species: str):
+    """背景互作组的 LCC 计算上下文（进程内缓存）。
+
+    Returns
+    -------
+    tuple
+        (nodes: 排序后基因元组, idx: 基因→行号, Mt: 转置 0-1 邻接 CSR,
+         degree_map: 基因→LCC内度数)
+    """
+    import networkx as nx
+
+    from . import interactome as itx
+
+    graph = itx.load_interactome(species)
+    lcc_nodes = max(nx.connected_components(graph), key=len)
+    sub = graph.subgraph(lcc_nodes)
+    nodes = tuple(sorted(sub.nodes()))
+    idx = {g: i for i, g in enumerate(nodes)}
+    adj = nx.to_scipy_sparse_array(sub, nodelist=nodes, weight=None, format="csr")
+    Mt = adj.T.tocsr()
+    degree_map = {g: int(d) for g, d in sub.degree()}
+    logging.info("Proximity LCC context ready: %d/%d nodes in LCC",
+                 len(nodes), graph.number_of_nodes())
+    return nodes, idx, Mt, degree_map
+
+
+def _build_degree_bins(degree_map: dict, bin_size: int) -> dict:
+    """按度值区间 [k*bin, (k+1)*bin) 分箱（论文 Algorithm 1 的 bins）。"""
+    bins: dict[int, list[str]] = {}
+    for gene, deg in degree_map.items():
+        bins.setdefault(int(deg) // bin_size, []).append(gene)
+    for k in bins:
+        bins[k].sort()
+    return bins
+
+
+def degree_matched_sample(degree_map: dict, seeds: list, bin_size: int, rng) -> list[str]:
+    """
+    度匹配随机抽样（论文 Algorithm 1）：每个种子从其度数所在箱内随机取一个替换节点。
+
+    - 排除种子自身；箱内无候选时按 |度差| 向最近非空箱扩散；
+    - 不同种子可能取到同一替换节点（与参考实现一致，随机集内部去重不影响
+      距离计算——集合语义）；
+    - 同一 rng 序列下结果确定。
+    """
+    bins = _build_degree_bins(degree_map, bin_size)
+    max_k = max(bins) if bins else 0
+    seeds_u = sorted({str(s) for s in seeds if s in degree_map})
+    picked: list[str] = []
+    for seed_gene in seeds_u:
+        k = int(degree_map[seed_gene]) // bin_size
+        chosen = None
+        for offset in range(0, max_k + 2):
+            for k_try in ((k - offset, k + offset) if offset else (k,)):
+                pool = [g for g in bins.get(k_try, ()) if g != seed_gene]
+                if pool:
+                    chosen = pool[int(rng.integers(len(pool)))]
+                    break
+            if chosen is not None:
+                break
+        if chosen is not None:
+            picked.append(chosen)
+    return picked
+
+
+def network_proximity(graph: "nx.Graph", set_a: list, set_b: list) -> float:
+    """
+    参考实现（networkx 级别同步多源 BFS）：d_c(A,B) = mean_{b∈B} min_{a∈A} d(a,b)。
+
+    仅供小图与自检交叉验证；页面链路走 proximity_zscore 的稀疏快路径。
+    图中不存在的基因被忽略；B 中存在从 A 不可达的节点时抛 ValueError。
+    """
+    a = {str(g) for g in set_a if g in graph}
+    b = {str(g) for g in set_b if g in graph}
+    if not a or not b:
+        raise ValueError("network_proximity: empty set after filtering to graph")
+    dist: dict[str, int] = {g: 0 for g in a}
+    frontier = set(a)
+    depth = 0
+    while frontier:
+        depth += 1
+        nxt: set[str] = set()
+        for u in frontier:
+            for v in graph[u]:
+                if v not in dist:
+                    dist[v] = depth
+                    nxt.add(v)
+        frontier = nxt
+    unreachable = b - dist.keys()
+    if unreachable:
+        raise ValueError(f"network_proximity: {len(unreachable)} nodes in B unreachable from A")
+    return sum(dist[g] for g in b) / len(b)
+
+
+def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: list,
+                                   n_perm: int, seed: int, bin_size: int,
+                                   drug_ratio: float, disease_ratio: float) -> dict:
+    """给定 LCC 上下文与已映射的基因集，计算 d_c / Z / 经验 p（纯计算，便于自检注入）。"""
+    import numpy as np
+
+    nodes, idx, Mt, degree_map = ctx
+    result: dict = {
+        "ok": False, "error": None, "d_c": None, "z": None, "p_empirical": None,
+        "n_perm": int(n_perm), "seed": int(seed),
+        "mean_random": None, "std_random": None,
+        "lcc_nodes": len(nodes), "cached": False,
+    }
+    d_lcc = sorted({g for g in drug_genes if g in idx})
+    s_lcc = sorted({g for g in disease_genes if g in idx})
+    result["coverage"] = {
+        "drug_in_lcc": len(d_lcc), "drug_total": len(drug_genes),
+        "disease_in_lcc": len(s_lcc), "disease_total": len(disease_genes),
+    }
+    if not d_lcc or not s_lcc:
+        result["error"] = "empty_after_filter"
+        return result
+    if len(d_lcc) / max(len(drug_genes), 1) < drug_ratio:
+        result["error"] = "low_coverage_drug"
+        return result
+    if len(s_lcc) / max(len(disease_genes), 1) < disease_ratio:
+        result["error"] = "low_coverage_disease"
+        return result
+
+    rng = np.random.default_rng(seed)
+    a_idx = np.array([idx[g] for g in d_lcc])
+    b_idx = np.array([idx[g] for g in s_lcc])
+
+    dist_obs = _multi_source_bfs(Mt, a_idx)
+    d_obs = float(dist_obs[b_idx].mean())
+
+    rand = np.empty(n_perm, dtype=float)
+    for i in range(n_perm):
+        ra = degree_matched_sample(degree_map, d_lcc, bin_size, rng)
+        rb = degree_matched_sample(degree_map, s_lcc, bin_size, rng)
+        ra_idx = np.array([idx[g] for g in ra])
+        rb_idx = np.array([idx[g] for g in rb])
+        rand[i] = float(_multi_source_bfs(Mt, ra_idx)[rb_idx].mean())
+
+    mu = float(rand.mean())
+    sd = float(rand.std())
+    z = (d_obs - mu) / sd if sd > 0 else 0.0
+    p_emp = (1 + int((rand <= d_obs).sum())) / (n_perm + 1)
+    result.update(ok=True, d_c=d_obs, z=float(z), p_empirical=float(p_emp),
+                  mean_random=mu, std_random=sd)
+    return result
+
+
+def proximity_zscore(drug_genes: list, disease_genes: list, species: str = "Human",
+                     n_perm: int | None = None, seed: int | None = None) -> dict:
+    """
+    网络邻近度 Z-score 主入口（背景互作组 LCC 内计算，度匹配随机化置换检验）。
+
+    覆盖率守卫：基因先经全网络口径归一化，再限制到 LCC；任一集合的入网率低于
+    config.PROXIMITY_MIN_COVERAGE 或过滤后为空时，返回 ok=False + error，
+    绝不输出"带病结果"。
+
+    Raises
+    ------
+    core.interactome.InteractomeNotBuiltError
+        背景互作组缓存未构建时上抛（调用方翻译为用户提示）。
+    """
+    import config
+    from . import interactome as itx
+
+    n_perm = int(n_perm if n_perm is not None else config.PROXIMITY_N_PERM)
+    seed = int(seed if seed is not None else config.PROXIMITY_SEED)
+    ctx = _lcc_context(species)
+    d_in, _ = itx.get_network_coverage(drug_genes, species)
+    s_in, _ = itx.get_network_coverage(disease_genes, species)
+    return _proximity_zscore_from_context(
+        ctx, d_in, s_in, n_perm=n_perm, seed=seed,
+        bin_size=config.PROXIMITY_DEGREE_BIN_SIZE,
+        drug_ratio=config.PROXIMITY_MIN_COVERAGE,
+        disease_ratio=config.PROXIMITY_MIN_COVERAGE,
+    )
+
+
+def run_proximity_cached(drug_genes: list, disease_genes: list,
+                         species: str = "Human", label: str | None = None) -> dict:
+    """
+    邻近度分析入口（带文件缓存）：成功才落盘 JSON，失败/未构建即时返回不缓存。
+
+    缓存键 = 排序去重后的两个基因集 + 物种 + 置换参数 + 背景网络版本/阈值，
+    任一项变化自然换文件；命中 TTL 内缓存时返回结果并置 cached=True。
+    """
+    import hashlib
+    import json
+    import os
+
+    import config
+
+    from .caching import _is_cache_fresh
+    from . import interactome as itx
+
+    def _norm(genes: list) -> list[str]:
+        return sorted({str(g).strip().upper() for g in genes if g and str(g).strip()})
+
+    payload = ("\r".join(_norm(drug_genes)) + "||" + "\r".join(_norm(disease_genes))
+               + f"|{species}|{config.PROXIMITY_N_PERM}|{config.PROXIMITY_SEED}"
+               + f"|{config.PROXIMITY_DEGREE_BIN_SIZE}"
+               + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}")
+    md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
+    name = f"proximity_{label}_{md5}.json" if label else f"proximity_{md5}.json"
+    os.makedirs(config.PROXIMITY_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(config.PROXIMITY_CACHE_DIR, name)
+
+    if _is_cache_fresh(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            cached["cached"] = True
+            logging.info("Proximity cache hit: %s", name)
+            return cached
+        except Exception:
+            # 损坏缓存按"不存在"处理并清除（同 M1 的空缓存清理语义）
+            logging.exception("Proximity cache unreadable, removing: %s", cache_path)
+            try:
+                os.remove(cache_path)
+            except OSError:
+                pass
+
+    try:
+        result = proximity_zscore(drug_genes, disease_genes, species=species)
+    except itx.InteractomeNotBuiltError:
+        logging.warning("Proximity skipped: interactome not built")
+        return {"ok": False, "error": "not_built", "d_c": None, "z": None,
+                "p_empirical": None, "coverage": {}, "cached": False}
+    if result.get("ok"):
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False)
+    return result
