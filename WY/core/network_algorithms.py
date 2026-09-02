@@ -139,11 +139,11 @@ def enrich_modules(
     sources = sources or config.ENRICHMENT_SOURCES
     candidates = [m for m in modules if m["size"] >= min_module_size][:top_n_modules]
 
-    frames: list[pd.DataFrame] = []
-    failures: list[dict] = []
-    no_sig: list[int] = []
+    def _enrich_one(m: dict) -> tuple[str, dict]:
+        """单个模块的富集 + 失败处理,返回 (类别, 数据):ok/failed/no_sig。
 
-    for m in candidates:
+        线程安全:各模块的缓存文件名互不相同,状态都记在局部变量里。
+        """
         label = f"module{m['module_id']}"
         cache_files = _module_cache_files(m["genes"], organism, sources, pvalue, label)
         try:
@@ -152,22 +152,46 @@ def enrich_modules(
         except Exception:
             logging.exception("Module %d enrichment crashed", m["module_id"])
             _purge_module_cache(cache_files, m["module_id"], "exception")
-            failures.append({"module_id": m["module_id"], "size": m["size"], "error": "exception"})
-            continue
+            return "failed", {"module_id": m["module_id"], "size": m["size"], "error": "exception"}
 
         if failed:
             # 失败：记录并清缓存，防止失败期间的空表被后续运行命中
             _purge_module_cache(cache_files, m["module_id"], err)
-            failures.append({"module_id": m["module_id"], "size": m["size"], "error": err})
-        elif df.empty:
+            return "failed", {"module_id": m["module_id"], "size": m["size"], "error": err}
+        if df.empty:
             # 真无显著项：正常不会写空缓存，这里防御性清理一次
             _purge_module_cache(cache_files, m["module_id"], "no_significant")
-            no_sig.append(m["module_id"])
+            return "no_sig", {"module_id": m["module_id"]}
+        out = df.copy()
+        out.insert(0, "module_id", m["module_id"])
+        out.insert(1, "module_size", m["size"])
+        return "ok", {"df": out}
+
+    # 并发富集:模块间是独立的 API 请求,串行时 10 个模块可能要等几分钟;
+    # 限制并发数,避免同时打到 g:Profiler/Enrichr 的请求过多。
+    if candidates:
+        from concurrent.futures import ThreadPoolExecutor
+
+        max_workers = min(4, len(candidates))
+        if max_workers > 1:
+            with ThreadPoolExecutor(max_workers=max_workers,
+                                    thread_name_prefix="modenrich") as pool:
+                outcomes = list(pool.map(_enrich_one, candidates))
         else:
-            out = df.copy()
-            out.insert(0, "module_id", m["module_id"])
-            out.insert(1, "module_size", m["size"])
-            frames.append(out)
+            outcomes = [_enrich_one(m) for m in candidates]
+    else:
+        outcomes = []
+
+    frames: list[pd.DataFrame] = []
+    failures: list[dict] = []
+    no_sig: list[int] = []
+    for (bucket, data) in outcomes:  # pool.map 保持原模块顺序
+        if bucket == "ok":
+            frames.append(data["df"])
+        elif bucket == "failed":
+            failures.append(data)
+        else:
+            no_sig.append(data["module_id"])
 
     if frames:
         long_df = pd.concat(frames, ignore_index=True)
@@ -242,25 +266,43 @@ def _build_degree_bins(degree_map: dict, bin_size: int) -> dict:
     return bins
 
 
-def degree_matched_sample(degree_map: dict, seeds: list, bin_size: int, rng) -> list[str]:
+def degree_matched_sample(degree_map: dict, seeds: list, bin_size: int, rng,
+                          bins: dict | None = None) -> list[str]:
     """
     度匹配随机抽样（置换检验的零分布）：为每个种子从其度数所在箱内随机取一个替换节点，
     使随机基因集与真实基因集的度数分布相当；排除种子自身，箱内无候选时向最近的非空箱扩散。
     同一随机序列下结果确定。
+
+    bins 可传入预构建的分箱（置换检验循环内复用，避免每轮重复构建）。
+    性能说明：低度箱可达上万成员，这里按箱建一次"基因→位置"映射后用索引跳过种子，
+    等价于"过滤掉种子再抽样"，但避免每个种子都复制整箱（随机数消耗序列与过滤写法一致）。
     """
-    bins = _build_degree_bins(degree_map, bin_size)
+    if bins is None:
+        bins = _build_degree_bins(degree_map, bin_size)
     max_k = max(bins) if bins else 0
     seeds_u = sorted({str(s) for s in seeds if s in degree_map})
+    pos_maps: dict[int, dict[str, int]] = {}  # 箱号 → {基因: 在箱内的位置},按需构建一次
     picked: list[str] = []
     for seed_gene in seeds_u:
         k = int(degree_map[seed_gene]) // bin_size
         chosen = None
         for offset in range(0, max_k + 2):
             for k_try in ((k - offset, k + offset) if offset else (k,)):
-                pool = [g for g in bins.get(k_try, ()) if g != seed_gene]
-                if pool:
+                pool = bins.get(k_try)
+                if not pool:
+                    continue
+                pos = pos_maps.get(k_try)
+                if pos is None:
+                    pos = pos_maps[k_try] = {g: i for i, g in enumerate(pool)}
+                if seed_gene in pos:
+                    if len(pool) == 1:
+                        continue  # 箱内只有种子自己,视为无候选,转向邻箱
+                    # 从"去掉种子的箱"里均匀取一个:索引 j 跳过种子的位置
+                    j = int(rng.integers(len(pool) - 1))
+                    chosen = pool[j + 1] if j >= pos[seed_gene] else pool[j]
+                else:
                     chosen = pool[int(rng.integers(len(pool)))]
-                    break
+                break
             if chosen is not None:
                 break
         if chosen is not None:
@@ -342,9 +384,10 @@ def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: 
     rand_excl = np.full(n_perm, np.nan)
 
     rand = np.empty(n_perm, dtype=float)
+    bins = _build_degree_bins(degree_map, bin_size)  # 置换循环内复用,避免每轮重建分箱
     for i in range(n_perm):
-        ra = degree_matched_sample(degree_map, d_lcc, bin_size, rng)
-        rb = degree_matched_sample(degree_map, s_lcc, bin_size, rng)
+        ra = degree_matched_sample(degree_map, d_lcc, bin_size, rng, bins=bins)
+        rb = degree_matched_sample(degree_map, s_lcc, bin_size, rng, bins=bins)
         ra_idx = np.array([idx[g] for g in ra])
         rb_idx = np.array([idx[g] for g in rb])
         dist_r = _multi_source_bfs(Mt, ra_idx)
@@ -606,8 +649,9 @@ def _rwr_from_context(ctx: tuple, seed_genes: list, alpha: float,
             rng = np.random.default_rng(null_seed)
             perms = int(null_perms) if null_perms else 0
             null_means = np.full(max(perms, 0), np.nan)
+            bins = _build_degree_bins(degree_map, bin_size)  # 置换循环内复用,避免每轮重建分箱
             for i in range(perms):
-                sample = degree_matched_sample(degree_map, ann, bin_size, rng)
+                sample = degree_matched_sample(degree_map, ann, bin_size, rng, bins=bins)
                 s_idx = np.array([idx[g] for g in sample])
                 null_means[i] = float(scores[s_idx].mean())
             valid = null_means[~np.isnan(null_means)]

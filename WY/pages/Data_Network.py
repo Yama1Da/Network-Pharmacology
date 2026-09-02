@@ -85,11 +85,8 @@ run_btn = st.button(t("net.build_report"), key="run_btn", type="primary", width=
 
 
 # ---------- 分析执行 ----------
-def _compute_ppi_modules(graph, organism, saved, prefix) -> dict:
-    """对 PPI 网络做 Louvain 模块检测和模块富集分析，并保存结果。
-
-    Build Report 自动分析与交互区手动重跑共用本函数，保证结果一致。
-    """
+def _compute_modules_data(graph, organism) -> dict:
+    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）。"""
     modules = detect_louvain_modules(
         graph,
         resolution=config.LOUVAIN_RESOLUTION,
@@ -116,10 +113,6 @@ def _compute_ppi_modules(graph, organism, saved, prefix) -> dict:
         min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
         top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
     )
-    # 结果保存到本次分析目录；空结果不保存。保存后打包下载（ZIP）会自动包含模块文件。
-    mod_saved = save_module_results(
-        saved["directory"], prefix, summary_df, long_df)
-    saved.update(mod_saved)
     return {
         "modules": modules,
         "summary_df": summary_df,
@@ -127,8 +120,16 @@ def _compute_ppi_modules(graph, organism, saved, prefix) -> dict:
         "long_df": long_df,
         "failures": failures,
         "no_sig": no_sig,
-        "saved_paths": mod_saved,
     }
+
+
+def _compute_ppi_modules(graph, organism, directory, prefix) -> dict:
+    """模块检测 + 富集 + 结果落盘（交互区手动重跑入口）。目录须已存在。"""
+    computed = _compute_modules_data(graph, organism)
+    # 结果保存到本次分析目录；空结果不保存。保存后打包下载（ZIP）会自动包含模块文件。
+    mod_saved = save_module_results(directory, prefix,
+                                    computed["summary_df"], computed["long_df"])
+    return {**computed, "saved_paths": mod_saved}
 
 
 def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
@@ -167,28 +168,28 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score,
                                       label=prefix, min_degree=int(min_degree))
 
-    # Step 2-4: 建图 + 拓扑指标 + Hub 筛选 + 可视化
+    # Step 2-4: 建图 + 拓扑指标 + Hub 筛选
     graph = Utils.build_ppi_graph(edges_df, genes)
     metrics_df = Utils.compute_ppi_metrics(graph)
     metrics_df = Utils.mark_hub_genes(metrics_df, min_degree=min_degree)
     hub_df = metrics_df[metrics_df["is_hub"]]
-    html_content = Utils.render_pyvis_html(graph, metrics_df)
-    static_fig = Utils.render_static_plot(graph, metrics_df)
 
-    # Step 4.5: 富集分析（g:Profiler 主 + Enrichr 备，输入为交集靶点）
-    enrichment_df, enrichment_source = Utils.run_enrichment(
-        genes, organism=organism, pvalue=config.ENRICHMENT_PVALUE, label=prefix
-    )
-    enrichment_bar_fig = enrichment_dot_fig = None
-    if not enrichment_df.empty:
-        enrichment_bar_fig, enrichment_dot_fig = Utils.render_enrichment_plots(enrichment_df)
+    # ---- Step 4.5-5.5(数据部分):富集/GSEA/邻近度+RWR/模块检测四个互相独立的任务并发执行 ----
+    # 只把 API 请求与本地计算放进线程池,墙钟时间从"各步之和"变成"最慢一步"。
+    # matplotlib 的 pyplot 是全局状态、非线程安全,所有绘图统一留在主线程做。
+    # 每步失败只跳过自身,不影响主报告(与原串行版逐项一致)。
+    from concurrent.futures import ThreadPoolExecutor
 
-    # Step 4.6: GSEA 排序富集（仅 names 模式，Build Report 自动跑）：药物侧按 pChEMBL
-    # 活性分排序、疾病侧按 Open Targets 关联分排序，检验通路基因是否整体偏向高排名。
-    # 此步失败只跳过 GSEA，不影响主报告。
-    gsea_results: dict = {}
-    gsea_drug_df = gsea_disease_df = None
-    if mode == "names":
+    def _task_enrichment():
+        df, src = Utils.run_enrichment(
+            genes, organism=organism, pvalue=config.ENRICHMENT_PVALUE, label=prefix)
+        return df, src
+
+    def _task_gsea():
+        # GSEA 排序富集（仅 names 模式）：药物侧按 pChEMBL 活性分排序、
+        # 疾病侧按 Open Targets 关联分排序，检验通路基因是否整体偏向高排名。
+        gsea_results: dict = {}
+        gsea_drug_df = gsea_disease_df = None
         try:
             for side_label in ("drug", "disease"):
                 gdf, rstats, reason = _gsea_prerank_side(side_label, drug_name, disease_name, prefix)
@@ -199,16 +200,16 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
                     gsea_disease_df = gdf if not gdf.empty else None
         except Exception:
             logging.exception("GSEA step failed during report build — skipped gracefully")
-            gsea_results = {}
-            gsea_drug_df = gsea_disease_df = None
+            gsea_results, gsea_drug_df, gsea_disease_df = {}, None, None
+        return gsea_results, gsea_drug_df, gsea_disease_df
 
-    # Step 4.7: 网络邻近度检验（仅 names 模式）——检验药物靶点与疾病基因在互作网络上的
-    # 距离是否比随机更近（支持药物作用于疾病相关机制）。背景网络未构建或此步失败时仅提示，不影响主报告。
-    # 两侧靶点表在此先取出（读缓存,代价小）,后面的 RWR 也要用,避免 proximity 早退时 RWR 引用未定义变量。
-    drug_df_full = pd.DataFrame()
-    disease_df_full = pd.DataFrame()
-    proximity_result: dict | None = None
-    if mode == "names":
+    def _task_network_tests():
+        # 网络邻近度 + RWR（仅 names 模式）：检验药物靶点与疾病基因在互作网络上的距离，
+        # 并以 RWR 给非种子蛋白排序。两者共用背景网络上下文,放在同一任务里顺序执行。
+        proximity_result: dict | None = None
+        rwr_results: dict = {}
+        drug_df_full = pd.DataFrame()
+        disease_df_full = pd.DataFrame()
         try:
             drug_df_full = Utils.get_drug_targets_merged(drug_name.strip())
             disease_df_full = Utils.get_disease_targets_merged(disease_name.strip())
@@ -220,21 +221,50 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         except Exception:
             logging.exception("Proximity step failed during report build — skipped gracefully")
             proximity_result = {"ok": False, "error": "exception", "coverage": {}, "cached": False}
+        if not (drug_df_full.empty or disease_df_full.empty):
+            try:
+                drug_syms = {str(g).strip().upper() for g in drug_df_full["approvedSymbol"]}
+                disease_syms = {str(g).strip().upper() for g in disease_df_full["approvedSymbol"]}
+                rwr_results["disease_seeds"] = run_rwr_cached(
+                    list(disease_syms), label=f"{prefix}_disease_seeds", annotate=drug_syms)
+                rwr_results["drug_seeds"] = run_rwr_cached(
+                    list(drug_syms), label=f"{prefix}_drug_seeds", annotate=disease_syms)
+            except Exception:
+                logging.exception("RWR step failed during report build — skipped gracefully")
+                rwr_results = {}
+        return proximity_result, rwr_results
 
-    # Step 4.8: RWR 靶点优先级排序（仅 names 模式）——分别以疾病基因、药物靶点为种子
-    # 在网络上随机游走，按邻近程度给其余蛋白打分排名，预测药物可能的起效靶点。
-    rwr_results: dict = {}
-    if mode == "names" and not (drug_df_full.empty or disease_df_full.empty):
-        try:
-            drug_syms = {str(g).strip().upper() for g in drug_df_full["approvedSymbol"]}
-            disease_syms = {str(g).strip().upper() for g in disease_df_full["approvedSymbol"]}
-            rwr_results["disease_seeds"] = run_rwr_cached(
-                list(disease_syms), label=f"{prefix}_disease_seeds", annotate=drug_syms)
-            rwr_results["drug_seeds"] = run_rwr_cached(
-                list(drug_syms), label=f"{prefix}_drug_seeds", annotate=disease_syms)
-        except Exception:
-            logging.exception("RWR step failed during report build — skipped gracefully")
-            rwr_results = {}
+    def _task_modules():
+        # 只做计算不落盘:结果目录由 save_ppi_results 重建(会先删除旧目录),
+        # 模块文件必须在主线程保存完主结果后再写,否则会被清掉。
+        return _compute_modules_data(graph, organism)
+
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="report") as pool:
+        fut_enr = pool.submit(_task_enrichment)
+        fut_gsea = pool.submit(_task_gsea) if mode == "names" else None
+        fut_net = pool.submit(_task_network_tests) if mode == "names" else None
+        fut_mod = pool.submit(_task_modules)
+
+        # 主线程在等待期间做 pyvis 交互图与静态图渲染(纯本地计算)
+        html_content = Utils.render_pyvis_html(graph, metrics_df)
+        static_fig = Utils.render_static_plot(graph, metrics_df)
+
+        enrichment_df, enrichment_source = fut_enr.result()
+        enrichment_bar_fig = enrichment_dot_fig = None
+        if not enrichment_df.empty:
+            enrichment_bar_fig, enrichment_dot_fig = Utils.render_enrichment_plots(enrichment_df)
+
+        gsea_results: dict = {}
+        gsea_drug_df = gsea_disease_df = None
+        if fut_gsea is not None:
+            gsea_results, gsea_drug_df, gsea_disease_df = fut_gsea.result()
+
+        proximity_result: dict | None = None
+        rwr_results: dict = {}
+        if fut_net is not None:
+            proximity_result, rwr_results = fut_net.result()
+
+        modules_data = fut_mod.result()
 
     # Step 5: 全部结果保存到下载目录（同名分析的旧结果目录会被替换，不会堆积）
     saved = Utils.save_ppi_results(
@@ -269,14 +299,17 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         )
         saved.update(rwr_saved)
 
-    # Step 5.5: 蛋白模块检测（Louvain + 模块富集，Build Report 自动跑）：
-    # names / genes 两种模式均可用。此步失败只跳过模块分析，不影响主报告。
+    # Step 5.5: 模块检测结果落盘（主目录已重建完毕,此时写入不会被清掉）
     modules_result: dict | None = None
-    try:
-        modules_result = _compute_ppi_modules(graph, organism, saved, prefix)
-    except Exception:
-        logging.exception("Module detection step failed during report build — skipped gracefully")
-        modules_result = None
+    if modules_data is not None:
+        try:
+            mod_saved = save_module_results(saved["directory"], prefix,
+                                            modules_data["summary_df"], modules_data["long_df"])
+            modules_result = {**modules_data, "saved_paths": mod_saved}
+            saved.update(mod_saved)
+        except Exception:
+            logging.exception("Module detection step failed during report build — skipped gracefully")
+            modules_result = None
 
     return {
         "genes": genes,
@@ -627,8 +660,11 @@ if ppi is not None:
                 else:
                     with st.spinner(t("net.modules_spinner_detect")):
                         # params[5] = 物种参数（organism）
+                        mods = _compute_ppi_modules(graph, current_params[5],
+                                                    saved["directory"], prefix)
+                        saved.update(mods["saved_paths"])
                         st.session_state.ppi_modules = {
-                            **_compute_ppi_modules(graph, current_params[5], saved, prefix),
+                            **mods,
                             "ppi_params": ppi["params"],
                         }
                     st.rerun()
