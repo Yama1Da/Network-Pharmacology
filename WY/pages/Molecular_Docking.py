@@ -9,7 +9,16 @@ import streamlit as st
 import config
 import Utils
 from i18n import t
-from core.docking import clamp_box, fetch_alphafold_receptor
+from core.docking import (
+    clamp_box,
+    download_pdb,
+    extract_model,
+    fetch_alphafold_receptor,
+    parse_hetatm,
+    residues_in_box,
+    resolve_cid,
+    smiles_to_sdf_3d,
+)
 
 st.set_page_config(page_title=t("dock.page_title"), layout="wide")
 
@@ -115,83 +124,6 @@ def _read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
     return hub, enr
 
 
-def _resolve_cid(query: str) -> int | None:
-    """把药物名换成 PubChem 化合物编号(CID);输入本身就是编号时直接使用。"""
-    query = query.strip()
-    if query.isdigit():
-        return int(query)
-    import pubchempy
-    try:
-        comps = pubchempy.get_compounds(query, "name")
-        return comps[0].cid if comps else None
-    except Exception:
-        return None
-
-
-def _smiles_to_sdf_3d(smiles: str, out_path: str, seed: int = 0, n_confs: int = 20) -> str:
-    """由 SMILES 生成配体 3D 结构:生成多个构象,取能量最低的一个存为 SDF 文件。"""
-    from rdkit import Chem
-    from rdkit.Chem import AllChem
-
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise ValueError(t("dock.err_invalid_smiles", s=smiles))
-    mol = Chem.AddHs(mol)
-    params = AllChem.ETKDGv3()
-    params.randomSeed = seed
-    cids = AllChem.EmbedMultipleConfs(mol, numConfs=n_confs, params=params)
-    if not cids:
-        raise RuntimeError(t("dock.err_rdkit_3d"))
-    best_cid, best_e = None, None
-    for cid in cids:
-        ff = AllChem.MMFFGetMoleculeForceField(mol, confId=cid)
-        if ff is None:
-            continue
-        ff.Minimize()
-        e = ff.CalcEnergy()
-        if best_e is None or e < best_e:
-            best_e, best_cid = e, cid
-    Chem.MolToMolFile(mol, out_path, confId=int(best_cid if best_cid is not None else cids[0]))
-    return out_path
-
-
-def _download_pdb(pdb_id: str) -> str:
-    """按 PDB 编号下载受体结构文件;之前下载过则直接复用本地文件。"""
-    import requests
-
-    pdb_id = pdb_id.strip().lower()
-    os.makedirs(config.DOCKING_RAW_CACHE_DIR, exist_ok=True)
-    path = os.path.join(config.DOCKING_RAW_CACHE_DIR, f"{pdb_id}.pdb")
-    if os.path.exists(path):
-        return path
-    url = config.PDB_DOWNLOAD_URL.format(pdb_id=pdb_id)
-    resp = requests.get(url, timeout=config.API_TIMEOUT)
-    resp.raise_for_status()
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(resp.text)
-    return path
-
-
-def _extract_model(out_pdbqt: str, mode: int, out_path: str) -> str:
-    """从 Vina 输出中取出第 mode 个对接构象,单独保存为文件。"""
-    blocks, current = [], None
-    with open(out_pdbqt, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if line.startswith("MODEL"):
-                current = [line]
-            elif line.startswith("ENDMDL") and current is not None:
-                current.append(line)
-                blocks.append(current)
-                current = None
-            elif current is not None:
-                current.append(line)
-    if not (1 <= mode <= len(blocks)):
-        raise RuntimeError(t("dock.err_mode_range", mode=mode, n=len(blocks)))
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write("".join(blocks[mode - 1]))
-    return out_path
-
-
 def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, box: dict,
                          out_pdbqt: str, scores: pd.DataFrame, conclusion: str,
                          receptor_source: str = "experiment") -> str:
@@ -210,7 +142,7 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
     # 最佳构象:按序号从 Vina 原始输出中提取
     best_mode = int(summary.iloc[0]["mode"])
     best_path = os.path.join(result_dir, f"best_{gene}_{ts}.pdbqt")
-    _extract_model(out_pdbqt, best_mode, best_path)
+    extract_model(out_pdbqt, best_mode, best_path)
 
     # 参数信息(药物、靶点、对接盒、打分等),便于日后复查
     Utils.write_docking_metadata(os.path.join(result_dir, f"meta_{ts}.txt"), {
@@ -423,7 +355,7 @@ if lig_source == "pubchem":
     # 已识别到药物名时自动从 PubChem 获取配体,只自动执行一次
     if default_drug and not dock.get("lig_pdbqt") and not dock.get("lig_auto_done"):
         with st.spinner(t("dock.auto_fetching", drug=default_drug)):
-            cid = _resolve_cid(default_drug)
+            cid = resolve_cid(default_drug)
             if cid is None:
                 dock["lig_auto_done"] = True
                 st.error(t("dock.pubchem_not_found", drug=default_drug))
@@ -446,7 +378,7 @@ if lig_source == "pubchem":
         if st.button(t("dock.fetch_ligand_btn"), key="prep_lig"):
             dock["lig_auto_done"] = True  # 手动指定后不再自动获取
             with st.spinner(t("dock.fetching_pubchem")):
-                cid = _resolve_cid(lig_query)
+                cid = resolve_cid(lig_query)
                 if cid is None:
                     st.error(t("dock.pubchem_no_compound", q=lig_query))
                 else:
@@ -464,7 +396,7 @@ else:
             try:
                 tmp_dir = config.DOCKING_RAW_CACHE_DIR
                 os.makedirs(tmp_dir, exist_ok=True)
-                sdf_path = _smiles_to_sdf_3d(
+                sdf_path = smiles_to_sdf_3d(
                     smiles,
                     os.path.join(tmp_dir, f"ligand_smiles_{datetime.now():%Y%m%d_%H%M%S}.sdf"))
                 dock["cid"] = None
@@ -522,7 +454,7 @@ if dock.get("genes"):
                         dock["pdb_id"] = f"AFDB:{af_acc}"
                         dock["receptor_source"] = "alphafold"
                     else:
-                        pdb_path = _download_pdb(pdb_id)
+                        pdb_path = download_pdb(pdb_id)
                         dock["pdb_id"] = pdb_id
                         dock["receptor_source"] = "experiment"
                     dock["pdb_path"] = pdb_path
@@ -547,43 +479,6 @@ if dock.get("rec_pdbqt"):
 st.divider()
 
 # ===== Step 4 对接盒辅助函数 =====
-
-
-def _parse_hetatm(pdb_path: str) -> list[tuple[str, str, str, tuple]]:
-    """找出 PDB 结构中的共结晶配体/辅因子(水分子除外)及其位置。"""
-    het = []
-    with open(pdb_path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if not line.startswith("HETATM"):
-                continue
-            resn = line[17:20].strip()
-            if resn in ("HOH", "H2O", "WAT", "DOD"):
-                continue
-            try:
-                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
-            except ValueError:
-                continue
-            het.append((resn, line[21], line[22:26].strip(), xyz))
-    return het
-
-
-def _residues_in_box(pdb_path: str, box: dict) -> list[str]:
-    """列出落在对接盒内的蛋白残基,用于检查盒子是否覆盖了结合口袋。"""
-    c, s = box["center"], box["size"]
-    lo = (c[0] - s[0] / 2, c[1] - s[1] / 2, c[2] - s[2] / 2)
-    hi = (c[0] + s[0] / 2, c[1] + s[1] / 2, c[2] + s[2] / 2)
-    res = set()
-    with open(pdb_path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if not line.startswith("ATOM"):
-                continue
-            try:
-                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
-            except ValueError:
-                continue
-            if lo[0] <= xyz[0] <= hi[0] and lo[1] <= xyz[1] <= hi[1] and lo[2] <= xyz[2] <= hi[2]:
-                res.add(f"{line[21]}{line[22:26].strip()}:{line[17:20].strip()}")
-    return sorted(res)
 
 
 def _render_box_3d(pdb_path: str, box: dict) -> None:
@@ -637,7 +532,7 @@ if dock.get("pdb_path"):
             st.error(t("dock.box_infer_failed", exc=exc))
     if dock.get("box"):
         # 说明盒子是参考哪个配体推断的
-        het = _parse_hetatm(dock["pdb_path"])
+        het = parse_hetatm(dock["pdb_path"])
         if het:
             ligs = sorted({f"{r} (chain {c}{n})" for r, c, n, _ in het})
             st.caption(t("dock.inferred_ligand", ligs=", ".join(ligs[:5])))
@@ -674,7 +569,7 @@ if dock.get("pdb_path"):
             st.code(f"center = {dock['box']['center']}\nsize   = {dock['box']['size']}")
 
         # 列出盒内残基,帮助判断盒子是否覆盖结合口袋
-        residues = _residues_in_box(dock["pdb_path"], dock["box"])
+        residues = residues_in_box(dock["pdb_path"], dock["box"])
         if residues:
             st.caption(t("dock.residues_caption", n=len(residues))
                        + ", ".join(residues[:30])
@@ -788,7 +683,7 @@ if dock.get("result"):
             try:
                 pose_path = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                          f"pose_{int(pose_sel)}.pdbqt")
-                _extract_model(dock["result"]["out"], int(pose_sel), pose_path)
+                extract_model(dock["result"]["out"], int(pose_sel), pose_path)
                 _render_3d(dock["pdb_path"], pose_path)
             except Exception as exc:
                 st.warning(t("dock.preview3d_failed", exc=exc))

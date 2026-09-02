@@ -11,25 +11,15 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from selfcheck_common import run
 
 import requests
 
 import config
 import core.docking as dock
 from core.http_client import throttle
-
-
-def check(name, fn):
-    try:
-        fn()
-        print(f"PASS  {name}")
-        return True
-    except AssertionError as e:
-        print(f"FAIL  {name}: {e}")
-        return False
-    except Exception as e:
-        print(f"ERROR {name}: {type(e).__name__}: {e}")
-        return False
 
 
 def t_clamp_box():
@@ -233,10 +223,7 @@ def main():
         ("alphafold pdb skip-if-exists", t_af_pdb_skip_existing),
         ("candidates AF fallback row", t_candidates_af_fallback_row),
     ]
-    print(f"==== docking AlphaFold selfcheck: {len(tests)} tests ====")
-    ok = all([check(name, fn) for name, fn in tests])
-    print("==== ALL PASS ====" if ok else "==== FAILED ====")
-    sys.exit(0 if ok else 1)
+    run(tests, "docking AlphaFold selfcheck")
 
 
 if __name__ == "__main__":

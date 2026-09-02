@@ -13,6 +13,11 @@ from typing import Iterator
 import pandas as pd
 import requests
 
+from i18n import t
+
+# PDB 结构中的水分子残基名,不参与结合位点定位与共晶配体识别
+_WATER_RESNAMES = ("HOH", "H2O", "WAT", "DOD")
+
 
 def _docking_fingerprint(path: str) -> str:
     """计算文件内容的指纹编号,用于判断该文件之前是否处理过、能否直接复用结果。"""
@@ -71,7 +76,7 @@ def _pdb_coords(pdb_path: str) -> tuple[list, list]:
             rec = line[:6].strip()
             if rec not in ("ATOM", "HETATM"):
                 continue
-            if line[17:20].strip() in ("HOH", "H2O", "WAT", "DOD"):
+            if line[17:20].strip() in _WATER_RESNAMES:
                 continue  # 水分子不参与结合位点定位
             try:
                 coord = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
@@ -81,7 +86,105 @@ def _pdb_coords(pdb_path: str) -> tuple[list, list]:
     return protein, het
 
 
+def parse_hetatm(pdb_path: str) -> list[tuple[str, str, str, tuple]]:
+    """找出 PDB 结构中的共结晶配体/辅因子(水分子除外)及其位置。
+
+    返回 (残基名, 链, 残基编号, (x, y, z)) 列表,供对接盒推断与 3D 预览使用。
+    """
+    het = []
+    with open(pdb_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.startswith("HETATM"):
+                continue
+            resn = line[17:20].strip()
+            if resn in _WATER_RESNAMES:
+                continue
+            try:
+                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            except ValueError:
+                continue
+            het.append((resn, line[21], line[22:26].strip(), xyz))
+    return het
+
+
+def residues_in_box(pdb_path: str, box: dict) -> list[str]:
+    """列出落在对接盒内的蛋白残基,用于检查盒子是否覆盖了结合口袋。"""
+    c, s = box["center"], box["size"]
+    lo = (c[0] - s[0] / 2, c[1] - s[1] / 2, c[2] - s[2] / 2)
+    hi = (c[0] + s[0] / 2, c[1] + s[1] / 2, c[2] + s[2] / 2)
+    res = set()
+    with open(pdb_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.startswith("ATOM"):
+                continue
+            try:
+                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            except ValueError:
+                continue
+            if lo[0] <= xyz[0] <= hi[0] and lo[1] <= xyz[1] <= hi[1] and lo[2] <= xyz[2] <= hi[2]:
+                res.add(f"{line[21]}{line[22:26].strip()}:{line[17:20].strip()}")
+    return sorted(res)
+
+
+def download_pdb(pdb_id: str) -> str:
+    """按 PDB 编号下载受体结构文件;之前下载过则直接复用本地文件。返回本地路径。"""
+    import config
+
+    pdb_id = pdb_id.strip().lower()
+    os.makedirs(config.DOCKING_RAW_CACHE_DIR, exist_ok=True)
+    path = os.path.join(config.DOCKING_RAW_CACHE_DIR, f"{pdb_id}.pdb")
+    if os.path.exists(path):
+        return path
+    url = config.PDB_DOWNLOAD_URL.format(pdb_id=pdb_id)
+    resp = requests.get(url, timeout=config.API_TIMEOUT)
+    resp.raise_for_status()
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(resp.text)
+    return path
+
+
 # -------------------- 配体链 --------------------
+
+
+def resolve_cid(query: str) -> int | None:
+    """把药物名换成 PubChem 化合物编号(CID);输入本身就是编号时直接使用。"""
+    import pubchempy
+
+    query = query.strip()
+    if query.isdigit():
+        return int(query)
+    try:
+        comps = pubchempy.get_compounds(query, "name")
+        return comps[0].cid if comps else None
+    except Exception:
+        return None
+
+
+def smiles_to_sdf_3d(smiles: str, out_path: str, seed: int = 0, n_confs: int = 20) -> str:
+    """由 SMILES 生成配体 3D 结构:生成多个构象,取能量最低的一个存为 SDF 文件。"""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(t("dock.err_invalid_smiles", s=smiles))
+    mol = Chem.AddHs(mol)
+    params = AllChem.ETKDGv3()
+    params.randomSeed = seed
+    cids = AllChem.EmbedMultipleConfs(mol, numConfs=n_confs, params=params)
+    if not cids:
+        raise RuntimeError(t("dock.err_rdkit_3d"))
+    best_cid, best_e = None, None
+    for cid in cids:
+        ff = AllChem.MMFFGetMoleculeForceField(mol, confId=cid)
+        if ff is None:
+            continue
+        ff.Minimize()
+        e = ff.CalcEnergy()
+        if best_e is None or e < best_e:
+            best_e, best_cid = e, cid
+    Chem.MolToMolFile(mol, out_path, confId=int(best_cid if best_cid is not None else cids[0]))
+    return out_path
 
 
 def fetch_ligand_sdf_3d(cid: int, out_dir: str | None = None) -> str:
@@ -424,6 +527,18 @@ def split_vina(out_pdbqt: str, out_dir: str | None = None) -> list[str]:
     if not files:
         raise RuntimeError(f"failed to split vina output: {out_pdbqt}")
     return files
+
+
+def extract_model(out_pdbqt: str, mode: int, out_path: str) -> str:
+    """从 Vina 输出中取出第 mode 个对接构象,单独保存为文件。"""
+    n = 0
+    for i, block in enumerate(_iter_vina_models(out_pdbqt), 1):
+        n = i
+        if i == mode:
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write("".join(block))
+            return out_path
+    raise RuntimeError(t("dock.err_mode_range", mode=mode, n=n))
 
 
 def parse_vina_scores(out_pdbqt: str) -> pd.DataFrame:

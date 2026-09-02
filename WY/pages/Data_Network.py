@@ -85,6 +85,39 @@ run_btn = st.button(t("net.build_report"), key="run_btn", type="primary", width=
 
 
 # ---------- 分析执行 ----------
+class _ReportProgress:
+    """Build Report 进度面板:总进度条 + 各阶段状态行(⏳ 待执行 / 🔄 进行中 / ✅ 完成)。
+
+    Streamlit 的 ScriptRunContext 绑定在脚本线程上,工作线程里更新组件会被静默忽略,
+    因此所有 st 调用都只发生在主线程:线程任务只管计算,完成情况由主线程轮询获取后刷新。
+    """
+
+    _ICON = {"pending": "⏳", "running": "🔄", "done": "✅"}
+
+    def __init__(self, steps: list[str]):
+        self._states = {k: "pending" for k in steps}
+        with st.container(border=True):
+            self._caption = st.caption(t("net.prog.caption"))
+            self._bar = st.progress(0.0)
+            self._rows = {k: st.empty() for k in steps}
+        for k in steps:
+            self._redraw(k)
+
+    def _redraw(self, key: str) -> None:
+        self._rows[key].markdown(
+            f"{self._ICON[self._states[key]]} {t(f'net.prog.{key}')}")
+
+    def set(self, key: str, state: str) -> None:
+        """更新某阶段状态(pending/running/done);键不在面板里时忽略。"""
+        if key not in self._states:
+            return
+        self._states[key] = state
+        self._redraw(key)
+
+    def advance(self, fraction: float) -> None:
+        self._bar.progress(min(max(fraction, 0.0), 1.0))
+
+
 def _compute_modules_data(graph, organism) -> dict:
     """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）。"""
     modules = detect_louvain_modules(
@@ -123,13 +156,19 @@ def _compute_modules_data(graph, organism) -> dict:
     }
 
 
-def _compute_ppi_modules(graph, organism, directory, prefix) -> dict:
-    """模块检测 + 富集 + 结果落盘（交互区手动重跑入口）。目录须已存在。"""
-    computed = _compute_modules_data(graph, organism)
-    # 结果保存到本次分析目录；空结果不保存。保存后打包下载（ZIP）会自动包含模块文件。
+def _save_modules_data(directory, prefix, computed: dict) -> dict:
+    """模块计算结果落盘并附上保存路径(自动流程与交互区手动重跑共用)。
+
+    空结果不保存。保存到分析目录后,打包下载（ZIP）会自动包含模块文件。
+    """
     mod_saved = save_module_results(directory, prefix,
                                     computed["summary_df"], computed["long_df"])
     return {**computed, "saved_paths": mod_saved}
+
+
+def _compute_ppi_modules(graph, organism, directory, prefix) -> dict:
+    """模块检测 + 富集 + 结果落盘（交互区手动重跑入口）。目录须已存在。"""
+    return _save_modules_data(directory, prefix, _compute_modules_data(graph, organism))
 
 
 def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
@@ -150,11 +189,24 @@ def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str
     return gdf, rstats, gsea_status.get("reason", "")
 
 
-def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree) -> dict:
-    """执行完整分析（交集→STRING→建图→指标→Hub→富集→可视化→保存），返回结果字典。"""
+def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree,
+                      progress: "_ReportProgress | None" = None) -> dict:
+    """执行完整分析（交集→STRING→建图→指标→富集→可视化→保存），返回结果字典。
+
+    progress 传入 _ReportProgress 时,在各阶段边界刷新进度面板;不影响计算逻辑。
+    """
+    def _prog(step: str | None = None, state: str | None = None,
+              fraction: float | None = None) -> None:
+        if progress is not None:
+            if step and state:
+                progress.set(step, state)
+            if fraction is not None:
+                progress.advance(fraction)
+
     # 疾病靶点目前只有 Open Targets 人类数据，因此整个分析按人类处理，
     # 界面也只开放 Human 选项；多物种支持待后续接入相应疾病数据库后再开放。
     # Step 0: 确定输入基因列表
+    _prog("targets", "running", 0.02)
     if mode == "names":
         genes = Utils.get_common_targets(drug_name, disease_name, top_n=config.STRING_QUERY_LIMIT)
         # 结果目录/文件名前缀：药物名_疾病名
@@ -163,22 +215,27 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         tokens = re.split(r"[\s,;]+", gene_text)
         genes = sorted({t.strip().upper() for t in tokens if t.strip()})
         prefix = "manual"
+    _prog("targets", "done", 0.08)
 
     # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数和最低连接数过滤）
+    _prog("string", "running", 0.08)
     edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score,
                                       label=prefix, min_degree=int(min_degree))
+    _prog("string", "done", 0.30)
 
     # Step 2-4: 建图 + 拓扑指标 + Hub 筛选
+    _prog("graph", "running", 0.30)
     graph = Utils.build_ppi_graph(edges_df, genes)
     metrics_df = Utils.compute_ppi_metrics(graph)
     metrics_df = Utils.mark_hub_genes(metrics_df, min_degree=min_degree)
     hub_df = metrics_df[metrics_df["is_hub"]]
+    _prog("graph", "done", 0.36)
 
     # ---- Step 4.5-5.5(数据部分):富集/GSEA/邻近度+RWR/模块检测四个互相独立的任务并发执行 ----
     # 只把 API 请求与本地计算放进线程池,墙钟时间从"各步之和"变成"最慢一步"。
     # matplotlib 的 pyplot 是全局状态、非线程安全,所有绘图统一留在主线程做。
     # 每步失败只跳过自身,不影响主报告(与原串行版逐项一致)。
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, wait
 
     def _task_enrichment():
         df, src = Utils.run_enrichment(
@@ -237,7 +294,12 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     def _task_modules():
         # 只做计算不落盘:结果目录由 save_ppi_results 重建(会先删除旧目录),
         # 模块文件必须在主线程保存完主结果后再写,否则会被清掉。
-        return _compute_modules_data(graph, organism)
+        # 计算失败只跳过模块分析,不影响主报告(fut_mod.result() 拿到 None)。
+        try:
+            return _compute_modules_data(graph, organism)
+        except Exception:
+            logging.exception("Module detection step failed during report build — skipped gracefully")
+            return None
 
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="report") as pool:
         fut_enr = pool.submit(_task_enrichment)
@@ -245,9 +307,26 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         fut_net = pool.submit(_task_network_tests) if mode == "names" else None
         fut_mod = pool.submit(_task_modules)
 
+        fut_key = {f: k for f, k in ((fut_enr, "enrichment"), (fut_gsea, "gsea"),
+                                     (fut_net, "network"), (fut_mod, "modules")) if f is not None}
+        for k in fut_key.values():
+            _prog(k, "running")
+        _prog(fraction=0.40)
+
         # 主线程在等待期间做 pyvis 交互图与静态图渲染(纯本地计算)
         html_content = Utils.render_pyvis_html(graph, metrics_df)
         static_fig = Utils.render_static_plot(graph, metrics_df)
+        _prog(fraction=0.48)
+
+        # 轮询任务完成情况并刷新进度面板(Streamlit 组件只能在脚本主线程更新)
+        pending = set(fut_key)
+        per_task = 0.28 / len(pending)  # 任务全完成时进度从 0.48 推进到 0.76
+        while pending:
+            done, pending = wait(pending, timeout=0.25)
+            for f in done:
+                _prog(fut_key[f], "done")
+            if done:
+                _prog(fraction=0.48 + per_task * (len(fut_key) - len(pending)))
 
         enrichment_df, enrichment_source = fut_enr.result()
         enrichment_bar_fig = enrichment_dot_fig = None
@@ -267,6 +346,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         modules_data = fut_mod.result()
 
     # Step 5: 全部结果保存到下载目录（同名分析的旧结果目录会被替换，不会堆积）
+    _prog("save", "running", 0.80)
     saved = Utils.save_ppi_results(
         graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix,
         enrichment_df=enrichment_df if not enrichment_df.empty else None,
@@ -303,13 +383,12 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     modules_result: dict | None = None
     if modules_data is not None:
         try:
-            mod_saved = save_module_results(saved["directory"], prefix,
-                                            modules_data["summary_df"], modules_data["long_df"])
-            modules_result = {**modules_data, "saved_paths": mod_saved}
-            saved.update(mod_saved)
+            modules_result = _save_modules_data(saved["directory"], prefix, modules_data)
+            saved.update(modules_result["saved_paths"])
         except Exception:
             logging.exception("Module detection step failed during report build — skipped gracefully")
             modules_result = None
+    _prog("save", "done", 1.0)
 
     return {
         "genes": genes,
@@ -352,29 +431,33 @@ if run_btn:
     if input_mode == "names" and (not drug_name.strip() or not disease_name.strip()):
         st.warning(t("net.warn_missing"))
     else:
-        with st.spinner(t("net.spinner_build")):
-            ppi_result = _run_ppi_analysis(
-                input_mode,
-                drug_name.strip(),
-                disease_name.strip(),
-                gene_text.strip(),
-                config.SPECIES_MAP[species_label]["ncbi_taxon"],
-                config.SPECIES_MAP[species_label]["gprofiler"],
-                score,
-                int(min_degree),
-            )
-            st.session_state.ppi = ppi_result
-            # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
-            st.session_state.ppi_gsea = {
-                side: {**info, "ppi_params": ppi_result["params"]}
-                for side, info in ppi_result.get("gsea", {}).items()
-            }
-            # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
-            mods_auto = ppi_result.get("modules")
-            st.session_state.ppi_modules = (
-                {**mods_auto, "ppi_params": ppi_result["params"]}
-                if mods_auto is not None else None
-            )
+        # 进度面板:names 模式 8 个阶段,genes 模式无 GSEA 与网络检验
+        steps = ["targets", "string", "graph", "enrichment",
+                 *(["gsea", "network"] if input_mode == "names" else []),
+                 "modules", "save"]
+        ppi_result = _run_ppi_analysis(
+            input_mode,
+            drug_name.strip(),
+            disease_name.strip(),
+            gene_text.strip(),
+            config.SPECIES_MAP[species_label]["ncbi_taxon"],
+            config.SPECIES_MAP[species_label]["gprofiler"],
+            score,
+            int(min_degree),
+            progress=_ReportProgress(steps),
+        )
+        st.session_state.ppi = ppi_result
+        # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
+        st.session_state.ppi_gsea = {
+            side: {**info, "ppi_params": ppi_result["params"]}
+            for side, info in ppi_result.get("gsea", {}).items()
+        }
+        # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
+        mods_auto = ppi_result.get("modules")
+        st.session_state.ppi_modules = (
+            {**mods_auto, "ppi_params": ppi_result["params"]}
+            if mods_auto is not None else None
+        )
         st.rerun()
 
 # ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
@@ -581,7 +664,22 @@ if ppi is not None:
                                            else t("net.gsea_side_disease")),
                     horizontal=True, key="gsea_side",
                 )
-                if st.button(t("net.gsea_run"), key="gsea_run_btn", width="stretch"):
+                # 换侧只切换已存结果,不触发重新计算。该侧已有有效结果(参数一致且
+                # 非请求失败)时禁用重跑按钮,避免误点重复计算;自动步骤失败时按钮
+                # 保持可用,作为手动兜底入口。
+                gsea_res = st.session_state.ppi_gsea.get(gsea_side)
+                params_stale = current_params != ppi["params"]
+                gsea_reason = (gsea_res or {}).get("reason", "")
+                gsea_done = (gsea_res is not None and not params_stale
+                             and gsea_reason not in ("request_failed", "circuit_open",
+                                                     "normalize_empty"))
+                run_clicked = st.button(
+                    t("net.gsea_run"), key="gsea_run_btn", width="stretch",
+                    disabled=gsea_done or params_stale,
+                    help=(t("net.params_changed") if params_stale
+                          else t("net.gsea_done_hint") if gsea_done else None),
+                )
+                if run_clicked:
                     if current_params != ppi["params"]:
                         # 防呆：主分析参数已变，先重跑主分析再 GSEA
                         st.warning(t("net.params_changed"))
@@ -597,7 +695,6 @@ if ppi is not None:
                             }
                         st.rerun()
 
-                gsea_res = st.session_state.ppi_gsea.get(gsea_side)
                 if gsea_res is not None:
                     if gsea_res["ppi_params"] != ppi["params"]:
                         st.info(t("net.params_changed"))

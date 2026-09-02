@@ -22,6 +22,12 @@ def _sort_drug_df_by_pchembl(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _abort_fetch() -> tuple[pd.DataFrame, None]:
+    """统一失败出口:界面提示后返回空表(不写缓存,避免把失败当有效数据)。"""
+    st.toast("靶点获取错误，停止信息获取", icon="⚠️")
+    return pd.DataFrame(), None
+
+
 def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]:
     """
     从 ChEMBL 获取药物的全部活性靶点（全靶点模式）：不按活性值过滤，
@@ -76,12 +82,10 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
                     t = new_client.target.get(tid)
                 except Exception:
                     logging.exception("Failed to fetch target details for '%s'", tid)
-                    st.toast("靶点获取错误，停止信息获取", icon="⚠️")
-                    return pd.DataFrame(), None  # 失败即停止，且不保存缓存
+                    return _abort_fetch()  # 失败即停止，且不保存缓存
                 if not t:
                     logging.error("Target '%s' not found, aborting fetch", tid)
-                    st.toast("靶点获取错误，停止信息获取", icon="⚠️")
-                    return pd.DataFrame(), None  # 失败即停止，且不保存缓存
+                    return _abort_fetch()  # 失败即停止，且不保存缓存
                 target_cache[tid] = t
 
         def _extract_gene_name(t: dict) -> str | None:
@@ -108,8 +112,7 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
             if not t:
                 # 正常不会走到这里；若发生说明数据异常，停止并提示
                 logging.error("Target details missing for '%s', aborting fetch", tid)
-                st.toast("靶点获取错误，停止信息获取", icon="⚠️")
-                return pd.DataFrame(), None
+                return _abort_fetch()
 
             gene_name = _extract_gene_name(t)
             if not gene_name:
