@@ -15,6 +15,6 @@
 !WY/Static/data/downloads/readme
 /WY/Static/log/
 /.venv/
-/WY/scripts/
 .idea/
 .reasonix/
+__pycache__/

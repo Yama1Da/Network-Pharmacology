@@ -29,6 +29,7 @@ from core.docking import (
     write_docking_metadata,
 )
 from core.enrichment import render_enrichment_plots, run_enrichment
+from core.http_client import clear_http_cache
 from core.files import (
     list_cache_files,
     list_download_dirs,
@@ -170,6 +171,9 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
     backup = path + ".bak"
     if os.path.exists(path):
         os.replace(path, backup)
+
+    # 清空 HTTP 响应缓存,避免强制更新时命中旧响应导致更新无效
+    clear_http_cache()
 
     ok = False
     df = pd.DataFrame()

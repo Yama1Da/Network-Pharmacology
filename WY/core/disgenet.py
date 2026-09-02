@@ -4,9 +4,9 @@ import logging
 import os
 
 import pandas as pd
-import requests
 
 from .caching import open_csv_cache, save_csv_cache
+from .http_client import _get_session
 from .text_utils import safe_name
 
 
@@ -95,7 +95,7 @@ def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
         resp = None
         for _ in range(config.ENRICHMENT_MAX_RETRIES + 1):
             _acquire_disgenet_rate_limit_slot()
-            resp = requests.get(
+            resp = _get_session().get(
                 config.DisGeNET_URL, params=params, headers=headers, timeout=config.API_TIMEOUT
             )
             if resp.status_code != 429:

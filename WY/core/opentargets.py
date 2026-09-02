@@ -41,7 +41,8 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             }
         }
         """
-        payload = _opentargets_post(search_query, {"queryString": disease_name.strip()})
+        payload = _opentargets_post(search_query, {"queryString": disease_name.strip()},
+                                    use_cache=True)
         if payload is None:
             return pd.DataFrame()
 
@@ -94,7 +95,8 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             }
         }
         """
-        payload = _opentargets_post(disease_query, {"diseaseId": disease_id, "size": top_n})
+        payload = _opentargets_post(disease_query, {"diseaseId": disease_id, "size": top_n},
+                                    use_cache=True)
         if payload is None:
             return pd.DataFrame()
 

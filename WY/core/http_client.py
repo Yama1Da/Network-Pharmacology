@@ -12,6 +12,43 @@ OPENTARGETS_API_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 _throttle_lock = threading.Lock()
 _next_allowed_at: dict[str, float] = {}
 
+# 共享 HTTP 会话(懒加载):带 sqlite 落盘缓存,供 DGIdb/Open Targets/DisGeNET 复用
+_session: requests.Session | None = None
+
+
+def _get_session() -> requests.Session:
+    """返回共享 HTTP 会话;requests_cache 可用时为带 TTL 的落盘缓存会话。
+
+    只缓存 GET/POST 的 200 响应(失败/限流不缓存,重试逻辑不受影响);
+    POST 按完整请求体作为缓存键,同一查询命中、不同查询互不干扰。
+    """
+    global _session
+    if _session is None:
+        try:
+            import os
+
+            import config
+            from requests_cache import CachedSession
+
+            os.makedirs(os.path.dirname(config.HTTP_CACHE_FILE), exist_ok=True)
+            _session = CachedSession(
+                config.HTTP_CACHE_FILE, backend="sqlite",
+                expire_after=config.HTTP_CACHE_TTL_HOURS * 3600,
+                allowable_methods=("GET", "POST"), allowable_codes=(200,),
+            )
+        except Exception:
+            logging.exception("requests_cache unavailable, falling back to plain session")
+            _session = requests.Session()
+    return _session
+
+
+def clear_http_cache() -> None:
+    """清空 HTTP 响应缓存(管理页强制更新前调用,确保抓到新数据)。"""
+    try:
+        _get_session().cache.clear()
+    except Exception:
+        logging.exception("Failed to clear HTTP cache")
+
 
 def throttle(host_key: str) -> None:
     """控制对同一数据源的请求间隔,避免访问过快被对方限流。
@@ -48,6 +85,7 @@ def request_with_retry(
     retry_delay: float | None = None,
     no_retry_status: tuple = (),
     raise_on_exhausted: bool = False,
+    use_cache: bool = False,
 ) -> requests.Response | None:
     """带重试的 HTTP 请求,项目内所有数据源请求的统一入口。
 
@@ -55,6 +93,7 @@ def request_with_retry(
     raise_on_exhausted=True 则抛出最后一次异常(调用方需要错误详情时使用)。
     no_retry_status 中的状态码不视为失败,直接原样返回(如 STRING 的 404 表示
     基因全部未识别,属正常业务情况)。throttle_key 传入时每次尝试前先过限速。
+    use_cache=True 时走共享缓存会话,命中有效缓存则不发起网络请求。
     """
     import time
 
@@ -67,12 +106,14 @@ def request_with_retry(
         try:
             if throttle_key:
                 throttle(throttle_key)
-            # 按方法分别走 requests.post/get(而不是 requests.request),
+            # use_cache=True 走共享缓存会话,否则用 requests 本体;
+            # 按方法分别走 .get/.post(而不是 .request),
             # 保持对 requests.post/get 打补丁的测试与工具兼容。
+            http = _get_session() if use_cache else requests
             if method == "get":
-                resp = requests.get(url, timeout=timeout, headers=headers)
+                resp = http.get(url, timeout=timeout, headers=headers)
             else:
-                resp = requests.post(url, json=json, data=data, timeout=timeout, headers=headers)
+                resp = http.post(url, json=json, data=data, timeout=timeout, headers=headers)
             if resp.status_code in no_retry_status:
                 return resp
             resp.raise_for_status()  # 返回异常状态码(如服务器报错)时视为请求失败
@@ -87,7 +128,8 @@ def request_with_retry(
     return None
 
 
-def _opentargets_post(query: str, variables: dict, timeout: int = 30) -> dict | None:
+def _opentargets_post(query: str, variables: dict, timeout: int = 30,
+                      use_cache: bool = False) -> dict | None:
     """向 Open Targets 数据库发送查询;网络失败时自动重试几次,仍失败则返回 None。
 
     查询本身报错(返回结果带 errors)不算网络失败,由调用方自行处理。
@@ -97,6 +139,6 @@ def _opentargets_post(query: str, variables: dict, timeout: int = 30) -> dict | 
     resp = request_with_retry(
         OPENTARGETS_API_URL, json={"query": query, "variables": variables},
         max_retries=config.LIGHT_API_MAX_RETRIES, timeout=timeout,
-        label="Open Targets POST",
+        label="Open Targets POST", use_cache=use_cache,
     )
     return resp.json() if resp is not None else None

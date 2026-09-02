@@ -48,7 +48,7 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
             config.DGIDB_GRAPHQL_URL,
             json={"query": query, "variables": {"names": [drug_name.strip()]}},
             max_retries=config.LIGHT_API_MAX_RETRIES, timeout=30,
-            label="DGIdb request",
+            label="DGIdb request", use_cache=True,
         )
         payload = resp.json() if resp is not None else None
 
