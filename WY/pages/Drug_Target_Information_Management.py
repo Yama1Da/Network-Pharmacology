@@ -32,16 +32,12 @@ def _invalidate_merged_drug(drug_name: str) -> None:
 
 
 def refresh_file(filename: str, cache_hours: int = 1) -> dict:
-    """按文件名前缀路由到对应抓取/整合函数，重新生成该文件。
+    """按文件名重新抓取或整合数据,更新指定文件。
 
-    - 来源文件（ChEMBL_ / DGIdb_）：先备份旧文件，抓取成功后才替换；
-      失败时恢复旧文件并返回 FAILED，避免数据丢失。
-    - merged 文件（merged_drug_）：先更新两个来源文件，再重建整合结果；
-      任一来源更新失败则保留旧 merged 并返回 FAILED。
-
-    cache_hours : 仅 ChEMBL 来源生效（chembl 客户端 HTTP 缓存有效期）。
+    来源文件(ChEMBL_/DGIdb_)先备份旧文件,抓取成功才替换,失败则恢复旧文件,避免数据丢失;
+    merged 整合文件先更新两个来源文件再重建,任一来源失败则保留旧的整合结果。
     """
-    # ===== merged 文件：先更新来源，再重建 =====
+    # merged 整合文件:先更新两个来源文件,再重建
     if filename.startswith("merged_drug_"):
         drug_name = filename[len("merged_drug_"):-len(".csv")]
         for source in (f"ChEMBL_{drug_name}.csv", f"DGIdb_{drug_name}.csv"):
@@ -51,13 +47,13 @@ def refresh_file(filename: str, cache_hours: int = 1) -> dict:
                         "Message": f"source '{source}' update failed: {result['Message']}"}
         merged_path = _file_path(filename)
         if os.path.exists(merged_path):
-            os.remove(merged_path)  # 来源更新时可能已失效删除，这里兜底
+            os.remove(merged_path)  # 可能已在上一步删除,这里兜底再删一次
         df = Utils.get_drug_targets_merged(drug_name)
         if not df.empty:
             return {"Status": "OK", "Message": f"{len(df)} targets"}
         return {"Status": "FAILED", "Message": "fetch failed"}
 
-    # ===== 来源文件：备份 → 抓取 → 成功替换 / 失败恢复 =====
+    # 来源文件:先备份,抓取成功才替换,失败则恢复旧文件
     path = _file_path(filename)
     backup = path + ".bak"
     if os.path.exists(path):
@@ -72,7 +68,7 @@ def refresh_file(filename: str, cache_hours: int = 1) -> dict:
         elif filename.startswith("DGIdb_"):
             drug_name = filename[len("DGIdb_"):-len(".csv")]
             df = Utils.fetch_drug_targets_dgidb(drug_name)
-            # 新缓存一律以净化命名落盘，存在性判断须与 Utils.safe_name 一致
+            # 文件名经过规范化处理,按同样规则检查新文件是否生成
             ok = not df.empty and os.path.exists(
                 _file_path(f"DGIdb_{Utils.safe_name(drug_name)}.csv"))
         else:
@@ -86,14 +82,14 @@ def refresh_file(filename: str, cache_hours: int = 1) -> dict:
             os.remove(backup)
         _invalidate_merged_drug(drug_name)
         return {"Status": "OK", "Message": f"{len(df)} targets"}
-    # 失败：恢复旧文件，保持旧整合结果有效
+    # 失败:恢复旧文件
     if os.path.exists(backup):
         os.replace(backup, path)
     return {"Status": "FAILED", "Message": "fetch failed"}
 
 
-# ---------- Hide auto navigation sidebar for full-screen display ----------
-#对于更新说明一下，由于ChEMBL对速率限制+防止被封禁，所以每次更新所等待的时间约莫在5分钟以上，且单行数据更新限制为1小时，全部数据更新限制为12小时，短时间内多次更新仅改变时间戳
+# 隐藏侧边栏,全屏显示页面
+# 说明:ChEMBL 接口限速,更新需等待约 5 分钟以上;单个文件更新最长约 1 小时,全部更新最长约 12 小时;短时间内重复更新只会刷新时间戳
 st.markdown("""
 <style>
     [data-testid="stSidebar"] {
@@ -118,7 +114,7 @@ st.markdown("""
 st.title(t("drug_mgmt.title"))
 st.caption(t("drug_mgmt.caption"))
 
-# 单文件更新结果（st.rerun 后仍展示）
+# 展示上一次单文件更新的结果
 last_update = st.session_state.pop("last_update", None)
 if last_update:
     if last_update["Status"] == "OK":
@@ -136,7 +132,7 @@ with col_update:
 if all_update_clicked:
     with st.spinner(t("drug_mgmt.updating_all")):
         rows = []
-        # 第一阶段：先更新所有来源文件（ChEMBL_ / DGIdb_）
+        # 第一步:先更新所有来源文件
         drug_names = set()
         for filename in sorted(os.listdir(CACHE_DIR)):
             if not filename.endswith(".csv"):
@@ -149,7 +145,7 @@ if all_update_clicked:
                     except Exception:
                         rows.append({"File": filename, "Status": "FAILED", "Message": "update error"})
                     break
-        # 第二阶段：再重建所有 merged 文件（来源已在第一阶段刷新，此处直接重建）
+        # 第二步:再重建所有 merged 整合文件
         for drug_name in sorted(drug_names):
             merged_file = f"merged_drug_{drug_name}.csv"
             merged_path = os.path.join(MERGED_DIR, merged_file)
@@ -191,7 +187,7 @@ else:
     col_h_btn.markdown(t("common.col_update"))
     col_h_dl.markdown(t("common.col_download"))
 
-    # 每行：Update（只更新该文件）+ Download（下载磁盘上的 CSV，保证持久化）
+    # 每行:Update 只更新该文件,Download 下载该 CSV
     with st.container(key="file_rows"):
         for _, row in drug_files.iterrows():
             col_name, col_time, col_btn, col_dl = st.columns([3, 2, 1, 1])
@@ -213,9 +209,7 @@ else:
                         key=f"download_{row['File name']}",
                     )
 
-# 更新在容器外执行后再 rerun，避免旧行以残影形式残留在页面上
-# try/except 兜底：refresh_file 内部异常（如整合函数抛错）也会记录结果并 rerun，
-# 避免页面停留在"运行中"的半渲染状态
+# 单文件更新在页面渲染完成后执行,完成或出错都会记录结果并刷新页面
 if clicked_file:
     with st.spinner(t("common.updating_file", file=clicked_file)):
         try:

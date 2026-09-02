@@ -10,7 +10,7 @@ from i18n import t
 
 st.set_page_config(page_title=t("star.page_title"), layout="wide")
 
-# ---------- Hide auto navigation sidebar for full-screen display ----------
+# 隐藏侧边栏,全屏显示页面
 st.markdown("""
 <style>
     [data-testid="stSidebar"] {
@@ -44,7 +44,7 @@ st.divider()
 
 @st.dialog(t("star.dialog_title"))
 def confirm_delete() -> None:
-    """删除确认悬浮窗：选择"是"才删除，"否"关闭窗口。待删项经 session_state 传递。"""
+    """删除确认弹窗:点"是"才删除,点"否"只关闭窗口。"""
     name = st.session_state.get("_star_pending", "")
     path = st.session_state.get("_star_pending_path", "")
     st.write(t("star.dialog_confirm", name=name))
@@ -53,10 +53,10 @@ def confirm_delete() -> None:
         if st.button(t("common.yes"), key="dlg_yes", width="stretch"):
             shutil.rmtree(path, ignore_errors=True)
             st.session_state["_star_deleted"] = name
-            st.rerun()  # rerun 关闭对话框并刷新列表
+            st.rerun()  # 关闭弹窗并刷新列表
     with col_no:
         if st.button(t("common.no"), key="dlg_no", width="stretch"):
-            st.rerun()  # 仅关闭对话框
+            st.rerun()  # 仅关闭弹窗
 
 
 if st.session_state.pop("_star_deleted", None):

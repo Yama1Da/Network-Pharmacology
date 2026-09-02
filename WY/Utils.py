@@ -1,23 +1,7 @@
-"""Utils 兼容门面（facade）。
+"""Utils 工具入口。
 
-原单文件 Utils.py（2700+ 行）已按业务域拆分到 core/ 包：
-
-    core/http_client.py     远端 API 公共层（重试 POST、端点常量）
-    core/text_utils.py      safe_name / _safe_round 等小工具
-    core/logging_setup.py   日志系统（控制台 + 按天轮转）
-    core/caching.py         CSV 缓存读写与 TTL 判断
-    core/opentargets.py     Open Targets（疾病/药物靶点）
-    core/disgenet.py        DisGeNET（疾病靶点 + 主动限流）
-    core/chembl.py          ChEMBL（药物靶点 + 缓存 TTL）
-    core/dgidb.py           DGIdb（药物-基因交互）
-    core/targets.py         多来源靶点整合（merged / 交集）
-    core/files.py           缓存/下载/日志列表与 zip 打包
-    core/ppi.py             STRING PPI：抓取、建图、指标、渲染、落盘
-    core/enrichment.py      富集分析：g:Profiler + Enrichr 降级、绘图
-    core/docking.py         分子对接：Vina 全流程与结果管理
-
-本文件仅做 re-export，保持 `import Utils` + `Utils.xxx` 的既有调用方式，
-App.py 与 pages/ 下所有页面无需任何改动。新代码建议直接从 core 子模块导入。
+具体功能(靶点获取、PPI、富集分析、分子对接等)都在 core/ 包中实现,
+这里统一转出,页面代码仍按 import Utils + Utils.xxx 的方式调用。
 """
 
 from core.caching import _is_cache_fresh, _read_cache_csv

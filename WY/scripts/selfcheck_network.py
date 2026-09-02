@@ -1,18 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""自检：Louvain 模块检测与模块富集批量封装的本地不变式（纯离线，无网络请求）。
+"""网络分析功能自检脚本（纯本地运行，不发网络请求）。
 
 运行方式（在 WY 目录下）：
     python scripts/selfcheck_network.py
 
-覆盖点：
-  1. detect_louvain_modules 基本性质：全节点覆盖恰好一次、按规模降序、id 从 1 连续
-  2. 确定性：同参数两次运行结果逐字段一致（种子固定）
-  3. 空图安全
-  4. avg_degree 计算正确性（5-团全联通，平均度应为 4）
-  5. enrich_modules 失败路径：双服务失败 → 空表 + failures 记录 + 缓存清理被触发
-  6. enrich_modules 成功路径：非空长表带 module_id 列且排序正确
-  7. 失败与真无显著项的区分逻辑（status reason 语义）
+检查内容：Louvain 模块检测、模块富集、GSEA、背景互作组、网络邻近度、RWR 靶点排序。
+每项检查打印 PASS 或 FAIL；全部通过时退出码为 0，有失败则为 1。
 """
 
 import os
@@ -100,14 +94,14 @@ def t_avg_degree():
     assert abs(top["avg_degree"] - 4.0) < 1e-9, f"avg_degree should be 4.0, got {top['avg_degree']}"
 
 
-# ---------- enrich_modules 测试（monkeypatch 两个 fetch 函数） ----------
+# ---------- 模块富集测试（用假函数代替真实请求） ----------
 
-# 与 core.enrichment 真实语义一致的"可信 reason"集合
+# 这些返回状态视为可信：真正成功，或确实无显著项
 _OK_REASONS = ("success", "no_significant", "cache")
 
 
 def _fake_gp(reason, df):
-    """reason=None 表示按真实成功语义（ok=True, reason='success'）并返回 df。"""
+    """假的富集函数：reason=None 表示成功，否则按给定 reason 记录状态。"""
     def f(genes, organism="hsapiens", sources=("GO:BP",), pvalue=0.05, label=None, status=None):
         if status is not None:
             if reason is None:
@@ -130,7 +124,7 @@ def _fake_enr(reason, df):
 
 
 def _patch(gp_spec, enr_spec):
-    """gp_spec / enr_spec 各为 (reason, df)：reason=None 时 fake 返回非空 df 走成功分支。"""
+    """临时把两个富集服务函数换成假函数，参数各为 (reason, df)。"""
     gp_reason, gp_df = gp_spec
     enr_reason, enr_df = enr_spec
     orig = (na.fetch_enrichment_gprofiler, na.fetch_enrichment_enrichr)
@@ -156,7 +150,7 @@ def t_enrich_fail_both():
 
 
 def t_enrich_fail_gp_ok_enr():
-    # g:Profiler 被熔断跳过 + Enrichr 真无显著 → 整体不可信，判失败
+    # 一个服务被熔断跳过、另一个确实无显著项 → 结果不可信，按失败处理
     orig = _patch(("circuit_open", pd.DataFrame()), ("no_significant", pd.DataFrame()))
     try:
         modules = [{"module_id": 1, "genes": ["A", "B", "C", "D", "E"], "size": 5, "avg_degree": 2.0}]
@@ -168,7 +162,7 @@ def t_enrich_fail_gp_ok_enr():
 
 
 def t_enrich_genuine_no_sig():
-    # 双链路都成功但无显著项 → 不是失败
+    # 两条链路都成功但确实无显著项 → 不算失败
     orig = _patch(("no_significant", pd.DataFrame()), ("no_significant", pd.DataFrame()))
     try:
         modules = [{"module_id": 1, "genes": ["A", "B", "C", "D", "E"], "size": 5, "avg_degree": 2.0}]
@@ -179,8 +173,7 @@ def t_enrich_genuine_no_sig():
 
 
 def t_enrich_success():
-    # 模块1（含基因A）：g:Profiler 成功返回非空结果；
-    # 模块2（含基因X）：g:Profiler 与 Enrichr 都失败 → 进入 failures。
+    # 模块1 富集成功、有结果；模块2 两个服务都失败，应记入 failures。
     ok_df = pd.DataFrame([
         {"source": "KEGG", "term_id": "hsa04151", "term_name": "PI3K-Akt",
          "p_value": 0.001, "adjusted_p_value": 0.001,
@@ -238,7 +231,7 @@ def t_min_size_filter():
         _restore(orig)
 
 
-# ---------- M5：GSEA prerank（本地离线） ----------
+# ---------- GSEA prerank 测试（本地离线运行） ----------
 
 def t_gsea_build_ranked():
     df = pd.DataFrame({
@@ -246,7 +239,7 @@ def t_gsea_build_ranked():
         "score_pchembl": [5.0, 9.0, 7.0, None, 6.0, float("nan")],
     })
     rnk, stats = build_ranked_list(df, "approvedSymbol", "score_pchembl")
-    # TP53 去重取最高分 9；BRCA1/MT-CO1 缺分剔除 → 保留 3 个
+    # TP53 大小写重复取最高分；缺分的基因剔除 → 保留 3 个
     assert stats["n_input"] == 6 and stats["n_kept"] == 3, stats
     assert abs(stats["drop_ratio"] - 0.5) < 1e-9
     assert list(rnk["gene"]) == ["TP53", "EGFR", "KRAS"], rnk
@@ -254,7 +247,7 @@ def t_gsea_build_ranked():
 
 
 def t_gsea_normalize():
-    # 用 gseapy 1.3.1 真实列名构造 res2d
+    # 按真实 gseapy 输出的列名构造测试数据
     res2d = pd.DataFrame([
         {"Name": "prerank", "Term": "SET_A", "ES": 0.6, "NES": 2.1,
          "NOM p-val": 0.01, "FDR q-val": 0.05, "FWER p-val": 0.02,
@@ -268,7 +261,7 @@ def t_gsea_normalize():
     assert out["source"].iloc[0] == "LIB_X"
     assert {"term_name", "es", "nes", "nominal_p_value", "fdr_q_value",
             "tag_pct", "gene_pct", "lead_genes", "source"} <= set(out.columns)
-    # 缺列 → 空 DataFrame 而非崩溃
+    # 缺少必需列时应返回空表而不是报错
     assert _normalize_enrichment_gsea(pd.DataFrame({"foo": [1]})).empty
 
 
@@ -289,13 +282,13 @@ def _rnk40() -> pd.DataFrame:
 
 
 def t_gsea_prerank_local():
-    """真实 gseapy 离线 prerank：方向正确 + 结果缓存生效（第二次命中缓存）。"""
+    """用真实 gseapy 离线跑 GSEA：排位靠前的基因集方向应正确；第二次调用应命中缓存。"""
     import glob
     import config
 
     libs = {"SELFTEST_LIB": _tiny_gmt()}
     label = "selfcheck_gsea"
-    # 幂等：清理历史运行留下的测试缓存（TTL 内会直接命中 cache 导致断言失真）
+    # 先删除旧测试缓存，避免直接命中
     for old in glob.glob(os.path.join(config.ENRICHMENT_CACHE_DIR, f"GSEA_{label}_*.csv")):
         try:
             os.remove(old)
@@ -313,13 +306,12 @@ def t_gsea_prerank_local():
     st2: dict = {}
     df2 = fetch_enrichment_gsea_prerank(_rnk40(), libs=libs, label=label, status=st2)
     assert st2.get("reason") == "cache", st2
-    # CSV 往返不改内容但可能改 dtype/空值表示，用容差比较而非严格 equals
+    # 经缓存读写后内容应不变（允许微小格式差异）
     pd.testing.assert_frame_equal(
         df1.reset_index(drop=True), df2.reset_index(drop=True),
         check_dtype=False, check_exact=False, rtol=1e-6,
     )
 
-    # 清理测试缓存文件
     try:
         cf = _gsea_cache_file(_rnk40(), libs, label)
         if os.path.exists(cf):
@@ -341,7 +333,7 @@ def t_gsea_insufficient_no_cache():
     assert not left, f"failure must not leave cache files: {left}"
 
 
-# ---------- M2：背景互作组（纯函数单测；真实缓存相关测试未构建时自动跳过） ----------
+# ---------- 背景互作组测试（真实数据未构建时自动跳过） ----------
 
 def t_interactome_info_cols():
     ok = pd.DataFrame({"protein_external_id": ["9606.ENSP1"],
@@ -361,7 +353,7 @@ def t_interactome_links_to_edges():
                      "9606.E5", "9606.E6", "9606.E7"],
         "protein2": ["9606.E2", "9606.E1", "9606.E3", "9606.E5",
                      "9606.E6", "9606.E7", "9606.E8"],
-        # E1-E2 700（两条 ENSP 对塌缩同符号对，取最高 800 那条语义见下两行）
+        # 前两行是同一对蛋白，分数 700 和 800
         "combined_score": [700, 800, 699, 950,
                            900, 850, 400],
     })
@@ -370,31 +362,30 @@ def t_interactome_links_to_edges():
               "9606.E7": "BRCA1", "9606.E8": "ABL1"}
     edges = itx._links_to_edges(links, id2sym, confidence=700)
     records = {(r.protein_a, r.protein_b): int(r.score) for r in edges.itertuples()}
-    # 无向边方向统一为 (字典序小, 字典序大)——断言按此约定写
-    # 1) E3-E3 自环（E3->EGFR 塌缩）被去掉，699 分即使 >=700 也不存在
+    # 无向边的两个端点统一按基因名字典序排列
+    # 1) 基因塌缩产生的自环（EGFR-EGFR）必须去掉
     assert ("EGFR", "EGFR") not in records, "self-loop must be dropped"
-    # 2) E1-E2（TP53-EGFR）：两行 700/800 塌缩为同符号对，保留最高 800
+    # 2) 同一对蛋白出现两次时保留最高分 800
     assert records.get(("EGFR", "TP53")) == 800, records
-    # 3) 低于阈值 400 的 E7-E8 被过滤（BRCA1-ABL1 不存在）
+    # 3) E7-E8 分数 400 低于阈值，被过滤
     assert ("ABL1", "BRCA1") not in records and ("BRCA1", "ABL1") not in records
     # 4) E4-E5 (KRAS-BRAF, 950) 与 E5-E6 (BRAF-BRCA1, 900) 存在
     assert records.get(("BRAF", "KRAS")) == 950
     assert records.get(("BRAF", "BRCA1")) == 900
     assert len(edges) == 3, f"expect 3 edges, got {len(edges)}"
-    # 5) 置信度换算入口一致性：0.7 * 1000 == 700
+    # 5) 置信度换算一致：0.7 * 1000 == 700
     import config
     assert config.INTERACTOME_CONFIDENCE == int(config.PPI_CONFIDENCE * 1000)
 
 
 def t_interactome_load_or_skip():
-    """未构建 → 必须抛 InteractomeNotBuiltError（不允许静默降级）；
-    已构建 → 加载成功且覆盖守卫行为正确。"""
+    """互作组未构建时必须明确报错；已构建时正常加载并检查基因覆盖情况。"""
     if not itx.is_built("Human"):
         try:
             itx.load_interactome("Human")
             raise AssertionError("must raise InteractomeNotBuiltError when not built")
         except itx.InteractomeNotBuiltError:
-            return  # SKIP：真实缓存相关分支待构建后自测
+            return  # 跳过：真实互作组尚未构建
         return
     graph = itx.load_interactome("Human")
     assert graph.number_of_nodes() >= 10000, f"human interactome too small: {graph.number_of_nodes()}"
@@ -406,7 +397,7 @@ def t_interactome_load_or_skip():
 
 
 def t_interactome_staleness():
-    """陈旧度：已构建时 age_days 为非负整数；days=0 必判 stale（age>=0）；负阈值判 stale。"""
+    """检查互作组数据的"过期"判断：未构建时 age 为 None；已构建时 age 为非负整数。"""
     if not itx.is_built("Human"):
         age = itx.interactome_age_days("Human")
         assert age is None, "age must be None when not built"
@@ -414,7 +405,7 @@ def t_interactome_staleness():
         return
     age = itx.interactome_age_days("Human")
     assert isinstance(age, int) and age >= 0, age
-    # 语义：stale = age > days（严格大于）。刚构建 age=0：days=-1 → stale，days=0 → 不stale
+    # 判断规则：age 严格大于 days 才算过期
     assert itx.is_stale("Human", days=-1) is True, "negative threshold must be stale"
     assert itx.is_stale("Human", days=age) is False, "boundary: age > days must be strict"
     assert itx.is_stale("Human", days=10_000) is False, "huge threshold must not be stale"
@@ -423,10 +414,10 @@ def t_interactome_staleness():
     assert config.INTERACTOME_STALE_DAYS > 0
 
 
-# ---------- M3：网络邻近度检验 ----------
+# ---------- 网络邻近度检验 ----------
 
 def _graph_context(G: nx.Graph):
-    """把任意 networkx 图打包成 _proximity_zscore_from_context 需要的 LCC 上下文。"""
+    """把 networkx 图整理成邻近度计算所需的格式（供多个测试复用）。"""
     nodes = tuple(sorted(G.nodes()))
     idx = {g: i for i, g in enumerate(nodes)}
     adj = nx.to_scipy_sparse_array(G, nodelist=nodes, weight=None, format="csr")
@@ -436,7 +427,7 @@ def _graph_context(G: nx.Graph):
 
 
 def t_prox_bfs_matches_networkx():
-    """稀疏多源 BFS 与 networkx 单源最短路取 min 逐节点一致（连通图）。"""
+    """自写的多源最短距离计算，结果应与 networkx 的标准结果完全一致。"""
     G = nx.barabasi_albert_graph(80, 2, seed=42)
     G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
     ctx = _graph_context(G)
@@ -459,21 +450,20 @@ def t_prox_degree_matched_sample():
     rng = np.random.default_rng(0)
     picked = degree_matched_sample(degrees, seeds, bin_size=100, rng=rng)
     assert len(picked) == len(seeds)
-    assert len(set(picked)) == len(set(seeds)) or True  # 允许跨种子重复（集合语义）
+    assert len(set(picked)) == len(set(seeds)) or True  # 允许不同种子抽到同一个基因
     for s, p in zip(seeds, picked):
         assert p != s, "replacement must not be the seed itself"
         assert abs(degrees[p] - degrees[s]) <= 100, f"degree {degrees[p]} not matched to {degrees[s]}"
-    # 确定性：同种子序列重放一致
+    # 同一随机种子两次抽取，结果一致
     rng2 = np.random.default_rng(0)
     assert degree_matched_sample(degrees, seeds, 100, rng2) == picked
-    # 空箱扩散：度 300 的种子所在箱只有自己 → 必须落到最近非空箱
+    # 种子所在的度数区间只有它自己时，应到最近的非空区间抽取
     picked2 = degree_matched_sample(degrees, ["G09"], 100, np.random.default_rng(3))
     assert picked2 and picked2[0] != "G09" and abs(degrees[picked2[0]] - 300) <= 100
 
 
 def t_prox_zscore_synthetic():
-    """合成图符号测试：与 A 直接相连的 B1 → d_c 显著小（p 取最小值）；
-    远端 B2 的 d_c 必然更大。A 取枢纽节点，度匹配随机化提供零分布。"""
+    """符号测试：药物基因 A 与直接邻居 B1 应显著邻近，与远端 B2 的距离必然更大。"""
     G = nx.barabasi_albert_graph(120, 3, seed=7)
     G = nx.relabel_nodes(G, {i: f"N{i:03d}" for i in G.nodes()})
     degrees = dict(G.degree())
@@ -496,11 +486,10 @@ def t_prox_zscore_synthetic():
     res_far = _proximity_zscore_from_context(ctx, A, B2, n_perm=100, seed=0,
                                              bin_size=100, drug_ratio=0.0, disease_ratio=0.0)
     assert res_near["ok"] and res_far["ok"]
-    # 结构断言（确定性）：B1 全部是 A 的直接邻居 → d_c 精确等于 1.0，且必然小于远端 B2
+    # B1 全是 A 的直接邻居，距离应恰好为 1，且小于远端 B2
     assert abs(res_near["d_c"] - 1.0) < 1e-12, res_near["d_c"]
     assert res_near["d_c"] < res_far["d_c"], (res_near["d_c"], res_far["d_c"])
-    # 统计断言（小无权图 d_c 高度量子化、随机置换常打平，绝对 p 阈值不成立）：
-    # 近端 z 为负，且近端的经验 p 不劣于（≤）远端
+    # 近端模块的 z 值应为负，经验 p 值不应比远端更差
     assert res_near["z"] < 0, f"near-module z should be negative, got {res_near['z']}"
     assert res_near["p_empirical"] <= res_far["p_empirical"], (
         res_near["p_empirical"], res_far["p_empirical"])
@@ -523,7 +512,7 @@ def t_prox_coverage_guard():
 
 
 def t_prox_reference_impl_consistency():
-    """稀疏快路径与 networkx 参考实现给出的 d_c 一致（同一小图）。"""
+    """快速算法算出的距离应与 networkx 参考实现一致。"""
     G = nx.barabasi_albert_graph(60, 2, seed=11)
     G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
     ctx = _graph_context(G)
@@ -537,7 +526,7 @@ def t_prox_reference_impl_consistency():
 
 
 def t_prox_real_and_cached():
-    """真实互作组端到端（未构建则跳过）：结构完整 + 缓存第二次命中。"""
+    """真实互作组完整流程（未构建则跳过）：结果结构完整，第二次调用命中缓存。"""
     if not itx.is_built("Human"):
         return  # SKIP
     drug = ["TP53", "EGFR", "AKT1", "MYC", "STAT3"]
@@ -545,8 +534,7 @@ def t_prox_real_and_cached():
     res1 = run_proximity_cached(drug, disease, label="selfcheck_prox")
     assert res1["ok"], res1
     assert all(isinstance(res1[k], float) for k in ("d_c", "z", "p_empirical"))
-    # v2：去交集字段。该药物/疾病对无共享靶点 → n_excl = 疾病集全部 5 个，
-    # d_c_excl 应与 d_c 完全相等（剔除的是空集）
+    # 该药物/疾病对无共享靶点，去交集后疾病集仍是 5 个，d_c_excl 应与 d_c 相等
     assert res1.get("n_excl") == 5, res1.get("n_excl")
     assert res1.get("d_c_excl") is not None
     assert abs(res1["d_c_excl"] - res1["d_c"]) < 1e-12
@@ -559,11 +547,10 @@ def t_prox_real_and_cached():
           f"z={res1['z_excl']:.3f} ({res1['n_perm']} perms)")
 
 
-# ---------- M4：RWR 靶点优先级排序 ----------
+# ---------- RWR 靶点优先级排序 ----------
 
 def t_rwr_direction_and_mass():
-    """方向锁定：列随机转移（列=出发点）。星形图中心注入质量 → 一次迭代后
-    每片叶子 0.25、总和≈1（行归一化的错误实现会让叶子各得 1.0、总和=4）。"""
+    """验证游走方向：从星形图中心出发，扩散一步后每个叶子各得 0.25，总和为 1。"""
     import scipy.sparse as sp
 
     G = nx.star_graph(4)  # 节点0为中心，度4；叶1..4度1
@@ -572,7 +559,6 @@ def t_rwr_direction_and_mass():
     # 列随机性：每列和为 1
     col_sum = np.asarray(W.sum(axis=0)).ravel()
     assert np.allclose(col_sum, 1.0), col_sum
-    # 中心注入 → 一次扩散后叶子各 0.25
     idx = {g: i for i, g in enumerate(nodes)}
     r = np.zeros(len(nodes))
     r[idx["N0"]] = 1.0
@@ -583,7 +569,7 @@ def t_rwr_direction_and_mass():
 
 
 def t_rwr_alpha0_returns_seeds():
-    """α=0（无游走）时稳态解 r = p：质量精确落在种子上。"""
+    """α=0 时不发生游走，得分应全部留在种子基因上。"""
     G = nx.barabasi_albert_graph(30, 2, seed=1)
     G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
     df = rwr_prioritize(G, ["N00", "N05"], alpha=0.0, tol=1e-12, max_iter=50)
@@ -596,22 +582,21 @@ def t_rwr_alpha0_returns_seeds():
 
 
 def t_rwr_prioritize_basic():
-    """α=0.7 幂迭代：总质量守恒（连通图）、按 score 降序、is_seed 标注正确。"""
+    """α=0.7 正常排序：总分守恒、按得分降序、种子基因标注正确。"""
     G = nx.barabasi_albert_graph(50, 2, seed=3)
     G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
     df = rwr_prioritize(G, ["N00", "N03", "NOT_IN_GRAPH"], alpha=0.7)
     assert abs(df["score"].sum() - 1.0) < 1e-6, df["score"].sum()
     assert df["score"].is_monotonic_decreasing
     assert df["is_seed"].sum() == 2
-    # 枢纽节点（度最高的 N00 是 BA 图最早节点）应排在前列
+    # 度最高的枢纽节点应排在前列
     assert df.iloc[0]["gene"] in ("N00", "N03") or df.iloc[0]["score"] > 0.01
 
 
 def t_rwr_from_context_guard_and_annotate():
-    """覆盖率守卫（种子全不在 LCC → 拒算）+ 纯结果不含标注字段（标注与缓存解耦，
-    由 run_rwr_cached 在缓存命中后按当前 annotate 集附加——见 t_rwr_real_and_cached）。"""
+    """种子基因全部不在网络中时应拒绝计算；计算结果本身不含基因标注信息。"""
     G = _karate()
-    ctx = _graph_context(G)  # 复用 M3 的打包函数
+    ctx = _graph_context(G)
     res = na._rwr_from_context(ctx, ["NOPE1", "NOPE2"], alpha=0.7, tol=1e-8, max_iter=50)
     assert res["error"] == "empty_after_filter" and not res["ok"]
     known = list(G.nodes())[:5]
@@ -622,8 +607,7 @@ def t_rwr_from_context_guard_and_annotate():
 
 
 def t_prox_excl_overlap():
-    """去交集 d_c：共享靶点（距离 0）被剔除后 d_c 只会变大或不变；
-    疾病集被药物集完全覆盖时 excl 不可用（None）且不报错。"""
+    """剔除药物/疾病共享靶点后再算距离：d_c 只会变大或不变；疾病靶点全被覆盖时该指标不可用。"""
     G = _karate()
     ctx = _graph_context(G)
     nodes = list(G.nodes())
@@ -634,21 +618,20 @@ def t_prox_excl_overlap():
     assert res["ok"] and res["n_excl"] == 8
     assert res["d_c_excl"] is not None and res["d_c_excl"] >= res["d_c"]
     assert res["z_excl"] is not None and res["p_excl"] is not None
-    # B ⊆ A：去交集后为空 → excl 字段为 None（不可用）
+    # 疾病集完全被药物集覆盖时，去交集后为空，该指标不可用
     res2 = _proximity_zscore_from_context(ctx, nodes[:10], nodes[:5], n_perm=10, seed=0,
                                           bin_size=100, drug_ratio=0.0, disease_ratio=0.0)
     assert res2["ok"] and res2["d_c_excl"] is None and res2["n_excl"] == 0
 
 
 def t_rwr_enrich_synthetic():
-    """标注集富集：种子=枢纽、标注=同一批枢纽 → 标注集平均得分显著高于度匹配随机
-    （z 明显为正、p 小）；行级 annotated 标志与标注集严格一致。"""
+    """标注集富集检验：种子和标注集都是枢纽基因时，标注基因得分应显著偏高（z 为正、p 小）。"""
     G = nx.barabasi_albert_graph(120, 3, seed=7)
     G = nx.relabel_nodes(G, {i: f"N{i:03d}" for i in G.nodes()})
     degrees = dict(G.degree())
     by_deg = sorted(degrees, key=degrees.get, reverse=True)
     hubs = by_deg[:8]
-    mid = by_deg[8:12]  # 次高度节点（大概率落在非种子 Top 窗口内）
+    mid = by_deg[8:12]  # 次高度节点
     ctx = _graph_context(G)
     ann = set(hubs) | set(mid)
     res = na._rwr_from_context(ctx, hubs, alpha=0.7, tol=1e-8, max_iter=100,
@@ -663,13 +646,13 @@ def t_rwr_enrich_synthetic():
 
 
 def t_rwr_real_and_cached():
-    """真实互作组端到端（未构建则跳过）：分列表结构、收敛、缓存命中、标注解耦。"""
+    """真实互作组完整流程（未构建则跳过）：检查种子/非种子分列表、收敛与缓存。"""
     if not itx.is_built("Human"):
         return  # SKIP
     import glob
     import config
 
-    # 幂等：清理历史运行留下的测试缓存（cached-False 断言需要一次全新计算）
+    # 先删除旧测试缓存，保证第一次是全新计算
     for old in glob.glob(os.path.join(config.RWR_CACHE_DIR, "rwr_selfcheck_rwr_*.json")):
         try:
             os.remove(old)
@@ -680,18 +663,17 @@ def t_rwr_real_and_cached():
     res1 = run_rwr_cached(seeds, label="selfcheck_rwr")
     assert res1["ok"], res1
     assert res1["converged"] and res1["n_iter"] >= 1
-    # 质量守恒校验的是全节点总质量（连通图≈1.0）；seed_mass 是"质量留在种子上的
-    # 比例"，属于信息量指标（5 个种子占 31% 即显著集中），两者语义不可混淆
+    # total_mass 是全网络总质量（约 1.0）；seed_mass 是留在种子上的比例，含义不同
     assert abs(res1["total_mass"] - 1.0) < 1e-6, res1["total_mass"]
     assert 0.0 < res1["seed_mass"] < 1.0, res1["seed_mass"]
-    # 分列表：种子全量（5 个），非种子独立截断为缓存窗口，且不含任何种子
+    # 种子列表全量保留；非种子榜单单独截断，且不含种子
     assert len(res1["seeds"]) == 5, len(res1["seeds"])
     assert {r["gene"] for r in res1["seeds"]} == {"TP53", "EGFR", "AKT1", "MYC", "STAT3"}
     assert len(res1["top_nonseed"]) == config.RWR_CACHE_TOP_N, len(res1["top_nonseed"])
     seed_names = {r["gene"] for r in res1["seeds"]}
     assert all(r["gene"] not in seed_names for r in res1["top_nonseed"])
     assert res1["top_nonseed"][0]["score"] >= res1["top_nonseed"][-1]["score"]
-    # 标注集进缓存键：带 annotate 的调用是全新计算（行级标注 + enrichment 随计算生成）
+    # 标注集也算进缓存标识：换标注集就要重新计算
     first_ns = res1["top_nonseed"][0]["gene"]
     res2 = run_rwr_cached(seeds, label="selfcheck_rwr", annotate={first_ns})
     assert res2["ok"] and res2.get("cached") is False
@@ -710,9 +692,7 @@ def t_rwr_real_and_cached():
 
 
 def t_rwr_truncation_guarantee():
-    """回归：种子数很大时（甚至超过缓存窗口），非种子 Top-N 不得被种子挤出、
-    种子表必须全量保留——M4 上线当日实际事故（aspirin 247 种子 → 非种子仅剩
-    12 个 / 疾病侧非种子为空）的锁定测试。"""
+    """回归测试：种子数很大时，种子表仍要全量保留，非种子榜单不被种子挤占。"""
     G = nx.barabasi_albert_graph(60, 2, seed=5)
     G = nx.relabel_nodes(G, {i: f"N{i:02d}" for i in G.nodes()})
     ctx = _graph_context(G)

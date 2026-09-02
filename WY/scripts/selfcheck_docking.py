@@ -1,17 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""M6 自检：AlphaFold 兜底链路的离线不变式（纯本地，无网络请求）。
+"""分子对接模块自检脚本:检查 AlphaFold 结构兜底相关功能是否正常。
 
-运行方式（在 WY 目录下）：
+纯本地运行,不发网络请求。运行方式(在 WY 目录下):
     python scripts/selfcheck_docking.py
-
-覆盖点：
-  1. clamp_box：未超限原样返回 / 超限以质心为中心收拢
-  2. _strip_receptor_pdb 兼容 AF 风格 PDB（REMARK 头 + 仅 ATOM + altloc 去重）
-  3. EBI 条目基因名解析（name.value + synonyms[].value）
-  4. fetch_uniprot_accession：负缓存（查无不再重复请求）/ 网络失败不缓存且上抛
-  5. fetch_alphafold_pdb：文件已存在时跳过下载（不发任何请求）
-  6. fetch_receptor_pdb_candidates：RCSB 空结果 + AF 开启 → 追加 AFDB 行（source=alphafold）
 """
 
 import os
@@ -50,7 +42,7 @@ def t_clamp_box():
 
 
 def t_strip_af_style_pdb():
-    """AF 模型为 REMARK 头 + 仅 ATOM（无 HETATM），清洗后应保留 ATOM 并去 altloc。"""
+    """AlphaFold 模型的 PDB 格式特殊,清洗后应只保留原子记录并去掉重复原子。"""
     src = os.path.join(tempfile.gettempdir(), "selfcheck_af_like.pdb")
     out = src + ".clean.pdb"
     with open(src, "w", encoding="utf-8") as f:
@@ -81,7 +73,7 @@ def t_ebi_gene_names():
 
 
 def t_uniprot_negative_cache():
-    """查无（API 正常返回但无精确匹配）→ 负缓存；第二次调用不再发起请求。"""
+    """数据库里查无此基因时记入缓存,第二次查询不再重复发请求。"""
     orig_cache = config.UNIPROT_LOOKUP_CACHE
     orig_ebi = dock._lookup_uniprot_ebi
     calls = {"n": 0}
@@ -107,7 +99,7 @@ def t_uniprot_negative_cache():
 
 
 def t_uniprot_network_failure_not_cached():
-    """全部源网络失败 → 抛 RuntimeError 且不写缓存（抖动不得固化为"查无"）。"""
+    """网络全部失败时应当报错且不写缓存,避免把临时故障当成"查无此基因"。"""
     orig_cache = config.UNIPROT_LOOKUP_CACHE
     orig = (dock._lookup_uniprot_ebi, dock._lookup_uniprot_rest)
 
@@ -144,7 +136,7 @@ def _json_nonempty(path):
 
 
 def t_af_pdb_skip_existing():
-    """AF 模型文件已存在时不发任何请求（直接复用）。"""
+    """AlphaFold 模型文件已存在时直接复用,不再发网络请求。"""
     tmpdir = tempfile.mkdtemp()
     orig_dir, orig_get = config.DOCKING_RECEPTOR_CACHE_DIR, requests.get
     config.DOCKING_RECEPTOR_CACHE_DIR = tmpdir
@@ -163,7 +155,7 @@ def t_af_pdb_skip_existing():
 
 
 def t_candidates_af_fallback_row():
-    """RCSB 空结果 + AF 开启 → 追加 AFDB 行（source=alphafold）；关闭时不追加。"""
+    """实验结构查不到且允许 AlphaFold 时,追加预测结构作候选;关闭时不追加。"""
     orig_acc = dock.fetch_uniprot_accession
     orig_post = requests.post
     dock.fetch_uniprot_accession = lambda gene, taxon=9606: "P99999"
@@ -188,7 +180,7 @@ def t_candidates_af_fallback_row():
 
 
 def t_throttle_spacing():
-    """主机级节流：同键串行调用间隔 ≥ 最小间隔；未知键不限速；并发线程正确排队。"""
+    """对同一网站的请求有最小时间间隔;未配置的请求不限速;并发调用也正确排队。"""
     import threading
     import time as _t
 
@@ -213,7 +205,7 @@ def t_throttle_spacing():
             throttle("unknown_host_x")
         assert _t.monotonic() - t0 < 0.05
 
-        # 并发预约：4 线程同时抢 → 总耗时 ≥ 3 个间隔（不会同时睡醒连发）
+        # 4 个线程同时请求 → 总耗时至少 3 个间隔(不会一起放行)
         barrier = threading.Barrier(4)
         t0 = _t.monotonic()
         threads = [threading.Thread(target=lambda: (barrier.wait(), throttle("selftest")))

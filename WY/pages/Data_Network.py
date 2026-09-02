@@ -84,11 +84,7 @@ with col_input:
         )
 
 with col_params:
-    # 物种选择：当前仅开放“人类（Human）”。
-    # 多物种支持待后续优化后再开放（届时把下面选项恢复为
-    # list(config.SPECIES_MAP.keys())，并同步处理疾病靶点数据源
-    # Open Targets 只有人类数据的问题）。
-    # 注意：选项值 "Human" 同时是 config.SPECIES_MAP 的键，不参与翻译。
+    # 物种选择：目前仅开放“人类”，因为疾病靶点数据源（Open Targets）只有人类数据。
     species_label = st.selectbox(t("net.species"), ["Human"])
     score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
     min_degree = st.number_input(t("net.min_degree"), 1, 20, config.MIN_DEGREE_FILTER, 1)
@@ -98,9 +94,9 @@ run_btn = st.button(t("net.build_report"), key="run_btn", type="primary", width=
 
 # ---------- 分析执行 ----------
 def _compute_ppi_modules(graph, organism, saved, prefix) -> dict:
-    """Louvain 模块检测 + 模块富集 + 落盘，返回交互区展示所需的完整结果字典。
+    """对 PPI 网络做 Louvain 模块检测和模块富集分析，并保存结果。
 
-    Build Report 自动执行与交互区手动重跑共用本函数，保证两条路径产出一致。
+    Build Report 自动分析与交互区手动重跑共用本函数，保证结果一致。
     """
     modules = detect_louvain_modules(
         graph,
@@ -128,9 +124,7 @@ def _compute_ppi_modules(graph, organism, saved, prefix) -> dict:
         min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
         top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
     )
-    # 结果落盘到本次分析目录（<prefix>_data），空表不落盘；
-    # saved 即 session_state 中的字典，追加后页面 ZIP 自动包含模块文件，
-    # Data Management 的整目录 zip 也会一并打包。
+    # 结果保存到本次分析目录；空结果不保存。保存后打包下载（ZIP）会自动包含模块文件。
     mod_saved = save_module_results(
         saved["directory"], prefix, summary_df, long_df)
     saved.update(mod_saved)
@@ -147,24 +141,19 @@ def _compute_ppi_modules(graph, organism, saved, prefix) -> dict:
 
 def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree) -> dict:
     """执行完整分析（交集→STRING→建图→指标→Hub→富集→可视化→保存），返回结果字典。"""
-    # ============ 物种策略说明（待优化时确认） ============
-    # 当前疾病靶点仅来自 Open Targets（只有人类数据），因此整个分析
-    # 链路按【人类】处理；界面侧也暂时只开放 Human 选项。
-    # 后续优化时再决定：是否定死人类，或放开多物种（Mouse/Rat）。
-    # 若放开多物种，需同步解决疾病靶点数据源的多物种支持
-    # （如接入 DisGeNET / MGI / RGD 等，并处理人-鼠同源映射）。
-    # =====================================================
+    # 疾病靶点目前只有 Open Targets 人类数据，因此整个分析按人类处理，
+    # 界面也只开放 Human 选项；多物种支持待后续接入相应疾病数据库后再开放。
     # Step 0: 确定输入基因列表
     if mode == "names":
         genes = Utils.get_common_targets(drug_name, disease_name, top_n=config.STRING_QUERY_LIMIT)
-        # 结果目录/文件前缀：药物名_疾病名（save_ppi_results 会生成 <prefix>_data 目录）
+        # 结果目录/文件名前缀：药物名_疾病名
         prefix = re.sub(r"[^\w\-]+", "_", f"{drug_name}_{disease_name}")
     else:
         tokens = re.split(r"[\s,;]+", gene_text)
         genes = sorted({t.strip().upper() for t in tokens if t.strip()})
         prefix = "manual"
 
-    # Step 1: STRING 获取相互作用（缓存命名含参数，如 StringPPI_aspirin_cancer_0.7_3.csv）
+    # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数和最低连接数过滤）
     edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score,
                                       label=prefix, min_degree=int(min_degree))
 
@@ -184,10 +173,9 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     if not enrichment_df.empty:
         enrichment_bar_fig, enrichment_dot_fig = Utils.render_enrichment_plots(enrichment_df)
 
-    # Step 4.6: 排序富集（GSEA prerank，仅 names 模式）——Build Report 自动跑
-    # 药物侧（pChEMBL 排秩）与疾病侧（OT 关联分排秩），CSV 由 save_gsea_results
-    # 落入 <prefix>_data 目录并随后纳入 ZIP。整段 try/except 兜底：GSEA 出任何
-    # 意外都不能拖垮主报告链路（主分析已有缓存，此时只会少两份 CSV）。
+    # Step 4.6: GSEA 排序富集（仅 names 模式，Build Report 自动跑）：药物侧按 pChEMBL
+    # 活性分排序、疾病侧按 Open Targets 关联分排序，检验通路基因是否整体偏向高排名。
+    # 此步失败只跳过 GSEA，不影响主报告。
     gsea_results: dict = {}
     gsea_drug_df = gsea_disease_df = None
     if mode == "names":
@@ -215,9 +203,8 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
             gsea_results = {}
             gsea_drug_df = gsea_disease_df = None
 
-    # Step 4.7: 网络邻近度检验（M3，仅 names 模式）——依赖背景互作组本地缓存
-    # （未构建时返回 not_built 提示，不阻断）；结果带文件缓存（同参数秒级复用）。
-    # 整段 try/except 兜底：邻近度出任何意外都不能拖垮主报告链路。
+    # Step 4.7: 网络邻近度检验（仅 names 模式）——检验药物靶点与疾病基因在互作网络上的
+    # 距离是否比随机更近（支持药物作用于疾病相关机制）。背景网络未构建或此步失败时仅提示，不影响主报告。
     proximity_result: dict | None = None
     if mode == "names":
         try:
@@ -232,10 +219,8 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
             logging.exception("Proximity step failed during report build — skipped gracefully")
             proximity_result = {"ok": False, "error": "exception", "coverage": {}, "cached": False}
 
-    # Step 4.8: RWR 靶点优先级排序（M4，仅 names 模式）——双侧种子各跑一次
-    # （幂迭代毫秒级，计算近零成本）。标注集（is_drug/is_disease）与缓存解耦，
-    # 由 run_rwr_cached 在缓存命中后按当前对侧靶点集附加。
-    # CSV 落盘放在 Step 5 saved 生成之后（与 GSEA 落盘并排），避免前向引用。
+    # Step 4.8: RWR 靶点优先级排序（仅 names 模式）——分别以疾病基因、药物靶点为种子
+    # 在网络上随机游走，按邻近程度给其余蛋白打分排名，预测药物可能的起效靶点。
     rwr_results: dict = {}
     if mode == "names":
         try:
@@ -249,19 +234,18 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
             logging.exception("RWR step failed during report build — skipped gracefully")
             rwr_results = {}
 
-    # Step 5: 保存到 DOWNLOADS_DIR（替代式：同 prefix 旧目录会被替换）
+    # Step 5: 全部结果保存到下载目录（同名分析的旧结果目录会被替换，不会堆积）
     saved = Utils.save_ppi_results(
         graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix,
         enrichment_df=enrichment_df if not enrichment_df.empty else None,
         enrichment_bar_fig=enrichment_bar_fig,
         enrichment_dot_fig=enrichment_dot_fig,
     )
-    # GSEA 结果 CSV 落盘进 <prefix>_data（空表不落盘），并入 saved 使 ZIP 自动包含
+    # GSEA 结果 CSV 保存进分析目录（空结果不保存），打包下载时自动包含
     gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
     saved.update(gsea_saved)
-    # RWR 结果 CSV 落盘（空表/失败不落盘），并入 saved 使 ZIP 自动包含。
-    # 注意 result 结构为 seeds（全量）+ top_nonseed（截断）两个分列表——
-    # 两者合并为一张表落盘，is_seed 列区分；annotated 仅非种子行携带。
+    # RWR 结果保存：种子基因（全量）与非种子候选蛋白（前若干名）合并为一张表，is_seed 列区分；
+    # 空结果或失败时不保存。
     if rwr_results:
 
         def _rwr_df(r: dict):
@@ -283,10 +267,8 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         )
         saved.update(rwr_saved)
 
-    # Step 5.5: 蛋白模块检测（Louvain + 模块富集）——Build Report 自动跑。
-    # 仅依赖 PPI 图，names / genes 两种模式均可用；需在 Step 5 之后执行
-    # （落盘目录由 saved 生成）。整段 try/except 兜底：模块检测出任何
-    # 意外都不能拖垮主报告链路（主分析结果仍完整，仅少两份模块 CSV）。
+    # Step 5.5: 蛋白模块检测（Louvain + 模块富集，Build Report 自动跑）：
+    # names / genes 两种模式均可用。此步失败只跳过模块分析，不影响主报告。
     modules_result: dict | None = None
     try:
         modules_result = _compute_ppi_modules(graph, organism, saved, prefix)
@@ -316,7 +298,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     }
 
 
-# ---------- 结果持久化：存入 session_state，点击下载等触发的 rerun 不再重跑分析 ----------
+# ---------- 结果暂存：页面上点下载等操作引起刷新时，不会重复跑分析 ----------
 if "ppi" not in st.session_state:
     st.session_state.ppi = None
 
@@ -347,14 +329,12 @@ if run_btn:
                 int(min_degree),
             )
             st.session_state.ppi = ppi_result
-            # Build Report 已自动跑完 GSEA 双侧 → 直接作为交互区的初始结果
-            # （按侧存储；缓存键相同，交互区重跑同侧也是秒级命中）。
+            # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
             st.session_state.ppi_gsea = {
                 side: {**info, "ppi_params": ppi_result["params"]}
                 for side, info in ppi_result.get("gsea", {}).items()
             }
-            # Build Report 已自动跑完模块检测 → 直接作为交互区的初始结果
-            # （检测失败时置 None，交互区仅保留手动重跑按钮作兜底）。
+            # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
             mods_auto = ppi_result.get("modules")
             st.session_state.ppi_modules = (
                 {**mods_auto, "ppi_params": ppi_result["params"]}
@@ -362,7 +342,7 @@ if run_btn:
             )
         st.rerun()
 
-# ---------- 结果展示（读取 session_state，不重新分析） ----------
+# ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
 ppi = st.session_state.ppi
 if ppi is not None:
     if current_params != ppi["params"]:
@@ -405,8 +385,8 @@ if ppi is not None:
         st.subheader(t("net.static"))
         st.pyplot(static_fig)
 
-        # ---------- 网络邻近度检验（M3，仅 names 模式） ----------
-        # 随主分析自动计算（文件缓存后秒级复用）；genes 模式无药物/疾病分侧，不展示。
+        # ---------- 网络邻近度检验（仅 names 模式） ----------
+        # 随主分析自动计算；手动输入基因模式无药物/疾病之分，不展示。
         proximity_result = ppi.get("proximity")
         if proximity_result is not None and input_mode == "names":
             st.divider()
@@ -456,8 +436,8 @@ if ppi is not None:
                 elif proximity_result.get("ok"):
                     st.caption(t("net.prox_excl_unavailable"))
 
-        # ---------- 靶点优先级排序（RWR，M4，仅 names 模式） ----------
-        # 随主分析自动计算双侧（种子=疾病 / 种子=药物）；radio 仅切换展示，无需重算。
+        # ---------- 靶点优先级排序（RWR，仅 names 模式） ----------
+        # 随主分析自动算完两个方向（种子=疾病基因 / 种子=药物靶点）；单选只切换查看，不重算。
         rwr_results = ppi.get("rwr") or {}
         if rwr_results and input_mode == "names":
             st.divider()
@@ -544,14 +524,12 @@ if ppi is not None:
                 st.caption(t("net.bubble_caption"))
                 st.pyplot(enrichment_dot_fig)
 
-        # ---------- 排序富集（GSEA prerank，仅智人） ----------
-        # Build Report 已自动跑双侧并落盘 ZIP；此交互区可换参数/换侧重跑。
-        # 会话状态按"侧"存储（ppi_gsea[side]）：切换药物/疾病单选只会显示
-        # 对应侧的结果，不会误展示另一侧的旧结果。
+        # ---------- 排序富集（GSEA prerank，仅人类） ----------
+        # Build Report 已自动跑完两侧并保存，此处可换侧重跑；
+        # 药物/疾病两侧结果分开存放，切换单选不会误显示另一侧的旧结果。
         st.divider()
         with st.expander(t("net.gsea_subheader")):
             st.caption(t("net.gsea_caption", libs="、".join(config.GSEA_ENRICHR_LIBS)))
-            # 按侧存储；兼容清理旧版（单结果字典含 "side" 键）的会话残留
             if ("ppi_gsea" not in st.session_state
                     or not isinstance(st.session_state.ppi_gsea, dict)
                     or "side" in st.session_state.ppi_gsea):
@@ -643,9 +621,8 @@ if ppi is not None:
                             )
 
         # ---------- 蛋白模块检测（Louvain + 模块富集） ----------
-        # Build Report 已随主分析自动跑完，结果连同其依赖的主分析参数指纹一起存
-        # session_state——主分析参数变更后模块结果自动标记过期。此处按钮用于
-        # 手动重跑（如自动步骤失败时的兜底入口）。
+        # Build Report 已随主分析自动跑完；主分析参数变更后，旧模块结果会提示过期。
+        # 此按钮用于手动重跑（如自动步骤失败时兜底）。
         st.divider()
         with st.expander(t("net.modules_subheader")):
             st.caption(t("net.modules_caption",
@@ -660,7 +637,7 @@ if ppi is not None:
                     st.warning(t("net.params_changed"))
                 else:
                     with st.spinner(t("net.modules_spinner_detect")):
-                        # params[5] = organism（见上方 current_params 的元组顺序）
+                        # params[5] = 物种参数（organism）
                         st.session_state.ppi_modules = {
                             **_compute_ppi_modules(graph, current_params[5], saved, prefix),
                             "ppi_params": ppi["params"],
@@ -764,14 +741,14 @@ if ppi is not None:
                     f"{prefix}_network.svg", "image/svg+xml", width="stretch",
                 )
             with col_d6:
-                # 富集气泡图（与 ZIP 换位到第二行第三列；有富集结果时显示）
+                # 富集气泡图（有富集结果时显示）
                 if "enrichment_csv" in saved:
                     st.download_button(
                         t("net.dl_bubble"),
                         open(saved["enrichment_dot_png"], "rb").read(),
                         f"{prefix}_enrichment_dot.png", "image/png", width="stretch",
                     )
-            # 第三行：富集 CSV / Bar（有富集结果时）+ 右下角 ZIP（始终显示）
+            # 下一行：富集 CSV / 条形图下载（有富集结果时）+ ZIP 打包下载（始终显示）
             col_e1, col_e2, col_e3 = st.columns(3)
             if "enrichment_csv" in saved:
                 with col_e1:

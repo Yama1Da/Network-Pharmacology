@@ -1,4 +1,4 @@
-"""文件 / 目录管理：缓存列表、下载目录列表、日志文件列表、zip 打包。"""
+"""结果文件与目录管理：列出缓存/下载/日志文件，并支持 zip 打包下载。"""
 
 import os
 from datetime import datetime
@@ -7,18 +7,7 @@ import pandas as pd
 
 
 def list_cache_files(category: str) -> pd.DataFrame:
-    """列出 Static/data/cache/<category> 目录下缓存文件的文件名与创建时间。
-
-    Parameters
-    ----------
-    category : str
-        子目录名，如 "drug" 或 "disease"。
-
-    Returns
-    -------
-    pd.DataFrame
-        含 "File name"、"Created time" 两列；目录不存在或为空时返回空表。
-    """
+    """列出指定类别缓存目录（如 "drug" 或 "disease"）下的文件名与创建时间；目录为空时返回空表。"""
     import config
 
     cache_dir = os.path.join(config.CACHE_DIR, category)
@@ -26,7 +15,7 @@ def list_cache_files(category: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["File name", "Created time"])
     rows = []
     for name in sorted(os.listdir(cache_dir)):
-        # 跳过更新过程中产生的备份/临时文件（.bak / .tmp），避免残留虚影显示在页面上
+        # 跳过更新过程产生的备份/临时文件，不在页面上显示
         if name.endswith((".bak", ".tmp")):
             continue
         path = os.path.join(cache_dir, name)
@@ -37,13 +26,7 @@ def list_cache_files(category: str) -> pd.DataFrame:
 
 
 def list_download_dirs() -> pd.DataFrame:
-    """列出 DOWNLOADS_DIR 下的子目录（一次分析一组）及其创建时间。
-
-    Returns
-    -------
-    pd.DataFrame
-        含 "Directory"、"Created time" 两列；目录不存在或无子目录时返回空表。
-    """
+    """列出下载目录下的各次分析子目录及其创建时间；无子目录时返回空表。"""
     import config
 
     if not os.path.isdir(config.DOWNLOADS_DIR):
@@ -58,20 +41,9 @@ def list_download_dirs() -> pd.DataFrame:
 
 
 def list_log_files() -> pd.DataFrame:
-    """列出 LOG_DIR 下的日志文件及其创建/修改时间。
+    """列出日志文件的文件名、创建与修改时间；无日志文件时返回空表。
 
-    兼容两种命名：
-      - 旧格式：app_YYYY-MM-DD.log
-      - TimedRotating 轮转格式：app.log（当前活跃）、app.log.YYYY-MM-DD（历史）
-
-    返回含 "File name"、"Created time"、"Modified time" 三列；
-    其中 app.log 为当前正在写入的文件（即"今天"的日志）。
-
-    Returns
-    -------
-    pd.DataFrame
-        含 "File name"、"Created time"、"Modified time" 列；
-        目录不存在或无日志文件时返回空表。
+    app.log 为当前正在写入的日志（即"今天"的），app.log.日期 为历史日志。
     """
     import config
 
@@ -90,11 +62,8 @@ def list_log_files() -> pd.DataFrame:
 
 def make_ppi_zip(file_paths: dict) -> bytes:
     """
-    将一次分析的全部结果文件打包为 zip 字节（nodes/edges/html/graphml/svg
-    及富集 CSV/图等所有已落盘的文件，排除 directory 键）。
-
-    供 st.download_button 直接下载；文件在 zip 内使用各自的文件名，
-    配合独立子目录，用户解压后即可获得该次分析的全部成品。
+    把一次分析产生的全部结果文件（PPI 网络、富集结果等已落盘的文件）
+    打包为 zip，供页面直接下载，解压后即得该次分析的全部成品。
     """
     import io
     import zipfile
@@ -111,9 +80,8 @@ def make_ppi_zip(file_paths: dict) -> bytes:
 
 def make_dir_zip(directory: str) -> bytes:
     """
-    将某个目录下的全部文件打包为 zip 字节（供管理页按目录整体下载）。
-
-    zip 内使用各文件的文件名（不带目录前缀），返回空 zip 当目录不存在或为空。
+    把某个目录下的全部文件打包为 zip，供管理页按目录整体下载；
+    目录不存在或为空时返回空 zip。
     """
     import io
     import zipfile

@@ -1,4 +1,4 @@
-"""富集分析模块：g:Profiler 优先 + Enrichr 降级，含熔断器与结果绘图。"""
+"""GO/KEGG 功能富集分析：主用 g:Profiler，连不上时自动改用 Enrichr，并绘制结果图。"""
 
 import hashlib
 import logging
@@ -8,12 +8,7 @@ import pandas as pd
 
 from .caching import _is_cache_fresh, _read_cache_csv
 
-# gseapy (Enrichr) 基因集库名与 g:Profiler sources 的映射关系：
-#   g:Profiler source    →  Enrichr 库名
-#   GO:BP                →  GO_Biological_Process_2021
-#   GO:MF                →  GO_Molecular_Function_2021
-#   GO:CC                →  GO_Cellular_Component_2021
-#   KEGG                 →  KEGG_2021_Human
+# 两个数据源的基因集库名对应关系（GO 生物过程/分子功能/细胞组分、KEGG 通路）。
 ENRICHR_LIB_MAP = {
     "GO:BP": "GO_Biological_Process_2021",
     "GO:MF": "GO_Molecular_Function_2021",
@@ -21,9 +16,8 @@ ENRICHR_LIB_MAP = {
     "KEGG": "KEGG_2021_Human",
 }
 
-# g:Profiler 物种名 → Enrichr 物种名。
-# 注意：Enrichr 只支持 human / mouse 等，大鼠（rnorvegicus）无对应库，
-# 因此大鼠场景下降级 Enrichr 会被跳过，仅依赖 g:Profiler。
+# g:Profiler 物种名 → Enrichr 物种名。Enrichr 只支持人/小鼠等，大鼠没有对应库，
+# 因此大鼠场景下 Enrichr 降级会被跳过，只能用 g:Profiler。
 _ENRICHR_ORGANISM_MAP = {
     "hsapiens": "human",
     "mmusculus": "mouse",
@@ -39,21 +33,20 @@ def _enrichment_cache_key(genes: list[str], organism: str, sources, pvalue: floa
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
 
 
-# ---------- g:Profiler 熔断（circuit breaker） ----------
-# g:Profiler 服务器不可达时，单次连接可能空等 20s+ 才超时（socket.setdefaulttimeout
-# 对库内部 requests 调用不生效），重试次数越多拖得越久。因此失败时写一个带时间戳的
-# 标记文件，TTL 内直接跳过 g:Profiler 走 Enrichr；TTL 过期后自动重试，服务恢复即复用。
+# ---------- g:Profiler 熔断 ----------
+# g:Profiler 暂时连不上时，短期内自动改用备选数据源 Enrichr，避免反复苦等超时；
+# 冷却期过后自动恢复尝试，服务恢复即回到正常流程。
 
 
 def _gprofiler_circuit_file() -> str:
-    """g:Profiler 熔断标记文件路径（内容为上次失败时间戳）。"""
+    """熔断标记文件路径（记录上次失败时间）。"""
     import config
 
     return os.path.join(config.ENRICHMENT_CACHE_DIR, ".gprofiler_unreachable")
 
 
 def _gprofiler_circuit_open() -> bool:
-    """熔断是否开启：失败标记存在且未超过 TTL。"""
+    """熔断是否生效：上次失败距今仍在冷却期内则为 True。"""
     import config
     import time
 
@@ -69,7 +62,7 @@ def _gprofiler_circuit_open() -> bool:
 
 
 def _gprofiler_circuit_open_trip() -> None:
-    """记录 g:Profiler 本次失败时间（开启熔断）。"""
+    """记录本次失败时间，开启熔断。"""
     import time
 
     path = _gprofiler_circuit_file()
@@ -81,7 +74,7 @@ def _gprofiler_circuit_open_trip() -> None:
 
 
 def _gprofiler_circuit_close() -> None:
-    """g:Profiler 请求成功时清除熔断标记。"""
+    """请求成功时清除熔断标记。"""
     path = _gprofiler_circuit_file()
     try:
         if os.path.exists(path):
@@ -99,40 +92,11 @@ def fetch_enrichment_gprofiler(
     status: dict | None = None,
 ) -> pd.DataFrame:
     """
-    通过 g:Profiler 官方客户端（gprofiler-official）获取功能富集结果。
+    用 g:Profiler 查询基因列表的功能富集（GO/KEGG）。结果整理为统一列后缓存到本地，
+    相同基因列表与参数再次查询时直接读缓存。
 
-    结果缓存在 Static/data/cache/enrichment 下，文件名为 gProfiler_{label}_{md5}.csv
-    （label 为来源标识，如 药物名_疾病名），缓存首行为 # 元数据注释头；
-    命中缓存时直接读取本地文件，不访问远端 API。
-
-    Parameters
-    ----------
-    genes : list[str]
-        输入基因符号列表。
-    organism : str
-        g:Profiler 物种名，如 "hsapiens"。
-    sources : tuple
-        g:Profiler 数据源，如 ("GO:BP", "GO:MF", "GO:CC", "KEGG")。
-    pvalue : float
-        显著性阈值（g:Profiler 的 user_threshold，默认即 g_SCS 校正后阈值）。
-    label : str | None
-        来源标识（如 "aspirin_cancer" 或 "manual"），用于缓存文件名前缀，便于用户识别。
-    status : dict | None
-        可选出参。提供时写入本次调用状态，供调用方区分"真无显著项"与"服务失败"：
-          ok: 布尔；reason 取值
-            "success"        请求成功且有显著结果
-            "no_significant" 请求成功但无显著条目
-            "cache"          命中本地缓存
-            "request_failed" 重试后仍失败（网络/服务不可用）
-            "circuit_open"   熔断开启，本次跳过 g:Profiler（未发起请求）
-            "empty_input"    输入基因列表为空
-
-    Returns
-    -------
-    pd.DataFrame
-        统一列富集结果（source / term_id / term_name / p_value /
-        adjusted_p_value / intersection_size / query_size / genes）；
-        请求失败或无显著结果时返回空 DataFrame。
+    请求失败或没有显著条目时返回空表；status（若提供）标明本次属于哪种情况，
+    便于区分"真无显著项"与"服务失败"。
     """
     import config
 
@@ -151,7 +115,7 @@ def fetch_enrichment_gprofiler(
             status.update(ok=True, reason="cache")
         return _read_cache_csv(cache_file)
 
-    # 熔断：gProfiler 近期失败过则直接跳过，不再空等连接超时（走 Enrichr 兜底）
+    # 熔断：g:Profiler 近期失败过则直接跳过，走 Enrichr 兜底
     if _gprofiler_circuit_open():
         logging.info("g:Profiler circuit breaker open — skipping, Enrichr fallback")
         if status is not None:
@@ -161,15 +125,12 @@ def fetch_enrichment_gprofiler(
     import time
     import socket
 
-    # 请求保护：gprofiler-official 内部 requests.post 未传 timeout、也无重试，
-    # 这里在调用层统一补上【请求间隔 + 失败重试 + socket 层超时兜底】。
-    # socket.setdefaulttimeout 兜底库内部的 requests 调用（未显式传 timeout 时生效），
-    # try/finally 确保调用结束后恢复，不影响其他请求。
+    # 请求保护：查询库自身不带超时和重试，这里统一补上请求间隔、失败重试和超时限制。
     from gprofiler import GProfiler
 
     res = None
     for attempt in range(config.ENRICHMENT_MAX_RETRIES):
-        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前等待，避免快速连发被限流
+        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前稍等，避免请求过快被服务器拒绝
         socket.setdefaulttimeout(config.API_TIMEOUT)
         try:
             gp = GProfiler(return_dataframe=True)
@@ -178,7 +139,7 @@ def fetch_enrichment_gprofiler(
                 organism=organism,
                 sources=list(sources),
                 user_threshold=pvalue,
-                no_evidences=False,  # 需要返回交集基因（intersections），供 genes 列使用
+                no_evidences=False,  # 需要返回每个通路命中的基因列表
             )
             break  # 成功
         except Exception:
@@ -188,7 +149,7 @@ def fetch_enrichment_gprofiler(
             )
             _gprofiler_circuit_open_trip()  # 记录失败时间，开启熔断
             if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
-                time.sleep(config.API_RETRY_DELAY)  # 失败退避后重试
+                time.sleep(config.API_RETRY_DELAY)  # 失败后稍等再重试
         finally:
             socket.setdefaulttimeout(None)
 
@@ -209,7 +170,7 @@ def fetch_enrichment_gprofiler(
     _gprofiler_circuit_close()  # 请求成功，关闭熔断
     df = _normalize_enrichment_gprofiler(res)
     if df.empty:
-        # 防御：返回行全部无法归一化时不写缓存，避免"异常空表"被后续 TTL 命中
+        # 结果整理后为空时不写缓存，避免下次把异常空表当成有效结果
         logging.warning("g:Profiler result normalized to empty — skip caching (%d genes)", len(genes))
         if status is not None:
             status.update(ok=False, reason="normalize_empty")
@@ -222,19 +183,15 @@ def fetch_enrichment_gprofiler(
 
 
 def _normalize_enrichment_gprofiler(df: pd.DataFrame) -> pd.DataFrame:
-    """把 g:Profiler 返回的 DataFrame 整理为统一列。
+    """把 g:Profiler 返回的结果整理为统一列。
 
-    g:Profiler 默认已做 g_SCS 多重检验校正，p_value 即校正后 p 值，
-    因此 adjusted_p_value 与 p_value 相同。
-
-    兼容 gprofiler-official 0.3.x 与 1.x 的列名差异：
-    0.3.x 返回 term_id / term_name / intersection；
-    1.x 返回 native / name / intersections（需 no_evidences=False）。
+    g:Profiler 返回的 p 值已做多重检验校正，因此校正前后 p 值相同；
+    同时兼容不同版本返回的列名差异。
     """
-    df = df.reset_index()  # return_dataframe=True 时 term_id 常在 index 中
+    df = df.reset_index()  # 通路 ID 有时在行索引里，先还原成列
 
     def _pick(*names) -> pd.Series:
-        """按优先级取第一个存在的列，都不存在时返回全 NA 序列。"""
+        """按优先级取第一个存在的列，都没有时返回空值。"""
         for n in names:
             if n in df.columns:
                 return df[n]
@@ -265,31 +222,9 @@ def fetch_enrichment_enrichr(
     status: dict | None = None,
 ) -> pd.DataFrame:
     """
-    通过 gseapy（Enrichr 官方 wrapper）获取功能富集结果（作为 g:Profiler 的降级方案）。
-
-    结果同样缓存在 Static/data/cache/enrichment 下，文件名为 Enrichr_{label}_{md5}.csv，
-    缓存首行为 # 元数据注释头。
-
-    Parameters
-    ----------
-    genes : list[str]
-        输入基因符号列表。
-    libs : list[str]
-        Enrichr 基因集库名（见 ENRICHR_LIB_MAP 的映射）。
-    organism : str
-        Enrichr 物种名（"human" / "mouse"）。
-    pvalue : float
-        显著性阈值（cutoff）。
-    label : str | None
-        来源标识（如 "aspirin_cancer" 或 "manual"），用于缓存文件名前缀，便于用户识别。
-    status : dict | None
-        可选出参，语义同 fetch_enrichment_gprofiler 的 status
-        （reason 取值：success / no_significant / cache / request_failed / empty_input）。
-
-    Returns
-    -------
-    pd.DataFrame
-        统一列富集结果；请求失败或无显著结果时返回空 DataFrame。
+    用 Enrichr 查询功能富集，作为 g:Profiler 连不上时的备选方案。
+    结果同样缓存到本地，相同基因列表与参数直接读缓存；
+    请求失败或没有显著条目时返回空表，status 含义与 g:Profiler 版本一致。
     """
     import config
 
@@ -311,22 +246,19 @@ def fetch_enrichment_enrichr(
     import time
     import socket
 
-    # 请求保护：gseapy 内部 session 虽自带 5xx 重试，但部分请求 timeout=None
-    # 无超时、且无请求间隔；这里在调用层统一补上【请求间隔 + 失败重试 + socket 层超时兜底】。
-    # socket.setdefaulttimeout 兜底库内部的 requests 调用（未显式传 timeout 时生效），
-    # try/finally 确保调用结束后恢复，不影响其他请求。
+    # 请求保护：查询库自身的超时和重试不完整，这里统一补上请求间隔、失败重试和超时限制。
     import gseapy as gp
 
     res = None
     for attempt in range(config.ENRICHMENT_MAX_RETRIES):
-        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前等待，避免快速连发被限流
+        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前稍等，避免请求过快被服务器拒绝
         socket.setdefaulttimeout(config.API_TIMEOUT)
         try:
             enr = gp.enrichr(
                 gene_list=genes,
                 gene_sets=list(libs),
                 organism=organism,
-                outdir=None,  # 不写盘，结果由我们自行缓存
+                outdir=None,  # 不让库自行写盘，结果由本程序统一缓存
                 cutoff=pvalue,
             )
             res = enr.results
@@ -337,7 +269,7 @@ def fetch_enrichment_enrichr(
                 attempt + 1, config.ENRICHMENT_MAX_RETRIES,
             )
             if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
-                time.sleep(config.API_RETRY_DELAY)  # 失败退避后重试
+                time.sleep(config.API_RETRY_DELAY)  # 失败后稍等再重试
         finally:
             socket.setdefaulttimeout(None)
 
@@ -356,7 +288,7 @@ def fetch_enrichment_enrichr(
 
     df = _normalize_enrichment_enrichr(res)
     if df.empty:
-        # 防御：返回行全部无法归一化时不写缓存，避免"异常空表"被后续 TTL 命中
+        # 结果整理后为空时不写缓存，避免下次把异常空表当成有效结果
         logging.warning("Enrichr result normalized to empty — skip caching (%d genes)", len(genes))
         if status is not None:
             status.update(ok=False, reason="normalize_empty")
@@ -368,7 +300,7 @@ def fetch_enrichment_enrichr(
 
 
 def _normalize_enrichment_enrichr(df: pd.DataFrame) -> pd.DataFrame:
-    """把 Enrichr 返回的 DataFrame 整理为统一列（并把库名反查回 g:Profiler 的 source 命名）。"""
+    """把 Enrichr 返回的结果整理为统一列，库名换回与 g:Profiler 一致的写法。"""
     import re
 
     def _parse_overlap(s) -> tuple[int, int]:
@@ -379,7 +311,7 @@ def _normalize_enrichment_enrichr(df: pd.DataFrame) -> pd.DataFrame:
             return 0, 0
 
     def _extract_term_id(term) -> str:
-        # Enrichr 的 Term 形如 "peptidyl-tyrosine modification (GO:0018212)"，提取末尾括号内的 ID
+        # 通路名形如 "XXX (GO:0018212)"，提取末尾括号内的通路 ID
         m = re.search(r"\(([^()]+)\)\s*$", str(term))
         return m.group(1) if m else str(term)
 
@@ -410,26 +342,10 @@ def run_enrichment(
     label: str | None = None,
 ) -> tuple[pd.DataFrame, str | None]:
     """
-    富集分析主入口：g:Profiler 优先，失败降级 Enrichr。
+    富集分析主入口：输入基因列表（通常是药物与疾病的交集靶点），
+    先请求 g:Profiler，失败自动改用 Enrichr。
 
-    Parameters
-    ----------
-    genes : list[str]
-        输入基因符号列表（通常为药物∩疾病交集靶点）。
-    organism : str
-        g:Profiler 物种名（hsapiens / mmusculus / rnorvegicus）。
-    pvalue : float
-        显著性阈值。
-    sources : tuple | None
-        g:Profiler 数据源，默认取 config.ENRICHMENT_SOURCES（GO三分类 + KEGG）。
-    label : str | None
-        来源标识（如 "aspirin_cancer" 或 "manual"），用于缓存文件名前缀，便于用户识别。
-
-    Returns
-    -------
-    tuple[pd.DataFrame, str | None]
-        (统一列富集结果, 实际使用的数据源 "gProfiler" / "Enrichr")；
-        两者都失败时返回 (空表, None)。
+    返回 (富集结果表, 实际使用的数据源)；两个数据源都失败时返回 (空表, None)。
     """
     import config
 
@@ -452,12 +368,9 @@ def run_enrichment(
 
 def render_enrichment_plots(df: pd.DataFrame) -> tuple:
     """
-    绘制富集结果图：柱状图（每个 source 取前 N 条，-log10 校正 p）+ 气泡图（全局前 N 条）。
-
-    Returns
-    -------
-    tuple
-        (柱状图 Figure, 气泡图 Figure)；df 无有效行时返回 (None, None)。
+    绘制富集结果图：柱状图（每类数据源各取前 N 条通路，横轴为 -log10 校正 p 值）
+    和气泡图（全局前 N 条，点越大表示命中的基因越多）。
+    没有有效结果时返回 (None, None)。
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -508,17 +421,15 @@ def render_enrichment_plots(df: pd.DataFrame) -> tuple:
 
 
 # ---------- 排序富集（GSEA prerank，仅智人） ----------
-# 与 ORA 的区别：输入是"基因|分数"排序列表（如 pChEMBL 亲和力、Open Targets 关联分），
-# 而非二元基因列表，能利用打分信息检验"高分靶点整体偏向哪些通路"。
-# 基因集来自 Enrichr 库的本地 GMT 快照（首次使用时下载一次，之后永不重复联网）；
-# 失败语义与 ORA 链路一致：失败返回空表 + status，且绝不把失败结果写进缓存。
+# 与普通富集的区别：输入是"基因|分数"排序列表（如药物亲和力、疾病关联分），
+# 而非单纯的基因列表，用于检验高分靶点整体偏向哪些通路。
+# 基因集来自 Enrichr 库的本地文件（首次使用时联网下载一次，之后不再重复下载）；
+# 失败时返回空表，且失败结果不会写进缓存。
 
 
 def _gsea_gmt_path(lib: str) -> str | None:
-    """返回该 Enrichr 库的本地 GMT 快照路径；无快照时下载一次并写盘，失败返回 None。
-
-    快照命名 {lib}_Human_{YYYY-MM-DD}.gmt，取字典序最新（即最近下载）的一份；
-    快照存在则永不重新下载，删除 GSEA_GMT_DIR 目录即可强制重建。
+    """返回 Enrichr 库对应的本地基因集文件（GMT）路径；本地没有时联网下载一次，
+    之后一直复用，下载失败返回 None。删除 GSEA_GMT_DIR 目录可强制重新下载。
     """
     import glob
     import config
@@ -554,7 +465,7 @@ def _gsea_gmt_path(lib: str) -> str | None:
 
 
 def gsea_gene_sets() -> dict[str, str]:
-    """返回可用的 {库名: GMT路径}；单库缺失自动降级跳过，全部缺失时返回空 dict。"""
+    """返回可用的基因集库（库名 → 文件路径）；单个库缺失自动跳过，全部缺失返回空字典。"""
     import config
 
     out: dict[str, str] = {}
@@ -569,16 +480,10 @@ def gsea_gene_sets() -> dict[str, str]:
 
 def build_ranked_list(targets_df: pd.DataFrame, gene_col: str, score_col: str) -> tuple[pd.DataFrame, dict]:
     """
-    把带打分的靶点表转为 gseapy.prerank 的输入（gene | score，按分数降序）。
+    把带打分的靶点表转为排序富集的输入（基因 | 分数，按分数降序）。
 
-    规则：基因统一大写去空白；同基因多行取最高分；打分缺失的行剔除（不补零，
-    补零会制造假尾部信号）。drop_ratio = 被剔除行数 / 输入行数，供页面预警。
-
-    Returns
-    -------
-    tuple[pd.DataFrame, dict]
-        (rnk: 两列 DataFrame[gene, score]，按 score 降序,
-         stats: n_input / n_kept / n_dropped / drop_ratio / missing_cols)
+    处理规则：基因名统一大写；同一基因取最高分；没有分数的行直接剔除
+    （不补零，补零会制造假信号），剔除比例记入 stats 供页面提示。
     """
     if targets_df is None or targets_df.empty:
         return pd.DataFrame(columns=["gene", "score"]), {
@@ -614,12 +519,7 @@ def build_ranked_list(targets_df: pd.DataFrame, gene_col: str, score_col: str) -
 
 
 def _normalize_enrichment_gsea(res2d: pd.DataFrame) -> pd.DataFrame:
-    """
-    把 gseapy prerank 的 res2d 整理为统一列。
-
-    gseapy 1.x 列名：Term / ES / NES / NOM p-val / FDR q-val / Tag % / Gene % / Lead_genes；
-    这里按"大小写不敏感精确匹配 → 包含子串"两级查找，兼容后续版本的更名。
-    """
+    """把排序富集的原始结果整理为统一列；兼容不同版本软件的列名差异。"""
     if res2d is None or res2d.empty:
         return pd.DataFrame()
     cols = list(res2d.columns)
@@ -669,7 +569,7 @@ def _normalize_enrichment_gsea(res2d: pd.DataFrame) -> pd.DataFrame:
 
 
 def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None) -> str:
-    """GSEA 结果缓存路径：键 = 排序基因+分数 + 库快照文件名 + 全部计算参数。"""
+    """GSEA 结果缓存路径：由基因排序与分数、基因集库、计算参数共同决定，相同输入命中同一缓存。"""
     import hashlib
     import config
 
@@ -691,27 +591,10 @@ def fetch_enrichment_gsea_prerank(
     status: dict | None = None,
 ) -> pd.DataFrame:
     """
-    GSEA prerank 主入口（gseapy 本地计算，逐库运行以标记 source）。
+    排序富集（GSEA prerank）主入口：在本地计算，逐个基因集库运行后合并结果。
 
-    Parameters
-    ----------
-    rnk : pd.DataFrame
-        build_ranked_list 的输出（gene | score 两列，降序）。
-    libs : dict[str, str] | None
-        {库名: GMT路径}；None 时自动取 gsea_gene_sets()。
-    label : str | None
-        缓存文件名前缀（如 aspirin_cancer_drug）。
-    status : dict | None
-        可选出参，语义与 fetch_enrichment_gprofiler 一致：
-          success / no_significant / cache / request_failed（GMT 全缺或计算异常）/
-          insufficient_input（打分基因少于 GSEA_MIN_RANKED_GENES）/ empty_input
-
-    Returns
-    -------
-    pd.DataFrame
-        统一列结果表（source / term_name / es / nes / nominal_p_value /
-        fdr_q_value / tag_pct / gene_pct / lead_genes），按 |NES| 降序；
-        失败或无显著结果时返回空 DataFrame（失败不写缓存）。
+    输入为"基因|分数"表（build_ranked_list 的输出）；结果按 |NES| 降序，
+    失败或无显著结果时返回空表（失败不写缓存），status 含义与 g:Profiler 版本一致。
     """
     import config
 
@@ -761,7 +644,7 @@ def fetch_enrichment_gsea_prerank(
         return pd.DataFrame()
 
     if not frames:
-        # 各库都算完但没有（通过规模窗口的）显著基因集
+        # 各基因集库都算完了，但没有显著富集的通路
         logging.info("GSEA prerank: no gene sets passed for %d genes", len(rnk))
         if status is not None:
             status.update(ok=True, reason="no_significant")
@@ -770,7 +653,7 @@ def fetch_enrichment_gsea_prerank(
     raw = pd.concat(frames, ignore_index=True)
     df = _normalize_enrichment_gsea(raw)
     if df.empty:
-        # 防御：归一化清零不写缓存（避免异常空表被 TTL 命中）
+        # 结果整理后为空时不写缓存
         logging.warning("GSEA result normalized to empty — skip caching (%d genes)", len(rnk))
         if status is not None:
             status.update(ok=False, reason="normalize_empty")
@@ -784,13 +667,9 @@ def fetch_enrichment_gsea_prerank(
 
 def render_gsea_plot(df: pd.DataFrame) -> "matplotlib.figure.Figure | None":
     """
-    绘制 GSEA 结果条形图：按 |NES| 取前 N 条基因集，
-    NES > 0 红色（高分靶点中富集/激活）、NES < 0 蓝色（抑制）。
-
-    Returns
-    -------
-    matplotlib.figure.Figure | None
-        df 无有效行时返回 None。
+    绘制 GSEA 结果条形图：按 |NES| 取前 N 条通路，
+    NES > 0 红色（在高分靶点中富集/激活），NES < 0 蓝色（抑制）；
+    没有有效结果时返回 None。
     """
     import matplotlib.pyplot as plt
     import config

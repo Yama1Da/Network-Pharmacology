@@ -1,4 +1,4 @@
-"""DGIdb v5 数据源：药物-基因交互（GraphQL API，原生 requests 调用）。"""
+"""DGIdb 数据源：查询药物的相互作用基因（drug-gene interaction）。"""
 
 import logging
 import os
@@ -10,26 +10,9 @@ from .text_utils import safe_name
 
 
 def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
-    """从 DGIdb v5 GraphQL API 获取药物的交互基因（drug-gene interaction）。
+    """从 DGIdb 获取药物已知的相互作用基因，含交互分数与证据来源（文献、数据库）。
 
-    直接通过 requests 调用 DGIdb 的 GraphQL 端点（dgipy 0.1.0 与 gql 4.x
-    存在 execute 签名不兼容的 bug，故弃用第三方库、改用原生 requests）。
-    返回药物与基因的交互记录，含交互分数与来源证据。
-
-    Parameters
-    ----------
-    drug_name : str
-        药物英文名，如 "aspirin"。
-
-    Returns
-    -------
-    pd.DataFrame
-        列: approvedSymbol（基因符号）、drug_name、interaction_score、
-        interaction_sources、interaction_pmids；无数据或失败时返回空表。
-
-    缓存
-    ----
-    结果持久化为 CSV（Static/data/cache/drug/DGIdb_{drug_name}.csv）。
+    失败或无数据时返回空表；结果存为本地 CSV，已有缓存则直接复用。
     """
     import time
     import config
@@ -38,7 +21,7 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
     os.makedirs(cache_dir, exist_ok=True)
     csv_path = os.path.join(cache_dir, f"DGIdb_{safe_name(drug_name)}.csv")
 
-    # ---- cache hit: load local ----
+    # 已有缓存则直接读取本地文件
     if os.path.exists(csv_path):
         logging.info("Loading cached DGIdb targets for '%s'", drug_name)
         return pd.read_csv(csv_path)
@@ -62,8 +45,7 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
     """
 
     try:
-        # 请求带重试：网络抖动 / 临时 5xx 时按退避重试，避免一次失败就返回空表。
-        # 单次分析仅 1 次请求，用轻量重试次数（2），避免网络不佳时拖慢更新。
+        # 网络偶发失败时做少量重试，避免一次失败就返回空表
         payload = None
         for attempt in range(config.LIGHT_API_MAX_RETRIES):
             try:
