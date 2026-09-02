@@ -12,7 +12,7 @@ CACHE_DIR = os.path.join(
 )
 
 
-# ---------- Hide auto navigation sidebar for full-screen display ----------
+# 隐藏侧边栏,全屏显示页面
 st.markdown("""
 <style>
     [data-testid="stSidebar"] {
@@ -47,7 +47,7 @@ else:
     col_h_time.markdown(t("common.col_created"))
     col_h_dl.markdown(t("common.col_download"))
 
-    # 每行一个 Download 按钮，下载磁盘上的缓存 CSV（文件名含来源标识，如 StringPPI_aspirin_cancer_xxx.csv）
+    # 每行一个 Download 按钮,下载对应的 PPI 结果 CSV
     with st.container(key="file_rows"):
         for _, row in ppi_files.iterrows():
             col_name, col_time, col_dl = st.columns([4, 2, 1])

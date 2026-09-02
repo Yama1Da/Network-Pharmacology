@@ -1,4 +1,4 @@
-"""Open Targets Platform 数据源：疾病关联靶点 + 药物靶点（GraphQL API）。"""
+"""Open Targets 数据源：按疾病或药物名称查询关联靶点。"""
 
 import logging
 import os
@@ -14,32 +14,10 @@ from .text_utils import _safe_round, safe_name
 @st.cache_data
 def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
     """
-    通过 Open Targets Platform GraphQL API 获取疾病的关联靶点及各项关联指标。
-
-    请求逻辑分两步：
-      1. search 查询：按疾病英文名模糊搜索，取排名第一的 disease 实体的
-         疾病标识符（EFO / MONDO 等）。
-      2. disease 查询：用该标识符查询 associatedTargets，获取关联分数、
-         新颖性、各数据类型分数以及靶点的基因组/类别信息，提取前 top_n 条。
-
-    Parameters
-    ----------
-    disease_name : str
-        疾病英文名，如 "lung cancer"。
-    top_n : int
-        返回的靶点数量上限，默认 200。
-
-    Returns
-    -------
-    pd.DataFrame
-        每行一个靶点，包含基因符号、ENSG ID、基因全名、染色体位置、
-        靶点类别、关联分数、新颖性及各数据类型分数等指标；
-        API 请求失败或未找到该疾病时返回空 DataFrame。
-
-    缓存
-    ----
-    结果持久化为 CSV（Static/data/cache/disease/OpenTargets_{disease_name}.csv），
-    命中缓存时直接读取本地文件，不访问远端 API。
+    通过 Open Targets 查询疾病的关联靶点：先按疾病英文名找到疾病编号，
+    再取关联分数最高的前 top_n 个靶点，附带总关联分数、新颖性、
+    各证据类型（遗传、突变、文献等）分数及基因基本信息。
+    查询失败或找不到该疾病时返回空表；结果存为本地 CSV，已有缓存则直接复用。
     """
     import config
 
@@ -47,17 +25,13 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
     os.makedirs(cache_dir, exist_ok=True)
     csv_path = os.path.join(cache_dir, f"OpenTargets_{safe_name(disease_name)}.csv")
 
-    # ---- cache hit: load local ----
+    # 已有缓存则直接读取本地文件
     if os.path.exists(csv_path):
         logging.info("Loading cached disease targets for '%s'", disease_name)
         return pd.read_csv(csv_path)
 
     try:
-        # ========== 第一步：search 查询，根据疾病名获取疾病 ID ==========
-        # 这个 search 端点会在整个平台（疾病、药物、靶点、研究等实体）中做模糊搜索。
-        # 返回结果按相关性排序，hits[0] 是匹配度最高的记录。
-        # 我们只挑 entity == "disease" 的记录，取第一个的 id 作为疾病标识符
-        # （可能是 EFO_xxx、MONDO_xxx 或 Orphanet 等，disease 查询都接受）。
+        # 第一步：按疾病英文名搜索，取匹配到的疾病编号（EFO/MONDO 等）。
         search_query = """
         query SearchDisease($queryString: String!) {
             search(queryString: $queryString) {
@@ -73,7 +47,7 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
         if payload is None:
             return pd.DataFrame()
 
-        # GraphQL 层错误（如查询语法问题）会出现在 payload["errors"] 中，而不是抛异常
+        # 查询出错时，错误信息记录在 payload["errors"] 中，不会抛异常
         if "errors" in payload or "data" not in payload:
             logging.error("Open Targets search query failed: %s", payload.get("errors"))
             return pd.DataFrame()
@@ -87,18 +61,9 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             logging.warning("No disease found for '%s'", disease_name)
             return pd.DataFrame()
 
-        # ========== 第二步：disease 查询，获取关联靶点及指标 ==========
-        # disease(efoId: ...) 返回疾病本体信息；
-        # associatedTargets 是"疾病-靶点"关联列表，官方已按关联分数降序排列。
-        # 每个关联（AssociatedTarget）携带的指标：
-        #   - score          : 总关联分数（0~1，越大关联越强）
-        #   - novelty        : 新颖性（0~1，越大表示该关联越少被人研究）
-        #   - datatypeScores : 各数据类型贡献分数（遗传关联、体细胞突变、
-        #                      文献、动物模型、通路、临床证据等）
-        #   - target         : 靶点详情（ENSG ID、基因符号、全名、生物类型、
-        #                      基因组位置、靶点类别）
-        # page 参数控制分页：index 是页码（从 0 开始），size 是每页条数，
-        # 这里 size 直接设为 top_n（默认 200），一次取回关联分数最高的前 200 个靶点。
+        # 第二步：用疾病编号查询关联靶点列表（已按关联分数从高到低排列）。
+        # score 为总关联分数（0~1，越大关联越强），novelty 为新颖性，
+        # datatypeScores 为各证据类型（遗传关联、体细胞突变、文献等）的分数。
         disease_query = """
         query DiseaseTargets($diseaseId: String!, $size: Int!) {
             disease(efoId: $diseaseId) {
@@ -140,18 +105,17 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             return pd.DataFrame()
 
         rows = payload["data"]["disease"]["associatedTargets"]["rows"]
-        # 按关联分数降序排序（API 通常已排序，这里再排一次更保险），只保留前 top_n 条
+        # 按关联分数从高到低排序，取前 top_n 条
         rows_sorted = sorted(rows, key=lambda r: r.get("score", 0.0), reverse=True)[:top_n]
 
-        # 把每条关联记录整理成一行 DataFrame
+        # 每条关联记录整理成表格的一行
         records: list[dict] = []
         for r in rows_sorted:
             tgt = r.get("target", {})
             gloc = tgt.get("genomicLocation", {}) or {}
-            # targetClass 是列表（可能有多个类别标签），取第一个
+            # 靶点类别可能有多个，只取第一个
             tc = tgt.get("targetClass") or []
-            # datatypeScores 形如 [{id: "genetic_association", score: 0.93}, ...]，
-            # 转成 {类型名: 分数} 字典，便于按数据类型名取分
+            # 各证据类型分数整理成"类型名: 分数"的形式，便于逐项取值
             dt_scores = {s.get("id"): s.get("score") for s in r.get("datatypeScores", []) if s.get("id")}
             records.append({
                 "approvedSymbol": tgt.get("approvedSymbol"),      # 官方基因符号
@@ -173,20 +137,19 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             })
 
         df = pd.DataFrame(records)
-        # ---- cache to CSV ----
+        # 保存到本地缓存
         df.to_csv(csv_path, index=False, encoding="utf-8-sig")
         logging.info("Disease '%s' (%s): %d targets fetched", disease_name, disease_id, len(df))
         return df
 
     except Exception:
-        # 网络错误、超时、JSON 解析失败等统一在此兜底：
-        # 打印完整错误日志（含堆栈），返回空 DataFrame，不让页面崩溃
+        # 网络错误等异常统一在此兜底：记录日志并返回空表，不让页面崩溃
         logging.exception("get_disease_targets failed for '%s'", disease_name)
         return pd.DataFrame()
 
 
 def _search_drug(drug_name: str) -> str | None:
-    # 通过Open Targets API搜索药物名称，返回其ChEMBL ID（如果找到），否则返回None
+    # 按药物名搜索，返回其 ChEMBL 编号；找不到时返回 None
     query = """
     query SearchDrug($queryString: String!) {
         search(queryString: $queryString) {
@@ -212,31 +175,17 @@ def _search_drug(drug_name: str) -> str | None:
 
 def fetch_drug_targets_opentargets(drug_name: str) -> tuple[pd.DataFrame, str | None]:
     """
-    Fetch drug targets from the Open Targets Platform GraphQL API.
-
-    Uses a two-step approach:
-      1. Search for the drug by name to get its ChEMBL ID.
-      2. Query mechanismsOfAction to retrieve target genes.
-
-    Parameters
-    ----------
-    drug_name : str
-        Drug name in English (e.g. \"Aspirin\").
-
-    Returns
-    -------
-    tuple[pd.DataFrame, str | None]
-        (DataFrame with columns [approvedSymbol, ensembl_id, approvedName],
-         path to the cached CSV file, or None if the request failed).
+    通过 Open Targets 查询药物的作用靶点：先按药物英文名找到其 ChEMBL 编号，
+    再取该药物作用机制对应的靶点基因。失败或找不到药物时返回空表。
     """
     try:
-        # ---- Step 1: search ----
+        # 第一步：按药物名搜索，拿到 ChEMBL 编号
         chembl_id = _search_drug(drug_name)
         if chembl_id is None:
             logging.warning("No drug found for '%s'", drug_name)
             return pd.DataFrame(), None
 
-        # ---- Step 2: get targets via mechanismsOfAction ----
+        # 第二步：查询该药物的作用机制，取靶点基因
         query = """
         query DrugTargets($chemblId: String!) {
             drug(chemblId: $chemblId) {
@@ -278,7 +227,7 @@ def fetch_drug_targets_opentargets(drug_name: str) -> tuple[pd.DataFrame, str | 
 
         df = pd.DataFrame(rows).drop_duplicates(subset=["ensembl_id"]).reset_index(drop=True)
 
-        # ---- cache to CSV ----
+        # 保存到本地缓存
         import config
 
         cache_dir = config.DRUG_CACHE_DIR

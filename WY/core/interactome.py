@@ -1,18 +1,8 @@
-"""背景互作组模块：STRING v12.0 全网络本地缓存（邻近度 Z-score / RWR / DIAMOnD 的数学地基）。
+"""背景互作组模块：从 STRING 数据库构建"全蛋白互作背景网络"的本地缓存。
 
-职责边界：
-- 本模块只管"全量背景网络"的下载、缓存与加载；查询型 PPI（输入基因之间的边）
-  仍归 core.ppi，两者互不替代；
-- 下载与构建只由 scripts/build_interactome.py 调用（CLI 离线构建），Streamlit
-  页面只读缓存——绝不把大文件下载放进同步 UI；
-- 缓存缺失时 load_interactome / load_degree_table 抛 InteractomeNotBuiltError，
-  由调用方翻译为用户提示。绝不允许静默降级为"拿查询子网络当背景"：那会让
-  度匹配随机化与显著性计算产生系统性偏差。
-
-缓存内容（INTERACTOME_CACHE_DIR，文件名含 taxon/置信度/版本，改参自然换文件）：
-  string_{taxon}_edges_{conf}_{ver}.parquet   边表 protein_a / protein_b / score(0-1000)
-  string_{taxon}_degrees_{conf}_{ver}.csv     度数表 gene / degree
-  string_{taxon}_meta_{conf}_{ver}.json       构建元数据（含实际文件名，见 files 键）
+背景网络是网络邻近度、RWR 等靶点优先级计算的参照;输入基因之间的查询型
+PPI 由 core.ppi 负责,两者互不替代。缓存缺失时会报错提示先构建,绝不会
+拿查询基因的小网络冒充背景(那会让随机对照与显著性计算失真)。
 """
 
 import functools
@@ -24,11 +14,11 @@ import pandas as pd
 
 
 class InteractomeNotBuiltError(RuntimeError):
-    """互作组缓存尚未构建（提示运行 scripts/build_interactome.py）。"""
+    """背景网络缓存尚未构建时报错,提示先运行构建脚本。"""
 
 
 def _taxon(species: str) -> str:
-    """校验物种已启用并返回 NCBI taxon id（如 'Human' -> '9606'）。"""
+    """检查物种是否已启用,返回其 NCBI 物种编号(如 'Human' -> '9606')。"""
     import config
 
     if species not in config.INTERACTOME_ENABLED_SPECIES:
@@ -51,7 +41,7 @@ def _meta_path(species: str, confidence: int, string_version: str) -> str:
 
 
 def _read_meta(species: str, confidence: int, string_version: str) -> dict | None:
-    """读构建元数据；缺失/损坏返回 None（缓存视为不存在）。"""
+    """读取构建记录;缺失或损坏时返回 None,视同缓存不存在。"""
     path = _meta_path(species, confidence, string_version)
     if not os.path.exists(path):
         return None
@@ -61,7 +51,7 @@ def _read_meta(species: str, confidence: int, string_version: str) -> dict | Non
     except Exception:
         logging.exception("Interactome meta file unreadable: %s", path)
         return None
-    # 元数据里登记的实际文件必须都在（parquet 失败回退 pickle 时文件名不同）
+    # 构建记录里登记的边表/度数表文件必须都存在,否则视同缓存缺失
     for key in ("edges", "degrees"):
         name = meta.get("files", {}).get(key)
         if not name or not os.path.exists(os.path.join(_cache_dir(), name)):
@@ -79,7 +69,7 @@ def _cache_dir() -> str:
 def is_built(species: str = "Human",
              confidence: int | None = None,
              string_version: str | None = None) -> bool:
-    """互作组缓存是否可用（元数据存在且登记的边表/度数表文件齐全）。"""
+    """背景网络缓存是否已构建且文件齐全可用。"""
     import config
 
     confidence = int(confidence if confidence is not None else config.INTERACTOME_CONFIDENCE)
@@ -87,21 +77,15 @@ def is_built(species: str = "Human",
     return _read_meta(species, confidence, string_version) is not None
 
 
-# ---------- 构建侧（CLI 专用） ----------
+# ---------- 构建侧(命令行专用) ----------
 
 
 def _download_gz(url_path: str, dest: str,
                  progress_cb=None, progress_range: tuple[float, float] = (0.0, 1.0),
                  progress_label: str = "download") -> str:
-    """下载 STRING gz 文件到 dest，返回本地路径。
+    """从 STRING 下载压缩文件到本地,返回文件路径。
 
-    - url_path 为不含域名的下载路径（基址已含 /download 前缀，见 build_interactome）；
-    - 候选源按 config 配置依次尝试（中国镜像优先、官方兜底）；
-    - dest 已存在且非空时直接跳过下载（支持手动预下载/中断后重跑）；
-    - 流式写 .part 临时文件 + 原子替换，带重试；全部失败抛 RuntimeError；
-    - progress_cb(stage, fraction, detail)：下载进度回调（Streamlit 进度条用）。
-      fraction 落在 progress_range 区间内；stage 取 progress_label；
-      detail 为 "x/y MB"（语言中立）或 "cached"（跳过下载）。
+    本地已有同名文件时直接跳过下载;多个下载源依次尝试,全部失败时报错。
     """
     import time
 
@@ -154,11 +138,7 @@ def _download_gz(url_path: str, dest: str,
 
 
 def _info_column_names(info_df: pd.DataFrame) -> tuple[str, str]:
-    """从 protein.info 表头解析（ENSP列, 基因符号列），找不到时抛 ValueError。
-
-    按表头取列而非按列序号——STRING 各版本列名/列序会微调
-    （实测 v12.0 info.gz 表头为：#string_protein_id / preferred_name / protein_size / annotation）。
-    """
+    """从蛋白信息表头里找出蛋白编号列和基因符号列;找不到时报错。"""
     id_candidates = ("protein_external_id", "#protein_external_id",
                      "string_protein_id", "#string_protein_id", "protein_id")
     sym_candidates = ("preferredName", "preferred_name", "symbol")
@@ -170,20 +150,10 @@ def _info_column_names(info_df: pd.DataFrame) -> tuple[str, str]:
 
 
 def _links_to_edges(links_df: pd.DataFrame, id2sym: dict, confidence: int) -> pd.DataFrame:
-    """
-    把 STRING links 全表转为符号级边表（纯函数，便于自检）。
+    """把 STRING 原始互作表整理成基因符号层面的边表。
 
-    步骤（顺序有讲究）：
-      1. 先按 combined_score 过滤（0-1000 整数），把千万级行砍到百万级再做映射；
-      2. ENSP -> 基因符号映射，映射不到的丢弃；
-      3. 去自环（一个 ENSP 对的两个蛋白塌缩到同一符号）；
-      4. 无向边统一 (小, 大) 方向后去重，保留最高分——多条 ENSP 对塌缩到同一
-         符号对时必须只留一条，否则度数会被系统性高估。
-
-    Returns
-    -------
-    pd.DataFrame
-        列 protein_a / protein_b / score（score 为 STRING 0-1000 整数），按分数降序。
+    按置信度阈值过滤后映射为基因符号;去掉自身互作,同一对基因
+    只保留最高分的一条边,避免基因连接数被高估。结果按分数降序。
     """
     needed = {"protein1", "protein2", "combined_score"}
     if not needed.issubset(links_df.columns):
@@ -211,7 +181,7 @@ def _links_to_edges(links_df: pd.DataFrame, id2sym: dict, confidence: int) -> pd
 
 
 def _write_edges_auto(df: pd.DataFrame, stem: str) -> str:
-    """边表落盘：优先 parquet（pyarrow），引擎不可用时回退 pickle。返回实际文件路径。"""
+    """把边表保存到磁盘,返回实际文件路径。"""
     try:
         path = stem + ".parquet"
         df.to_parquet(path, index=False)
@@ -234,19 +204,10 @@ def build_interactome(species: str = "Human",
                       string_version: str | None = None,
                       keep_raw: bool = False,
                       progress_cb=None) -> dict:
-    """
-    下载并构建全互作组缓存（CLI：scripts/build_interactome.py；或页面内一键构建）。
+    """下载 STRING 全互作数据并构建本地背景网络缓存。
 
-    幂等：同参数重跑直接覆盖同名文件。构建成功后清空运行期加载缓存。
-    原始 gz 默认构建成功后删除（可 --keep-raw 保留调试），删了随时可重新下载。
-
-    Parameters
-    ----------
-    progress_cb : callable | None
-        进度回调 progress_cb(stage, fraction, detail)，供 UI 渲染进度条：
-          stage ∈ {"download_links", "download_info", "processing", "writing"}（语言中立键），
-          fraction ∈ [0,1]（None 表示不确定进度，如解析清洗阶段），
-          detail 为 "x/y MB" / "cached" / ""。回调异常被吞掉（仅记日志），不影响构建。
+    同参数重跑会直接覆盖原文件;默认构建成功后删除原始下载文件。
+    progress_cb 为进度回调,供界面显示进度条;回调出错只记日志,不影响构建。
     """
     import shutil
     from datetime import datetime
@@ -259,12 +220,12 @@ def build_interactome(species: str = "Human",
     os.makedirs(config.INTERACTOME_CACHE_DIR, exist_ok=True)
     raw_dir = os.path.join(config.INTERACTOME_CACHE_DIR, "raw")
 
-    # 基址（config.STRING_DOWNLOAD_*）已含 /download 前缀，相对路径不再重复携带
+    # 下载基址已含 /download 前缀,这里只拼相对路径
     links_rel = f"/protein.links.{string_version}/{taxon}.protein.links.{string_version}.txt.gz"
     info_rel = f"/protein.info.{string_version}/{taxon}.protein.info.{string_version}.txt.gz"
 
     def report(stage: str, fraction: float | None, detail: str = "") -> None:
-        """进度回调安全封装：回调异常只记日志，绝不打断构建本身。"""
+        """进度回调的包装:回调出错只记日志,不会中断构建。"""
         if progress_cb is None:
             return
         try:
@@ -274,7 +235,7 @@ def build_interactome(species: str = "Human",
 
     logging.info("Downloading STRING %s interactome (taxon %s, confidence>=%d)...",
                  string_version, taxon, confidence)
-    # 进度区间分配：互作全网络占大头（0.05~0.95），映射表很小（0.95~1.0）
+    # 进度条区间:大文件下载占 0.05~0.95,小文件占 0.95~1.0
     links_gz = _download_gz(links_rel, os.path.join(raw_dir, os.path.basename(links_rel)),
                             progress_cb=report, progress_range=(0.05, 0.95),
                             progress_label="download_links")
@@ -283,18 +244,18 @@ def build_interactome(species: str = "Human",
                            progress_label="download_info")
 
     report("processing", None)
-    # ---- info: ENSP -> gene symbol ----
+    # ---- 蛋白编号 -> 基因符号 映射表 ----
     info_df = pd.read_csv(info_gz, sep="\t", compression="gzip")
     id_col, sym_col = _info_column_names(info_df)
     id2sym = dict(zip(info_df[id_col].astype(str),
                       info_df[sym_col].astype(str).str.strip().str.upper()))
     logging.info("protein.info: %d proteins mapped to symbols", len(id2sym))
 
-    # ---- links: 过滤 -> 映射 -> 去自环 -> 去重 ----
+    # ---- 互作数据:过滤 -> 映射 -> 去自环 -> 去重 ----
     links_df = pd.read_csv(links_gz, sep=" ", compression="gzip",
                            usecols=["protein1", "protein2", "combined_score"])
     edges = _links_to_edges(links_df, id2sym, confidence)
-    del links_df  # 及时释放千万级行的内存
+    del links_df  # 及时释放内存
 
     degree_series = pd.concat([edges["protein_a"], edges["protein_b"]]).value_counts()
     degree_df = pd.DataFrame({"gene": degree_series.index.astype(str),
@@ -334,11 +295,11 @@ def build_interactome(species: str = "Human",
     return meta
 
 
-# ---------- 加载侧（页面 / 算法用） ----------
+# ---------- 加载侧(页面/算法用) ----------
 
 
 def require_meta(species: str = "Human") -> dict:
-    """取构建元数据；缓存未构建时抛 InteractomeNotBuiltError（绝不静默降级）。"""
+    """读取构建记录;缓存未构建时报错提示,绝不静默降级。"""
     import config
 
     meta = _read_meta(species, config.INTERACTOME_CONFIDENCE, config.STRING_VERSION)
@@ -351,19 +312,19 @@ def require_meta(species: str = "Human") -> dict:
 
 @functools.lru_cache(maxsize=4)
 def _load_graph_cached(edges_filename: str) -> "nx.Graph":
-    """按文件名加载并冻结图（lru_cache：Streamlit 每次 rerun 都会进页面，不能重复读盘）。"""
+    """从磁盘加载背景网络图并设为只读;进程内只读一次盘,之后复用。"""
     import networkx as nx
 
     df = _read_edges_auto(os.path.join(_cache_dir(), edges_filename))
     graph = nx.from_pandas_edgelist(df, "protein_a", "protein_b", edge_attr="score")
-    nx.freeze(graph)  # 防止后续代码意外加/删边（可变图是隐性偏差来源）
+    nx.freeze(graph)  # 设为只读,防止后续计算误改网络
     logging.info("Interactome graph loaded: %d nodes / %d edges (%s)",
                  graph.number_of_nodes(), graph.number_of_edges(), edges_filename)
     return graph
 
 
 def load_interactome(species: str = "Human") -> "nx.Graph":
-    """加载全互作组图（只读、已 freeze、进程内缓存）。缺缓存抛 InteractomeNotBuiltError。"""
+    """加载全蛋白背景互作网络(只读,自动复用缓存);未构建时报错。"""
     meta = require_meta(species)
     return _load_graph_cached(meta["files"]["edges"])
 
@@ -374,13 +335,13 @@ def _load_degrees_cached(degrees_filename: str) -> pd.DataFrame:
 
 
 def load_degree_table(species: str = "Human") -> pd.DataFrame:
-    """加载度数表（gene / degree）。度匹配随机化（M3）每次都要用，独立缓存。"""
+    """加载各基因的连接数(度)表,供随机对照使用;自动复用缓存。"""
     meta = require_meta(species)
     return _load_degrees_cached(meta["files"]["degrees"])
 
 
 def interactome_age_days(species: str = "Human") -> int | None:
-    """背景网络构建至今的天数（meta.built_at 距今）；未构建返回 None。"""
+    """背景网络构建至今的天数;未构建返回 None。"""
     import config
     from datetime import datetime
 
@@ -395,11 +356,9 @@ def interactome_age_days(species: str = "Human") -> int | None:
 
 
 def is_stale(species: str = "Human", days: int | None = None) -> bool:
-    """背景网络是否超过陈旧阈值（config.INTERACTOME_STALE_DAYS，默认365天）。
+    """背景网络是否过于陈旧(超过 config 设定的天数阈值,默认365天)。
 
-    语义提醒：stale ≠ 需要重下同版本（同版本文件是冻结的），而是提示
-    "构建至今较久，建议检查 STRING 是否已发布新版本（改 STRING_VERSION 后重建）"。
-    未构建时返回 False（此时应报"未构建"而非"陈旧"，避免双重误导）。
+    陈旧只是提示该检查 STRING 是否已发布新版本;未构建时返回 False。
     """
     import config
 
@@ -414,10 +373,9 @@ def _known_genes(species: str) -> frozenset:
 
 
 def get_network_coverage(genes: list[str], species: str = "Human") -> tuple[list[str], list[str]]:
-    """
-    把基因列表按"是否存在于背景网络"二分（M3/M4 的覆盖率守卫用此函数）。
+    """把基因列表分成"在背景网络中"和"不在"两组。
 
-    输入会做 strip + 大写归一化；保持去重、保序。
+    基因名自动去空格并统一大写;结果去重且保持原顺序。
     """
     known = _known_genes(species)
     seen: set[str] = set()
@@ -433,7 +391,7 @@ def get_network_coverage(genes: list[str], species: str = "Human") -> tuple[list
 
 
 def clear_runtime_caches() -> None:
-    """清空运行期加载缓存（重建缓存后调用；CLI 进程退出亦自然失效）。"""
+    """清空内存中的加载缓存,重建背景网络后调用。"""
     _load_graph_cached.cache_clear()
     _load_degrees_cached.cache_clear()
     _known_genes.cache_clear()

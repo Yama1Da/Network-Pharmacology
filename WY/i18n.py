@@ -1,15 +1,12 @@
-"""轻量 i18n：zh/en 文案字典 + t() 取词。
+"""界面中英文文案对照表。
 
-用法：
-    from i18n import t
-    st.title(t("app.title"))
-    t("star.dialog_confirm", name=name)   # 带参数模板
+界面上所有文字都用 t("键名") 从这里取，如 t("app.title")。
 """
 import streamlit as st
 
-# 默认语言：英文（会话未切换过语言时使用）
+# 默认语言：英文
 DEFAULT_LANG = "en"
-# 支持的语言（供后续语言切换按钮渲染）
+# 支持的语言
 SUPPORTED_LANGS = {"en": "English", "zh": "中文"}
 
 TEXT: dict[str, dict[str, str]] = {
@@ -50,13 +47,14 @@ TEXT: dict[str, dict[str, str]] = {
         "app.metric_targets": "Targets",
         "app.metric_disease_targets": "Disease targets",
         "app.metric_common": "🎯 Common targets",
-        # app.targets_of / app.venn_title 已移除：Venn 图内文字刻意保持英文
-        # （matplotlib 默认字体无 CJK 字形），英文文案硬编码在 App.py 图表处。
+        # Venn 图内文字刻意保持英文，硬编码在 App.py 图表处，相关键已移除。
         "app.expander_targets": "View target lists",
         "app.drug_targets_md": "**💊 {name} targets** — {count} genes (ChEMBL + DGIdb, deduplicated)",
         "app.no_drug_data": "(No drug target data retrieved)",
         "app.disease_targets_md": "**🦠 {name} targets** — {count} genes (Open Targets + DisGeNET, deduplicated)",
         "app.no_disease_data": "(No disease target data retrieved)",
+        "app.common_targets_md": "**🎯 {drug} ∩ {disease} common targets** — {count} genes (drug ∩ disease intersection)",
+        "app.no_common_data": "(No common targets between drug and disease)",
         "app.success_done": "✅ Analysis complete",
         "app.info_hint": "💡 Enter drug and disease names above and click Analyze",
         # ---- Logs.py ----
@@ -411,6 +409,8 @@ TEXT: dict[str, dict[str, str]] = {
         "app.no_drug_data": "（未获取到药物靶点数据）",
         "app.disease_targets_md": "**🦠 {name} 靶点** — {count} 个基因（Open Targets + DisGeNET，去重）",
         "app.no_disease_data": "（未获取到疾病靶点数据）",
+        "app.common_targets_md": "**🎯 {drug} ∩ {disease} 交集靶点** — {count} 个基因（药物与疾病共有）",
+        "app.no_common_data": "（药物与疾病没有交集靶点）",
         "app.success_done": "✅ 分析完成",
         "app.info_hint": "💡 在上方输入药物与疾病名称，然后点击「分析」",
         # ---- Logs.py ----
@@ -727,18 +727,18 @@ TEXT: dict[str, dict[str, str]] = {
 
 
 def get_lang() -> str:
-    """当前语言（session 级，跨页面持久）；默认英文。仅读 session_state，可在 set_page_config 前调用。"""
+    """当前语言，默认英文。"""
     return st.session_state.get("lang", DEFAULT_LANG)
 
 
 def set_lang(lang: str) -> None:
-    """切换语言（仅接受 TEXT 中已定义的语言）。"""
+    """切换语言。"""
     if lang in TEXT:
         st.session_state["lang"] = lang
 
 
 def t(key: str, **kwargs) -> str:
-    """按键取当前语言文案；缺失时回退默认语言，再缺失返回 key 本身。"""
+    """按键取当前语言文案，缺失时回退英文，再缺失返回键名。"""
     text = TEXT.get(get_lang(), {}).get(key)
     if text is None:
         text = TEXT[DEFAULT_LANG].get(key, key)

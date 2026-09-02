@@ -1,4 +1,4 @@
-"""多来源靶点整合：药物（ChEMBL+DGIdb）、疾病（Open Targets+DisGeNET）并集与交集。"""
+"""靶点汇总：整合药物靶点（ChEMBL+DGIdb）与疾病靶点（Open Targets+DisGeNET），并取交集。"""
 
 import logging
 import os
@@ -13,26 +13,11 @@ from .text_utils import safe_name
 
 
 def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
-    """整合 ChEMBL 与 DGIdb 两个来源的药物靶点（并集去重，保留来源证据）。
+    """整合 ChEMBL 与 DGIdb 两个数据库的药物靶点，按基因符号取并集去重。
 
-    两个来源分别抓取（各自独立缓存），按基因符号（approvedSymbol，统一大写）取并集，
-    去重后为每个基因标记来源（source_chmbl / source_dgidb）与来源数量，
-    并保留各来源的分数（score_pchembl / score_dgidb）。
-
-    Parameters
-    ----------
-    drug_name : str
-        药物英文名。
-
-    Returns
-    -------
-    pd.DataFrame
-        列: approvedSymbol、source_chmbl、source_dgidb、source_count、
-        score_pchembl、score_dgidb；两来源均无数据时返回空表。
-
-    缓存
-    ----
-    结果持久化为 CSV（Static/data/cache/merged/merged_drug_{drug_name}.csv）。
+    为每个基因标记来自哪些数据库（source_chmbl / source_dgidb），
+    并保留各库的活性/交互分数。两个库都没有数据时返回空表；
+    结果存为本地 CSV，已有缓存则直接复用。
     """
     import config
 
@@ -53,7 +38,7 @@ def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
         logging.warning("No drug targets from either source for '%s'", drug_name)
         return pd.DataFrame()
 
-    # 各来源分数聚合（同一基因多条记录取最大值）
+    # 同一基因有多条记录时，分数取最大值
     chmbl_score: dict[str, float] = {}
     if not chmbl_df.empty and "pchembl_value" in chmbl_df.columns:
         tmp = chmbl_df.dropna(subset=["approvedSymbol"]).copy()
@@ -91,26 +76,11 @@ def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
 
 
 def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
-    """整合 Open Targets 与 DisGeNET 两个来源的疾病靶点（并集去重，保留来源证据）。
+    """整合 Open Targets 与 DisGeNET 两个数据库的疾病靶点，按基因符号取并集去重。
 
-    两个来源分别抓取（各自独立缓存），按基因符号（approvedSymbol，统一大写）取并集，
-    去重后为每个基因标记来源（source_ot / source_disgenet）与来源数量，
-    并保留各来源的分数（score_ot / score_disgenet）。
-
-    Parameters
-    ----------
-    disease_name : str
-        疾病英文名。
-
-    Returns
-    -------
-    pd.DataFrame
-        列: approvedSymbol、source_ot、source_disgenet、source_count、
-        score_ot、score_disgenet；两来源均无数据时返回空表。
-
-    缓存
-    ----
-    结果持久化为 CSV（Static/data/cache/merged/merged_disease_{disease_name}.csv）。
+    为每个基因标记来自哪些数据库（source_ot / source_disgenet），
+    并保留各库的关联分数。两个库都没有数据时返回空表；
+    结果存为本地 CSV，已有缓存则直接复用。
     """
     import config
 
@@ -168,30 +138,15 @@ def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
 
 def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> list[str]:
     """
-    计算药物靶点与疾病靶点的交集基因列表（PPI 网络输入）。
+    取药物靶点与疾病靶点的交集基因，作为后续 PPI 网络分析的输入。
 
-    药物靶点整合 ChEMBL + DGIdb（get_drug_targets_merged），
-    疾病靶点整合 Open Targets + DisGeNET（get_disease_targets_merged），
-    再取两表 approvedSymbol 的交集，按字母序排序并截断到 top_n（默认对齐 STRING 查询上限 1000）。
-
-    Parameters
-    ----------
-    drug_name : str
-        药物英文名。
-    disease_name : str
-        疾病英文名。
-    top_n : int
-        返回的交集基因数量上限，默认 1000。
-
-    Returns
-    -------
-    list[str]
-        交集基因符号列表；任一来源无数据时返回空列表。
+    按字母序排序，最多返回 top_n 个（默认 1000，对齐 STRING 查询上限）；
+    任一侧无数据时返回空列表。
     """
     drug_df = get_drug_targets_merged(drug_name)
     disease_df = get_disease_targets_merged(disease_name)
-    # 从药物和疾病靶点表中提取基因符号（approvedSymbol），并转换为集合
+    # 提取药物和疾病两侧的基因符号
     drug_set = set(drug_df["approvedSymbol"].dropna()) if not drug_df.empty else set()
     disease_set = set(disease_df["approvedSymbol"].dropna()) if not disease_df.empty else set()
-    # 取药物和疾病靶点的交集，按字母序排序并截断到 top_n
+    # 取交集，按字母序排序并截断到 top_n
     return sorted(drug_set & disease_set)[:top_n]

@@ -2,12 +2,11 @@
 
 
 def safe_name(name: str) -> str:
-    """把用户输入（药物名/疾病名/基因等）净化为可安全用作文件名的字符串。
+    """把用户输入(药物名/疾病名/基因等)转成能安全用作文件名的形式。
 
-    将所有非字母/数字/下划线/连字符的字符替换为下划线（与 Data_Network 的
-    prefix 过滤规则一致），阻断 `../`、`..\\`、绝对路径等路径穿越；
-    再去除首尾的 `._-`，空结果退化为 "unnamed"。
-    仅用于构造文件名/目录名，不要用于 API 查询参数（查询仍用原始输入）。
+    把文件名不允许出现的符号统一替换成下划线,防止输入内容被当作路径、
+    破坏文件组织;转换结果为空时用 "unnamed"。只用于文件命名,
+    查询时仍使用原始输入。
     """
     import re
 
@@ -16,7 +15,7 @@ def safe_name(name: str) -> str:
 
 
 def _safe_round(value, ndigits: int = 4) -> float:
-    """None 安全取分：Open Targets 部分靶点的指标字段可能为 null，统一转 0.0 再四舍五入。"""
+    """安全取数:部分靶点在数据库中没有指标数值,统一按 0 处理后再四舍五入。"""
     try:
         return round(float(value), ndigits)
     except (TypeError, ValueError):

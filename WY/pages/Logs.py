@@ -6,12 +6,12 @@ import config
 import Utils
 from i18n import t
 
-# 初始化日志系统（幂等：直接访问本页 URL 时也保证日志就绪）
+# 初始化日志系统
 Utils.setup_logging()
 
 st.set_page_config(page_title=t("logs.page_title"), layout="wide")
 
-# ---------- Hide auto navigation sidebar for full-screen display ----------
+# 隐藏侧边栏,全屏显示页面
 st.markdown("""
 <style>
     [data-testid="stSidebar"] {
@@ -34,8 +34,8 @@ log_files = Utils.list_log_files()
 if log_files.empty:
     st.info(t("logs.empty"))
 else:
-    # 每个日志文件一个展开区：点击文件名即查看内容
-    # app.log 是当前正在写入的文件（今天的日志），其余带日期后缀为历史文件
+    # 每个日志文件一个展开区,点击查看内容
+    # app.log 是今天的日志,其余为历史日志
     for _, row in log_files.iterrows():
         file_path = os.path.join(config.LOG_DIR, row["File name"])
         is_current = row["File name"] == "app.log"

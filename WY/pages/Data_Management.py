@@ -16,7 +16,7 @@ from core.interactome import (
 
 st.set_page_config(page_title=t("data_mgmt.page_title"), layout="wide")
 
-# ---------- Hide auto navigation sidebar for full-screen display ----------
+# 隐藏侧边栏,全屏显示页面
 st.markdown("""
 <style>
     [data-testid="stSidebar"] {
@@ -41,14 +41,12 @@ with col_back:
 
 st.divider()
 
-# ---------- 背景互作组：状态提醒 + 一键构建（M2） ----------
-# 三种状态：未构建（错误提醒）/ 已构建但陈旧（警告）/ 已构建（状态卡）。
-# 构建按钮在当前页面进程内直接调用 build_interactome（不子进程），回调驱动进度条；
-# 同步模型下构建期间用户点击其他控件会中断本次运行——.part 临时文件保证中断不留脏数据，重跑即可。
+# 背景互作网络:显示构建状态,支持一键重建
+# 三种状态:未构建(错误提醒) / 已构建但数据陈旧(警告) / 已构建(正常)
 st.subheader(t("data_mgmt.itx_title"))
 
 if "itx_build_result" not in st.session_state:
-    st.session_state.itx_build_result = None  # ("ok", nodes, edges, secs) | ("fail", err)
+    st.session_state.itx_build_result = None  # 保存本次构建结果(成功或失败信息)
 
 if st.session_state.itx_build_result is not None:
     result = st.session_state.itx_build_result
@@ -76,7 +74,7 @@ if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", 
     t0 = time.time()
 
     def _on_progress(stage: str, fraction, detail: str) -> None:
-        # stage 为语言中立键；detail 的 "cached" 需翻译，"x/y MB" 原样展示
+        # 把构建阶段名翻译成当前语言,显示在进度条上
         base = t(f"data_mgmt.itx_stage_{stage}")
         if detail == "cached":
             detail_txt = t("data_mgmt.itx_cached")
@@ -96,7 +94,7 @@ if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", 
 st.divider()
 
 dirs_df = Utils.list_download_dirs()
-# 排除分子对接成果区与收藏区：它们由 Molecular_Docking / Star Management 页管理，不在此提供整包下载
+# 分子对接成果区和收藏区由各自页面管理,这里不提供下载
 excluded = {os.path.basename(config.MD_RESULT_DIR), os.path.basename(config.MD_STAR_DIR)}
 dirs_df = dirs_df[~dirs_df["Directory"].isin(excluded)]
 if dirs_df.empty:
