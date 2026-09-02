@@ -161,6 +161,8 @@ def t_candidates_af_fallback_row():
     dock.fetch_uniprot_accession = lambda gene, taxon=9606: "P99999"
 
     class _FakeResp:
+        status_code = 200
+
         def raise_for_status(self):
             return None
 

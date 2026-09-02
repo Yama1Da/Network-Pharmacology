@@ -6,7 +6,7 @@ import os
 
 import pandas as pd
 
-from .caching import _is_cache_fresh, _read_cache_csv
+from .caching import open_csv_cache, save_csv_cache
 
 # 两个数据源的基因集库名对应关系（GO 生物过程/分子功能/细胞组分、KEGG 通路）。
 ENRICHR_LIB_MAP = {
@@ -83,6 +83,38 @@ def _gprofiler_circuit_close() -> None:
         logging.exception("Failed to remove g:Profiler circuit breaker file")
 
 
+def _call_with_request_guard(fn, label: str, on_fail=None):
+    """给第三方富集查询库统一补上请求保护：请求间隔、全局超时、失败重试。
+
+    fn 为零参调用（内部完成实际的库调用并取回结果表）；全部重试失败返回 None。
+    on_fail 在每次失败后被调用（g:Profiler 用它累计熔断）。
+    """
+    import time
+    import socket
+
+    import config
+
+    res = None
+    for attempt in range(config.ENRICHMENT_MAX_RETRIES):
+        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前稍等，避免请求过快被服务器拒绝
+        socket.setdefaulttimeout(config.API_TIMEOUT)
+        try:
+            res = fn()
+            break  # 成功
+        except Exception:
+            logging.exception(
+                "%s enrichment failed (attempt %d/%d)",
+                label, attempt + 1, config.ENRICHMENT_MAX_RETRIES,
+            )
+            if on_fail is not None:
+                on_fail()
+            if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
+                time.sleep(config.API_RETRY_DELAY)  # 失败后稍等再重试
+        finally:
+            socket.setdefaulttimeout(None)
+    return res
+
+
 def fetch_enrichment_gprofiler(
     genes: list[str],
     organism: str = "hsapiens",
@@ -109,11 +141,11 @@ def fetch_enrichment_gprofiler(
     md5 = _enrichment_cache_key(genes, organism, sources, pvalue)
     name = f"gProfiler_{label}_{md5}.csv" if label else f"gProfiler_{md5}.csv"
     cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
-    if _is_cache_fresh(cache_file):
-        logging.info("Loading cached g:Profiler enrichment for %d genes", len(genes))
+    cached = open_csv_cache(cache_file, fresh=True, label=f"g:Profiler enrichment for {len(genes)} genes")
+    if cached is not None:
         if status is not None:
             status.update(ok=True, reason="cache")
-        return _read_cache_csv(cache_file)
+        return cached
 
     # 熔断：g:Profiler 近期失败过则直接跳过，走 Enrichr 兜底
     if _gprofiler_circuit_open():
@@ -122,36 +154,20 @@ def fetch_enrichment_gprofiler(
             status.update(ok=False, reason="circuit_open")
         return pd.DataFrame()
 
-    import time
-    import socket
-
     # 请求保护：查询库自身不带超时和重试，这里统一补上请求间隔、失败重试和超时限制。
     from gprofiler import GProfiler
 
-    res = None
-    for attempt in range(config.ENRICHMENT_MAX_RETRIES):
-        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前稍等，避免请求过快被服务器拒绝
-        socket.setdefaulttimeout(config.API_TIMEOUT)
-        try:
-            gp = GProfiler(return_dataframe=True)
-            res = gp.profile(
-                query=genes,
-                organism=organism,
-                sources=list(sources),
-                user_threshold=pvalue,
-                no_evidences=False,  # 需要返回每个通路命中的基因列表
-            )
-            break  # 成功
-        except Exception:
-            logging.exception(
-                "g:Profiler enrichment failed (attempt %d/%d)",
-                attempt + 1, config.ENRICHMENT_MAX_RETRIES,
-            )
-            _gprofiler_circuit_open_trip()  # 记录失败时间，开启熔断
-            if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
-                time.sleep(config.API_RETRY_DELAY)  # 失败后稍等再重试
-        finally:
-            socket.setdefaulttimeout(None)
+    res = _call_with_request_guard(
+        lambda: GProfiler(return_dataframe=True).profile(
+            query=genes,
+            organism=organism,
+            sources=list(sources),
+            user_threshold=pvalue,
+            no_evidences=False,  # 需要返回每个通路命中的基因列表
+        ),
+        label="g:Profiler",
+        on_fail=_gprofiler_circuit_open_trip,  # 记录失败时间，开启熔断
+    )
 
     if res is None:
         # 重试后仍失败（网络/服务不可用）
@@ -177,7 +193,7 @@ def fetch_enrichment_gprofiler(
         return df
     if status is not None:
         status.update(ok=True, reason="success")
-    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    save_csv_cache(df, cache_file)
     logging.info("g:Profiler enrichment for %d genes: %d terms cached", len(genes), len(df))
     return df
 
@@ -237,41 +253,25 @@ def fetch_enrichment_enrichr(
     md5 = _enrichment_cache_key(genes, organism, libs, pvalue)
     name = f"Enrichr_{label}_{md5}.csv" if label else f"Enrichr_{md5}.csv"
     cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
-    if _is_cache_fresh(cache_file):
-        logging.info("Loading cached Enrichr enrichment for %d genes", len(genes))
+    cached = open_csv_cache(cache_file, fresh=True, label=f"Enrichr enrichment for {len(genes)} genes")
+    if cached is not None:
         if status is not None:
             status.update(ok=True, reason="cache")
-        return _read_cache_csv(cache_file)
-
-    import time
-    import socket
+        return cached
 
     # 请求保护：查询库自身的超时和重试不完整，这里统一补上请求间隔、失败重试和超时限制。
     import gseapy as gp
 
-    res = None
-    for attempt in range(config.ENRICHMENT_MAX_RETRIES):
-        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前稍等，避免请求过快被服务器拒绝
-        socket.setdefaulttimeout(config.API_TIMEOUT)
-        try:
-            enr = gp.enrichr(
-                gene_list=genes,
-                gene_sets=list(libs),
-                organism=organism,
-                outdir=None,  # 不让库自行写盘，结果由本程序统一缓存
-                cutoff=pvalue,
-            )
-            res = enr.results
-            break  # 成功
-        except Exception:
-            logging.exception(
-                "Enrichr enrichment failed (attempt %d/%d)",
-                attempt + 1, config.ENRICHMENT_MAX_RETRIES,
-            )
-            if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
-                time.sleep(config.API_RETRY_DELAY)  # 失败后稍等再重试
-        finally:
-            socket.setdefaulttimeout(None)
+    res = _call_with_request_guard(
+        lambda: gp.enrichr(
+            gene_list=genes,
+            gene_sets=list(libs),
+            organism=organism,
+            outdir=None,  # 不让库自行写盘，结果由本程序统一缓存
+            cutoff=pvalue,
+        ).results,
+        label="Enrichr",
+    )
 
     if res is None:
         # 重试后仍失败（网络/服务不可用）
@@ -295,7 +295,7 @@ def fetch_enrichment_enrichr(
         return df
     if status is not None:
         status.update(ok=True, reason="success")
-    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    save_csv_cache(df, cache_file)
     return df
 
 
@@ -617,11 +617,11 @@ def fetch_enrichment_gsea_prerank(
 
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
     cache_file = _gsea_cache_file(rnk, libs, label)
-    if _is_cache_fresh(cache_file):
-        logging.info("Loading cached GSEA prerank result for %d genes", len(rnk))
+    cached = open_csv_cache(cache_file, fresh=True, label=f"GSEA prerank result for {len(rnk)} genes")
+    if cached is not None:
         if status is not None:
             status.update(ok=True, reason="cache")
-        return _read_cache_csv(cache_file)
+        return cached
 
     import gseapy
 
@@ -659,7 +659,7 @@ def fetch_enrichment_gsea_prerank(
         return df
     if status is not None:
         status.update(ok=True, reason="success")
-    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    save_csv_cache(df, cache_file)
     logging.info("GSEA prerank for %d genes: %d terms cached", len(rnk), len(df))
     return df
 

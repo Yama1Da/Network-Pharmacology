@@ -6,6 +6,7 @@ import os
 import pandas as pd
 import streamlit as st
 
+from .caching import open_csv_cache, save_csv_cache
 from .text_utils import safe_name
 
 
@@ -30,15 +31,12 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
     """
     import config
 
-    cache_dir = config.DRUG_CACHE_DIR
-    os.makedirs(cache_dir, exist_ok=True)
-    csv_path = os.path.join(cache_dir, f"ChEMBL_{safe_name(drug_name)}.csv")
+    csv_path = os.path.join(config.DRUG_CACHE_DIR, f"ChEMBL_{safe_name(drug_name)}.csv")
 
     # 已有缓存则直接读取本地文件
-    if os.path.exists(csv_path):
-        logging.info("Loading cached ChEMBL targets for '%s'", drug_name)
-        df = _sort_drug_df_by_pchembl(pd.read_csv(csv_path))
-        return df, csv_path
+    cached = open_csv_cache(csv_path, label=f"ChEMBL targets for '{drug_name}'")
+    if cached is not None:
+        return _sort_drug_df_by_pchembl(cached), csv_path
 
     # 无缓存时联网查询
     try:
@@ -143,8 +141,8 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
         # 不设数量上限，按 pChEMBL 活性值降序排列（无值的排最后）
         df = _sort_drug_df_by_pchembl(df)
 
-        # 保存到本地缓存
-        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        # 保存到本地缓存（空结果也落盘，避免反复查询同一查不到的药物）
+        save_csv_cache(df, csv_path, skip_empty=False)
 
         return df, csv_path
 

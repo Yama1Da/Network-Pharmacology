@@ -24,34 +24,26 @@ from core.ppi import render_pyvis_html, save_gsea_results, save_module_results, 
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
-# ---------- Hide auto navigation sidebar for full-screen display ----------
-st.markdown("""
-<style>
-    [data-testid="stSidebar"] {
-        display: none;
-    }
-    /* Run button colors (#167A9C bg, #C6E7F5 text) */
+# ---------- 隐藏侧边栏全屏显示;Run 按钮(#167A9C)、Data Management 按钮(#6347A1)配色 ----------
+Utils.hide_sidebar("""
     .st-key-run_btn button {
         background-color: #167A9C;
         color: #C6E7F5;
         border: 1px solid #167A9C;
     }
-    /* Data Management button colors (#6347A1 bg, #E0D8F2 text) */
     .st-key-data_mgmt_btn button {
         background-color: #6347A1;
         color: #E0D8F2;
         border: 1px solid #6347A1;
     }
-</style>
-""", unsafe_allow_html=True)
+""")
 
 st.title(t("net.title"))
 st.caption(t("net.caption"))
 
 col_back, col_mgmt = st.columns([1, 1])
 with col_back:
-    if st.button(t("common.back_main"), key="back_btn"):
-        st.switch_page("App.py")
+    Utils.back_button()
 with col_mgmt:
     if st.button(t("net.data_mgmt"), key="data_mgmt_btn"):
         st.switch_page("pages/Data_Management.py")
@@ -139,6 +131,24 @@ def _compute_ppi_modules(graph, organism, saved, prefix) -> dict:
     }
 
 
+def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
+    """对药物/疾病一侧构建排秩表并运行 GSEA prerank（Build Report 自动流程与手动重跑共用）。
+
+    返回 (结果表, 排秩统计, 状态原因)。
+    """
+    if side == "drug":
+        src_df = Utils.get_drug_targets_merged(drug_name.strip())
+        score_col = "score_pchembl"
+    else:
+        src_df = Utils.get_disease_targets_merged(disease_name.strip())
+        score_col = "score_ot"
+    rnk, rstats = build_ranked_list(src_df, "approvedSymbol", score_col)
+    gsea_status: dict = {}
+    gdf = fetch_enrichment_gsea_prerank(
+        rnk, libs=gsea_gene_sets(), label=f"{prefix}_{side}", status=gsea_status)
+    return gdf, rstats, gsea_status.get("reason", "")
+
+
 def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree) -> dict:
     """执行完整分析（交集→STRING→建图→指标→Hub→富集→可视化→保存），返回结果字典。"""
     # 疾病靶点目前只有 Open Targets 人类数据，因此整个分析按人类处理，
@@ -180,20 +190,9 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     gsea_drug_df = gsea_disease_df = None
     if mode == "names":
         try:
-            libs = gsea_gene_sets()
-            for side_label, src_df, score_col in (
-                ("drug", Utils.get_drug_targets_merged(drug_name.strip()), "score_pchembl"),
-                ("disease", Utils.get_disease_targets_merged(disease_name.strip()), "score_ot"),
-            ):
-                rnk, rstats = build_ranked_list(src_df, "approvedSymbol", score_col)
-                gsea_status: dict = {}
-                gdf = fetch_enrichment_gsea_prerank(
-                    rnk, libs=libs, label=f"{prefix}_{side_label}", status=gsea_status)
-                gsea_results[side_label] = {
-                    "df": gdf,
-                    "stats": rstats,
-                    "reason": gsea_status.get("reason", ""),
-                }
+            for side_label in ("drug", "disease"):
+                gdf, rstats, reason = _gsea_prerank_side(side_label, drug_name, disease_name, prefix)
+                gsea_results[side_label] = {"df": gdf, "stats": rstats, "reason": reason}
                 if side_label == "drug":
                     gsea_drug_df = gdf if not gdf.empty else None
                 else:
@@ -205,6 +204,9 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
 
     # Step 4.7: 网络邻近度检验（仅 names 模式）——检验药物靶点与疾病基因在互作网络上的
     # 距离是否比随机更近（支持药物作用于疾病相关机制）。背景网络未构建或此步失败时仅提示，不影响主报告。
+    # 两侧靶点表在此先取出（读缓存,代价小）,后面的 RWR 也要用,避免 proximity 早退时 RWR 引用未定义变量。
+    drug_df_full = pd.DataFrame()
+    disease_df_full = pd.DataFrame()
     proximity_result: dict | None = None
     if mode == "names":
         try:
@@ -222,7 +224,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     # Step 4.8: RWR 靶点优先级排序（仅 names 模式）——分别以疾病基因、药物靶点为种子
     # 在网络上随机游走，按邻近程度给其余蛋白打分排名，预测药物可能的起效靶点。
     rwr_results: dict = {}
-    if mode == "names":
+    if mode == "names" and not (drug_df_full.empty or disease_df_full.empty):
         try:
             drug_syms = {str(g).strip().upper() for g in drug_df_full["approvedSymbol"]}
             disease_syms = {str(g).strip().upper() for g in disease_df_full["approvedSymbol"]}
@@ -493,10 +495,10 @@ if ppi is not None:
                         with st.expander(t("net.rwr_seeds_header", n=len(seeds_df))):
                             st.dataframe(seeds_df[["gene", "score"]],
                                          width="stretch", hide_index=True)
-                        st.download_button(
-                            t("net.dl_rwr_csv"),
+                        Utils.download_button(
+                            "net.dl_rwr_csv",
                             top_df.to_csv(index=False).encode("utf-8-sig"),
-                            f"{prefix}_rwr_{rwr_side}.csv", "text/csv", width="stretch",
+                            f"{prefix}_rwr_{rwr_side}.csv", "text/csv",
                         )
                         if "rwr_disease_csv" in saved or "rwr_drug_csv" in saved:
                             st.caption(t("net.rwr_in_report", dir=saved["directory"]))
@@ -552,24 +554,12 @@ if ppi is not None:
                         st.warning(t("net.params_changed"))
                     else:
                         with st.spinner(t("net.gsea_spinner")):
-                            if gsea_side == "drug":
-                                src_df = Utils.get_drug_targets_merged(drug_name.strip())
-                                score_col = "score_pchembl"
-                            else:
-                                src_df = Utils.get_disease_targets_merged(disease_name.strip())
-                                score_col = "score_ot"
-                            rnk, rstats = build_ranked_list(src_df, "approvedSymbol", score_col)
-                            gsea_status: dict = {}
-                            gsea_df = fetch_enrichment_gsea_prerank(
-                                rnk,
-                                libs=gsea_gene_sets(),
-                                label=f"{prefix}_{gsea_side}",
-                                status=gsea_status,
-                            )
+                            gsea_df, rstats, reason = _gsea_prerank_side(
+                                gsea_side, drug_name, disease_name, prefix)
                             st.session_state.ppi_gsea[gsea_side] = {
                                 "df": gsea_df,
                                 "stats": rstats,
-                                "reason": gsea_status.get("reason", ""),
+                                "reason": reason,
                                 "ppi_params": ppi["params"],
                             }
                         st.rerun()
@@ -613,11 +603,10 @@ if ppi is not None:
                                 if gsea_fig is not None:
                                     st.caption(t("net.gsea_bar_caption"))
                                     st.pyplot(gsea_fig)
-                            st.download_button(
-                                t("net.dl_gsea_csv"),
+                            Utils.download_button(
+                                "net.dl_gsea_csv",
                                 gsea_df.to_csv(index=False).encode("utf-8-sig"),
                                 f"{prefix}_gsea_{gsea_side}.csv", "text/csv",
-                                width="stretch",
                             )
 
         # ---------- 蛋白模块检测（Louvain + 模块富集） ----------
@@ -690,16 +679,16 @@ if ppi is not None:
                         st.dataframe(show_df[cols], width="stretch", hide_index=True)
                         col_ms, col_me = st.columns(2)
                         with col_ms:
-                            st.download_button(
-                                t("net.dl_module_summary_csv"),
+                            Utils.download_button(
+                                "net.dl_module_summary_csv",
                                 summary_df.to_csv(index=False).encode("utf-8-sig"),
-                                f"{prefix}_modules.csv", "text/csv", width="stretch",
+                                f"{prefix}_modules.csv", "text/csv",
                             )
                         with col_me:
-                            st.download_button(
-                                t("net.dl_module_enrich_csv"),
+                            Utils.download_button(
+                                "net.dl_module_enrich_csv",
                                 long_df.to_csv(index=False).encode("utf-8-sig"),
-                                f"{prefix}_module_enrichment.csv", "text/csv", width="stretch",
+                                f"{prefix}_module_enrichment.csv", "text/csv",
                             )
                         if mods_res.get("saved_paths"):
                             st.caption(t("net.modules_saved", dir=saved["directory"]))
@@ -710,64 +699,55 @@ if ppi is not None:
         with st.expander(t("net.download_expander")):
             col_d1, col_d2, col_d3 = st.columns(3)
             with col_d1:
-                st.download_button(
-                    t("net.dl_nodes"),
+                Utils.download_button(
+                    "net.dl_nodes",
                     metrics_df.to_csv(index=False).encode("utf-8-sig"),
-                    f"{prefix}_nodes.csv", "text/csv", width="stretch",
+                    f"{prefix}_nodes.csv", "text/csv",
                 )
             with col_d2:
-                st.download_button(
-                    t("net.dl_edges"),
+                Utils.download_button(
+                    "net.dl_edges",
                     edges_df.to_csv(index=False).encode("utf-8-sig"),
-                    f"{prefix}_edges.csv", "text/csv", width="stretch",
+                    f"{prefix}_edges.csv", "text/csv",
                 )
             with col_d3:
-                st.download_button(
-                    t("net.dl_html"),
-                    html_content,
-                    f"{prefix}_network.html", "text/html", width="stretch",
+                Utils.download_button(
+                    "net.dl_html", html_content, f"{prefix}_network.html", "text/html",
                 )
             col_d4, col_d5, col_d6 = st.columns(3)
             with col_d4:
-                st.download_button(
-                    t("net.dl_graphml"),
-                    open(saved["graphml"], "rb").read(),
-                    f"{prefix}_graph.graphml", "application/xml", width="stretch",
+                Utils.download_file_button(
+                    "net.dl_graphml", saved["graphml"], f"{prefix}_graph.graphml",
+                    "application/xml",
                 )
             with col_d5:
-                st.download_button(
-                    t("net.dl_svg"),
-                    open(saved["svg"], "rb").read(),
-                    f"{prefix}_network.svg", "image/svg+xml", width="stretch",
+                Utils.download_file_button(
+                    "net.dl_svg", saved["svg"], f"{prefix}_network.svg", "image/svg+xml",
                 )
             with col_d6:
                 # 富集气泡图（有富集结果时显示）
                 if "enrichment_csv" in saved:
-                    st.download_button(
-                        t("net.dl_bubble"),
-                        open(saved["enrichment_dot_png"], "rb").read(),
-                        f"{prefix}_enrichment_dot.png", "image/png", width="stretch",
+                    Utils.download_file_button(
+                        "net.dl_bubble", saved["enrichment_dot_png"],
+                        f"{prefix}_enrichment_dot.png", "image/png",
                     )
             # 下一行：富集 CSV / 条形图下载（有富集结果时）+ ZIP 打包下载（始终显示）
             col_e1, col_e2, col_e3 = st.columns(3)
             if "enrichment_csv" in saved:
                 with col_e1:
-                    st.download_button(
-                        t("net.dl_enrich_csv"),
-                        open(saved["enrichment_csv"], "rb").read(),
-                        f"{prefix}_enrichment.csv", "text/csv", width="stretch",
+                    Utils.download_file_button(
+                        "net.dl_enrich_csv", saved["enrichment_csv"],
+                        f"{prefix}_enrichment.csv", "text/csv",
                     )
                 with col_e2:
-                    st.download_button(
-                        t("net.dl_enrich_bar"),
-                        open(saved["enrichment_bar_png"], "rb").read(),
-                        f"{prefix}_enrichment_bar.png", "image/png", width="stretch",
+                    Utils.download_file_button(
+                        "net.dl_enrich_bar", saved["enrichment_bar_png"],
+                        f"{prefix}_enrichment_bar.png", "image/png",
                     )
             with col_e3:
-                st.download_button(
-                    t("net.dl_zip"),
-                    Utils.make_ppi_zip(saved),
-                    f"{prefix}_results.zip", "application/zip", width="stretch",
+                Utils.download_button(
+                    "net.dl_zip", Utils.make_ppi_zip(saved),
+                    f"{prefix}_results.zip", "application/zip",
                 )
             st.caption(
                 t("net.files_grouped", dir=saved["directory"])

@@ -10,34 +10,26 @@ from i18n import t
 
 st.set_page_config(page_title=t("star.page_title"), layout="wide")
 
-# 隐藏侧边栏,全屏显示页面
-st.markdown("""
-<style>
-    [data-testid="stSidebar"] {
-        display: none;
-    }
-    /* 下载按钮：#00B42A 底、白字 */
+# 隐藏侧边栏,全屏显示页面;下载按钮(#00B42A 底白字)、删除按钮(#F53F3F 底白字)
+Utils.hide_sidebar("""
     [class*="st-key-star_dl_"] button {
         background-color: #00B42A;
         color: #FFFFFF;
         border: 1px solid #00B42A;
     }
-    /* 删除按钮：#F53F3F 底、白字 */
     [class*="st-key-star_del_"] button {
         background-color: #F53F3F;
         color: #FFFFFF;
         border: 1px solid #F53F3F;
     }
-</style>
-""", unsafe_allow_html=True)
+""")
 
 st.title(t("star.title"))
 st.caption(t("star.caption"))
 
 col_back, _ = st.columns([1, 4])
 with col_back:
-    if st.button(t("star.back"), key="back_btn"):
-        st.switch_page("pages/Molecular_Docking.py")
+    Utils.back_button("star.back", target="pages/Molecular_Docking.py")
 
 st.divider()
 

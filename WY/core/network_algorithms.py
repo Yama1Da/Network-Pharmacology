@@ -401,6 +401,38 @@ def proximity_zscore(drug_genes: list, disease_genes: list, species: str = "Huma
     )
 
 
+def _load_json_cache(cache_path: str, label: str, validate=None) -> dict | None:
+    """读取 JSON 结果缓存：未命中/过期返回 None；损坏或未通过校验则清除后返回 None。"""
+    import json
+
+    from .caching import _is_cache_fresh
+
+    if not _is_cache_fresh(cache_path):
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if validate is not None:
+            validate(cached)
+        return cached
+    except Exception:
+        # 损坏/过期缓存按"不存在"处理并清除
+        logging.exception("%s cache unreadable, removing: %s", label, cache_path)
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
+        return None
+
+
+def _save_json_cache(cache_path: str, result: dict) -> None:
+    """计算成功后把结果写入 JSON 缓存。"""
+    import json
+
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False)
+
+
 def run_proximity_cached(drug_genes: list, disease_genes: list,
                          species: str = "Human", label: str | None = None) -> dict:
     """
@@ -408,12 +440,9 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
     缓存键由两个基因集、物种、置换参数与背景网络版本/阈值决定，任一变化即重算。
     """
     import hashlib
-    import json
-    import os
 
     import config
 
-    from .caching import _is_cache_fresh
     from . import interactome as itx
 
     def _norm(genes: list) -> list[str]:
@@ -429,20 +458,11 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
     os.makedirs(config.PROXIMITY_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(config.PROXIMITY_CACHE_DIR, name)
 
-    if _is_cache_fresh(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                cached = json.load(f)
-            cached["cached"] = True
-            logging.info("Proximity cache hit: %s", name)
-            return cached
-        except Exception:
-            # 损坏缓存按"不存在"处理并清除
-            logging.exception("Proximity cache unreadable, removing: %s", cache_path)
-            try:
-                os.remove(cache_path)
-            except OSError:
-                pass
+    cached = _load_json_cache(cache_path, "Proximity")
+    if cached is not None:
+        cached["cached"] = True
+        logging.info("Proximity cache hit: %s", name)
+        return cached
 
     try:
         result = proximity_zscore(drug_genes, disease_genes, species=species)
@@ -451,8 +471,7 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
         return {"ok": False, "error": "not_built", "d_c": None, "z": None,
                 "p_empirical": None, "coverage": {}, "cached": False}
     if result.get("ok"):
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False)
+        _save_json_cache(cache_path, result)
     return result
 
 
@@ -620,12 +639,9 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
     不能命中旧缓存后补算。非种子行截断为 config.RWR_CACHE_TOP_N。
     """
     import hashlib
-    import json
-    import os
 
     import config
 
-    from .caching import _is_cache_fresh
     from . import interactome as itx
 
     seeds_norm = sorted({str(g).strip().upper() for g in seed_genes if g and str(g).strip()})
@@ -641,41 +657,31 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
     os.makedirs(config.RWR_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(config.RWR_CACHE_DIR, name)
 
-    result = None
-    if _is_cache_fresh(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                result = json.load(f)
-            if "top_nonseed" not in result or "seeds" not in result:
-                # 旧版格式的残留缓存：按损坏处理，清除后重算
-                raise ValueError("outdated RWR cache schema")
-            result["cached"] = True
-            logging.info("RWR cache hit: %s", name)
-        except Exception:
-            # 损坏/过期缓存按"不存在"处理并清除
-            logging.exception("RWR cache unreadable, removing: %s", cache_path)
-            try:
-                os.remove(cache_path)
-            except OSError:
-                pass
-            result = None
+    def _valid_schema(d: dict) -> None:
+        if "top_nonseed" not in d or "seeds" not in d:
+            # 旧版格式的残留缓存：按损坏处理，清除后重算
+            raise ValueError("outdated RWR cache schema")
 
-    if result is None:
-        try:
-            ctx = _lcc_context(species)
-            result = _rwr_from_context(
-                ctx, seeds_norm,
-                alpha=config.RWR_ALPHA, tol=config.RWR_TOL, max_iter=config.RWR_MAX_ITER,
-                top_nonseed=config.RWR_CACHE_TOP_N,
-                annotate=annotate,
-                null_perms=config.RWR_NULL_PERMS, null_seed=config.RWR_NULL_SEED,
-                bin_size=config.PROXIMITY_DEGREE_BIN_SIZE)
-        except itx.InteractomeNotBuiltError:
-            logging.warning("RWR skipped: interactome not built")
-            return {"ok": False, "error": "not_built", "seeds": [], "top_nonseed": [],
-                    "coverage": {}, "cached": False}
-        if result.get("ok"):
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False)
-            result["cached"] = False
+    result = _load_json_cache(cache_path, "RWR", validate=_valid_schema)
+    if result is not None:
+        result["cached"] = True
+        logging.info("RWR cache hit: %s", name)
+        return result
+
+    try:
+        ctx = _lcc_context(species)
+        result = _rwr_from_context(
+            ctx, seeds_norm,
+            alpha=config.RWR_ALPHA, tol=config.RWR_TOL, max_iter=config.RWR_MAX_ITER,
+            top_nonseed=config.RWR_CACHE_TOP_N,
+            annotate=annotate,
+            null_perms=config.RWR_NULL_PERMS, null_seed=config.RWR_NULL_SEED,
+            bin_size=config.PROXIMITY_DEGREE_BIN_SIZE)
+    except itx.InteractomeNotBuiltError:
+        logging.warning("RWR skipped: interactome not built")
+        return {"ok": False, "error": "not_built", "seeds": [], "top_nonseed": [],
+                "coverage": {}, "cached": False}
+    if result.get("ok"):
+        _save_json_cache(cache_path, result)
+        result["cached"] = False
     return result

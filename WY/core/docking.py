@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 from datetime import datetime
+from typing import Iterator
 
 import pandas as pd
 import requests
@@ -158,10 +159,8 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
     开启 AlphaFold 选项且查无实验结构时,追加一条 AlphaFold 预测结构作兜底
     (预测结构查询失败不影响空表正常返回)。
     """
-    import time
-
     import config
-    from .http_client import throttle
+    from .http_client import request_with_retry
 
     # 1) 在 RCSB 中用基因符号精确检索结构
     query = {
@@ -175,46 +174,37 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
     }
     # 查询有频率限制,失败会自动重试几次,全部失败才报错。
     # 注意:检索成功但没有命中结构不算失败。
-    hits, last_exc = None, None
-    for attempt in range(1, config.RCSB_SEARCH_MAX_RETRIES + 1):
-        try:
-            throttle("rcsb_search")
-            resp = requests.post(
-                "https://search.rcsb.org/rcsbsearch/v2/query",
-                json=query, timeout=config.API_TIMEOUT,
-                headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
-            )
-            resp.raise_for_status()
-            hits = resp.json().get("result_set", [])[:max_hits]
-            break
-        except Exception as exc:
-            last_exc = exc
-            logging.warning("RCSB search failed for %s (attempt %d/%d)",
-                            gene_symbol, attempt, config.RCSB_SEARCH_MAX_RETRIES)
-            if attempt < config.RCSB_SEARCH_MAX_RETRIES:
-                time.sleep(config.API_RETRY_DELAY)
-    if hits is None:
+    try:
+        resp = request_with_retry(
+            "https://search.rcsb.org/rcsbsearch/v2/query", json=query,
+            max_retries=config.RCSB_SEARCH_MAX_RETRIES, timeout=config.API_TIMEOUT,
+            label=f"RCSB search for {gene_symbol}", throttle_key="rcsb_search",
+            headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
+            raise_on_exhausted=True,
+        )
+    except Exception as exc:
         # 搜索失败要报错供页面提示;查无结构属正常情况
         logging.exception("RCSB search failed for gene %s", gene_symbol)
-        raise RuntimeError(f"RCSB 搜索失败（{gene_symbol}）：{last_exc}")
+        raise RuntimeError(f"RCSB 搜索失败（{gene_symbol}）：{exc}")
+    hits = resp.json().get("result_set", [])[:max_hits]
 
     # 2) 补充每个结构的分辨率、实验方法、标题等信息
     def _fetch_meta(entry_id: str) -> tuple[str, float | None, str, str]:
-        for attempt in range(2):
+        resp = request_with_retry(
+            f"https://data.rcsb.org/rest/v1/core/entry/{entry_id}", method="get",
+            max_retries=2, timeout=15, label="RCSB meta", throttle_key="rcsb_data",
+            headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"}, retry_delay=1,
+        )
+        if resp is not None:
             try:
-                throttle("rcsb_data")
-                d = requests.get(
-                    f"https://data.rcsb.org/rest/v1/core/entry/{entry_id}",
-                    timeout=15, headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
-                ).json()
+                d = resp.json()
                 res = d.get("rcsb_entry_info", {}).get("resolution_combined")
                 res = res[0] if isinstance(res, list) and res else res
                 method = ", ".join(m.get("method", "") for m in (d.get("exptl") or [])) or ""
                 title = (d.get("struct") or {}).get("title", "") or ""
                 return entry_id, res, method, title
             except Exception:
-                if attempt == 0:
-                    time.sleep(1)
+                pass  # 元数据解析失败按缺信息处理,不影响主流程
         return entry_id, None, "", ""
 
     ids = [hit.get("identifier", "") for hit in hits if hit.get("identifier")]
@@ -372,23 +362,26 @@ def run_vina(
     return proc
 
 
-def _split_models_python(out_pdbqt: str, out_dir: str) -> list[str]:
-    """内置方式:按构象把 vina 多模型输出逐个拆成独立文件(拆分工具不可用时的备用方案)。"""
-    stem = os.path.splitext(os.path.basename(out_pdbqt))[0]
-    blocks = []
-    current = None
+def _iter_vina_models(out_pdbqt: str) -> Iterator[list[str]]:
+    """按 MODEL/ENDMDL 把 vina 多模型输出切成逐个构象的行块(含 MODEL/ENDMDL 行)。"""
+    current: list[str] | None = None
     with open(out_pdbqt, encoding="utf-8", errors="replace") as f:
         for line in f:
             if line.startswith("MODEL"):
                 current = [line]
             elif line.startswith("ENDMDL") and current is not None:
                 current.append(line)
-                blocks.append(current)
+                yield current
                 current = None
             elif current is not None:
                 current.append(line)
+
+
+def _split_models_python(out_pdbqt: str, out_dir: str) -> list[str]:
+    """内置方式:按构象把 vina 多模型输出逐个拆成独立文件(拆分工具不可用时的备用方案)。"""
+    stem = os.path.splitext(os.path.basename(out_pdbqt))[0]
     files = []
-    for i, block in enumerate(blocks, 1):
+    for i, block in enumerate(_iter_vina_models(out_pdbqt), 1):
         path = os.path.join(out_dir, f"{stem}_{i}.pdbqt")
         with open(path, "w", encoding="utf-8") as f:
             f.write("".join(block))
@@ -440,20 +433,17 @@ def parse_vina_scores(out_pdbqt: str) -> pd.DataFrame:
     无可解析结果时返回空表。
     """
     modes = []
-    current = None
-    with open(out_pdbqt, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if line.startswith("MODEL"):
-                current = {}
-            elif line.startswith("REMARK VINA RESULT") and current is not None:
+    for block in _iter_vina_models(out_pdbqt):
+        info: dict = {}
+        for line in block:
+            if line.startswith("REMARK VINA RESULT"):
                 parts = line.split()
                 if len(parts) >= 5:
-                    current["affinity"] = float(parts[3])
-                    current["rmsd_lb"] = float(parts[4])
-                    current["rmsd_ub"] = float(parts[5]) if len(parts) > 5 else None
-            elif line.startswith("ENDMDL") and current:
-                modes.append(current)
-                current = None
+                    info["affinity"] = float(parts[3])
+                    info["rmsd_lb"] = float(parts[4])
+                    info["rmsd_ub"] = float(parts[5]) if len(parts) > 5 else None
+        if info:  # 与原逻辑一致:没有打分行的构象不计入
+            modes.append(info)
     df = pd.DataFrame(modes)
     if df.empty:
         return pd.DataFrame(columns=["mode", "affinity", "rmsd_lb", "rmsd_ub"])

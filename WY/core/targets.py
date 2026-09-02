@@ -5,11 +5,74 @@ import os
 
 import pandas as pd
 
+from .caching import open_csv_cache, save_csv_cache
 from .chembl import fetch_drug_targets_chembl
 from .disgenet import fetch_disease_targets_disgenet
 from .dgidb import fetch_drug_targets_dgidb
 from .opentargets import get_disease_targets
 from .text_utils import safe_name
+
+
+def _max_score_map(df: pd.DataFrame, score_col: str) -> dict[str, float]:
+    """按基因符号分组取分数最大值；符号统一大写，分数统一转数值（非数值置空）。"""
+    if df.empty or score_col not in df.columns:
+        return {}
+    tmp = df.dropna(subset=["approvedSymbol"]).copy()
+    tmp["approvedSymbol"] = tmp["approvedSymbol"].str.upper()
+    tmp[score_col] = pd.to_numeric(tmp[score_col], errors="coerce")
+    return tmp.groupby("approvedSymbol")[score_col].max().to_dict()
+
+
+def _merge_source_pair(
+    name: str,
+    df_a: pd.DataFrame,
+    df_b: pd.DataFrame,
+    *,
+    cache_path: str,
+    kind: str,
+    src_a: str,
+    src_b: str,
+    score_a: tuple[str, str],
+    score_b: tuple[str, str],
+    sources_desc: tuple[str, str],
+) -> pd.DataFrame:
+    """两个数据源的靶点按基因符号取并集去重，并保留各源分数最大值。
+
+    kind 为 "drug"/"disease"，用于日志；src_a/src_b 为来源标记列名；
+    score_a/score_b 为 (输出列名, 源分数列名)；两源都没有数据时返回空表。
+    """
+    genes_a = set(df_a["approvedSymbol"].dropna().str.upper()) if not df_a.empty else set()
+    genes_b = set(df_b["approvedSymbol"].dropna().str.upper()) if not df_b.empty else set()
+    all_genes = sorted(genes_a | genes_b)
+    if not all_genes:
+        logging.warning("No %s targets from either source for '%s'", kind, name)
+        return pd.DataFrame()
+
+    col_a, raw_a = score_a
+    col_b, raw_b = score_b
+    map_a = _max_score_map(df_a, raw_a)
+    map_b = _max_score_map(df_b, raw_b)
+
+    records: list[dict] = []
+    for g in all_genes:
+        in_a = g in genes_a
+        in_b = g in genes_b
+        records.append({
+            "approvedSymbol": g,
+            src_a: int(in_a),
+            src_b: int(in_b),
+            "source_count": int(in_a) + int(in_b),
+            col_a: map_a.get(g),
+            col_b: map_b.get(g),
+        })
+
+    merged = pd.DataFrame(records)
+    save_csv_cache(merged, cache_path, skip_empty=False)
+    logging.info(
+        "Merged %s '%s': %d targets (%s %d, %s %d)",
+        kind, name, len(merged), sources_desc[0], len(genes_a), sources_desc[1], len(genes_b),
+    )
+    return merged
 
 
 def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
@@ -21,58 +84,21 @@ def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
     """
     import config
 
-    os.makedirs(config.MERGED_CACHE_DIR, exist_ok=True)
-    merged_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_drug_{safe_name(drug_name)}.csv")
-    if os.path.exists(merged_path):
-        logging.info("Loading cached merged drug targets for '%s'", drug_name)
-        return pd.read_csv(merged_path)
+    cache_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_drug_{safe_name(drug_name)}.csv")
+    cached = open_csv_cache(cache_path, label=f"merged drug targets for '{drug_name}'")
+    if cached is not None:
+        return cached
 
     chmbl_df, _ = fetch_drug_targets_chembl(drug_name)
     dgidb_df = fetch_drug_targets_dgidb(drug_name)
-
-    chmbl_genes = set(chmbl_df["approvedSymbol"].dropna().str.upper()) if not chmbl_df.empty else set()
-    dgidb_genes = set(dgidb_df["approvedSymbol"].dropna().str.upper()) if not dgidb_df.empty else set()
-
-    all_genes = sorted(chmbl_genes | dgidb_genes)
-    if not all_genes:
-        logging.warning("No drug targets from either source for '%s'", drug_name)
-        return pd.DataFrame()
-
-    # 同一基因有多条记录时，分数取最大值
-    chmbl_score: dict[str, float] = {}
-    if not chmbl_df.empty and "pchembl_value" in chmbl_df.columns:
-        tmp = chmbl_df.dropna(subset=["approvedSymbol"]).copy()
-        tmp["approvedSymbol"] = tmp["approvedSymbol"].str.upper()
-        tmp["pchembl_value"] = pd.to_numeric(tmp["pchembl_value"], errors="coerce")
-        chmbl_score = tmp.groupby("approvedSymbol")["pchembl_value"].max().to_dict()
-
-    dgidb_score: dict[str, float] = {}
-    if not dgidb_df.empty and "interaction_score" in dgidb_df.columns:
-        tmp = dgidb_df.dropna(subset=["approvedSymbol"]).copy()
-        tmp["approvedSymbol"] = tmp["approvedSymbol"].str.upper()
-        tmp["interaction_score"] = pd.to_numeric(tmp["interaction_score"], errors="coerce")
-        dgidb_score = tmp.groupby("approvedSymbol")["interaction_score"].max().to_dict()
-
-    records: list[dict] = []
-    for g in all_genes:
-        in_chmbl = g in chmbl_genes
-        in_dgidb = g in dgidb_genes
-        records.append({
-            "approvedSymbol": g,
-            "source_chmbl": int(in_chmbl),
-            "source_dgidb": int(in_dgidb),
-            "source_count": int(in_chmbl) + int(in_dgidb),
-            "score_pchembl": chmbl_score.get(g),
-            "score_dgidb": dgidb_score.get(g),
-        })
-
-    merged = pd.DataFrame(records)
-    merged.to_csv(merged_path, index=False, encoding="utf-8-sig")
-    logging.info(
-        "Merged drug '%s': %d targets (ChEMBL %d, DGIdb %d)",
-        drug_name, len(merged), len(chmbl_genes), len(dgidb_genes),
+    return _merge_source_pair(
+        drug_name, chmbl_df, dgidb_df,
+        cache_path=cache_path, kind="drug",
+        src_a="source_chmbl", src_b="source_dgidb",
+        score_a=("score_pchembl", "pchembl_value"),
+        score_b=("score_dgidb", "interaction_score"),
+        sources_desc=("ChEMBL", "DGIdb"),
     )
-    return merged
 
 
 def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
@@ -84,56 +110,21 @@ def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
     """
     import config
 
-    os.makedirs(config.MERGED_CACHE_DIR, exist_ok=True)
-    merged_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_disease_{safe_name(disease_name)}.csv")
-    if os.path.exists(merged_path):
-        logging.info("Loading cached merged disease targets for '%s'", disease_name)
-        return pd.read_csv(merged_path)
+    cache_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_disease_{safe_name(disease_name)}.csv")
+    cached = open_csv_cache(cache_path, label=f"merged disease targets for '{disease_name}'")
+    if cached is not None:
+        return cached
 
     ot_df = get_disease_targets(disease_name)
     disgenet_df = fetch_disease_targets_disgenet(disease_name)
-
-    ot_genes = set(ot_df["approvedSymbol"].dropna().str.upper()) if not ot_df.empty else set()
-    disgenet_genes = set(disgenet_df["approvedSymbol"].dropna().str.upper()) if not disgenet_df.empty else set()
-
-    all_genes = sorted(ot_genes | disgenet_genes)
-    if not all_genes:
-        logging.warning("No disease targets from either source for '%s'", disease_name)
-        return pd.DataFrame()
-
-    ot_score: dict[str, float] = {}
-    if not ot_df.empty and "association_score" in ot_df.columns:
-        tmp = ot_df.dropna(subset=["approvedSymbol"]).copy()
-        tmp["approvedSymbol"] = tmp["approvedSymbol"].str.upper()
-        ot_score = tmp.groupby("approvedSymbol")["association_score"].max().to_dict()
-
-    disgenet_score: dict[str, float] = {}
-    if not disgenet_df.empty and "disgenet_score" in disgenet_df.columns:
-        tmp = disgenet_df.dropna(subset=["approvedSymbol"]).copy()
-        tmp["approvedSymbol"] = tmp["approvedSymbol"].str.upper()
-        tmp["disgenet_score"] = pd.to_numeric(tmp["disgenet_score"], errors="coerce")
-        disgenet_score = tmp.groupby("approvedSymbol")["disgenet_score"].max().to_dict()
-
-    records: list[dict] = []
-    for g in all_genes:
-        in_ot = g in ot_genes
-        in_dis = g in disgenet_genes
-        records.append({
-            "approvedSymbol": g,
-            "source_ot": int(in_ot),
-            "source_disgenet": int(in_dis),
-            "source_count": int(in_ot) + int(in_dis),
-            "score_ot": ot_score.get(g),
-            "score_disgenet": disgenet_score.get(g),
-        })
-
-    merged = pd.DataFrame(records)
-    merged.to_csv(merged_path, index=False, encoding="utf-8-sig")
-    logging.info(
-        "Merged disease '%s': %d targets (OpenTargets %d, DisGeNET %d)",
-        disease_name, len(merged), len(ot_genes), len(disgenet_genes),
+    return _merge_source_pair(
+        disease_name, ot_df, disgenet_df,
+        cache_path=cache_path, kind="disease",
+        src_a="source_ot", src_b="source_disgenet",
+        score_a=("score_ot", "association_score"),
+        score_b=("score_disgenet", "disgenet_score"),
+        sources_desc=("OpenTargets", "DisGeNET"),
     )
-    return merged
 
 
 def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> list[str]:

@@ -13,34 +13,21 @@ from core.docking import clamp_box, fetch_alphafold_receptor
 
 st.set_page_config(page_title=t("dock.page_title"), layout="wide")
 
-ENRICHMENT_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "Static", "data", "cache", "enrichment",
-)
-
-
-# ---------- 隐藏侧边栏,全屏显示页面 ----------
-st.markdown("""
-<style>
-    [data-testid="stSidebar"] {
-        display: none;
-    }
-    /* Star Management 按钮（#6347A1 底、#E0D8F2 字，与 Data Network 的 Data Management 一致） */
+# ---------- 隐藏侧边栏,全屏显示页面;Star Management 按钮(#6347A1 底、#E0D8F2 字) ----------
+Utils.hide_sidebar("""
     .st-key-star_mgmt_btn button {
         background-color: #6347A1;
         color: #E0D8F2;
         border: 1px solid #6347A1;
     }
-</style>
-""", unsafe_allow_html=True)
+""")
 
 st.title(t("dock.title"))
 st.caption(t("dock.caption"))
 
 col_back, col_star = st.columns([1, 1])
 with col_back:
-    if st.button(t("common.back_main"), key="back_btn"):
-        st.switch_page("App.py")
+    Utils.back_button()
 with col_star:
     if st.button(t("dock.star_mgmt"), key="star_mgmt_btn"):
         st.switch_page("pages/Star_Management.py")
@@ -336,7 +323,7 @@ else:
         # 选定文件后自动读取
         if sel_file and dock.get("enr_file") != sel_file:
             dock["enr_file"] = sel_file
-            df = pd.read_csv(os.path.join(ENRICHMENT_DIR, sel_file),
+            df = pd.read_csv(os.path.join(config.ENRICHMENT_CACHE_DIR, sel_file),
                              encoding="utf-8-sig", comment="#")
             dock["enrichment_genes"] = sorted(_genes_from_df(df))
             dock["hub_genes"] = []  # 没有 HUB 信息,只按富集基因筛选

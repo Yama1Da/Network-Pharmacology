@@ -7,35 +7,28 @@ import os
 import pandas as pd
 import requests
 
-from .caching import _is_cache_fresh, _read_cache_csv
+from .caching import open_csv_cache, save_csv_cache
+from .http_client import request_with_retry
 from .text_utils import safe_name
 
 
 def _string_post(endpoint: str, params: dict) -> requests.Response | None:
     """向 STRING 数据库发送请求,失败时返回 None。
 
-    如果提交的基因在 STRING 中一个都识别不出来,不算错误,按空结果处理。
+    如果提交的基因在 STRING 中一个都识别不出来(404),不算错误,按空结果处理,不重试。
     """
-    import time
     import config
 
     url = f"{config.STRING_BASE_URL}/{endpoint}"
-    for attempt in range(config.API_MAX_RETRIES):
-        try:
-            resp = requests.post(url, data=params, timeout=config.API_TIMEOUT)
-            if resp.status_code == 404:
-                logging.warning("STRING %s: 404 (no identifiers resolved)", endpoint)
-                return None
-            resp.raise_for_status()
-            return resp
-        except Exception:
-            logging.exception(
-                "STRING %s request failed (attempt %d/%d)",
-                endpoint, attempt + 1, config.API_MAX_RETRIES,
-            )
-            if attempt < config.API_MAX_RETRIES - 1:
-                time.sleep(config.API_RETRY_DELAY)
-    return None
+    resp = request_with_retry(
+        url, data=params, max_retries=config.API_MAX_RETRIES,
+        timeout=config.API_TIMEOUT, label=f"STRING {endpoint}",
+        no_retry_status=(404,),
+    )
+    if resp is not None and resp.status_code == 404:
+        logging.warning("STRING %s: 404 (no identifiers resolved)", endpoint)
+        return None
+    return resp
 
 
 def fetch_string_ppi(
@@ -65,7 +58,6 @@ def fetch_string_ppi(
     if len(genes) > config.STRING_QUERY_LIMIT:
         genes = genes[:config.STRING_QUERY_LIMIT]
 
-    os.makedirs(config.PPI_CACHE_DIR, exist_ok=True)
     # 缓存文件名由来源标识、置信度阈值、度数阈值拼成。
     # 相同参数组合固定同名,重新生成时直接覆盖旧文件。
     if label:
@@ -81,9 +73,9 @@ def fetch_string_ppi(
     cache_file = os.path.join(config.PPI_CACHE_DIR, name)
 
     # ---- 命中有效期内的缓存:直接读本地文件 ----
-    if _is_cache_fresh(cache_file):
-        logging.info("Loading cached STRING PPI for %d genes", len(genes))
-        return _read_cache_csv(cache_file)
+    cached = open_csv_cache(cache_file, fresh=True, label=f"STRING PPI for {len(genes)} genes")
+    if cached is not None:
+        return cached
 
     # ---- 第一步:把基因符号映射为 STRING 蛋白 ID ----
     id_resp = _string_post("get_string_ids", {
@@ -137,7 +129,7 @@ def fetch_string_ppi(
     df = df[[c for c in keep if c in df.columns]]
 
     # ---- 结果存入本地缓存 ----
-    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    save_csv_cache(df, cache_file)
     logging.info("STRING PPI for %d genes: %d edges cached", len(genes), len(df))
     return df
 
@@ -384,6 +376,25 @@ def save_ppi_results(
     return paths
 
 
+def _save_optional_csvs(directory: str, label: str,
+                        specs: tuple[tuple[str, str, pd.DataFrame | None], ...]) -> dict:
+    """把若干结果表追加保存到既有分析目录(<prefix>_data)。
+
+    specs 每项为 (结果键, 文件名, 表格)；约定:空表不落盘,避免产生无意义的空文件。
+    返回实际写出的文件路径,调用方会并入结果字典,打包下载时自动包含。
+    """
+    os.makedirs(directory, exist_ok=True)
+    paths: dict = {}
+    for key, name, df in specs:
+        if df is not None and not df.empty:
+            path = os.path.join(directory, name)
+            df.to_csv(path, index=False, encoding="utf-8-sig")
+            paths[key] = path
+    if paths:
+        logging.info("%s saved to %s (%d files)", label, directory, len(paths))
+    return paths
+
+
 def save_module_results(
     directory: str,
     prefix: str,
@@ -394,20 +405,12 @@ def save_module_results(
     把蛋白模块检测结果追加保存到既有分析目录(<prefix>_data)。
 
     包括模块汇总表({prefix}_modules.csv)和模块富集长表
-    ({prefix}_module_enrichment.csv)。约定:空表不落盘,避免产生无意义的空文件。
-    返回实际写出的文件路径,调用方会并入结果字典,打包下载时自动包含。
+    ({prefix}_module_enrichment.csv)。约定与 _save_optional_csvs 相同:空表不落盘。
     """
-    os.makedirs(directory, exist_ok=True)
-    paths: dict = {}
-    if summary_df is not None and not summary_df.empty:
-        paths["modules_csv"] = os.path.join(directory, f"{prefix}_modules.csv")
-        summary_df.to_csv(paths["modules_csv"], index=False, encoding="utf-8-sig")
-    if enrichment_df is not None and not enrichment_df.empty:
-        paths["module_enrichment_csv"] = os.path.join(directory, f"{prefix}_module_enrichment.csv")
-        enrichment_df.to_csv(paths["module_enrichment_csv"], index=False, encoding="utf-8-sig")
-    if paths:
-        logging.info("Module results saved to %s (%d files)", directory, len(paths))
-    return paths
+    return _save_optional_csvs(directory, "Module results", (
+        ("modules_csv", f"{prefix}_modules.csv", summary_df),
+        ("module_enrichment_csv", f"{prefix}_module_enrichment.csv", enrichment_df),
+    ))
 
 
 def save_gsea_results(
@@ -420,22 +423,12 @@ def save_gsea_results(
     把 GSEA prerank 结果追加保存到既有分析目录(<prefix>_data)。
 
     包括药物靶点排秩结果({prefix}_gsea_drug.csv)和疾病靶点排秩结果
-    ({prefix}_gsea_disease.csv)。约定与模块结果相同:空表不落盘。
-    返回实际写出的文件路径,调用方会并入结果字典,打包下载时自动包含。
+    ({prefix}_gsea_disease.csv)。约定同前:空表不落盘。
     """
-    os.makedirs(directory, exist_ok=True)
-    paths: dict = {}
-    for key, name, df in (
+    return _save_optional_csvs(directory, "GSEA results", (
         ("gsea_drug_csv", f"{prefix}_gsea_drug.csv", drug_df),
         ("gsea_disease_csv", f"{prefix}_gsea_disease.csv", disease_df),
-    ):
-        if df is not None and not df.empty:
-            path = os.path.join(directory, name)
-            df.to_csv(path, index=False, encoding="utf-8-sig")
-            paths[key] = path
-    if paths:
-        logging.info("GSEA results saved to %s (%d files)", directory, len(paths))
-    return paths
+    ))
 
 
 def save_rwr_results(
@@ -449,18 +442,8 @@ def save_rwr_results(
 
     包括以疾病靶点为种子的排序表({prefix}_rwr_disease_seeds.csv)和以药物
     靶点为种子的排序表({prefix}_rwr_drug_seeds.csv)。约定同前:空表不落盘。
-    返回实际写出的文件路径,调用方会并入结果字典,打包下载时自动包含。
     """
-    os.makedirs(directory, exist_ok=True)
-    paths: dict = {}
-    for key, name, df in (
+    return _save_optional_csvs(directory, "RWR results", (
         ("rwr_disease_csv", f"{prefix}_rwr_disease_seeds.csv", disease_df),
         ("rwr_drug_csv", f"{prefix}_rwr_drug_seeds.csv", drug_df),
-    ):
-        if df is not None and not df.empty:
-            path = os.path.join(directory, name)
-            df.to_csv(path, index=False, encoding="utf-8-sig")
-            paths[key] = path
-    if paths:
-        logging.info("RWR results saved to %s (%d files)", directory, len(paths))
-    return paths
+    ))
