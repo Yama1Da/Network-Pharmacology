@@ -570,7 +570,6 @@ def _normalize_enrichment_gsea(res2d: pd.DataFrame) -> pd.DataFrame:
 
 def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None) -> str:
     """GSEA 结果缓存路径：由基因排序与分数、基因集库、计算参数共同决定，相同输入命中同一缓存。"""
-    import hashlib
     import config
 
     gene_part = "\r".join(rnk["gene"].astype(str))

@@ -1,13 +1,12 @@
-"""Open Targets 数据源：按疾病或药物名称查询关联靶点。"""
+"""Open Targets 数据源：按疾病名称查询关联靶点。"""
 
 import logging
 import os
 
 import pandas as pd
-import requests
 import streamlit as st
 
-from .http_client import OPENTARGETS_API_URL, _opentargets_post
+from .http_client import _opentargets_post
 from .text_utils import _safe_round, safe_name
 
 
@@ -146,97 +145,3 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
         # 网络错误等异常统一在此兜底：记录日志并返回空表，不让页面崩溃
         logging.exception("get_disease_targets failed for '%s'", disease_name)
         return pd.DataFrame()
-
-
-def _search_drug(drug_name: str) -> str | None:
-    # 按药物名搜索，返回其 ChEMBL 编号；找不到时返回 None
-    query = """
-    query SearchDrug($queryString: String!) {
-        search(queryString: $queryString) {
-            hits {
-                id
-                entity
-            }
-        }
-    }
-    """
-    resp = requests.post(
-        OPENTARGETS_API_URL,
-        json={"query": query, "variables": {"queryString": drug_name.strip()}},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-    for hit in payload.get("data", {}).get("search", {}).get("hits", []):
-        if hit.get("entity") == "drug":
-            return hit["id"]
-    return None
-
-
-def fetch_drug_targets_opentargets(drug_name: str) -> tuple[pd.DataFrame, str | None]:
-    """
-    通过 Open Targets 查询药物的作用靶点：先按药物英文名找到其 ChEMBL 编号，
-    再取该药物作用机制对应的靶点基因。失败或找不到药物时返回空表。
-    """
-    try:
-        # 第一步：按药物名搜索，拿到 ChEMBL 编号
-        chembl_id = _search_drug(drug_name)
-        if chembl_id is None:
-            logging.warning("No drug found for '%s'", drug_name)
-            return pd.DataFrame(), None
-
-        # 第二步：查询该药物的作用机制，取靶点基因
-        query = """
-        query DrugTargets($chemblId: String!) {
-            drug(chemblId: $chemblId) {
-                id
-                name
-                mechanismsOfAction {
-                    rows {
-                        targets {
-                            id
-                            approvedSymbol
-                            approvedName
-                        }
-                    }
-                }
-            }
-        }
-        """
-        resp = requests.post(
-            OPENTARGETS_API_URL,
-            json={"query": query, "variables": {"chemblId": chembl_id}},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-
-        rows: list[dict] = []
-        for row in (
-            payload.get("data", {})
-            .get("drug", {})
-            .get("mechanismsOfAction", {})
-            .get("rows", [])
-        ):
-            for tgt in row.get("targets", []):
-                rows.append({
-                    "approvedSymbol": tgt.get("approvedSymbol"),
-                    "ensembl_id": tgt.get("id"),
-                    "approvedName": tgt.get("approvedName"),
-                })
-
-        df = pd.DataFrame(rows).drop_duplicates(subset=["ensembl_id"]).reset_index(drop=True)
-
-        # 保存到本地缓存
-        import config
-
-        cache_dir = config.DRUG_CACHE_DIR
-        os.makedirs(cache_dir, exist_ok=True)
-        csv_path = os.path.join(cache_dir, f"OpenTargets_{safe_name(drug_name)}.csv")
-        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-
-        return df, csv_path
-
-    except Exception:
-        logging.exception("fetch_drug_targets_opentargets failed for '%s'", drug_name)
-        return pd.DataFrame(), None

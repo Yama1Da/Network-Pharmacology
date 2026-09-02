@@ -15,8 +15,6 @@ DisGeNET_API_KEY = os.getenv("DisGeNET_API_KEY", "")
 # PPI网络路径
 # 固定版本的 STRING 地址,保证分析结果可复现
 STRING_BASE_URL = "https://version-12-0.string-db.org/api/json"
-# 非版本化地址,正式分析不建议使用
-STRING_URL = "https://string-db.org/api/json/network"
 # STRING 单次查询基因数上限(约 1000 个)
 STRING_QUERY_LIMIT = 1000
 # STRING 调用方标识(官方要求,避免被限流)
@@ -25,22 +23,6 @@ STRING_CALLER_IDENTITY = "NetworkPharmacologyPlatform"
 DisGeNET_URL = "https://api.disgenet.com/api/v1/gda/summary"
 # DGIdb 药物-基因交互数据源(无需密钥)
 DGIDB_GRAPHQL_URL = "https://dgidb.org/api/graphql"
-# 富集分析路径
-gProfiler_URL = "https://biit.cs.ut.ee/gprofiler/api/gost/profile/"
-# ChEMBL — 药物靶点主数据源
-ChEMBL_API_BASE_URL = "https://www.ebi.ac.uk/chembl/api/data"
-ChEMBL_MAX_ACTIVITIES = 1000
-# ======== 备选路径 =========
-# 疾病靶点替补路径
-OpenTargetsPlatform_URL = "https://api.platform.opentargets.org/api/v4/graphql"
-# 富集分析替补路径
-ENRICHR_ADD_URL = "https://maayanlab.cloud/Enrichr/addList"
-ENRICHR_QUERY_URL = "https://maayanlab.cloud/Enrichr/enrich"
-# ======== 其他路径 =========
-# RxNorm:把药物名称转成 RxCUI 编号
-RxNorm_URL = "https://rxnav.nlm.nih.gov/REST/rxcui.json"
-def RxNorm_PARAMS(drug_name: str) -> dict:
-    return {"idtype": "name", "name": drug_name}
 # ======== API 请求控制(数据源均为国外网站,设置较宽松) ========
 API_TIMEOUT = 60
 API_MAX_RETRIES = 5
@@ -119,8 +101,6 @@ ENRICHMENT_PVALUE = 0.05
 ENRICHMENT_SOURCES = ("GO:BP", "GO:MF", "GO:CC", "KEGG")
 # 每类富集展示条数上限
 ENRICHMENT_TOP_PER_SOURCE = 10
-# 药物-靶点关联打分阈值(Open Targets):0.7 以上视为可信
-DRUG_TARGET_SCORE = 0.7
 # 通路展示数量上限
 PATHWAY_DISPLAY_NUM = 30
 # 最小度数过滤:连接数不超过该值的节点不作为核心靶点(兜底过滤)
@@ -244,10 +224,6 @@ DOCKING_CPU = 4             # 并行 CPU 核数（--cpu）
 DOCKING_TIMEOUT = 600       # 单次对接超时(秒),超时视为失败
 DOCKING_SEED = 0            # vina 随机种子（--seed），固定可复现
 
-# 配体 3D 结构生成参数(根据 ChEMBL 的 SMILES 生成时使用)
-LIGAND_PH = 7.4             # 生成 3D 结构时的质子化 pH
-LIGAND_3D_SEED = 0          # 构象生成固定种子，保证确定性
-
 # 缓存与归档策略
 DOCKING_CACHE_TTL_DAYS = 7  # 加工后的中间文件(受体/配体 pdbqt 等)保留天数,超期自动清理
 DOCKING_RAW_TTL_DAYS = 1    # 原始/过程文件(SDF/PDB 等)保留天数,过期清理后可重新生成
@@ -258,7 +234,6 @@ DOCKING_MAX_VERSIONS = 3    # 同一药物-疾病组合的成果最多保留版�
 DOCKING_CACHE_DIR = os.path.join(CACHE_DIR, "docking")
 DOCKING_RECEPTOR_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "receptor")
 DOCKING_LIGAND_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "ligand")
-DOCKING_BOX_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "box")
 # 原始文件目录:原始 PDB/SDF,到期自动清理
 DOCKING_RAW_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "raw")
 

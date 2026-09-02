@@ -28,8 +28,6 @@ from core.enrichment import (
     fetch_enrichment_gsea_prerank,
 )
 from core.network_algorithms import (
-    _build_degree_bins,
-    _lcc_context,
     _multi_source_bfs,
     _proximity_zscore_from_context,
     build_sparse_adj,

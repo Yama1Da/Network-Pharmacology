@@ -2,7 +2,6 @@ import pandas as pd
 import streamlit as st
 import Utils
 from i18n import t, set_lang, get_lang
-import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
 

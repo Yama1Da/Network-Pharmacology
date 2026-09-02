@@ -1,6 +1,5 @@
 import os
 import streamlit as st
-import pandas as pd
 import Utils
 from i18n import t
 

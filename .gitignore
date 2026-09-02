@@ -16,3 +16,5 @@
 /WY/Static/log/
 /.venv/
 /WY/scripts/
+.idea/
+.reasonix/
