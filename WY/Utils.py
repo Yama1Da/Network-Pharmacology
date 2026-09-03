@@ -17,6 +17,7 @@ from core.disgenet import fetch_disease_targets_disgenet
 from core.docking import (
     clean_docking_cache,
     fetch_ligand_sdf_3d,
+    fetch_receptor_candidates_batch,
     fetch_receptor_pdb_candidates,
     infer_box_from_cofactor,
     parse_vina_scores,

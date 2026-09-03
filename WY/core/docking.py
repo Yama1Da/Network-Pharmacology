@@ -253,6 +253,166 @@ def prepare_ligand_pdbqt(sdf_path: str, out_path: str | None = None) -> str:
 # -------------------- 受体链 --------------------
 
 
+# RCSB 批量检索:逐基因搜索(召回与旧版一致)按 4 路并发执行,元数据阶段
+# 合并成少数几次 GraphQL 批量请求(实测把每基因最多 20 次元数据请求压到
+# 全局约 1 次/100 个结构)。曾尝试把多个基因合并进一次 OR 搜索,实测相关度
+# 排序会把部分基因的结果挤出截断上限(如 TP53 完全丢失),故不采用。
+_RCSB_GRAPHQL_CHUNK = 100
+_RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
+_RCSB_GRAPHQL_URL = "https://data.rcsb.org/graphql"
+_RCSB_BATCH_WORKERS = 4
+_RCSB_HEADERS = {"User-Agent": "NetworkPharmacologyPlatform/1.0"}
+
+_RCSB_ENTRY_QUERY = """
+query ($ids: [String!]!) {
+  entries(entry_ids: $ids) {
+    rcsb_id
+    exptl { method }
+    struct { title }
+    rcsb_entry_info { resolution_combined }
+  }
+}
+"""
+
+
+def _rcsb_search_entry_ids(gene_symbol: str, max_hits: int) -> list[str]:
+    """在 RCSB 中用基因符号精确检索结构,返回 entry 编号列表(最多 max_hits 条)。
+
+    与旧的逐基因检索完全同一查询,保证召回一致;失败向上抛错。
+    """
+    import config
+    from .http_client import request_with_retry
+
+    query = {
+        "query": {
+            "type": "terminal",
+            "service": "full_text",
+            "parameters": {"value": f'"{gene_symbol.strip().upper()}"'},
+        },
+        "return_type": "entry",
+        "request_options": {"return_all_hits": True},
+    }
+    resp = request_with_retry(
+        _RCSB_SEARCH_URL, json=query,
+        max_retries=config.RCSB_SEARCH_MAX_RETRIES, timeout=config.API_TIMEOUT,
+        label=f"RCSB search for {gene_symbol}", throttle_key="rcsb_search",
+        headers=_RCSB_HEADERS, raise_on_exhausted=True, use_cache=True,
+    )
+    return [hit.get("identifier", "") for hit in resp.json().get("result_set", [])
+            if hit.get("identifier")][:max_hits]
+
+
+def _rcsb_graphql_entries(entry_ids: list[str]) -> dict[str, dict]:
+    """按 entry 编号批量取分辨率/实验方法/标题元数据;返回 {entry号: 信息字典}。
+
+    一次请求即可覆盖最多 100 个 entry;GraphQL 层面的软错误记录日志后
+    按缺数据处理,不中断整体。
+    """
+    import config
+    from .http_client import request_with_retry
+
+    out: dict[str, dict] = {}
+    for start in range(0, len(entry_ids), _RCSB_GRAPHQL_CHUNK):
+        chunk = entry_ids[start:start + _RCSB_GRAPHQL_CHUNK]
+        resp = request_with_retry(
+            _RCSB_GRAPHQL_URL, json={"query": _RCSB_ENTRY_QUERY,
+                                     "variables": {"ids": chunk}},
+            max_retries=config.RCSB_SEARCH_MAX_RETRIES, timeout=config.API_TIMEOUT,
+            label=f"RCSB GraphQL batch ({len(chunk)} entries)", throttle_key="rcsb_data",
+            headers=_RCSB_HEADERS, raise_on_exhausted=True, use_cache=True,
+        )
+        payload = resp.json()
+        if payload.get("errors"):
+            logging.warning("RCSB GraphQL errors on %d entries: %s",
+                            len(chunk), payload["errors"][:1])
+        for e in payload.get("data", {}).get("entries") or []:
+            eid = e and e.get("rcsb_id")
+            if not eid:
+                continue
+            res = (e.get("rcsb_entry_info") or {}).get("resolution_combined")
+            res = res[0] if isinstance(res, list) and res else res
+            out[eid] = {
+                "resolution": res,
+                "method": ", ".join(m.get("method", "") for m in e.get("exptl") or []),
+                "title": (e.get("struct") or {}).get("title", "") or "",
+            }
+    return out
+
+
+def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
+                                    allow_alphafold: bool = False, taxon: int = 9606,
+                                    progress_cb=None) -> dict[str, pd.DataFrame]:
+    """批量查询多个基因的 PDB 候选结构,返回 {基因符号: 候选表}。
+
+    搜索阶段与旧的逐基因检索完全同一查询(保证召回一致),但按 4 路并发执行;
+    元数据阶段合并为 GraphQL 批量请求,总请求数与基因数解耦。
+    查无实验结构的基因在 allow_alphafold 开启时追加 AlphaFold 预测结构兜底。
+    progress_cb(0~1) 可选,用于页面进度条。
+    """
+    import config
+
+    uniq = sorted({g.strip().upper() for g in genes if g and g.strip()})
+    empty = pd.DataFrame(columns=["pdb_id", "resolution", "method", "title", "source"])
+    results: dict[str, pd.DataFrame] = {g: empty.copy() for g in uniq}
+    if not uniq:
+        return results
+
+    # 1) 并发逐基因搜索(与旧版同一查询,召回一致)
+    from concurrent.futures import ThreadPoolExecutor
+
+    gene_ids: dict[str, list[str]] = {}
+
+    def _search(g: str) -> tuple[str, list[str]]:
+        return g, _rcsb_search_entry_ids(g, max_hits)
+
+    with ThreadPoolExecutor(max_workers=_RCSB_BATCH_WORKERS,
+                            thread_name_prefix="rcsb-search") as pool:
+        for i, (g, ids) in enumerate(pool.map(_search, uniq)):
+            gene_ids[g] = ids
+            if progress_cb:
+                progress_cb((i + 1) / len(uniq) * 0.7)
+
+    # 2) 所有命中 entry 去重后,合并为 GraphQL 批量元数据请求
+    all_ids = sorted({eid for ids in gene_ids.values() for eid in ids})
+    meta: dict[str, dict] = {}
+    gql_chunks = [all_ids[i:i + _RCSB_GRAPHQL_CHUNK]
+                  for i in range(0, len(all_ids), _RCSB_GRAPHQL_CHUNK)]
+    for idx, chunk in enumerate(gql_chunks):
+        meta.update(_rcsb_graphql_entries(chunk))
+        if progress_cb:
+            progress_cb(0.7 + (idx + 1) / max(len(gql_chunks), 1) * 0.3)
+
+    # 3) 按基因组装结果表(与旧版字段完全一致;个别 entry 元数据缺失按缺信息展示)
+    for g, ids in gene_ids.items():
+        rows = [{"pdb_id": eid,
+                 "resolution": meta.get(eid, {}).get("resolution"),
+                 "method": meta.get(eid, {}).get("method", ""),
+                 "title": meta.get(eid, {}).get("title", "")}
+                for eid in ids]
+        if rows:
+            results[g] = pd.DataFrame(rows)
+
+    # 4) 无实验结构且开启开关时,逐基因追加 AlphaFold 预测结构兜底
+    if allow_alphafold and config.ALPHAFOLD_ENABLED:
+        for g in uniq:
+            if not results[g].empty:
+                continue
+            try:
+                acc = fetch_uniprot_accession(g, taxon=taxon)
+                if acc:
+                    results[g] = pd.DataFrame([{
+                        "pdb_id": f"AFDB:{acc}",
+                        "resolution": None,
+                        "method": f"AlphaFold predicted ({config.ALPHAFOLD_MODEL_VERSION})",
+                        "title": f"AlphaFold {config.ALPHAFOLD_MODEL_VERSION} monomer model for {g}",
+                        "source": "alphafold",
+                    }])
+            except Exception:
+                # 预测结构查询失败不影响空表正常返回
+                logging.exception("AlphaFold fallback lookup failed for gene %s", g)
+    return results
+
+
 def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
                                   allow_alphafold: bool = False,
                                   taxon: int = 9606) -> pd.DataFrame:

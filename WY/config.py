@@ -291,7 +291,7 @@ RCSB_DATA_MAX_WORKERS = 4
 # 只对需要连续快速请求的站点做限速,未列出的数据源请求量小,不做额外限制。
 HOST_MIN_REQUEST_INTERVAL = {
     "chembl": 0.2,        # ChEMBL 批量分页:保持原 API_REQUEST_DELAY 的礼貌间隔
-    "rcsb_search": 1.0,   # RCSB 批量检索:逐基因连发,容易触发限流
+    "rcsb_search": 0.3,   # RCSB 批量检索:约 3 次/秒,配合 4 路并发仍属礼貌范围
     "rcsb_data": 0.25,    # RCSB 元数据下载
     "ebi_proteins": 1.1,  # EBI 官方建议 ≤1 次/秒（UniProt 基因查询）
     "alphafold": 1.1,     # AlphaFold 文件下载（EBI 同域）
