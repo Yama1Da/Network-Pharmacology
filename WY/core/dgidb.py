@@ -4,8 +4,9 @@ import logging
 import os
 
 import pandas as pd
-import requests
 
+from .caching import open_csv_cache, save_csv_cache
+from .http_client import request_with_retry
 from .text_utils import safe_name
 
 
@@ -14,17 +15,14 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
 
     失败或无数据时返回空表；结果存为本地 CSV，已有缓存则直接复用。
     """
-    import time
     import config
 
-    cache_dir = config.DRUG_CACHE_DIR
-    os.makedirs(cache_dir, exist_ok=True)
-    csv_path = os.path.join(cache_dir, f"DGIdb_{safe_name(drug_name)}.csv")
+    csv_path = os.path.join(config.DRUG_CACHE_DIR, f"DGIdb_{safe_name(drug_name)}.csv")
 
     # 已有缓存则直接读取本地文件
-    if os.path.exists(csv_path):
-        logging.info("Loading cached DGIdb targets for '%s'", drug_name)
-        return pd.read_csv(csv_path)
+    cached = open_csv_cache(csv_path, label=f"DGIdb targets for '{drug_name}'")
+    if cached is not None:
+        return cached
 
     query = """
     query getInteractionsByDrug($names: [String!]) {
@@ -46,24 +44,13 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
 
     try:
         # 网络偶发失败时做少量重试，避免一次失败就返回空表
-        payload = None
-        for attempt in range(config.LIGHT_API_MAX_RETRIES):
-            try:
-                resp = requests.post(
-                    config.DGIDB_GRAPHQL_URL,
-                    json={"query": query, "variables": {"names": [drug_name.strip()]}},
-                    timeout=30,
-                )
-                resp.raise_for_status()
-                payload = resp.json()
-                break
-            except Exception:
-                logging.exception(
-                    "DGIdb request failed (attempt %d/%d)",
-                    attempt + 1, config.LIGHT_API_MAX_RETRIES,
-                )
-                if attempt < config.LIGHT_API_MAX_RETRIES - 1:
-                    time.sleep(config.API_RETRY_DELAY)
+        resp = request_with_retry(
+            config.DGIDB_GRAPHQL_URL,
+            json={"query": query, "variables": {"names": [drug_name.strip()]}},
+            max_retries=config.LIGHT_API_MAX_RETRIES, timeout=30,
+            label="DGIdb request", use_cache=True,
+        )
+        payload = resp.json() if resp is not None else None
 
         if payload is None:
             return pd.DataFrame()
@@ -105,7 +92,7 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
             .drop_duplicates(subset=["approvedSymbol", "drug_name"])
             .reset_index(drop=True)
         )
-        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        save_csv_cache(df, csv_path)
         logging.info("DGIdb '%s': %d targets fetched", drug_name, len(df))
         return df
 

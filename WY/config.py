@@ -1,6 +1,5 @@
 # 全局配置文件
 import os
-import shutil
 from dotenv import load_dotenv
 
 # 项目根目录,即 config.py 所在文件夹
@@ -41,6 +40,8 @@ DISGENET_RATE_LIMIT_MAX_WAIT = 60
 GPROFILER_CIRCUIT_TTL_SECONDS = 1800
 # 缓存有效期(秒):PPI/富集缓存超过该时长即过期,下次分析重新请求。
 CACHE_TTL_SECONDS = 6 * 3600
+# 数据源 HTTP 响应缓存有效期(小时):DGIdb/Open Targets/DisGeNET 共用,与 ChEMBL 库默认一致
+HTTP_CACHE_TTL_HOURS = 24
 # ======== 文件存储路径配置 =========
 
 # cache目录 — 储存 API 返回的原始数据
@@ -66,6 +67,9 @@ MERGED_CACHE_DIR = os.path.join(CACHE_DIR, "merged")
 
 # DisGeNET 限流状态文件(保存请求时间戳,页面刷新后仍生效)
 DISGENET_RATE_LIMIT_STATE_FILE = os.path.join(CACHE_DIR, "disgenet_rate_limit.json")
+
+# 数据源 HTTP 响应缓存(DGIdb/Open Targets/DisGeNET)的 sqlite 落盘位置
+HTTP_CACHE_FILE = os.path.join(CACHE_DIR, "http_cache.sqlite")
 
 # ======== 日志配置 ========
 # 日志目录:每天一个日志文件 app_YYYY-MM-DD.log
@@ -186,36 +190,47 @@ RWR_NULL_SEED = 0
 RWR_CACHE_DIR = os.path.join(CACHE_DIR, "rwr")
 
 # ======== 分子对接配置（AutoDock Vina v1.2.7） ========
-# Vina 程序目录自动探测:优先环境变量 VINA_DIR,其次 PATH;换电脑只需设置其中之一。
-# 都找不到时用下面的兜底目录(运行对接时会报错提示设置 VINA_DIR)。
-default_dir = r"D:\PythonCode\vina"
-def _find_vina_dir() -> str:
-    """探测 Vina 程序所在目录(Windows)。
+# Vina 程序目录自动探测:优先环境变量 VINA_DIR(可写入 API.env),其次 PATH;换电脑只需设置其中之一。
+# 都找不到时 VINA_DIR 为空串,运行对接时会报错提示设置 VINA_DIR。
+def _find_exe(vina_dir: str, prefix: str, exclude: str = "") -> str:
+    """目录里按文件名前缀找可执行文件(不限定平台与版本文件名)。
 
-    VINA_DIR 或 PATH 里填目录即可(也可填 exe 全路径)。
+    多个匹配时取字典序最后一个;exclude 用于主程序排除 vina_split;找不到返回空串。
     """
-    exe = "vina_1.2.7_win.exe"
+    if not vina_dir or not os.path.isdir(vina_dir):
+        return ""
+    names = sorted(
+        f for f in os.listdir(vina_dir)
+        if f.lower().startswith(prefix)
+        and not (exclude and f.lower().startswith(exclude))
+        and os.path.isfile(os.path.join(vina_dir, f))
+    )
+    return os.path.join(vina_dir, names[-1]) if names else ""
 
-    # 1) 环境变量优先
+
+def _find_vina_dir() -> str:
+    """探测 Vina 程序所在目录(跨平台):VINA_DIR 优先,其次 PATH。
+
+    VINA_DIR 或 PATH 里填目录即可(也可填可执行文件全路径)。
+    """
     env_dir = os.environ.get("VINA_DIR")
     if env_dir:
-        if os.path.isfile(env_dir):                                   # 填的是 exe 全路径
+        if os.path.isfile(env_dir):                                   # 填的是可执行文件全路径
             return os.path.dirname(env_dir)
-        if os.path.isfile(os.path.join(env_dir, exe)):                # 填的是目录
+        if _find_exe(env_dir, "vina", exclude="vina_split"):          # 填的是目录
             return env_dir
 
-    # 2) PATH 中能找到（vina 已加入 PATH）
-    for name in (exe, "vina"):
-        found = shutil.which(name)
-        if found:
-            return os.path.dirname(found)
+    # vina 所在目录已加入 PATH(按 vina* 前缀匹配,兼容各平台发布文件名)
+    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if _find_exe(path_dir.strip().strip('"'), "vina", exclude="vina_split"):
+            return path_dir.strip().strip('"')
 
-    return default_dir  # 找不到时,运行对接会报错提示设置 VINA_DIR
+    return ""  # 找不到时,运行对接会报错提示设置 VINA_DIR
 
 
 VINA_DIR = _find_vina_dir()
-VINA_EXE = os.path.join(VINA_DIR, "vina_1.2.7_win.exe")
-VINA_SPLIT_EXE = os.path.join(VINA_DIR, "vina_split_1.2.7_win.exe")
+VINA_EXE = _find_exe(VINA_DIR, "vina", exclude="vina_split")
+VINA_SPLIT_EXE = _find_exe(VINA_DIR, "vina_split")  # 缺失时 docking 自动改用内置拆分
 
 # 对接算法参数
 EXHAUSTIVENESS = 8          # 搜索深度（越大越充分，耗时越长）
