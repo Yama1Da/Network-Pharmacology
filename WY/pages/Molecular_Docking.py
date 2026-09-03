@@ -14,9 +14,12 @@ from core.docking import (
     download_pdb,
     extract_model,
     fetch_alphafold_receptor,
+    interactive_3d_html,
     parse_hetatm,
+    pose_pdbqt_to_pdb,
     residues_in_box,
     resolve_cid,
+    save_interactive_3d_html,
     smiles_to_sdf_3d,
 )
 
@@ -175,13 +178,10 @@ def _render_3d(pdb_path: str, pose_pdbqt: str) -> None:
     except ImportError:
         st.info(t("dock.py3dmol_pose"))
         return
-    from openbabel import openbabel as ob
-
     pose_pdb = os.path.join(os.path.dirname(pose_pdbqt), "pose_view.pdb")
-    conv = ob.OBConversion()
-    conv.SetInAndOutFormats("pdbqt", "pdb")
-    mol = ob.OBMol()
-    if not (conv.ReadFile(mol, pose_pdbqt) and conv.WriteFile(mol, pose_pdb)):
+    try:
+        pose_pdbqt_to_pdb(pose_pdbqt, pose_pdb)
+    except Exception:
         st.warning(t("dock.pose_pdb_failed"))
         return
     with open(pdb_path, encoding="utf-8", errors="replace") as f:
@@ -200,6 +200,43 @@ def _render_3d(pdb_path: str, pose_pdbqt: str) -> None:
     except AttributeError:
         html = view.write()
     st.components.v1.html(html, height=540)
+
+
+def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel) -> None:
+    """「保存交互式 3D 视图」:把受体与当前构象打包成单个自包含 HTML(内嵌 3Dmol.js 与坐标),
+    可下载或存入结果目录;之后双击即可在任意浏览器打开,可拖动旋转,离线可用。"""
+    gene = Utils.safe_name(str(dock.get("gene") or "target"))
+    pose_n = int(pose_sel)
+    caption = t("dock.save3d_caption", gene=dock.get("gene") or "?", pose=pose_n,
+                drug=dock.get("drug") or "-", disease=dock.get("disease") or "-")
+    try:
+        html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption)
+    except Exception as exc:
+        st.warning(t("dock.save3d_failed", exc=exc))
+        return
+    file_name = f"3d_view_{gene}_pose{pose_n}.html"
+
+    def _download(col) -> None:
+        with col:
+            st.download_button(t("dock.save3d_dl"), data=html_text.encode("utf-8"),
+                               file_name=file_name, mime="text/html", key="save3d_dl")
+
+    if dock.get("result_dir"):
+        col_arc, col_dl = st.columns(2)
+        with col_arc:
+            if st.button(t("dock.save3d_btn"), key="save3d_btn"):
+                try:
+                    out_path, offline_ok = save_interactive_3d_html(
+                        pdb_path, pose_pdbqt,
+                        os.path.join(dock["result_dir"], file_name), caption)
+                    key = "dock.save3d_ok" if offline_ok else "dock.save3d_ok_online"
+                    st.success(t(key, path=out_path))
+                except Exception as exc:
+                    st.error(t("dock.save3d_failed", exc=exc))
+        _download(col_dl)
+    else:
+        # 尚未归档时没有结果目录可存,只提供直接下载
+        _download(st.container())
 
 
 @st.cache_data(ttl=3600)
@@ -685,6 +722,7 @@ if dock.get("result"):
                                          f"pose_{int(pose_sel)}.pdbqt")
                 extract_model(dock["result"]["out"], int(pose_sel), pose_path)
                 _render_3d(dock["pdb_path"], pose_path)
+                _save_3d_html_ui(dock, dock["pdb_path"], pose_path, pose_sel)
             except Exception as exc:
                 st.warning(t("dock.preview3d_failed", exc=exc))
 else:
