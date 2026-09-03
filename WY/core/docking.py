@@ -833,3 +833,144 @@ def clamp_box(box: dict, max_size: float) -> dict:
     """
     size = tuple(round(min(float(v), float(max_size)), 4) for v in box["size"])
     return {"center": tuple(round(float(v), 4) for v in box["center"]), "size": size}
+
+
+# ---------- 交互式 3D 视图导出 ----------
+
+# 3Dmol.js 库的下载地址:官方源在前,jsdelivr 镜像兜底
+_3DMOL_JS_URLS = (
+    "https://3dmol.org/build/3Dmol-min.js",
+    "https://cdn.jsdelivr.net/npm/3dmol@2/build/3Dmol-min.js",
+)
+
+_3D_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<style>
+  body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; }
+  #cap { padding: 8px 14px; background: #f5f7fa; border-bottom: 1px solid #ddd;
+         font-size: 13px; color: #333; }
+  #viewer { width: 100vw; height: calc(100vh - 36px); position: relative; }
+</style>
+__LIB__
+</head>
+<body>
+<div id="cap">__CAPTION__</div>
+<div id="viewer"></div>
+<script>
+(function () {
+  var receptor = __RECEPTOR__;
+  var ligand = __LIGAND__;
+  var viewer = $3Dmol.createViewer("viewer", { backgroundColor: "white" });
+  viewer.addModel(receptor, "pdb");
+  viewer.setStyle({ model: 0 }, { cartoon: { color: "spectrum" } });
+  viewer.addModel(ligand, "pdb");
+  viewer.setStyle({ model: 1 }, { stick: { colorscheme: "greenCarbon" } });
+  viewer.zoomTo();
+  viewer.render();
+  document.getElementById("viewer").ondblclick = function () {
+    viewer.zoomTo();
+    viewer.render();
+  };
+})();
+</script>
+</body>
+</html>
+"""
+
+
+def _load_3dmol_js() -> str | None:
+    """读取 3Dmol.js 库源码:本地有缓存直接用,没有则下载一次并长期缓存。
+
+    两个下载地址都失败时返回 None,HTML 将改用在线引用(打开时需联网)。
+    """
+    import config
+
+    cache_path = os.path.join(config.DOCKING_CACHE_DIR, "3Dmol-min.js")
+    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 100_000:
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            logging.exception("cached 3Dmol.js unreadable, re-downloading")
+    for url in _3DMOL_JS_URLS:
+        try:
+            resp = requests.get(url, timeout=config.API_TIMEOUT,
+                                headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"})
+            resp.raise_for_status()
+            if "$3Dmol" not in resp.text or "</script" in resp.text:
+                raise RuntimeError(f"unexpected content from {url}")
+            os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                f.write(resp.text)
+            logging.info("Cached 3Dmol.js (%d KB) from %s", len(resp.text) // 1024, url)
+            return resp.text
+        except Exception:
+            logging.exception("3Dmol.js download failed: %s", url)
+    return None
+
+
+def pose_pdbqt_to_pdb(pose_pdbqt: str, out_path: str) -> str:
+    """把对接构象从 pdbqt 转成通用 PDB 格式(供各查看器显示);失败时抛 RuntimeError。"""
+    from openbabel import openbabel as ob
+
+    conv = ob.OBConversion()
+    conv.SetInAndOutFormats("pdbqt", "pdb")
+    mol = ob.OBMol()
+    if not (conv.ReadFile(mol, pose_pdbqt) and conv.WriteFile(mol, out_path)):
+        raise RuntimeError(f"pose pdbqt -> pdb conversion failed: {pose_pdbqt}")
+    return out_path
+
+
+def build_interactive_3d_html(receptor_pdb: str, ligand_pdb: str, caption: str = "",
+                              lib_js: str | None = None) -> tuple[str, bool]:
+    """生成自包含的交互式 3D 视图 HTML,样式与页面内预览一致(受体卡通彩虹色、配体绿色棍状)。
+
+    lib_js 传入 3Dmol.js 源码时内嵌进文件,双击即可离线打开;
+    传 None 时改用在线引用,打开时需联网。返回 (html 文本, 是否离线可用)。
+    """
+    import html as _html
+    import json
+
+    if lib_js and "</script" not in lib_js:
+        lib_tag = f"<script>\n{lib_js}\n</script>"
+        offline_ok = True
+    else:
+        lib_tag = f'<script src="{_3DMOL_JS_URLS[0]}"></script>'
+        offline_ok = False
+    caption = _html.escape(caption)
+    out = (_3D_HTML_TEMPLATE
+           .replace("__LIB__", lib_tag)
+           .replace("__TITLE__", caption or "3D view")
+           .replace("__CAPTION__", caption)
+           .replace("__RECEPTOR__", json.dumps(receptor_pdb))
+           .replace("__LIGAND__", json.dumps(ligand_pdb)))
+    return out, offline_ok
+
+
+def interactive_3d_html(pdb_path: str, pose_pdbqt: str, caption: str = "") -> tuple[str, bool]:
+    """由受体 PDB 与所选构象 pdbqt 生成可保存的交互式 3D 视图 HTML。"""
+    pose_pdb = os.path.join(os.path.dirname(pose_pdbqt), "pose_view.pdb")
+    pose_pdbqt_to_pdb(pose_pdbqt, pose_pdb)
+    with open(pdb_path, encoding="utf-8", errors="replace") as f:
+        receptor_pdb = f.read()
+    with open(pose_pdb, encoding="utf-8") as f:
+        ligand_pdb = f.read()
+    return build_interactive_3d_html(receptor_pdb, ligand_pdb, caption,
+                                     lib_js=_load_3dmol_js())
+
+
+def save_interactive_3d_html(pdb_path: str, pose_pdbqt: str, out_path: str,
+                             caption: str = "") -> tuple[str, bool]:
+    """把交互式 3D 视图保存为单个 HTML 文件(同名覆盖,便于同一构象反复保存)。
+
+    返回 (文件路径, 是否离线可用)。
+    """
+    html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html_text)
+    logging.info("Saved interactive 3D view: %s (offline=%s)", out_path, offline_ok)
+    return out_path, offline_ok
