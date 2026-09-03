@@ -15,28 +15,21 @@ from core.interactome import (
 
 st.set_page_config(page_title=t("data_mgmt.page_title"), layout="wide")
 
-# 隐藏侧边栏,全屏显示页面
-st.markdown("""
-<style>
-    [data-testid="stSidebar"] {
-        display: none;
-    }
-    /* Download button colors (#207D62 bg, #C8F0DF text) */
+# 隐藏侧边栏,全屏显示页面;Download 按钮(#207D62 底、#C8F0DF 字)
+Utils.hide_sidebar("""
     .st-key-dir_rows button {
         background-color: #207D62;
         color: #C8F0DF;
         border: 1px solid #207D62;
     }
-</style>
-""", unsafe_allow_html=True)
+""")
 
 st.title(t("data_mgmt.title"))
 st.caption(t("data_mgmt.caption"))
 
 col_back, _ = st.columns([1, 4])
 with col_back:
-    if st.button(t("data_mgmt.back"), key="back_btn"):
-        st.switch_page("pages/Data_Network.py")
+    Utils.back_button("data_mgmt.back", target="pages/Data_Network.py")
 
 st.divider()
 

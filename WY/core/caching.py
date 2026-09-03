@@ -1,5 +1,6 @@
 """分析结果的本地缓存读写:刚算过的结果短期内存起来,重复分析时直接复用。"""
 
+import logging
 import os
 
 import pandas as pd
@@ -26,3 +27,28 @@ def _is_cache_fresh(cache_file: str, ttl_seconds: int | None = None) -> bool:
         return (time.time() - os.path.getmtime(cache_file)) < ttl_seconds
     except OSError:
         return False
+
+
+def open_csv_cache(cache_file: str, *, fresh: bool = False, label: str = "") -> pd.DataFrame | None:
+    """命中缓存则读取返回;未命中返回 None,由调用方自行请求数据。
+
+    fresh=True 时按 TTL 判定有效性(超期视为未命中);False 时只要文件存在即命中。
+    label 用于命中日志,如 "ChEMBL targets for 'aspirin'"。
+    """
+    hit = _is_cache_fresh(cache_file) if fresh else os.path.exists(cache_file)
+    if not hit:
+        return None
+    logging.info("Loading cached %s", label or os.path.basename(cache_file))
+    return _read_cache_csv(cache_file)
+
+
+def save_csv_cache(df: pd.DataFrame, cache_file: str, *, skip_empty: bool = True) -> bool:
+    """把结果表落盘缓存;默认空表不写(避免把失败/空结果当成有效缓存)。
+
+    返回是否实际写出。目录不存在时自动创建。
+    """
+    if skip_empty and (df is None or df.empty):
+        return False
+    os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
+    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    return True

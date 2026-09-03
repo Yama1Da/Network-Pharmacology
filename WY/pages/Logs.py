@@ -12,21 +12,14 @@ Utils.setup_logging()
 st.set_page_config(page_title=t("logs.page_title"), layout="wide")
 
 # 隐藏侧边栏,全屏显示页面
-st.markdown("""
-<style>
-    [data-testid="stSidebar"] {
-        display: none;
-    }
-</style>
-""", unsafe_allow_html=True)
+Utils.hide_sidebar()
 
 st.title(t("logs.title"))
 st.caption(t("logs.caption"))
 
 col_back, _ = st.columns([1, 4])
 with col_back:
-    if st.button(t("common.back_main"), key="back_btn"):
-        st.switch_page("App.py")
+    Utils.back_button()
 
 st.divider()
 

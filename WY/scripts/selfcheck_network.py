@@ -14,6 +14,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from selfcheck_common import run
 
 import networkx as nx
 import numpy as np
@@ -42,19 +45,6 @@ from core.network_algorithms import (
 def _karate() -> nx.Graph:
     G = nx.karate_club_graph()
     return nx.relabel_nodes(G, {i: f"G{i:02d}" for i in G.nodes()})
-
-
-def check(name, fn):
-    try:
-        fn()
-        print(f"PASS  {name}")
-        return True
-    except AssertionError as e:
-        print(f"FAIL  {name}: {e}")
-        return False
-    except Exception as e:
-        print(f"ERROR {name}: {type(e).__name__}: {e}")
-        return False
 
 
 def t_detect_basic():
@@ -741,10 +731,7 @@ def main():
         ("rwr real interactome + cache (skip if not built)", t_rwr_real_and_cached),
         ("rwr truncation guarantee (large seed set)", t_rwr_truncation_guarantee),
     ]
-    print(f"==== network_algorithms selfcheck: {len(tests)} tests ====")
-    ok = all([check(name, fn) for name, fn in tests])
-    print("==== ALL PASS ====" if ok else "==== FAILED ====")
-    sys.exit(0 if ok else 1)
+    run(tests, "network_algorithms selfcheck")
 
 
 if __name__ == "__main__":

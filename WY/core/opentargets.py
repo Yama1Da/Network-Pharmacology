@@ -6,6 +6,7 @@ import os
 import pandas as pd
 import streamlit as st
 
+from .caching import open_csv_cache, save_csv_cache
 from .http_client import _opentargets_post
 from .text_utils import _safe_round, safe_name
 
@@ -20,14 +21,12 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
     """
     import config
 
-    cache_dir = config.DISEASE_CACHE_DIR
-    os.makedirs(cache_dir, exist_ok=True)
-    csv_path = os.path.join(cache_dir, f"OpenTargets_{safe_name(disease_name)}.csv")
+    csv_path = os.path.join(config.DISEASE_CACHE_DIR, f"OpenTargets_{safe_name(disease_name)}.csv")
 
     # 已有缓存则直接读取本地文件
-    if os.path.exists(csv_path):
-        logging.info("Loading cached disease targets for '%s'", disease_name)
-        return pd.read_csv(csv_path)
+    cached = open_csv_cache(csv_path, label=f"disease targets for '{disease_name}'")
+    if cached is not None:
+        return cached
 
     try:
         # 第一步：按疾病英文名搜索，取匹配到的疾病编号（EFO/MONDO 等）。
@@ -42,7 +41,8 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             }
         }
         """
-        payload = _opentargets_post(search_query, {"queryString": disease_name.strip()})
+        payload = _opentargets_post(search_query, {"queryString": disease_name.strip()},
+                                    use_cache=True)
         if payload is None:
             return pd.DataFrame()
 
@@ -95,7 +95,8 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             }
         }
         """
-        payload = _opentargets_post(disease_query, {"diseaseId": disease_id, "size": top_n})
+        payload = _opentargets_post(disease_query, {"diseaseId": disease_id, "size": top_n},
+                                    use_cache=True)
         if payload is None:
             return pd.DataFrame()
 
@@ -136,8 +137,8 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             })
 
         df = pd.DataFrame(records)
-        # 保存到本地缓存
-        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        # 保存到本地缓存（空结果也缓存，避免反复查询同一无效疾病名）
+        save_csv_cache(df, csv_path, skip_empty=False)
         logging.info("Disease '%s' (%s): %d targets fetched", disease_name, disease_id, len(df))
         return df
 

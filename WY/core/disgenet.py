@@ -4,8 +4,9 @@ import logging
 import os
 
 import pandas as pd
-import requests
 
+from .caching import open_csv_cache, save_csv_cache
+from .http_client import _get_session
 from .text_utils import safe_name
 
 
@@ -74,14 +75,12 @@ def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
     import time
     import config
 
-    cache_dir = config.DISEASE_CACHE_DIR
-    os.makedirs(cache_dir, exist_ok=True)
-    csv_path = os.path.join(cache_dir, f"DisGeNET_{safe_name(disease_name)}.csv")
+    csv_path = os.path.join(config.DISEASE_CACHE_DIR, f"DisGeNET_{safe_name(disease_name)}.csv")
 
     # 已有缓存则直接读取本地文件
-    if os.path.exists(csv_path):
-        logging.info("Loading cached DisGeNET targets for '%s'", disease_name)
-        return pd.read_csv(csv_path)
+    cached = open_csv_cache(csv_path, label=f"DisGeNET targets for '{disease_name}'")
+    if cached is not None:
+        return cached
 
     if not config.DisGeNET_API_KEY:
         logging.error("DisGeNET_API_KEY is empty; check API.env")
@@ -96,7 +95,7 @@ def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
         resp = None
         for _ in range(config.ENRICHMENT_MAX_RETRIES + 1):
             _acquire_disgenet_rate_limit_slot()
-            resp = requests.get(
+            resp = _get_session().get(
                 config.DisGeNET_URL, params=params, headers=headers, timeout=config.API_TIMEOUT
             )
             if resp.status_code != 429:
@@ -147,7 +146,7 @@ def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
             .drop_duplicates(subset=["approvedSymbol"])
             .reset_index(drop=True)
         )
-        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        save_csv_cache(df, csv_path)
         logging.info("DisGeNET '%s': %d targets fetched", disease_name, len(df))
         return df
 
