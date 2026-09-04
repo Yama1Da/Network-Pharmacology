@@ -30,12 +30,15 @@ def setup_logging() -> None:
     if logger.hasHandlers():
         return  # 已初始化过
 
-    logger.setLevel(logging.INFO)
+    level = getattr(logging, str(config.LOG_LEVEL).upper(), logging.INFO)
+    if not isinstance(level, int):
+        level = logging.INFO
+    logger.setLevel(level)
     formatter = logging.Formatter(config.LOG_FORMAT, config.LOG_DATE_FORMAT)
 
     # 屏幕输出(方便实时查看运行情况)
     console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
+    console.setLevel(level)
     console.setFormatter(formatter)
     logger.addHandler(console)
 
@@ -49,9 +52,21 @@ def setup_logging() -> None:
             backupCount=config.LOG_RETENTION_DAYS,        # 保留两年，超期自动删除
             encoding="utf-8",
         )
-        file_handler.setLevel(logging.INFO)
+        file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
     except OSError:
         # 日志文件创建失败:改为只在屏幕输出,不影响程序运行
         logger.warning("日志文件创建失败，降级为仅控制台输出: %s", config.LOG_DIR)
+
+
+def set_logging_level(level_name: str) -> None:
+    """切换运行中的根日志级别,使后续日志立即生效。"""
+    level = getattr(logging, str(level_name).upper(), None)
+    if not isinstance(level, int):
+        return
+    logger = logging.getLogger()
+    logger.setLevel(level)
+    for handler in logger.handlers:
+        handler.setLevel(level)
+    logging.info("Log level changed to %s", logging.getLevelName(level))

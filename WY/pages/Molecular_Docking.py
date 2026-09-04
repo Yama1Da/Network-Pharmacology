@@ -560,9 +560,6 @@ if dock.get("pdb_path"):
 
         # 左侧 3D 预览盒子,右侧微调参数,方便对照调整
         col_box3d, col_tune = st.columns([2, 1])
-        with col_box3d:
-            st.markdown(t("dock.box_preview_title"))
-            _render_box_3d(dock["pdb_path"], dock["box"])
         with col_tune:
             st.caption(t("dock.finetune_caption"))
             cc1, cc2, cc3 = st.columns(3)
@@ -581,6 +578,9 @@ if dock.get("pdb_path"):
                 s3 = st.number_input("sz", value=float(s[2]), step=1.0, format="%.3f", key="sx_z")
             dock["box"] = {"center": (c1, c2, c3), "size": (s1, s2, s3)}
             st.code(f"center = {dock['box']['center']}\nsize   = {dock['box']['size']}")
+        with col_box3d:
+            st.markdown(t("dock.box_preview_title"))
+            _render_box_3d(dock["pdb_path"], dock["box"])
 
         # 列出盒内残基,帮助判断盒子是否覆盖结合口袋
         residues = residues_in_box(dock["pdb_path"], dock["box"])

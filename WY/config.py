@@ -81,6 +81,7 @@ HTTP_CACHE_FILE = os.path.join(CACHE_DIR, "http_cache.sqlite")
 # 日志目录:每天一个日志文件 app_YYYY-MM-DD.log
 LOG_DIR = os.path.join(BASE_DIR, "Static", "log")
 # 日志保留天数(天):超期日志在应用启动时自动删除
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_RETENTION_DAYS = 365
 # 日志格式:时间 | 级别 | 函数名 | 消息
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(funcName)s | %(message)s"

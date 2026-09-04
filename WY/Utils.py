@@ -38,7 +38,7 @@ from core.files import (
     make_dir_zip,
     make_ppi_zip,
 )
-from core.logging_setup import setup_logging
+from core.logging_setup import set_logging_level, setup_logging
 from core.opentargets import get_disease_targets
 from core.ppi import (
     build_ppi_graph,

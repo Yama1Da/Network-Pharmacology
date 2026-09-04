@@ -23,6 +23,24 @@ with col_back:
 
 st.divider()
 
+# 运行中可临时开启 DEBUG;正常使用仍默认 INFO,避免日志过大
+if "logs_debug_enabled" not in st.session_state:
+    st.session_state["logs_debug_enabled"] = config.LOG_LEVEL.upper() == "DEBUG"
+level_name = "DEBUG" if st.session_state["logs_debug_enabled"] else "INFO"
+
+col_level, _ = st.columns([1, 3])
+with col_level:
+    st.markdown(t("logs.level_title"))
+    st.toggle(
+        t("logs.debug_toggle"),
+        key="logs_debug_enabled",
+        help=t("logs.debug_toggle_help"),
+    )
+    Utils.set_logging_level(level_name)
+    st.caption(t("logs.level_current", level=level_name))
+
+st.divider()
+
 log_files = Utils.list_log_files()
 if log_files.empty:
     st.info(t("logs.empty"))
