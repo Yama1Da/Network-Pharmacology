@@ -102,7 +102,7 @@ clicked_file = None
 if disease_files.empty:
     st.info(t("disease_mgmt.no_files"))
 else:
-    clicked_file = Utils.render_updateable_file_table(disease_files, _SPEC)
+    clicked_file = Utils.render_updateable_file_table(disease_files, _SPEC, search_key="search_disease")
 
 # 单文件更新在页面渲染完成后执行,完成或出错都会记录结果并刷新页面
 if clicked_file:

@@ -723,6 +723,9 @@ if ppi is not None:
                             screened = gsea_df[gsea_df["fdr_q_value"] < config.GSEA_FDR_SCREEN]
                             if screened.empty:
                                 st.info(t("net.gsea_none", thr=config.GSEA_FDR_SCREEN))
+                                # 展示阈值只作用于页面表格；导出始终为完整计算结果，
+                                # 在此说明以免"提示无显著却仍能下载"造成误解
+                                st.caption(t("net.gsea_full_export_note", thr=config.GSEA_FDR_SCREEN))
                             else:
                                 st.caption(t("net.gsea_table_caption", n=len(gsea_df),
                                              m=len(screened), thr=config.GSEA_FDR_SCREEN))

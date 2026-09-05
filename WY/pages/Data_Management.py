@@ -89,8 +89,11 @@ dirs_df = Utils.list_download_dirs()
 # 分子对接成果区和收藏区由各自页面管理,这里不提供下载
 excluded = {os.path.basename(config.MD_RESULT_DIR), os.path.basename(config.MD_STAR_DIR)}
 dirs_df = dirs_df[~dirs_df["Directory"].isin(excluded)]
+query = st.text_input(t("common.search_placeholder"), key="search_dirs").strip().lower()
+if query:
+    dirs_df = dirs_df[dirs_df["Directory"].str.lower().str.contains(query, regex=False)]
 if dirs_df.empty:
-    st.info(t("data_mgmt.empty"))
+    st.info(t("common.search_no_match", query=query) if query else t("data_mgmt.empty"))
 else:
     # 表头
     col_h_name, col_h_time, col_h_btn = st.columns([3, 2, 1])

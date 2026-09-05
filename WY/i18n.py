@@ -121,6 +121,8 @@ TEXT: dict[str, dict[str, str]] = {
         "common.updating_file": "Updating {file}…",
         "common.all_complete": "✅ All updates complete",
         "common.some_failed": "Some files failed to update",
+        "common.search_placeholder": "🔍 Search files…",
+        "common.search_no_match": "No files matching \"{query}\"",
         # ---- PPI_Information.py ----
         "ppi_info.page_title": "PPI Information",
         "ppi_info.title": "🕸️ PPI Information",
@@ -230,6 +232,7 @@ TEXT: dict[str, dict[str, str]] = {
         "net.gsea_drop_note": "By design, {n} of {m} targets without scores (e.g., DGIdb-only interactions lacking pChEMBL) are excluded from the ranking.",
         "net.gsea_result_side": "Ranked list: **{side}** · {n_in} targets in → {n_kept} with scores",
         "net.gsea_none": "No gene set passed the GSEA screen (FDR < {thr}).",
+        "net.gsea_full_export_note": "The CSV below exports the full computed result (including terms not passing FDR < {thr}) — assess significance on your own.",
         "net.gsea_table_caption": "{n} gene sets total · {m} passed FDR < {thr} · full table via CSV below",
         "net.gsea_fail": "⚠️ GSEA failed ({reason}). No cache was written — please retry later.",
         "net.gsea_bar_caption": "Bar plot: gene sets by NES (red = enriched among high-score targets, blue = depleted)",
@@ -498,6 +501,8 @@ TEXT: dict[str, dict[str, str]] = {
         "common.updating_file": "正在更新 {file}…",
         "common.all_complete": "✅ 全部更新完成",
         "common.some_failed": "部分文件更新失败",
+        "common.search_placeholder": "🔍 搜索文件名…",
+        "common.search_no_match": "没有匹配“{query}”的文件",
         # ---- PPI_Information.py ----
         "ppi_info.page_title": "PPI 信息",
         "ppi_info.title": "🕸️ PPI 信息",
@@ -607,6 +612,7 @@ TEXT: dict[str, dict[str, str]] = {
         "net.gsea_drop_note": "按设计，{m} 个靶点中 {n} 个无打分（如仅 DGIdb 收录、无 pChEMBL 亲和力的靶点）不参与排序，属预期行为。",
         "net.gsea_result_side": "排序列表：**{side}** · 输入 {n_in} 个靶点 → {n_kept} 个有打分",
         "net.gsea_none": "无基因集通过 GSEA 显著性筛选（FDR < {thr}）。",
+        "net.gsea_full_export_note": "下方 CSV 导出的是完整计算结果（含未达 FDR < {thr} 的通路），显著性请自行判断。",
         "net.gsea_table_caption": "共 {n} 个基因集 · FDR < {thr} 的 {m} 个（完整表走下方 CSV）",
         "net.gsea_fail": "⚠️ GSEA 运行失败（{reason}）。失败未写缓存，请稍后重试。",
         "net.gsea_bar_caption": "条形图：按 NES 排序（红 = 高分靶点中富集，蓝 = 高分靶点中缺失）",
