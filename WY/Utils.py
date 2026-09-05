@@ -17,6 +17,7 @@ from core.disgenet import fetch_disease_targets_disgenet
 from core.docking import (
     clean_docking_cache,
     fetch_ligand_sdf_3d,
+    fetch_receptor_candidates_batch,
     fetch_receptor_pdb_candidates,
     infer_box_from_cofactor,
     parse_vina_scores,
@@ -37,7 +38,7 @@ from core.files import (
     make_dir_zip,
     make_ppi_zip,
 )
-from core.logging_setup import setup_logging
+from core.logging_setup import set_logging_level, setup_logging
 from core.opentargets import get_disease_targets
 from core.ppi import (
     build_ppi_graph,
@@ -52,8 +53,9 @@ from core.targets import (
     get_common_targets,
     get_disease_targets_merged,
     get_drug_targets_merged,
+    get_targets_concurrent,
 )
-from core.text_utils import safe_name
+from core.text_utils import resolve_original_name, safe_name
 
 
 # ---------- 界面公共组件 ----------
@@ -146,14 +148,19 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
     来源文件先备份旧文件,抓取成功才替换,失败则恢复旧文件,避免数据丢失;
     merged 整合文件先更新两个来源文件再重建,任一来源失败则保留旧的整合结果。
     cache_hours 透传给 fetch_source(ChEMBL 更新需区分单文件/全部更新的 TTL)。
+
+    文件名里的名字是 safe_name 有损转换的结果(如 Alzheimer_s_Disease),
+    先按映射还原成原始查询名(Alzheimer's Disease)再抓取,否则查不到数据。
     """
     import logging
 
     # merged 整合文件:先更新两个来源文件,再重建
     if filename.startswith(spec["merged_prefix"]):
-        name = filename[len(spec["merged_prefix"]):-len(".csv")]
+        stem = filename[len(spec["merged_prefix"]):-len(".csv")]
+        name = resolve_original_name(stem) or stem
         for prefix in spec["source_prefixes"]:
-            source = f"{prefix}{name}.csv"
+            # 来源文件名用 safe 名(name 已还原为原始名,含空格/撇号等)
+            source = f"{prefix}{safe_name(name)}.csv"
             result = refresh_cache_file(source, spec, cache_hours)
             if result["Status"] != "OK":
                 return {"Status": "FAILED",
@@ -180,7 +187,8 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
     try:
         for prefix in spec["source_prefixes"]:
             if filename.startswith(prefix):
-                name = filename[len(prefix):-len(".csv")]
+                stem = filename[len(prefix):-len(".csv")]
+                name = resolve_original_name(stem) or stem
                 df, ok = spec["fetch_source"][prefix](name, cache_hours)
                 break
         else:
@@ -212,16 +220,17 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None):
             continue
         for prefix in spec["source_prefixes"]:
             if filename.startswith(prefix):
-                names.add(filename[len(prefix):-len(".csv")])
+                stem = filename[len(prefix):-len(".csv")]
+                names.add(resolve_original_name(stem) or stem)
                 try:
                     rows.append({"File": filename,
                                  **refresh_cache_file(filename, spec, cache_hours)})
                 except Exception:
                     rows.append({"File": filename, "Status": "FAILED", "Message": "update error"})
                 break
-    # 第二步:再重建所有 merged 整合文件
+    # 第二步:再重建所有 merged 整合文件(name 已还原为原始名,文件名需再走 safe_name)
     for name in sorted(names):
-        merged_file = f"{spec['merged_prefix']}{name}.csv"
+        merged_file = f"{spec['merged_prefix']}{safe_name(name)}.csv"
         merged_path = os.path.join(spec["merged_dir"], merged_file)
         if os.path.exists(merged_path):
             os.remove(merged_path)

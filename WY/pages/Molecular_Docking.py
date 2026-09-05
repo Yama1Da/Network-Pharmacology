@@ -105,7 +105,7 @@ def _reset_docking_downstream() -> None:
     for _k in ("lig_pdbqt", "cid", "lig_auto_done",
                "gene", "rec_pdbqt", "pdb_id", "pdb_path",
                "box", "result", "result_dir", "starred",
-               "gene_structures", "candidate_pre"):
+               "gene_structures", "candidate_pre", "batch_results"):
         dock.pop(_k, None)
 
 
@@ -246,6 +246,17 @@ def _cached_pdb_candidates(gene: str, allow_alphafold: bool = False) -> pd.DataF
                                                allow_alphafold=allow_alphafold)
 
 
+@st.cache_data(ttl=3600)
+def _cached_pdb_candidates_batch(genes: tuple, allow_alphafold: bool = False) -> dict[str, pd.DataFrame]:
+    """一次批量查询多个基因的受体结构(近期查过则复用);返回 {基因: 候选表}。
+
+    搜索合并成少数几次批量请求 + GraphQL 批量归因,速度与基因数基本无关;
+    查无实验结构的基因按开关附加 AlphaFold 预测结构。
+    """
+    return Utils.fetch_receptor_candidates_batch(list(genes), max_hits=20,
+                                                 allow_alphafold=allow_alphafold)
+
+
 # ===== Step 1 候选基因筛选 =====
 st.subheader(t("dock.step1"))
 
@@ -329,14 +340,15 @@ if dock.get("enrichment_genes") is not None:
         if st.button(t("dock.check_struct_btn"), key="check_struct"):
             with st.spinner(t("dock.checking_rcsb")):
                 try:
-                    found: dict[str, int] = {}
-                    progress = st.progress(0)
-                    for i, g in enumerate(candidate):
-                        cand = _cached_pdb_candidates(g, allow_alphafold=allow_af)
-                        if not cand.empty:
-                            found[g] = len(cand)
-                        progress.progress((i + 1) / len(candidate))
-                    dock["gene_structures"] = found
+                    # 批量检索:4 路并发逐基因搜索(召回与旧版一致),
+                    # 元数据合并为 GraphQL 批量请求;进度条按两阶段推进
+                    progress = st.progress(0.0)
+                    results = _cached_pdb_candidates_batch(
+                        tuple(candidate), allow_alphafold=allow_af)
+                    progress.progress(1.0)
+                    dock["gene_structures"] = {g: len(df) for g, df in results.items()
+                                               if not df.empty}
+                    dock["batch_results"] = results
                 except Exception as exc:
                     # 查询失败时提示错误原因
                     dock.pop("gene_structures", None)
@@ -462,10 +474,12 @@ if dock.get("genes"):
         dock.pop("result", None)
         dock.pop("receptor_source", None)
 
-    # 自动查询该基因的候选结构(近期查过则复用);AF 预测结构开关跟随 Step 1 的设置
+    # 自动查询该基因的候选结构:优先复用 Step 1 批量结果,查不到再单基因查
     allow_af = st.session_state.get("allow_af", False) and config.ALPHAFOLD_ENABLED
     try:
-        cand = _cached_pdb_candidates(gene, allow_alphafold=allow_af)
+        cand = (dock.get("batch_results") or {}).get(gene)
+        if cand is None:
+            cand = _cached_pdb_candidates(gene, allow_alphafold=allow_af)
     except Exception as exc:
         st.warning(t("dock.rcsb_error", exc=exc))
         cand = None
@@ -583,9 +597,6 @@ if dock.get("pdb_path"):
 
         # 左侧 3D 预览盒子,右侧微调参数,方便对照调整
         col_box3d, col_tune = st.columns([2, 1])
-        with col_box3d:
-            st.markdown(t("dock.box_preview_title"))
-            _render_box_3d(dock["pdb_path"], dock["box"])
         with col_tune:
             st.caption(t("dock.finetune_caption"))
             cc1, cc2, cc3 = st.columns(3)
@@ -604,6 +615,9 @@ if dock.get("pdb_path"):
                 s3 = st.number_input("sz", value=float(s[2]), step=1.0, format="%.3f", key="sx_z")
             dock["box"] = {"center": (c1, c2, c3), "size": (s1, s2, s3)}
             st.code(f"center = {dock['box']['center']}\nsize   = {dock['box']['size']}")
+        with col_box3d:
+            st.markdown(t("dock.box_preview_title"))
+            _render_box_3d(dock["pdb_path"], dock["box"])
 
         # 列出盒内残基,帮助判断盒子是否覆盖结合口袋
         residues = residues_in_box(dock["pdb_path"], dock["box"])

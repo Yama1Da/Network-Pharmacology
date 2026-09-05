@@ -8,7 +8,46 @@ import streamlit as st
 
 from .caching import open_csv_cache, save_csv_cache
 from .http_client import _opentargets_post
-from .text_utils import _safe_round, safe_name
+from .text_utils import _safe_round, remember_name_mapping, safe_name
+
+
+def find_disease_id(disease_name: str,
+                    prefer_prefixes: tuple[str, ...] = ("MONDO", "UMLS")) -> str | None:
+    """按疾病英文名搜索,返回疾病编号(EFO/MONDO 等);找不到返回 None。
+
+    同名疾病常有多个词表编号(如 MONDO 与 EFO),命中多个时按 prefer_prefixes
+    优先返回(下游 DisGeNET 只认 MONDO/UMLS 等编号,不认 EFO)。
+    """
+    # 第一步：按疾病英文名搜索，取匹配到的疾病编号（EFO/MONDO 等）。
+    search_query = """
+    query SearchDisease($queryString: String!) {
+        search(queryString: $queryString) {
+            hits {
+                id
+                entity
+                name
+            }
+        }
+    }
+    """
+    payload = _opentargets_post(search_query, {"queryString": disease_name.strip()},
+                                use_cache=True)
+    if payload is None:
+        return None
+
+    # 查询出错时，错误信息记录在 payload["errors"] 中，不会抛异常
+    if "errors" in payload or "data" not in payload:
+        logging.error("Open Targets search query failed: %s", payload.get("errors"))
+        return None
+
+    disease_hits = [h for h in payload["data"]["search"]["hits"]
+                    if h.get("entity") == "disease"]
+    for prefix in prefer_prefixes:
+        for hit in disease_hits:
+            hit_id = hit.get("id") or ""
+            if hit_id.startswith(prefix + "_"):
+                return hit_id
+    return disease_hits[0]["id"] if disease_hits else None
 
 
 @st.cache_data
@@ -22,6 +61,7 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
     import config
 
     csv_path = os.path.join(config.DISEASE_CACHE_DIR, f"OpenTargets_{safe_name(disease_name)}.csv")
+    remember_name_mapping(disease_name)  # 记录安全文件名→原始名,供管理页还原
 
     # 已有缓存则直接读取本地文件
     cached = open_csv_cache(csv_path, label=f"disease targets for '{disease_name}'")
@@ -29,33 +69,7 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
         return cached
 
     try:
-        # 第一步：按疾病英文名搜索，取匹配到的疾病编号（EFO/MONDO 等）。
-        search_query = """
-        query SearchDisease($queryString: String!) {
-            search(queryString: $queryString) {
-                hits {
-                    id
-                    entity
-                    name
-                }
-            }
-        }
-        """
-        payload = _opentargets_post(search_query, {"queryString": disease_name.strip()},
-                                    use_cache=True)
-        if payload is None:
-            return pd.DataFrame()
-
-        # 查询出错时，错误信息记录在 payload["errors"] 中，不会抛异常
-        if "errors" in payload or "data" not in payload:
-            logging.error("Open Targets search query failed: %s", payload.get("errors"))
-            return pd.DataFrame()
-
-        disease_id = None
-        for hit in payload["data"]["search"]["hits"]:
-            if hit.get("entity") == "disease":
-                disease_id = hit["id"]
-                break
+        disease_id = find_disease_id(disease_name)
         if disease_id is None:
             logging.warning("No disease found for '%s'", disease_name)
             return pd.DataFrame()

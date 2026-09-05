@@ -45,7 +45,9 @@ def _fetch_disgenet(name: str, cache_hours):
 
 def _invalidate_merged_disease(disease_name: str) -> None:
     """更新来源文件后删除对应 merged 缓存，避免整合结果与来源不一致。"""
-    path = os.path.join(config.MERGED_CACHE_DIR, f"merged_disease_{disease_name}.csv")
+    # 传入的是原始疾病名,文件名需走同样的 safe_name 规范化才能对上
+    path = os.path.join(config.MERGED_CACHE_DIR,
+                        f"merged_disease_{Utils.safe_name(disease_name)}.csv")
     if os.path.exists(path):
         os.remove(path)
 

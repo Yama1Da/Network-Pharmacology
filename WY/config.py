@@ -29,11 +29,17 @@ API_RETRY_DELAY = 3
 API_REQUEST_DELAY = 0.2
 # DGIdb / Open Targets 请求重试次数:每次分析只调 1~2 次,重试 2 次即可。
 LIGHT_API_MAX_RETRIES = 2
+# ChEMBL 请求超时(秒)与重试次数:靶点详情批量响应大,服务端偶发很慢,放宽以免整个抓取中止
+CHEMBL_API_TIMEOUT = 90
+CHEMBL_API_MAX_RETRIES = 3
 # 富集请求(g:Profiler / Enrichr)重试次数:服务不可达时等待时间长,故压低。
 ENRICHMENT_MAX_RETRIES = 2
-# DisGeNET 主动限流:控制在官方配额之内(约每分钟 50 次、每天 25000 次),避免被封禁。
-DISGENET_RATE_LIMIT_PER_MINUTE = 50
-DISGENET_RATE_LIMIT_PER_DAY = 25000
+# DisGeNET 主动限流:学术(Academic)计划官方 API 配额为 每分钟 50 次 / 每天 25,000 次 /
+# 每月 500,000 次。本地限额在官方配额内再留约 10% 余量,避免本地窗口与服务器
+# 计数口径差异导致 429。本程序每次分析仅 1 次请求,正常使用远达不到这些上限。
+DISGENET_RATE_LIMIT_PER_MINUTE = 45
+DISGENET_RATE_LIMIT_PER_DAY = 20000
+DISGENET_RATE_LIMIT_PER_MONTH = 450000
 # 限流等待上限(秒):超过则放弃本次请求
 DISGENET_RATE_LIMIT_MAX_WAIT = 60
 # g:Profiler 连续失败后的熔断时长(秒):期间直接改用 Enrichr,避免反复等超时。
@@ -75,6 +81,7 @@ HTTP_CACHE_FILE = os.path.join(CACHE_DIR, "http_cache.sqlite")
 # 日志目录:每天一个日志文件 app_YYYY-MM-DD.log
 LOG_DIR = os.path.join(BASE_DIR, "Static", "log")
 # 日志保留天数(天):超期日志在应用启动时自动删除
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_RETENTION_DAYS = 365
 # 日志格式:时间 | 级别 | 函数名 | 消息
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(funcName)s | %(message)s"
@@ -284,7 +291,8 @@ RCSB_DATA_MAX_WORKERS = 4
 # ======== 各数据源最小请求间隔(秒) ========
 # 只对需要连续快速请求的站点做限速,未列出的数据源请求量小,不做额外限制。
 HOST_MIN_REQUEST_INTERVAL = {
-    "rcsb_search": 1.0,   # RCSB 批量检索:逐基因连发,容易触发限流
+    "chembl": 0.2,        # ChEMBL 批量分页:保持原 API_REQUEST_DELAY 的礼貌间隔
+    "rcsb_search": 0.3,   # RCSB 批量检索:约 3 次/秒,配合 4 路并发仍属礼貌范围
     "rcsb_data": 0.25,    # RCSB 元数据下载
     "ebi_proteins": 1.1,  # EBI 官方建议 ≤1 次/秒（UniProt 基因查询）
     "alphafold": 1.1,     # AlphaFold 文件下载（EBI 同域）

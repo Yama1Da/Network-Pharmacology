@@ -11,7 +11,7 @@ from i18n import t
 st.set_page_config(page_title=t("drug_mgmt.page_title"), layout="wide")
 
 # 隐藏侧边栏,全屏显示页面;行内 Update 按钮(#6347A1 底、#E0D8F2 字)、Download 按钮(#207D62 底、#C8F0DF 字)
-# 说明:ChEMBL 接口限速,更新需等待约 5 分钟以上;单个文件更新最长约 1 小时,全部更新最长约 12 小时;短时间内重复更新只会刷新时间戳
+# 说明:ChEMBL 请求已改为批量分页,单个文件更新通常几十秒内完成;短时间内重复更新只会刷新时间戳
 Utils.hide_sidebar("""
     .st-key-update_btn button,
     .st-key-file_rows [class*="st-key-update_"] button {
@@ -44,7 +44,9 @@ def _fetch_dgidb(name: str, cache_hours):
 
 def _invalidate_merged_drug(drug_name: str) -> None:
     """更新来源文件后删除对应 merged 缓存，避免整合结果与来源不一致。"""
-    path = os.path.join(config.MERGED_CACHE_DIR, f"merged_drug_{drug_name}.csv")
+    # 传入的是原始药物名,文件名需走同样的 safe_name 规范化才能对上
+    path = os.path.join(config.MERGED_CACHE_DIR,
+                        f"merged_drug_{Utils.safe_name(drug_name)}.csv")
     if os.path.exists(path):
         os.remove(path)
 
