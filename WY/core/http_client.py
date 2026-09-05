@@ -80,12 +80,14 @@ def request_with_retry(
     label: str,
     json: dict | None = None,
     data: dict | None = None,
+    params: dict | None = None,
     headers: dict | None = None,
     throttle_key: str | None = None,
     retry_delay: float | None = None,
     no_retry_status: tuple = (),
     raise_on_exhausted: bool = False,
     use_cache: bool = False,
+    cache_ttl_hours: float | None = None,
 ) -> requests.Response | None:
     """带重试的 HTTP 请求,项目内所有数据源请求的统一入口。
 
@@ -93,7 +95,8 @@ def request_with_retry(
     raise_on_exhausted=True 则抛出最后一次异常(调用方需要错误详情时使用)。
     no_retry_status 中的状态码不视为失败,直接原样返回(如 STRING 的 404 表示
     基因全部未识别,属正常业务情况)。throttle_key 传入时每次尝试前先过限速。
-    use_cache=True 时走共享缓存会话,命中有效缓存则不发起网络请求。
+    use_cache=True 时走共享缓存会话,命中有效缓存则不发起网络请求;
+    cache_ttl_hours 覆盖该请求的缓存有效期(仅缓存会话生效)。
     """
     import time
 
@@ -110,10 +113,15 @@ def request_with_retry(
             # 按方法分别走 .get/.post(而不是 .request),
             # 保持对 requests.post/get 打补丁的测试与工具兼容。
             http = _get_session() if use_cache else requests
+            # 按请求缓存有效期仅对真正的缓存会话生效(降级为普通会话时忽略)
+            extra: dict = {}
+            if use_cache and cache_ttl_hours is not None and hasattr(http, "cache"):
+                extra["expire_after"] = float(cache_ttl_hours) * 3600
             if method == "get":
-                resp = http.get(url, timeout=timeout, headers=headers)
+                resp = http.get(url, params=params, timeout=timeout, headers=headers, **extra)
             else:
-                resp = http.post(url, json=json, data=data, timeout=timeout, headers=headers)
+                resp = http.post(url, json=json, data=data, params=params,
+                                 timeout=timeout, headers=headers, **extra)
             if resp.status_code in no_retry_status:
                 return resp
             resp.raise_for_status()  # 返回异常状态码(如服务器报错)时视为请求失败

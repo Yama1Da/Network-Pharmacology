@@ -304,12 +304,32 @@ if analyze_btn:
         st.warning(t("app.warn_missing", fields=t("app.and_join").join(errors)))
     else:
         with st.spinner(t("app.spinner_query", drug=drug_name, disease=disease_name)):
-            # 药物靶点来自 ChEMBL + DGIdb,疾病靶点来自 Open Targets + DisGeNET,均已去重
-            drug_df = Utils.get_drug_targets_merged(drug_name)
-            drug_targets = drug_df["approvedSymbol"].tolist() if not drug_df.empty else []
-            disease_df = Utils.get_disease_targets_merged(disease_name)
+            # 四路数据库并发请求(ChEMBL/DGIdb/OpenTargets/DisGeNET);每路写各自的来源 CSV,
+            # merged 表由主线程最后写出,并发不会写错文件;进度条随各路完成逐格推进
+            progress = st.progress(0.0, text=t("app.progress_prepare"))
+
+            def _on_fetch_progress(done: list[str], total: int) -> None:
+                waiting = "、".join(
+                    t(f"source.{key}")
+                    for key in ("chembl", "dgidb", "opentargets", "disgenet")
+                    if key not in done)
+                progress.progress(
+                    (len(done) / total) if total else 1.0,
+                    text=t("app.progress_fetch", done=len(done), total=total,
+                           pending=waiting or t("app.progress_done_word")))
+
+            drug_df, disease_df, failed_sources = Utils.get_targets_concurrent(
+                drug_name, disease_name, progress_cb=_on_fetch_progress)
+            progress.empty()
             # 从表格取出基因符号列表,供韦恩图和统计使用
+            drug_targets = drug_df["approvedSymbol"].tolist() if not drug_df.empty else []
             disease_targets = disease_df["approvedSymbol"].tolist() if not disease_df.empty else []
+
+        if failed_sources:
+            # 单路失败时结果可能不完整:此时该侧 merged 缓存不会被写入,重试只补拉失败源
+            st.warning(t("app.warn_source_failed",
+                         sources=t("app.and_join").join(
+                             t(f"source.{key}") for key in failed_sources)))
 
         st.markdown('<div class="result-card">', unsafe_allow_html=True)
 

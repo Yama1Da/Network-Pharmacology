@@ -1,4 +1,4 @@
-"""ChEMBL 数据源：查询药物的全部人类活性靶点，并提供缓存有效期调整。"""
+"""ChEMBL 数据源：查询药物的全部人类活性靶点（直接 REST 批量分页），并提供缓存有效期调整。"""
 
 import logging
 import os
@@ -7,7 +7,31 @@ import pandas as pd
 import streamlit as st
 
 from .caching import open_csv_cache, save_csv_cache
-from .text_utils import safe_name
+from .http_client import request_with_retry
+from .text_utils import remember_name_mapping, safe_name
+
+# ChEMBL REST 基地址:加 .json 后缀直接返回 JSON,
+# 用统一的 request_with_retry 直连,不再依赖 chembl_webresource_client
+# (该客户端每页固定 20 条、逐靶点单查,慢药物要发数百个请求)。
+CHEMBL_API_URL = "https://www.ebi.ac.uk/chembl/api/data"
+
+# 单页记录数:activity 记录小,官方上限 1000/页;target 记录带组件与同义词,体积大,25/批
+# (批次越大单次响应越慢,ChEMBL 服务端慢时容易读超时,实测 25/批更稳)
+_ACTIVITY_PAGE_SIZE = 1000
+_TARGET_PAGE_SIZE = 25
+
+# 管理页设置的缓存有效期(小时);None 表示沿用共享 HTTP 缓存的全局 TTL
+_chembl_cache_hours: float | None = None
+
+
+def set_chembl_cache_ttl(hours: int | None) -> None:
+    """调整 ChEMBL 请求结果的缓存有效期(默认与全局 HTTP 缓存一致,24 小时)。
+
+    hours 为缓存小时数:设得越小,数据越新、联网请求越频繁;
+    超过有效期的旧数据会自动重新联网获取。
+    """
+    global _chembl_cache_hours
+    _chembl_cache_hours = hours
 
 
 def _sort_drug_df_by_pchembl(df: pd.DataFrame) -> pd.DataFrame:
@@ -24,8 +48,103 @@ def _sort_drug_df_by_pchembl(df: pd.DataFrame) -> pd.DataFrame:
 
 def _abort_fetch() -> tuple[pd.DataFrame, None]:
     """统一失败出口:界面提示后返回空表(不写缓存,避免把失败当有效数据)。"""
-    st.toast("靶点获取错误，停止信息获取", icon="⚠️")
+    try:
+        st.toast("靶点获取错误，停止信息获取", icon="⚠️")
+    except Exception:
+        # 并发线程里没有 Streamlit 脚本上下文,toast 不可用时退化为日志
+        logging.warning("靶点获取错误，停止信息获取")
     return pd.DataFrame(), None
+
+
+def _chembl_get(path: str, params: dict, label: str) -> dict | None:
+    """向 ChEMBL REST 发一次带缓存的重试 GET;全部失败返回 None。
+
+    ChEMBL 服务端偶发很慢,超时与重试次数都比轻量接口放宽,
+    避免个别慢请求导致整个靶点抓取中止。
+    """
+    import config
+
+    resp = request_with_retry(
+        f"{CHEMBL_API_URL}/{path}", method="get", params=params,
+        max_retries=config.CHEMBL_API_MAX_RETRIES, timeout=config.CHEMBL_API_TIMEOUT,
+        retry_delay=config.API_RETRY_DELAY * 2,
+        label=label, use_cache=True, cache_ttl_hours=_chembl_cache_hours,
+        throttle_key="chembl",
+    )
+    return resp.json() if resp is not None else None
+
+
+def _find_chembl_id(drug_name: str) -> str | None:
+    """按药物名查找化合物编号:先精确匹配,找不到时改用不区分大小写的模糊搜索。"""
+    name = drug_name.strip()
+    payload = _chembl_get("molecule.json", {"pref_name__iexact": name, "limit": 1},
+                          f"ChEMBL molecule search for '{name}'")
+    mols = (payload or {}).get("molecules", [])
+    if not mols:
+        payload = _chembl_get("molecule.json", {"pref_name__icontains": name, "limit": 1},
+                              f"ChEMBL fuzzy molecule search for '{name}'")
+        mols = (payload or {}).get("molecules", [])
+    if not mols:
+        return None
+    return mols[0].get("molecule_chembl_id")
+
+
+def _fetch_all_activities(chembl_id: str) -> list[dict] | None:
+    """取该药物在人类中的全部活性记录,按 1000 条/页翻页;失败返回 None 表示中止。"""
+    acts: list[dict] = []
+    offset = 0
+    while True:
+        payload = _chembl_get(
+            "activity.json",
+            {"molecule_chembl_id": chembl_id, "organism": "Homo sapiens",
+             "limit": _ACTIVITY_PAGE_SIZE, "offset": offset},
+            f"ChEMBL activity page (offset {offset})",
+        )
+        if payload is None:
+            return None
+        batch = payload.get("activities", [])
+        acts.extend(batch)
+        # 按服务端实际生效的页大小翻页(防止服务端上限低于请求值时提前停止)
+        page_size = (payload.get("page_meta") or {}).get("limit") or _ACTIVITY_PAGE_SIZE
+        if len(batch) < page_size:
+            return acts
+        offset += page_size
+
+
+def _fetch_targets_batched(tids: list[str]) -> dict[str, dict] | None:
+    """按编号批量取靶点详情(25 个/批,一次请求顶过去 25 次);失败返回 None 表示中止。
+
+    每批一次请求即可:批内编号数就是返回条数上限,不需要翻页;
+    实测对 __in 过滤请求越界的 offset 会得到服务端 500,故绝不发空页请求。
+    """
+    targets: dict[str, dict] = {}
+    for start in range(0, len(tids), _TARGET_PAGE_SIZE):
+        batch = tids[start:start + _TARGET_PAGE_SIZE]
+        payload = _chembl_get(
+            "target.json",
+            {"target_chembl_id__in": ",".join(batch), "limit": _TARGET_PAGE_SIZE},
+            f"ChEMBL target batch ({len(batch)} ids)",
+        )
+        if payload is None:
+            return None
+        for t in payload.get("targets", []):
+            tid = t.get("target_chembl_id")
+            if tid:
+                targets[tid] = t
+    return targets
+
+
+def _extract_gene_name(t: dict) -> str | None:
+    """从靶点信息中提取基因符号，没有则退而用 HGNC 名称，都没有时返回 None"""
+    if "target_components" in t:
+        for comp in t["target_components"]:
+            for syn in comp.get("target_component_synonyms", []):
+                if syn.get("syn_type") == "GENE_SYMBOL":
+                    return syn.get("component_synonym")
+            for xref in comp.get("target_component_xrefs", []):
+                if xref.get("xref_src_db") == "HGNC":
+                    return xref.get("xref_name")
+    return None
 
 
 def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]:
@@ -33,11 +152,14 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
     从 ChEMBL 获取药物的全部活性靶点（全靶点模式）：不按活性值过滤，
     靶点更全，但会包含 ALB、CYP450 等弱关联/非特异性结合的蛋白；
     仅保留人类靶点，按 pChEMBL 活性值降序排列。
+    请求全部批量分页:activity 1000 条/页、靶点详情 50 个/批,
+    慢药物(如 metformin 数千条活性)也只需约 10 个请求。
     已有本地缓存时直接复用；请求失败时返回空表。
     """
     import config
 
     csv_path = os.path.join(config.DRUG_CACHE_DIR, f"ChEMBL_{safe_name(drug_name)}.csv")
+    remember_name_mapping(drug_name)  # 记录安全文件名→原始名,供管理页还原
 
     # 已有缓存则直接读取本地文件
     cached = open_csv_cache(csv_path, label=f"ChEMBL targets for '{drug_name}'")
@@ -46,59 +168,31 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
 
     # 无缓存时联网查询
     try:
-        # 延迟导入：该库一导入就会联网，放在函数内可避免启动时
-        # ChEMBL 服务器不可用导致整个程序崩溃。
-        from chembl_webresource_client.new_client import new_client
-
         # 第一步：按药物名查找化合物
-        mols = list(new_client.molecule.filter(pref_name__iexact=drug_name.strip()))
-        if not mols:
-            # 找不到时改用不区分大小写的模糊搜索
-            mols = list(new_client.molecule.filter(pref_name__icontains=drug_name.strip()))
-        if not mols:
+        chembl_id = _find_chembl_id(drug_name)
+        if not chembl_id:
+            # 查无此药属正常业务情况:返回空表并带上路径(不写文件),
+            # 调用方据此区分"没有数据"与"请求失败"
             logging.warning("No ChEMBL molecule found for '%s'", drug_name)
-            return pd.DataFrame(), None
-
-        chembl_id = mols[0]["molecule_chembl_id"]
+            return pd.DataFrame(), csv_path
 
         # 第二步：取该药物在人类中的全部活性记录（不按 pChEMBL 过滤，靶点更全）。
-        # 如需只保留有 pChEMBL 定量值的高置信度靶点，可在 filter 中
-        # 加回 pchembl_value__isnull=False 参数。
-        acts = list(new_client.activity.filter(
-            molecule_chembl_id=chembl_id,
-            organism="Homo sapiens",
-        ))
+        # 如需只保留有 pChEMBL 定量值的高置信度靶点，可在参数中
+        # 加回 pchembl_value__isnull=False。
+        acts = _fetch_all_activities(chembl_id)
+        if acts is None:
+            return _abort_fetch()  # 拉取失败即停止，且不保存缓存
 
-        # 第三步：逐个获取靶点详情（同一靶点只查一次）
-        import time
-        import config
-        target_cache: dict[str, dict | None] = {}
+        # 第三步：汇总去重后的靶点编号,批量获取靶点详情
+        tids: list[str] = []
         for act in acts:
             tid = act.get("target_chembl_id")
-            if tid and tid not in target_cache:
-                # 每次请求前稍作等待，避免请求过快被 ChEMBL 限流
-                time.sleep(config.API_REQUEST_DELAY)
-                try:
-                    t = new_client.target.get(tid)
-                except Exception:
-                    logging.exception("Failed to fetch target details for '%s'", tid)
-                    return _abort_fetch()  # 失败即停止，且不保存缓存
-                if not t:
-                    logging.error("Target '%s' not found, aborting fetch", tid)
-                    return _abort_fetch()  # 失败即停止，且不保存缓存
-                target_cache[tid] = t
+            if tid and tid not in tids:
+                tids.append(tid)
 
-        def _extract_gene_name(t: dict) -> str | None:
-            """从靶点信息中提取基因符号，没有则退而用 HGNC 名称，都没有时返回 None"""
-            if "target_components" in t:
-                for comp in t["target_components"]:
-                    for syn in comp.get("target_component_synonyms", []):
-                        if syn.get("syn_type") == "GENE_SYMBOL":
-                            return syn.get("component_synonym")
-                    for xref in comp.get("target_component_xrefs", []):
-                        if xref.get("xref_src_db") == "HGNC":
-                            return xref.get("xref_name")
-            return None
+        targets = _fetch_targets_batched(tids) if tids else {}
+        if targets is None:
+            return _abort_fetch()  # 拉取失败即停止，且不保存缓存
 
         # 第四步：给每条活性记录补上靶点信息，整理成表格行
         rows: list[dict] = []
@@ -108,7 +202,7 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
             if not tid:
                 continue
 
-            t = target_cache.get(tid)
+            t = targets.get(tid)
             if not t:
                 # 正常不会走到这里；若发生说明数据异常，停止并提示
                 logging.error("Target details missing for '%s', aborting fetch", tid)
@@ -152,23 +246,3 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
     except Exception:
         logging.exception("fetch_drug_targets_chembl failed for '%s'", drug_name)
         return pd.DataFrame(), None
-
-
-def set_chembl_cache_ttl(hours: int) -> None:
-    """调整 ChEMBL 客户端本地缓存的有效期（默认 24 小时）。
-
-    hours 为缓存小时数：设得越小，数据越新、联网请求越频繁；
-    超过有效期的旧数据会自动重新联网获取。
-    """
-    try:
-        from chembl_webresource_client.settings import Settings
-        Settings.Instance().CACHE_EXPIRE = hours * 3600
-        from chembl_webresource_client.new_client import new_client
-        for name in ("molecule", "activity", "target"):
-            qs = getattr(new_client, name, None)
-            query = getattr(qs, "query", None) if qs is not None else None
-            session = getattr(query, "session", None) if query is not None else None
-            if session is not None:
-                session.expire_after = hours * 3600
-    except Exception:
-        logging.exception("Failed to set ChEMBL cache TTL to %d hours", hours)
