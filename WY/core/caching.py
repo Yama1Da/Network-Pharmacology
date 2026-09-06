@@ -42,13 +42,38 @@ def open_csv_cache(cache_file: str, *, fresh: bool = False, label: str = "") -> 
     return _read_cache_csv(cache_file)
 
 
-def save_csv_cache(df: pd.DataFrame, cache_file: str, *, skip_empty: bool = True) -> bool:
+def save_csv_cache(df: pd.DataFrame, cache_file: str, *, skip_empty: bool = True,
+                   header_lines: list[str] | None = None) -> bool:
     """把结果表落盘缓存;默认空表不写(避免把失败/空结果当成有效缓存)。
 
+    header_lines 为可选的缓存键行(逐行以 "# " 前缀写在文件最前部),供同名覆盖式
+    缓存在命中时校验"文件内容是否对应当前查询";读取端会跳过 # 行,互不干扰。
     返回是否实际写出。目录不存在时自动创建。
     """
     if skip_empty and (df is None or df.empty):
         return False
     os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
-    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+    with open(cache_file, "w", encoding="utf-8-sig", newline="") as f:
+        for line in header_lines or []:
+            f.write(f"# {line}\n")
+        df.to_csv(f, index=False)
     return True
+
+
+def read_cache_key(cache_file: str) -> str | None:
+    """读取缓存文件首行 "# <键>" 形式的缓存键(save_csv_cache 的 header_lines 写入)。
+
+    没有该行(旧格式文件)返回 None。
+    """
+    try:
+        with open(cache_file, "r", encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.rstrip("\r\n")
+                if not line.strip():
+                    continue
+                if line.startswith("#"):
+                    return line[1:].strip()
+                return None
+    except OSError:
+        return None
+    return None

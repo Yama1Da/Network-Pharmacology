@@ -20,7 +20,13 @@ from core.enrichment import (
     gsea_gene_sets,
     render_gsea_plot,
 )
-from core.ppi import render_pyvis_html, save_gsea_results, save_module_results, save_rwr_results
+from core.ppi import (
+    render_pyvis_html,
+    save_gsea_results,
+    save_module_results,
+    save_proximity_results,
+    save_rwr_results,
+)
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
@@ -63,9 +69,9 @@ with col_input:
     if input_mode == "names":
         col_drug, col_dis = st.columns(2)
         with col_drug:
-            drug_name = st.text_input(t("net.drug_label"), value="aspirin")
+            drug_name = st.text_input(t("net.drug_label"), value="metformin")
         with col_dis:
-            disease_name = st.text_input(t("net.disease_label"), value="cancer")
+            disease_name = st.text_input(t("net.disease_label"), value="Type 2 diabetes mellitus")
         gene_text = ""
     else:
         drug_name, disease_name = "", ""
@@ -118,8 +124,11 @@ class _ReportProgress:
         self._bar.progress(min(max(fraction, 0.0), 1.0))
 
 
-def _compute_modules_data(graph, organism) -> dict:
-    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）。"""
+def _compute_modules_data(graph, organism, label_prefix: str = "") -> dict:
+    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）。
+
+    label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。
+    """
     modules = detect_louvain_modules(
         graph,
         resolution=config.LOUVAIN_RESOLUTION,
@@ -145,6 +154,7 @@ def _compute_modules_data(graph, organism) -> dict:
         organism=organism,
         min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
         top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
+        label_prefix=label_prefix,
     )
     return {
         "modules": modules,
@@ -168,7 +178,8 @@ def _save_modules_data(directory, prefix, computed: dict) -> dict:
 
 def _compute_ppi_modules(graph, organism, directory, prefix) -> dict:
     """模块检测 + 富集 + 结果落盘（交互区手动重跑入口）。目录须已存在。"""
-    return _save_modules_data(directory, prefix, _compute_modules_data(graph, organism))
+    return _save_modules_data(directory, prefix,
+                              _compute_modules_data(graph, organism, label_prefix=prefix))
 
 
 def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
@@ -184,8 +195,9 @@ def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str
         score_col = "score_ot"
     rnk, rstats = build_ranked_list(src_df, "approvedSymbol", score_col)
     gsea_status: dict = {}
+    # 缓存文件名里侧别(drug/disease)放在最前,避免与疾病名中可能出现的"disease"字样混淆
     gdf = fetch_enrichment_gsea_prerank(
-        rnk, libs=gsea_gene_sets(), label=f"{prefix}_{side}", status=gsea_status)
+        rnk, libs=gsea_gene_sets(), label=f"{side}_{prefix}", status=gsea_status)
     return gdf, rstats, gsea_status.get("reason", "")
 
 
@@ -296,7 +308,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         # 模块文件必须在主线程保存完主结果后再写,否则会被清掉。
         # 计算失败只跳过模块分析,不影响主报告(fut_mod.result() 拿到 None)。
         try:
-            return _compute_modules_data(graph, organism)
+            return _compute_modules_data(graph, organism, label_prefix=prefix)
         except Exception:
             logging.exception("Module detection step failed during report build — skipped gracefully")
             return None
@@ -379,6 +391,10 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         )
         saved.update(rwr_saved)
 
+    # 邻近度结果保存:报告页只作展示,这份 CSV 是它的唯一持久记录;失败/未计算不保存
+    if proximity_result and proximity_result.get("ok"):
+        saved.update(save_proximity_results(saved["directory"], prefix, proximity_result))
+
     # Step 5.5: 模块检测结果落盘（主目录已重建完毕,此时写入不会被清掉）
     modules_result: dict | None = None
     if modules_data is not None:
@@ -435,30 +451,36 @@ if run_btn:
         steps = ["targets", "string", "graph", "enrichment",
                  *(["gsea", "network"] if input_mode == "names" else []),
                  "modules", "save"]
-        ppi_result = _run_ppi_analysis(
-            input_mode,
-            drug_name.strip(),
-            disease_name.strip(),
-            gene_text.strip(),
-            config.SPECIES_MAP[species_label]["ncbi_taxon"],
-            config.SPECIES_MAP[species_label]["gprofiler"],
-            score,
-            int(min_degree),
-            progress=_ReportProgress(steps),
-        )
-        st.session_state.ppi = ppi_result
-        # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
-        st.session_state.ppi_gsea = {
-            side: {**info, "ppi_params": ppi_result["params"]}
-            for side, info in ppi_result.get("gsea", {}).items()
-        }
-        # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
-        mods_auto = ppi_result.get("modules")
-        st.session_state.ppi_modules = (
-            {**mods_auto, "ppi_params": ppi_result["params"]}
-            if mods_auto is not None else None
-        )
-        st.rerun()
+        try:
+            ppi_result = _run_ppi_analysis(
+                input_mode,
+                drug_name.strip(),
+                disease_name.strip(),
+                gene_text.strip(),
+                config.SPECIES_MAP[species_label]["ncbi_taxon"],
+                config.SPECIES_MAP[species_label]["gprofiler"],
+                score,
+                int(min_degree),
+                progress=_ReportProgress(steps),
+            )
+        except Exception:
+            # 面向用户只提示友好信息;完整堆栈经 logging.exception 写入日志文件供排查
+            logging.exception("PPI analysis failed")
+            st.error(t("net.analysis_fail"))
+        else:
+            st.session_state.ppi = ppi_result
+            # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
+            st.session_state.ppi_gsea = {
+                side: {**info, "ppi_params": ppi_result["params"]}
+                for side, info in ppi_result.get("gsea", {}).items()
+            }
+            # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
+            mods_auto = ppi_result.get("modules")
+            st.session_state.ppi_modules = (
+                {**mods_auto, "ppi_params": ppi_result["params"]}
+                if mods_auto is not None else None
+            )
+            st.rerun()
 
 # ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
 ppi = st.session_state.ppi
@@ -478,9 +500,11 @@ if ppi is not None:
 
     if not genes:
         st.warning(t("net.no_common"))
-    elif edges_df.empty:
-        st.error(t("net.no_interactions"))
     else:
+        # 交集过小(如降噪后)可能没有任何达到置信度的互作边:此时 PPI 网络为空,
+        # 但富集/GSEA/网络检验/下载等结果仍然有效,照常展示而非整页拦截
+        if edges_df.empty:
+            st.warning(t("net.no_interactions"))
         st.info(t("net.input_genes", n=len(genes)))
 
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
@@ -760,13 +784,18 @@ if ppi is not None:
                 else:
                     with st.spinner(t("net.modules_spinner_detect")):
                         # params[5] = 物种参数（organism）
-                        mods = _compute_ppi_modules(graph, current_params[5],
-                                                    saved["directory"], prefix)
-                        saved.update(mods["saved_paths"])
-                        st.session_state.ppi_modules = {
-                            **mods,
-                            "ppi_params": ppi["params"],
-                        }
+                        try:
+                            mods = _compute_ppi_modules(graph, current_params[5],
+                                                        saved["directory"], prefix)
+                        except Exception:
+                            logging.exception("Module analysis failed")
+                            st.error(t("net.analysis_fail"))
+                        else:
+                            saved.update(mods["saved_paths"])
+                            st.session_state.ppi_modules = {
+                                **mods,
+                                "ppi_params": ppi["params"],
+                            }
                     st.rerun()
 
             mods_res = st.session_state.ppi_modules

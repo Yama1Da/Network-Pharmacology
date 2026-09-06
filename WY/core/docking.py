@@ -126,6 +126,61 @@ def residues_in_box(pdb_path: str, box: dict) -> list[str]:
     return sorted(res)
 
 
+def residues_near_ligand(receptor_pdb: str, ligand_pdbqt: str, cutoff: float = 4.0) -> list[dict]:
+    """找出对接构象(配体)周围 cutoff Å 以内的蛋白残基,即结合位点残基。
+
+    只统计受体 PDB 中的蛋白原子(ATOM 记录),水与共晶配体不参与;
+    返回按链与残基编号排序、去重后的残基列表,每项含链号 chain、
+    残基编号 resi、残基名 resn,以及标注名称用的代表原子坐标 pos(CA 原子优先)。
+    """
+    import re
+
+    lig: list[tuple] = []
+    with open(ligand_pdbqt, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line[:6].strip() not in ("ATOM", "HETATM"):
+                continue
+            try:
+                lig.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
+            except ValueError:
+                continue
+    if not lig:
+        return []
+
+    cutoff2 = cutoff * cutoff
+    found: dict[tuple, dict] = {}
+    with open(receptor_pdb, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.startswith("ATOM") or line[16:17] not in ("", " ", "A"):
+                continue  # 非蛋白记录与 altloc 冗余构象不参与位点判定
+            try:
+                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            except ValueError:
+                continue
+            key = (line[21:22].strip(), line[22:26].strip())
+            info = found.get(key)
+            if info is None:
+                info = {"resn": line[17:20].strip(), "ca": None, "pos": xyz, "near": False}
+                found[key] = info
+            if info["ca"] is None and line[12:16].strip() == "CA":
+                info["ca"] = xyz
+            if not info["near"]:
+                for lx, ly, lz in lig:
+                    dx, dy, dz = xyz[0] - lx, xyz[1] - ly, xyz[2] - lz
+                    if (abs(dx) <= cutoff and abs(dy) <= cutoff and abs(dz) <= cutoff
+                            and dx * dx + dy * dy + dz * dz <= cutoff2):
+                        info["near"] = True
+                        break
+    residues = [
+        {"chain": chain, "resi": resi, "resn": info["resn"],
+         "pos": info["ca"] or info["pos"]}
+        for (chain, resi), info in found.items() if info["near"]
+    ]
+    residues.sort(key=lambda r: (r["chain"], int(re.match(r"\d+", r["resi"]).group())
+                                 if re.match(r"\d+", r["resi"]) else 0, r["resi"]))
+    return residues
+
+
 def download_pdb(pdb_id: str) -> str:
     """按 PDB 编号下载受体结构文件;之前下载过则直接复用本地文件。返回本地路径。"""
     import config
@@ -297,7 +352,13 @@ def _rcsb_search_entry_ids(gene_symbol: str, max_hits: int) -> list[str]:
         max_retries=config.RCSB_SEARCH_MAX_RETRIES, timeout=config.API_TIMEOUT,
         label=f"RCSB search for {gene_symbol}", throttle_key="rcsb_search",
         headers=_RCSB_HEADERS, raise_on_exhausted=True, use_cache=True,
+        no_retry_status=(204,),
     )
+    # RCSB 官方行为:查询成功但 0 命中时返回 204 No Content(空响应体),
+    # 不能按 JSON 解析——按"无实验结构"处理,返回空列表
+    if resp is None or resp.status_code == 204 or not resp.content.strip():
+        logging.info("RCSB search: no experimental structures for %s", gene_symbol)
+        return []
     return [hit.get("identifier", "") for hit in resp.json().get("result_set", [])
             if hit.get("identifier")][:max_hits]
 
@@ -363,7 +424,13 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
     gene_ids: dict[str, list[str]] = {}
 
     def _search(g: str) -> tuple[str, list[str]]:
-        return g, _rcsb_search_entry_ids(g, max_hits)
+        try:
+            return g, _rcsb_search_entry_ids(g, max_hits)
+        except Exception:
+            # 单基因检索失败只影响该基因:记日志、按无结构处理,不让整批报废;
+            # 无结构基因仍可被后续的 AlphaFold 兜底接住
+            logging.exception("RCSB batch search failed for gene %s; treating as no-hit", g)
+            return g, []
 
     with ThreadPoolExecutor(max_workers=_RCSB_BATCH_WORKERS,
                             thread_name_prefix="rcsb-search") as pool:
@@ -436,20 +503,24 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
         "request_options": {"return_all_hits": True},
     }
     # 查询有频率限制,失败会自动重试几次,全部失败才报错。
-    # 注意:检索成功但没有命中结构不算失败。
+    # 注意:检索成功但没有命中结构不算失败——RCSB 对 0 命中返回 204 空响应体。
     try:
         resp = request_with_retry(
             "https://search.rcsb.org/rcsbsearch/v2/query", json=query,
             max_retries=config.RCSB_SEARCH_MAX_RETRIES, timeout=config.API_TIMEOUT,
             label=f"RCSB search for {gene_symbol}", throttle_key="rcsb_search",
             headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
-            raise_on_exhausted=True,
+            raise_on_exhausted=True, no_retry_status=(204,),
         )
     except Exception as exc:
         # 搜索失败要报错供页面提示;查无结构属正常情况
         logging.exception("RCSB search failed for gene %s", gene_symbol)
         raise RuntimeError(f"RCSB 搜索失败（{gene_symbol}）：{exc}")
-    hits = resp.json().get("result_set", [])[:max_hits]
+    if resp is None or resp.status_code == 204 or not resp.content.strip():
+        logging.info("RCSB search: no experimental structures for %s", gene_symbol)
+        hits = []
+    else:
+        hits = resp.json().get("result_set", [])[:max_hits]
 
     # 2) 补充每个结构的分辨率、实验方法、标题等信息
     def _fetch_meta(entry_id: str) -> tuple[str, float | None, str, str]:

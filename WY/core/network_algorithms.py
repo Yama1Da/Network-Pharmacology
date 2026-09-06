@@ -14,6 +14,7 @@ from .enrichment import (
     ENRICHR_LIB_MAP,
     _ENRICHR_ORGANISM_MAP,
     _enrichment_cache_key,
+    enrichment_cache_filename,
     fetch_enrichment_enrichr,
     fetch_enrichment_gprofiler,
 )
@@ -61,13 +62,15 @@ def _module_cache_files(genes: list[str], organism: str, sources: tuple,
     if not genes_clean:
         return files
     md5_gp = _enrichment_cache_key(genes_clean, organism, sources, pvalue)
-    files.append(os.path.join(config.ENRICHMENT_CACHE_DIR, f"gProfiler_{label}_{md5_gp}.csv"))
+    files.append(os.path.join(config.ENRICHMENT_CACHE_DIR,
+                              enrichment_cache_filename("gProfiler", label, md5_gp)))
     enrichr_org = _ENRICHR_ORGANISM_MAP.get(organism)
     if enrichr_org:
         libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
         if libs:
             md5_enr = _enrichment_cache_key(genes_clean, enrichr_org, libs, pvalue)
-            files.append(os.path.join(config.ENRICHMENT_CACHE_DIR, f"Enrichr_{label}_{md5_enr}.csv"))
+            files.append(os.path.join(config.ENRICHMENT_CACHE_DIR,
+                                      enrichment_cache_filename("Enrichr", label, md5_enr)))
     return files
 
 
@@ -126,9 +129,13 @@ def enrich_modules(
     top_n_modules: int = 10,
     sources: tuple | None = None,
     pvalue: float = 0.05,
+    label_prefix: str = "",
 ) -> tuple[pd.DataFrame, list[dict], list[int]]:
     """
     批量模块富集：对满足规模条件的模块（取规模最大的前 top_n_modules 个）逐个做 GO/KEGG 富集并汇总为长表。
+
+    label_prefix 为所属分析的"药物_疾病"标识,拼进缓存文件名
+    （如 gProfiler_aspirin_cancer_module1_<哈希>.csv）,让模块结果在文件列表里能认出归属。
 
     某模块富集失败时计入 failures（页面报错），并清除该模块可能产生的缓存文件，
     保证空表不会是失败残留；两链路成功但无显著条目的模块计入 no_sig（页面一般性提示）。
@@ -144,7 +151,7 @@ def enrich_modules(
 
         线程安全:各模块的缓存文件名互不相同,状态都记在局部变量里。
         """
-        label = f"module{m['module_id']}"
+        label = f"{label_prefix}_module{m['module_id']}" if label_prefix else f"module{m['module_id']}"
         cache_files = _module_cache_files(m["genes"], organism, sources, pvalue, label)
         try:
             df, used_source, failed, err = _enrich_single_module(
@@ -476,11 +483,38 @@ def _save_json_cache(cache_path: str, result: dict) -> None:
         json.dump(result, f, ensure_ascii=False)
 
 
+def _clean_expired_caches(directory: str) -> None:
+    """删除目录里超过缓存有效期(CACHE_TTL_SECONDS)的 JSON 缓存。
+
+    这些结果已永久保存在分析结果目录(<prefix>_data)中,过期的计算缓存删除即可,
+    下次分析会重算并重新覆盖;调用方进入缓存读写前调用一次即可。
+    """
+    import time
+
+    import config
+
+    if not os.path.isdir(directory):
+        return
+    cutoff = time.time() - config.CACHE_TTL_SECONDS
+    for name in os.listdir(directory):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                logging.info("Expired cache removed: %s", name)
+        except OSError:
+            logging.exception("Failed to remove expired cache %s", path)
+
+
 def run_proximity_cached(drug_genes: list, disease_genes: list,
                          species: str = "Human", label: str | None = None) -> dict:
     """
     邻近度分析入口（带文件缓存）：成功才写缓存，失败/背景网络未构建即时返回不缓存。
-    缓存键由两个基因集、物种、置换参数与背景网络版本/阈值决定，任一变化即重算。
+    同名覆盖式缓存:文件名只由标识(label)决定,同一标识只保留最新一份;
+    是否命中由文件内记录的缓存键校验,基因集/参数变了会重算并覆盖。
+    过期的缓存文件(含其它分析的)自动删除,结果已在分析结果目录永久保存。
     """
     import hashlib
 
@@ -497,15 +531,19 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
                + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}"
                + "|v2-excl")  # v2：结果新增去交集字段，旧缓存（v1）自动失效重算
     md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
-    name = f"proximity_{label}_{md5}.json" if label else f"proximity_{md5}.json"
+    name = f"proximity_{label}.json" if label else f"proximity_{md5[:12]}.json"
     os.makedirs(config.PROXIMITY_CACHE_DIR, exist_ok=True)
+    _clean_expired_caches(config.PROXIMITY_CACHE_DIR)
     cache_path = os.path.join(config.PROXIMITY_CACHE_DIR, name)
 
     cached = _load_json_cache(cache_path, "Proximity")
-    if cached is not None:
+    if cached is not None and cached.get("cache_key") == md5:
         cached["cached"] = True
         logging.info("Proximity cache hit: %s", name)
         return cached
+    if cached is not None:
+        # 同名但输入(基因集/参数)变了:按未命中处理,重算后覆盖
+        logging.info("Proximity cache key changed, recompute: %s", name)
 
     try:
         result = proximity_zscore(drug_genes, disease_genes, species=species)
@@ -514,6 +552,7 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
         return {"ok": False, "error": "not_built", "d_c": None, "z": None,
                 "p_empirical": None, "coverage": {}, "cached": False}
     if result.get("ok"):
+        result["cache_key"] = md5
         _save_json_cache(cache_path, result)
     return result
 
@@ -681,6 +720,9 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
     RWR 入口（带文件缓存）：成功才写缓存，失败/背景网络未构建即时返回不缓存。
     标注集必须参与缓存键：度匹配校正依赖全量得分向量，只能在计算期完成，
     不能命中旧缓存后补算。非种子行截断为 config.RWR_CACHE_TOP_N。
+    同名覆盖式缓存:文件名只由标识(label,含药物/疾病侧)决定,同一标识只保留最新一份;
+    是否命中由文件内记录的缓存键校验,种子/参数变了会重算并覆盖。
+    过期的缓存文件(含其它分析的)自动删除;排序结果已在分析结果目录永久保存。
     """
     import hashlib
 
@@ -697,8 +739,9 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
                + f"|{config.PROXIMITY_DEGREE_BIN_SIZE}"
                + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}")
     md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
-    name = f"rwr_{label}_{md5}.json" if label else f"rwr_{md5}.json"
+    name = f"rwr_{label}.json" if label else f"rwr_{md5[:12]}.json"
     os.makedirs(config.RWR_CACHE_DIR, exist_ok=True)
+    _clean_expired_caches(config.RWR_CACHE_DIR)
     cache_path = os.path.join(config.RWR_CACHE_DIR, name)
 
     def _valid_schema(d: dict) -> None:
@@ -707,10 +750,13 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
             raise ValueError("outdated RWR cache schema")
 
     result = _load_json_cache(cache_path, "RWR", validate=_valid_schema)
-    if result is not None:
+    if result is not None and result.get("cache_key") == md5:
         result["cached"] = True
         logging.info("RWR cache hit: %s", name)
         return result
+    if result is not None:
+        # 同名但输入(种子/参数)变了:按未命中处理,重算后覆盖
+        logging.info("RWR cache key changed, recompute: %s", name)
 
     try:
         ctx = _lcc_context(species)
@@ -726,6 +772,7 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
         return {"ok": False, "error": "not_built", "seeds": [], "top_nonseed": [],
                 "coverage": {}, "cached": False}
     if result.get("ok"):
+        result["cache_key"] = md5
         _save_json_cache(cache_path, result)
         result["cached"] = False
     return result

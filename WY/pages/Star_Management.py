@@ -55,20 +55,24 @@ if st.session_state.pop("_star_deleted", None):
     st.success(t("star.deleted"))
 
 star_dir = config.MD_STAR_DIR
-names = []
+all_names = []
 if os.path.isdir(star_dir):
-    names = sorted(n for n in os.listdir(star_dir)
-                   if os.path.isdir(os.path.join(star_dir, n)))
+    all_names = sorted(n for n in os.listdir(star_dir)
+                       if os.path.isdir(os.path.join(star_dir, n)))
+# 批量删除结果提示(多选删除在确认弹窗内完成,结果跨 rerun 传递)
+Utils.show_file_op_result("star_dirs")
+
 query = st.text_input(t("common.search_placeholder"), key="search_star").strip().lower()
-if query:
-    names = [n for n in names if query in n.lower()]
+names = [n for n in all_names if query in n.lower()] if query else all_names
 if not names:
     st.info(t("common.search_no_match", query=query) if query else t("star.empty"))
 else:
     st.caption(t("star.total", count=len(names)))
 
-    # 表头
-    col_h_name, col_h_time, col_h_dl, col_h_del = st.columns([4, 2, 1, 1])
+    # 表头(行首多选,支持批量下载/删除)
+    col_h_sel, col_h_name, col_h_time, col_h_dl, col_h_del = st.columns([0.5, 3.5, 2, 1, 1])
+    with col_h_sel:
+        select_all = Utils.render_select_all_checkbox("star_dirs", all_names)
     col_h_name.markdown(t("star.col_name"))
     col_h_time.markdown(t("star.col_time"))
     col_h_dl.markdown(t("common.col_download"))
@@ -77,7 +81,9 @@ else:
     for name in names:
         path = os.path.join(star_dir, name)
         created = datetime.fromtimestamp(os.path.getctime(path)).strftime("%Y-%m-%d %H:%M:%S")
-        col_a, col_b, col_c, col_d = st.columns([4, 2, 1, 1])
+        col_sel, col_a, col_b, col_c, col_d = st.columns([0.5, 3.5, 2, 1, 1])
+        with col_sel:
+            Utils.render_row_checkbox("star_dirs", name, select_all)
         col_a.write(name)
         col_b.write(created)
         with col_c:
@@ -89,3 +95,8 @@ else:
                 st.session_state["_star_pending"] = name
                 st.session_state["_star_pending_path"] = path
                 confirm_delete()
+
+    # 批量操作:下载选中(各目录打成一个 ZIP)/删除选中(确认弹窗)
+    Utils.collect_selected("star_dirs", all_names)
+    Utils.render_file_action_bar("star_dirs", star_dir, zip_name="Starred_results.zip",
+                                 dirs=True, confirm_key="star.dialog_confirm_batch")
