@@ -98,44 +98,48 @@ st.markdown("""
         border: 1px solid #909399;
         box-shadow: none;
     }
-    /* 左下角齿轮 FAB:悬浮圆形按钮,点击弹出设置悬浮窗(模态对话框) */
+    /* 左下角齿轮 FAB:无底色,只显示一个白色描边齿轮(带中孔);点击弹出设置悬浮窗 */
     div.st-key-gear_fab {
         position: fixed;
         bottom: 1.5rem;
         left: 1.5rem;
         z-index: 9999;
-        width: 48px;
-        height: 48px;
+        width: 18px;
+        height: 18px;
         pointer-events: auto;
     }
     div.st-key-gear_fab .stButton button {
-        width: 32px;
-        height: 32px;
-        min-height: 32px;
+        width: 18px;
+        height: 18px;
+        min-height: 18px;
         padding: 0;
         border-radius: 50%;
-        background-color: #FFFFFF;
-        color: #4b5563;
-        border: 1px solid #d1d5db;
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
-        font-size: 32px;
+        background-color: rgba(255, 255, 255, 0.08);
+        color: transparent;
+        border: none;
+        box-shadow: none;
         line-height: 1;
         display: flex;
         align-items: center;
         justify-content: center;
+        /* 齿轮用内联 SVG 绘制(白色描边、空心中心,40px):Streamlit 打包的
+           图标字体是静态实例,无可变轴,CSS 调不出空心,故不再依赖字体 */
+        background-image: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37c1 .608 2.296.07 2.572-1.065z%22/%3E%3Ccircle cx=%2212%22 cy=%2212%22 r=%223%22/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: center;
+        background-size: 18px 18px;
+        filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.3));
     }
-    /* 图标是独立的 <p> 元素,显式放大,不靠继承 */
-    div.st-key-gear_fab .stButton button p[data-testid="stIconMaterial"] {
-        font-size: 38px !important;
-        width: 38px;
-        height: 38px;
+    /* Material 字体齿轮文字隐藏(齿轮由按钮背景 SVG 绘制) */
+    div.st-key-gear_fab .stButton button span[role="img"] {
+        color: transparent !important;
     }
     div.st-key-gear_fab .stButton button:hover,
     div.st-key-gear_fab .stButton button:active {
-        background-color: #F3F4F6;
-        color: #111827;
-        border-color: #9ca3af;
-        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+        background-color: rgba(255, 255, 255, 0.18);
+        color: transparent;
+        box-shadow: none;
+        filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.5));
     }
     /* 语言切换：iOS 风格滑动开关，文本直接嵌在开关轨道内
        （左=中文红 / 右=English蓝，文字始终位于滑块对侧） */
