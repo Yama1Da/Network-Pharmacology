@@ -212,6 +212,25 @@ def t_throttle_spacing():
             hc._next_allowed_at.pop("selftest", None)
 
 
+def t_interactive_3d_html():
+    """交互式 3D HTML:坐标须以合法 JSON 内嵌,离线/在线两种模式标记正确。"""
+    import json as _json
+
+    receptor = "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+    ligand = "ATOM      1  N   LIG B   1       1.000   1.000   1.000  1.00  0.00           N\n"
+    # 离线模式:传入库源码,HTML 直接内嵌且标记为离线可用
+    html, offline = dock.build_interactive_3d_html(
+        receptor, ligand, caption="gene · pose 1", lib_js="var $3Dmol = {};")
+    assert offline and "$3Dmol.createViewer" in html
+    assert 'var receptor = "ATOM' in html, "receptor must be embedded as a JSON string"
+    # 内嵌的坐标文本必须是合法 JSON(转义正确,浏览器端才能还原)
+    embedded = html.split("var receptor = ", 1)[1].split(";\n", 1)[0]
+    assert _json.loads(embedded) == receptor, "embedded receptor must round-trip"
+    # 在线模式:不传库源码,应改用 CDN 引用并明确标记非离线
+    html2, offline2 = dock.build_interactive_3d_html(receptor, ligand)
+    assert not offline2 and 'src="https://3dmol.org' in html2
+
+
 def main():
     tests = [
         ("clamp_box under/over limit", t_clamp_box),
@@ -222,6 +241,7 @@ def main():
         ("uniprot network failure not cached", t_uniprot_network_failure_not_cached),
         ("alphafold pdb skip-if-exists", t_af_pdb_skip_existing),
         ("candidates AF fallback row", t_candidates_af_fallback_row),
+        ("interactive 3D html embed", t_interactive_3d_html),
     ]
     run(tests, "docking AlphaFold selfcheck")
 
