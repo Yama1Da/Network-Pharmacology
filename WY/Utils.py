@@ -280,3 +280,53 @@ def render_updateable_file_table(files_df, spec: dict, *, search_key: str) -> st
                 csv_download_button(_mgmt_file_path(row["File name"], spec),
                                     row["File name"], key=f"download_{row['File name']}")
     return clicked
+
+
+# ---------- 设置面板(主页面板齿轮)公共逻辑 ----------
+
+def save_ui_settings(overrides: dict) -> None:
+    """把齿轮面板修改的分析参数持久化到 ui_settings.json。
+
+    config.py 启动时会读取该文件套用覆盖值,因此设置重启后仍生效;
+    只写白名单内的键(数值参数与 ChEMBL 黑名单),其余忽略。
+    """
+    import json
+
+    import config
+
+    clean: dict = {}
+    for k, v in overrides.items():
+        if k == "CHEMBL_TARGET_BLACKLIST":
+            if isinstance(v, (list, tuple)):
+                clean[k] = sorted({str(x).strip().upper() for x in v if str(x).strip()})
+        elif k in config.UI_SETTINGS_KEYS and isinstance(v, (int, float)) \
+                and not isinstance(v, bool):
+            clean[k] = float(v)
+    if not clean:
+        return
+    os.makedirs(os.path.dirname(config.UI_SETTINGS_FILE), exist_ok=True)
+    with open(config.UI_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(clean, f, ensure_ascii=False, indent=2)
+
+
+def purge_merged_cache() -> int:
+    """清空 merged 整合缓存目录,返回删除的文件数。
+
+    降噪阈值等参数变更后,旧参数算出的整合结果不再可信,统一清除,
+    下次分析按新参数从原始缓存重建(原始缓存不受影响,无需重新联网)。
+    """
+    import glob
+    import logging
+
+    import config
+
+    n = 0
+    for path in glob.glob(os.path.join(config.MERGED_CACHE_DIR, "*.csv")):
+        try:
+            os.remove(path)
+            n += 1
+        except OSError:
+            pass
+    if n:
+        logging.info("Purged %d merged cache files (settings changed)", n)
+    return n

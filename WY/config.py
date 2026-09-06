@@ -59,6 +59,11 @@ TARGET_FILTER_VERSION = 1
 CHEMBL_TARGET_BLACKLIST = (
     "ALB", "CYP1A2", "CYP2A6", "CYP2C9", "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4",
 )
+# 设置面板里黑名单的常用候选(白蛋白、主要代谢 CYP、常见结合蛋白);面板也支持手输任意基因符号
+CHEMBL_BLACKLIST_OPTIONS = (
+    "ALB", "CYP1A1", "CYP1A2", "CYP1B1", "CYP2A6", "CYP2B6", "CYP2C8", "CYP2C9",
+    "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4", "CYP3A5", "CES1", "GSTP1", "F2", "UGT1A1",
+)
 # ChEMBL pChEMBL 活性下限:基因的最大 pChEMBL 达到该值才保留;
 # 完全没有 pChEMBL 定量值的基因需被 DGIdb 佐证(通过 DGIDB_MIN_SCORE 过滤)才保留;
 # 仅有弱定量活性(0 < pChEMBL < 阈值)的基因剔除。
@@ -323,3 +328,28 @@ HOST_MIN_REQUEST_INTERVAL = {
     "alphafold": 1.1,     # AlphaFold 文件下载（EBI 同域）
     "uniprot": 1.1,       # UniProt REST 兜底
 }
+
+# ======== 页面设置覆盖(主页面板齿轮保存的运行时设置) ========
+# 齿轮面板修改的分析参数会写入 Static/data/cache/ui_settings.json,
+# 启动时在此套用,保证重启后设置仍生效。只允许覆盖白名单内的键。
+UI_SETTINGS_FILE = os.path.join(CACHE_DIR, "ui_settings.json")
+UI_SETTINGS_KEYS = (
+    "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
+    "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION",
+)
+if os.path.exists(UI_SETTINGS_FILE):
+    try:
+        import json
+        with open(UI_SETTINGS_FILE, "r", encoding="utf-8") as _f:
+            _ui_overrides = json.load(_f)
+        for _k, _v in _ui_overrides.items():
+            if _k == "CHEMBL_TARGET_BLACKLIST":
+                # 黑名单是字符串列表,单独校验后套用
+                if isinstance(_v, list) and all(isinstance(_i, str) for _i in _v):
+                    globals()[_k] = tuple(_v)
+            elif _k in UI_SETTINGS_KEYS and isinstance(_v, (int, float)) \
+                    and not isinstance(_v, bool):
+                globals()[_k] = _v
+    except Exception:
+        # 设置文件损坏时不阻断启动,按 config.py 内置值运行
+        pass

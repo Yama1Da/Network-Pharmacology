@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+import config
 import Utils
 from i18n import t, set_lang, get_lang
 import matplotlib.pyplot as plt
@@ -96,6 +97,45 @@ st.markdown("""
         color: #FFFFFF;
         border: 1px solid #909399;
         box-shadow: none;
+    }
+    /* 左下角齿轮 FAB:悬浮圆形按钮,点击弹出设置悬浮窗(模态对话框) */
+    div.st-key-gear_fab {
+        position: fixed;
+        bottom: 1.5rem;
+        left: 1.5rem;
+        z-index: 9999;
+        width: 48px;
+        height: 48px;
+        pointer-events: auto;
+    }
+    div.st-key-gear_fab .stButton button {
+        width: 32px;
+        height: 32px;
+        min-height: 32px;
+        padding: 0;
+        border-radius: 50%;
+        background-color: #FFFFFF;
+        color: #4b5563;
+        border: 1px solid #d1d5db;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+        font-size: 32px;
+        line-height: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    /* 图标是独立的 <p> 元素,显式放大,不靠继承 */
+    div.st-key-gear_fab .stButton button p[data-testid="stIconMaterial"] {
+        font-size: 38px !important;
+        width: 38px;
+        height: 38px;
+    }
+    div.st-key-gear_fab .stButton button:hover,
+    div.st-key-gear_fab .stButton button:active {
+        background-color: #F3F4F6;
+        color: #111827;
+        border-color: #9ca3af;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
     }
     /* 语言切换：iOS 风格滑动开关，文本直接嵌在开关轨道内
        （左=中文红 / 右=English蓝，文字始终位于滑块对侧） */
@@ -236,9 +276,56 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ---------- Settings floating window (modal dialog, opened by the bottom-left gear) ----------
+@st.dialog(t("app.settings.title"))
+def _open_settings_dialog() -> None:
+    """设置悬浮窗:靶点降噪阈值与黑名单、富集/模块参数,改动即时生效并持久化。"""
+    st.caption(t("app.settings.caption"))
+    # ChEMBL 黑名单:可在常用选项里勾选,也支持手输任意基因符号
+    new_bl = st.multiselect(
+        t("app.settings.blacklist"),
+        options=list(config.CHEMBL_BLACKLIST_OPTIONS),
+        default=list(config.CHEMBL_TARGET_BLACKLIST),
+        accept_new_options=True,
+        key="set_blacklist",
+    )
+    new_vals = {
+        "CHEMBL_PCHEMBL_THRESHOLD": st.number_input(
+            t("app.settings.pchembl"), min_value=0.0, max_value=12.0, step=0.1,
+            value=float(config.CHEMBL_PCHEMBL_THRESHOLD), key="set_pchembl"),
+        "DGIDB_MIN_SCORE": st.number_input(
+            t("app.settings.dgidb"), min_value=0.0, max_value=1.0, step=0.01,
+            value=float(config.DGIDB_MIN_SCORE), key="set_dgidb"),
+        "OT_MIN_SCORE": st.number_input(
+            t("app.settings.ot"), min_value=0.0, max_value=1.0, step=0.05,
+            value=float(config.OT_MIN_SCORE), key="set_ot"),
+        "ENRICHMENT_PVALUE": st.number_input(
+            t("app.settings.enr_p"), min_value=0.001, max_value=0.5, step=0.005,
+            value=float(config.ENRICHMENT_PVALUE), key="set_enr_p"),
+        "LOUVAIN_RESOLUTION": st.number_input(
+            t("app.settings.louvain"), min_value=0.3, max_value=3.0, step=0.1,
+            value=float(config.LOUVAIN_RESOLUTION), key="set_louvain"),
+    }
+    # 有变化才动手:改 config 运行时值 + 持久化 + 清 merged 整合缓存
+    changed = {k: v for k, v in new_vals.items() if v != getattr(config, k)}
+    if sorted(new_bl) != sorted(config.CHEMBL_TARGET_BLACKLIST):
+        changed["CHEMBL_TARGET_BLACKLIST"] = new_bl
+    if changed:
+        for _k, _v in changed.items():
+            setattr(config, _k, _v)
+        Utils.save_ui_settings(changed)
+        Utils.purge_merged_cache()
+        st.toast(t("app.settings.toast"))
+
+
 # ---------- Title ----------
 st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtitle")}</p></div>',
             unsafe_allow_html=True)
+
+# ---------- Bottom-left gear: opens the settings modal ----------
+with st.container(key="gear_fab"):
+    if st.button(":material/settings:", key="gear_fab_btn"):
+        _open_settings_dialog()
 
 # ---------- Language sliding switch + Logs button (fixed top-right) ----------
 with st.container(key="top_right_logs"):
