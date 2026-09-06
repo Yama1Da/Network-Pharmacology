@@ -107,8 +107,15 @@ def df_download_button(df, file_name: str, *, key: str) -> None:
                        file_name=file_name, mime="text/csv", key=key)
 
 
-def render_file_table(files_df, cache_dir: str) -> None:
-    """"文件名 | 创建时间 | 下载"三列文件列表:表头 + 每行一个下载按钮。"""
+def render_file_table(files_df, cache_dir: str, *, search_key: str) -> None:
+    """"文件名 | 创建时间 | 下载"三列文件列表:顶部搜索框过滤文件名,表头 + 每行一个下载按钮。"""
+    query = st.text_input(t("common.search_placeholder"), key=search_key).strip().lower()
+    if query:
+        # 子串大小写不敏感匹配;regex=False 防关键词里的正则元字符报错
+        files_df = files_df[files_df["File name"].str.lower().str.contains(query, regex=False)]
+    if files_df.empty:
+        st.info(t("common.search_no_match", query=query))
+        return
     col_h_name, col_h_time, col_h_dl = st.columns([4, 2, 1])
     col_h_name.markdown(t("common.col_file_name"))
     col_h_time.markdown(t("common.col_created"))
@@ -245,8 +252,14 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None):
     return pd.DataFrame(rows, columns=["File", "Status", "Message"])
 
 
-def render_updateable_file_table(files_df, spec: dict) -> str | None:
-    """"文件名 | 创建时间 | 更新 | 下载"四列文件列表;返回被点击 Update 的文件名。"""
+def render_updateable_file_table(files_df, spec: dict, *, search_key: str) -> str | None:
+    """"文件名 | 创建时间 | 更新 | 下载"四列文件列表;返回被点击 Update 的文件名。顶部搜索框过滤文件名。"""
+    query = st.text_input(t("common.search_placeholder"), key=search_key).strip().lower()
+    if query:
+        files_df = files_df[files_df["File name"].str.lower().str.contains(query, regex=False)]
+    if files_df.empty:
+        st.info(t("common.search_no_match", query=query))
+        return None
     col_h_name, col_h_time, col_h_btn, col_h_dl = st.columns([3, 2, 1, 1])
     col_h_name.markdown(t("common.col_file_name"))
     col_h_time.markdown(t("common.col_created"))
