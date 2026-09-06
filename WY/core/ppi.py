@@ -448,3 +448,26 @@ def save_rwr_results(
         ("rwr_disease_csv", f"{prefix}_rwr_disease_seeds.csv", disease_df),
         ("rwr_drug_csv", f"{prefix}_rwr_drug_seeds.csv", drug_df),
     ))
+
+
+def save_proximity_results(directory: str, prefix: str, result: dict | None) -> dict:
+    """
+    把网络邻近度检验结果保存到分析目录({prefix}_proximity.csv,metric/value 两列)。
+
+    报告页只作展示,这份文件是邻近度结果的唯一持久记录(cache 里的 JSON 按
+    有效期自动清理);失败/未计算/空结果不落盘。约定同前。
+    """
+    if not result or not result.get("ok"):
+        return {}
+    rows: list[dict] = []
+    for key in ("d_c", "z", "p_empirical", "d_c_excl", "z_excl", "p_excl", "n_excl",
+                "n_perm", "seed", "mean_random", "std_random", "lcc_nodes"):
+        if result.get(key) is not None:
+            rows.append({"metric": key, "value": result[key]})
+    for key, val in (result.get("coverage") or {}).items():
+        rows.append({"metric": f"coverage_{key}", "value": val})
+    if not rows:
+        return {}
+    return _save_optional_csvs(directory, "Proximity results", (
+        ("proximity_csv", f"{prefix}_proximity.csv", pd.DataFrame(rows)),
+    ))

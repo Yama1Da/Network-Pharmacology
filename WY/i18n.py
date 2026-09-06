@@ -144,6 +144,7 @@ TEXT: dict[str, dict[str, str]] = {
         "common.delete_done": "✅ Deleted {n} item(s)",
         "common.delete_failed": "❌ Failed to delete: {names}",
         "common.source_filter": "**Source filter**",
+        "common.filter_merged": "Merged",
         "common.filter_no_match": "No files match the selected filters.",
         # ---- PPI_Information.py ----
         "ppi_info.page_title": "PPI Information",
@@ -556,6 +557,7 @@ TEXT: dict[str, dict[str, str]] = {
         "common.delete_done": "✅ 已删除 {n} 个条目",
         "common.delete_failed": "❌ 删除失败：{names}",
         "common.source_filter": "**来源筛选**",
+        "common.filter_merged": "整合(Merged)",
         "common.filter_no_match": "没有符合所选筛选条件的文件。",
         # ---- PPI_Information.py ----
         "ppi_info.page_title": "PPI 信息",

@@ -20,7 +20,13 @@ from core.enrichment import (
     gsea_gene_sets,
     render_gsea_plot,
 )
-from core.ppi import render_pyvis_html, save_gsea_results, save_module_results, save_rwr_results
+from core.ppi import (
+    render_pyvis_html,
+    save_gsea_results,
+    save_module_results,
+    save_proximity_results,
+    save_rwr_results,
+)
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
@@ -384,6 +390,10 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
             drug_df=_rwr_df(rwr_results.get("drug_seeds", {})),
         )
         saved.update(rwr_saved)
+
+    # 邻近度结果保存:报告页只作展示,这份 CSV 是它的唯一持久记录;失败/未计算不保存
+    if proximity_result and proximity_result.get("ok"):
+        saved.update(save_proximity_results(saved["directory"], prefix, proximity_result))
 
     # Step 5.5: 模块检测结果落盘（主目录已重建完毕,此时写入不会被清掉）
     modules_result: dict | None = None

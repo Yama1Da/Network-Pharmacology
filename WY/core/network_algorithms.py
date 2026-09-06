@@ -483,11 +483,38 @@ def _save_json_cache(cache_path: str, result: dict) -> None:
         json.dump(result, f, ensure_ascii=False)
 
 
+def _clean_expired_caches(directory: str) -> None:
+    """删除目录里超过缓存有效期(CACHE_TTL_SECONDS)的 JSON 缓存。
+
+    这些结果已永久保存在分析结果目录(<prefix>_data)中,过期的计算缓存删除即可,
+    下次分析会重算并重新覆盖;调用方进入缓存读写前调用一次即可。
+    """
+    import time
+
+    import config
+
+    if not os.path.isdir(directory):
+        return
+    cutoff = time.time() - config.CACHE_TTL_SECONDS
+    for name in os.listdir(directory):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                logging.info("Expired cache removed: %s", name)
+        except OSError:
+            logging.exception("Failed to remove expired cache %s", path)
+
+
 def run_proximity_cached(drug_genes: list, disease_genes: list,
                          species: str = "Human", label: str | None = None) -> dict:
     """
     邻近度分析入口（带文件缓存）：成功才写缓存，失败/背景网络未构建即时返回不缓存。
-    缓存键由两个基因集、物种、置换参数与背景网络版本/阈值决定，任一变化即重算。
+    同名覆盖式缓存:文件名只由标识(label)决定,同一标识只保留最新一份;
+    是否命中由文件内记录的缓存键校验,基因集/参数变了会重算并覆盖。
+    过期的缓存文件(含其它分析的)自动删除,结果已在分析结果目录永久保存。
     """
     import hashlib
 
@@ -504,15 +531,19 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
                + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}"
                + "|v2-excl")  # v2：结果新增去交集字段，旧缓存（v1）自动失效重算
     md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
-    name = f"proximity_{label}_{md5}.json" if label else f"proximity_{md5}.json"
+    name = f"proximity_{label}.json" if label else f"proximity_{md5[:12]}.json"
     os.makedirs(config.PROXIMITY_CACHE_DIR, exist_ok=True)
+    _clean_expired_caches(config.PROXIMITY_CACHE_DIR)
     cache_path = os.path.join(config.PROXIMITY_CACHE_DIR, name)
 
     cached = _load_json_cache(cache_path, "Proximity")
-    if cached is not None:
+    if cached is not None and cached.get("cache_key") == md5:
         cached["cached"] = True
         logging.info("Proximity cache hit: %s", name)
         return cached
+    if cached is not None:
+        # 同名但输入(基因集/参数)变了:按未命中处理,重算后覆盖
+        logging.info("Proximity cache key changed, recompute: %s", name)
 
     try:
         result = proximity_zscore(drug_genes, disease_genes, species=species)
@@ -521,6 +552,7 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
         return {"ok": False, "error": "not_built", "d_c": None, "z": None,
                 "p_empirical": None, "coverage": {}, "cached": False}
     if result.get("ok"):
+        result["cache_key"] = md5
         _save_json_cache(cache_path, result)
     return result
 
@@ -688,6 +720,9 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
     RWR 入口（带文件缓存）：成功才写缓存，失败/背景网络未构建即时返回不缓存。
     标注集必须参与缓存键：度匹配校正依赖全量得分向量，只能在计算期完成，
     不能命中旧缓存后补算。非种子行截断为 config.RWR_CACHE_TOP_N。
+    同名覆盖式缓存:文件名只由标识(label,含药物/疾病侧)决定,同一标识只保留最新一份;
+    是否命中由文件内记录的缓存键校验,种子/参数变了会重算并覆盖。
+    过期的缓存文件(含其它分析的)自动删除;排序结果已在分析结果目录永久保存。
     """
     import hashlib
 
@@ -704,8 +739,9 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
                + f"|{config.PROXIMITY_DEGREE_BIN_SIZE}"
                + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}")
     md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
-    name = f"rwr_{label}_{md5}.json" if label else f"rwr_{md5}.json"
+    name = f"rwr_{label}.json" if label else f"rwr_{md5[:12]}.json"
     os.makedirs(config.RWR_CACHE_DIR, exist_ok=True)
+    _clean_expired_caches(config.RWR_CACHE_DIR)
     cache_path = os.path.join(config.RWR_CACHE_DIR, name)
 
     def _valid_schema(d: dict) -> None:
@@ -714,10 +750,13 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
             raise ValueError("outdated RWR cache schema")
 
     result = _load_json_cache(cache_path, "RWR", validate=_valid_schema)
-    if result is not None:
+    if result is not None and result.get("cache_key") == md5:
         result["cached"] = True
         logging.info("RWR cache hit: %s", name)
         return result
+    if result is not None:
+        # 同名但输入(种子/参数)变了:按未命中处理,重算后覆盖
+        logging.info("RWR cache key changed, recompute: %s", name)
 
     try:
         ctx = _lcc_context(species)
@@ -733,6 +772,7 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
         return {"ok": False, "error": "not_built", "seeds": [], "top_nonseed": [],
                 "coverage": {}, "cached": False}
     if result.get("ok"):
+        result["cache_key"] = md5
         _save_json_cache(cache_path, result)
         result["cached"] = False
     return result
