@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import os
+import re
 
 import pandas as pd
 
@@ -31,6 +32,112 @@ def _enrichment_cache_key(genes: list[str], organism: str, sources, pvalue: floa
         + f"|{organism}|{','.join(sources)}|{pvalue}"
     )
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+# 缓存文件名中哈希的保留长度:完整 md5 的前 12 位(48 位区分度,同一标识下几乎不会碰撞),
+# 避免整串 32 位哈希把文件名拖得又长又难认。
+_HASH_LEN = 12
+# 文件名解析时兼容的哈希长度:新文件 12 位,旧文件完整 32 位
+_HASH_RE = r"[0-9a-f]{8,32}"
+
+
+def enrichment_cache_filename(source_name: str, label: str | None, md5: str) -> str:
+    """构造富集缓存文件名:数据源_分析标识_短哈希.csv,如 gProfiler_aspirin_cancer_3c66bd3391a9.csv。
+
+    标识(label)为"药物_疾病"等分析前缀,便于用户直接从文件名认出是哪次分析;
+    md5 才是缓存命中键,标识只影响可读性。network_algorithms 推算模块缓存文件时也用它,
+    保证命名规则只有一份。
+    """
+    short = md5[:_HASH_LEN]
+    return f"{source_name}_{label}_{short}.csv" if label else f"{source_name}_{short}.csv"
+
+
+# ---------- 缓存文件名解析(页面友好展示与分子对接选择共用) ----------
+
+_ORA_NAME_RE = re.compile(
+    rf"^(?P<source>gProfiler|Enrichr)_(?P<label>.+)_(?P<hash>{_HASH_RE})\.csv$")
+_ORA_NAME_NO_LABEL_RE = re.compile(
+    rf"^(?P<source>gProfiler|Enrichr)_(?P<hash>{_HASH_RE})\.csv$")
+_GSEA_NAME_RE = re.compile(rf"^GSEA_(?P<rest>.+)_(?P<hash>{_HASH_RE})\.csv$")
+_GSEA_NAME_NO_LABEL_RE = re.compile(rf"^GSEA_(?P<hash>{_HASH_RE})\.csv$")
+
+
+def parse_enrichment_filename(file_name: str) -> dict | None:
+    """解析富集缓存文件名;不是富集缓存命名规则时返回 None。
+
+    返回 {"kind", "source", "label", "side"}:
+      kind   "ora"（g:Profiler/Enrichr 普通富集）或 "gsea"（排序富集）;
+      source 数据源名;
+      label  "药物_疾病"等分析标识;
+      side   仅 GSEA 有:药物侧 "drug" / 疾病侧 "disease"。
+    新命名为 GSEA_侧_标识_哈希;旧命名 GSEA_标识_侧_哈希 也兼容解析。
+    """
+    if not isinstance(file_name, str):
+        return None
+    m = _ORA_NAME_RE.match(file_name) or _ORA_NAME_NO_LABEL_RE.match(file_name)
+    if m:
+        return {"kind": "ora", "source": m.group("source"),
+                "label": m.groupdict().get("label", ""), "side": None}
+    m = _GSEA_NAME_RE.match(file_name)
+    if m:
+        rest = m.group("rest")
+        sm = re.match(r"^(?P<side>drug|disease)_(?P<prefix>.+)$", rest)      # 新命名:侧别在最前
+        if not sm:
+            sm = re.match(r"^(?P<prefix>.+)_(?P<side>drug|disease)$", rest)  # 旧命名:侧别在最后
+        if sm:
+            return {"kind": "gsea", "source": "GSEA",
+                    "label": sm.group("prefix"), "side": sm.group("side")}
+        return {"kind": "gsea", "source": "GSEA", "label": rest, "side": None}
+    if _GSEA_NAME_NO_LABEL_RE.match(file_name):
+        return {"kind": "gsea", "source": "GSEA", "label": "", "side": None}
+    return None
+
+
+def migrate_legacy_cache_names() -> int:
+    """把旧版完整 32 位哈希命名的富集缓存文件改为新的短哈希命名,返回迁移的文件数。
+
+    哈希即缓存键,改名不改变缓存命中;目标名已存在时逐字节比对,内容一致才删除旧文件去重,
+    否则保留旧文件。幂等:已是短哈希命名的文件原样保留。页面进入时调用一次即可。
+    """
+    import config
+
+    try:
+        names = os.listdir(config.ENRICHMENT_CACHE_DIR)
+    except OSError:
+        return 0
+    moved = 0
+    for name in names:
+        info = parse_enrichment_filename(name)
+        if info is None:
+            continue
+        m = re.search(rf"_({_HASH_RE})\.csv$", name)
+        full_hash = m.group(1) if m else ""
+        if len(full_hash) <= _HASH_LEN:
+            continue  # 已是短哈希命名
+        label = info["label"]
+        if info["kind"] == "gsea" and info["side"]:
+            label = f"{info['side']}_{label}"  # GSEA 统一为侧别在最前
+        target = enrichment_cache_filename(info["source"], label, full_hash)
+        if target == name:
+            continue
+        src = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
+        dst = os.path.join(config.ENRICHMENT_CACHE_DIR, target)
+        try:
+            if os.path.exists(dst):
+                # 同一缓存键的重复文件:内容一致才删旧留新(先关句柄再删,Windows 不允许删除打开中的文件)
+                with open(src, "rb") as f1, open(dst, "rb") as f2:
+                    same = f1.read() == f2.read()
+                if same:
+                    os.remove(src)
+                    moved += 1
+                continue
+            os.replace(src, dst)
+            moved += 1
+        except OSError:
+            logging.exception("Failed to migrate legacy enrichment cache file %s", name)
+    if moved:
+        logging.info("Enrichment cache files migrated to short-hash naming: %d", moved)
+    return moved
 
 
 # ---------- g:Profiler 熔断 ----------
@@ -177,8 +284,8 @@ def _fetch_enrichment_cached(
         return pd.DataFrame()
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
     md5 = _enrichment_cache_key(genes, organism, cache_key_extra, pvalue)
-    name = f"{source_name}_{label}_{md5}.csv" if label else f"{source_name}_{md5}.csv"
-    cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
+    cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR,
+                              enrichment_cache_filename(source_name, label, md5))
     cached = open_csv_cache(cache_file, fresh=True,
                             label=f"{source_name} enrichment for {len(genes)} genes")
     if cached is not None:
@@ -571,7 +678,11 @@ def _normalize_enrichment_gsea(res2d: pd.DataFrame) -> pd.DataFrame:
 
 
 def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None) -> str:
-    """GSEA 结果缓存路径：由基因排序与分数、基因集库、计算参数共同决定，相同输入命中同一缓存。"""
+    """GSEA 结果缓存路径：由基因排序与分数、基因集库、计算参数共同决定，相同输入命中同一缓存。
+
+    label 约定"侧别_分析标识"（如 disease_metformin_cancer），侧别放在最前,
+    避免与疾病名里的"disease"字样混淆。
+    """
     import config
 
     gene_part = "\r".join(rnk["gene"].astype(str))
@@ -581,8 +692,8 @@ def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None)
                + f"|{config.GSEA_SET_MIN_SIZE}|{config.GSEA_SET_MAX_SIZE}"
                + f"|{config.GSEA_PERMUTATION_NUM}|{config.GSEA_SEED}")
     md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
-    name = f"GSEA_{label}_{md5}.csv" if label else f"GSEA_{md5}.csv"
-    return os.path.join(config.ENRICHMENT_CACHE_DIR, name)
+    return os.path.join(config.ENRICHMENT_CACHE_DIR,
+                        enrichment_cache_filename("GSEA", label, md5))
 
 
 def fetch_enrichment_gsea_prerank(

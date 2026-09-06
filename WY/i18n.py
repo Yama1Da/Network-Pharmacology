@@ -142,6 +142,9 @@ TEXT: dict[str, dict[str, str]] = {
         "enrich_info.title": "🧪 Enrichment Information",
         "enrich_info.caption": "Cached enrichment result files under Static/data/cache/enrichment",
         "enrich_info.empty": "No cached enrichment files. Run a Data Network analysis first.",
+        # 富集文件友好名称中的 GSEA 侧别标签
+        "enrich_file.side_drug": "drug side",
+        "enrich_file.side_disease": "disease side",
         # ---- Drug_Target_Information_Management.py ----
         "drug_mgmt.page_title": "Drug Target Information Management",
         "drug_mgmt.title": "💊 Drug Target Information Management",
@@ -538,6 +541,9 @@ TEXT: dict[str, dict[str, str]] = {
         "enrich_info.title": "🧪 富集信息",
         "enrich_info.caption": "Static/data/cache/enrichment 下的富集结果缓存文件",
         "enrich_info.empty": "暂无富集缓存文件。请先运行数据网络药理学分析。",
+        # 富集文件友好名称中的 GSEA 侧别标签
+        "enrich_file.side_drug": "药物侧",
+        "enrich_file.side_disease": "疾病侧",
         # ---- Drug_Target_Information_Management.py ----
         "drug_mgmt.page_title": "药物靶点信息管理",
         "drug_mgmt.title": "💊 药物靶点信息管理",

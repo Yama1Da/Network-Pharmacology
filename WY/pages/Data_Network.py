@@ -118,8 +118,11 @@ class _ReportProgress:
         self._bar.progress(min(max(fraction, 0.0), 1.0))
 
 
-def _compute_modules_data(graph, organism) -> dict:
-    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）。"""
+def _compute_modules_data(graph, organism, label_prefix: str = "") -> dict:
+    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）。
+
+    label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。
+    """
     modules = detect_louvain_modules(
         graph,
         resolution=config.LOUVAIN_RESOLUTION,
@@ -145,6 +148,7 @@ def _compute_modules_data(graph, organism) -> dict:
         organism=organism,
         min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
         top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
+        label_prefix=label_prefix,
     )
     return {
         "modules": modules,
@@ -168,7 +172,8 @@ def _save_modules_data(directory, prefix, computed: dict) -> dict:
 
 def _compute_ppi_modules(graph, organism, directory, prefix) -> dict:
     """模块检测 + 富集 + 结果落盘（交互区手动重跑入口）。目录须已存在。"""
-    return _save_modules_data(directory, prefix, _compute_modules_data(graph, organism))
+    return _save_modules_data(directory, prefix,
+                              _compute_modules_data(graph, organism, label_prefix=prefix))
 
 
 def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
@@ -184,8 +189,9 @@ def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str
         score_col = "score_ot"
     rnk, rstats = build_ranked_list(src_df, "approvedSymbol", score_col)
     gsea_status: dict = {}
+    # 缓存文件名里侧别(drug/disease)放在最前,避免与疾病名中可能出现的"disease"字样混淆
     gdf = fetch_enrichment_gsea_prerank(
-        rnk, libs=gsea_gene_sets(), label=f"{prefix}_{side}", status=gsea_status)
+        rnk, libs=gsea_gene_sets(), label=f"{side}_{prefix}", status=gsea_status)
     return gdf, rstats, gsea_status.get("reason", "")
 
 
@@ -296,7 +302,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         # 模块文件必须在主线程保存完主结果后再写,否则会被清掉。
         # 计算失败只跳过模块分析,不影响主报告(fut_mod.result() 拿到 None)。
         try:
-            return _compute_modules_data(graph, organism)
+            return _compute_modules_data(graph, organism, label_prefix=prefix)
         except Exception:
             logging.exception("Module detection step failed during report build — skipped gracefully")
             return None

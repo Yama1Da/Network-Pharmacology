@@ -12,18 +12,23 @@ def _ctime_str(path: str) -> str:
 
 def _list_to_table(directory: str, *, name_col: str, dirs: bool,
                    skip_suffixes: tuple = (), name_pred=None,
-                   with_mtime: bool = False) -> pd.DataFrame:
+                   with_mtime: bool = False, exts: tuple = ()) -> pd.DataFrame:
     """列出 directory 下满足条件的条目名与创建时间;目录不存在时返回空表。
 
     dirs=True 选子目录,False 选文件;skip_suffixes 跳过指定后缀(如更新过程的备份/临时文件);
-    name_pred 为额外的文件名过滤;with_mtime=True 时附带修改时间列。
+    name_pred 为额外的文件名过滤;exts 非空时只保留这些扩展名的文件;
+    隐藏文件(以 . 开头,如熔断状态标记)一律不列出;with_mtime=True 时附带修改时间列。
     """
     cols = [name_col, "Created time"] + (["Modified time"] if with_mtime else [])
     if not os.path.isdir(directory):
         return pd.DataFrame(columns=cols)
     rows = []
     for name in sorted(os.listdir(directory)):
+        if name.startswith("."):
+            continue
         if name.endswith(skip_suffixes):
+            continue
+        if exts and not name.endswith(exts):
             continue
         if name_pred is not None and not name_pred(name):
             continue
@@ -37,12 +42,15 @@ def _list_to_table(directory: str, *, name_col: str, dirs: bool,
     return pd.DataFrame(rows, columns=cols)
 
 
-def list_cache_files(category: str) -> pd.DataFrame:
-    """列出指定类别缓存目录（如 "drug" 或 "disease"）下的文件名与创建时间；目录为空时返回空表。"""
+def list_cache_files(category: str, *, exts: tuple = ()) -> pd.DataFrame:
+    """列出指定类别缓存目录（如 "drug" 或 "disease"）下的文件名与创建时间；目录为空时返回空表。
+
+    exts 非空时只列出这些扩展名的文件(如富集目录传 (".csv",) 排除非结果的杂项文件)。
+    """
     import config
 
     return _list_to_table(os.path.join(config.CACHE_DIR, category), name_col="File name",
-                          dirs=False, skip_suffixes=(".bak", ".tmp"))
+                          dirs=False, skip_suffixes=(".bak", ".tmp"), exts=exts)
 
 
 def list_download_dirs() -> pd.DataFrame:

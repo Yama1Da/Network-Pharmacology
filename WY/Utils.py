@@ -29,7 +29,12 @@ from core.docking import (
     star_docking_result,
     write_docking_metadata,
 )
-from core.enrichment import render_enrichment_plots, run_enrichment
+from core.enrichment import (
+    migrate_legacy_cache_names,
+    parse_enrichment_filename,
+    render_enrichment_plots,
+    run_enrichment,
+)
 from core.http_client import clear_http_cache
 from core.files import (
     list_cache_files,
@@ -107,12 +112,23 @@ def df_download_button(df, file_name: str, *, key: str) -> None:
                        file_name=file_name, mime="text/csv", key=key)
 
 
-def render_file_table(files_df, cache_dir: str, *, search_key: str) -> None:
-    """"文件名 | 创建时间 | 下载"三列文件列表:顶部搜索框过滤文件名,表头 + 每行一个下载按钮。"""
+def render_file_table(files_df, cache_dir: str, *, search_key: str,
+                      display_map: dict[str, str] | None = None) -> None:
+    """"文件名 | 创建时间 | 下载"三列文件列表:顶部搜索框过滤文件名,表头 + 每行一个下载按钮。
+
+    display_map 提供 {真实文件名: 展示名}:列表展示展示名(友好名称),搜索同时匹配
+    展示名与真实文件名,下载按钮仍下载真实文件。
+    """
+    display_map = display_map or {}
+
+    def _disp(name: str) -> str:
+        return display_map.get(name, name)
+
     query = st.text_input(t("common.search_placeholder"), key=search_key).strip().lower()
     if query:
-        # 子串大小写不敏感匹配;regex=False 防关键词里的正则元字符报错
-        files_df = files_df[files_df["File name"].str.lower().str.contains(query, regex=False)]
+        # 展示名/真实文件名任一命中即保留;子串大小写不敏感匹配
+        files_df = files_df[files_df["File name"].map(
+            lambda n: query in n.lower() or query in _disp(n).lower())]
     if files_df.empty:
         st.info(t("common.search_no_match", query=query))
         return
@@ -124,11 +140,44 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str) -> None:
     with st.container(key="file_rows"):
         for _, row in files_df.iterrows():
             col_name, col_time, col_dl = st.columns([4, 2, 1])
-            col_name.write(row["File name"])
+            col_name.write(_disp(row["File name"]))
             col_time.write(row["Created time"])
             with col_dl:
                 csv_download_button(os.path.join(cache_dir, row["File name"]),
                                     row["File name"], key=f"download_{row['File name']}")
+
+
+# ---------- 富集结果文件的友好命名展示 ----------
+# 缓存文件名(数据源_标识_短哈希.csv)面向程序;下面两个函数把它翻译成用户可读的名称,
+# 富集信息页与分子对接页的文件选择共用,保证两处看到的名字一致。
+
+
+def humanize_analysis_label(label: str) -> str:
+    """"药物_疾病"分析标识转成人读文本:首个下划线换成"→",其余下划线换回空格。"""
+    label = (label or "").strip()
+    if not label:
+        return ""
+    if "_" in label:
+        drug, disease = label.split("_", 1)
+        return f"{drug} → {disease.replace('_', ' ')}"
+    return label.replace("_", " ")
+
+
+def enrichment_display_name(file_name: str) -> str:
+    """富集缓存文件名 → 用户友好名称,如 gProfiler_aspirin_cancer_<哈希>.csv
+    → "aspirin → cancer · gProfiler"。无法识别的文件名原样返回。"""
+    info = parse_enrichment_filename(file_name)
+    if info is None:
+        return file_name
+    desc = humanize_analysis_label(info["label"])
+    if info["kind"] == "gsea":
+        side = ""
+        if info["side"] == "drug":
+            side = t("enrich_file.side_drug")
+        elif info["side"] == "disease":
+            side = t("enrich_file.side_disease")
+        return " · ".join(x for x in (desc, "GSEA", side) if x)
+    return " · ".join(x for x in (desc, info["source"]) if x)
 
 
 # ---------- 数据管理页公共逻辑(药物/疾病两个管理页共用) ----------

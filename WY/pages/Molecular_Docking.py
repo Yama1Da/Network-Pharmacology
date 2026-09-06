@@ -20,6 +20,7 @@ from core.docking import (
     resolve_cid,
     smiles_to_sdf_3d,
 )
+from core.enrichment import parse_enrichment_filename
 
 st.set_page_config(page_title=t("dock.page_title"), layout="wide")
 
@@ -55,9 +56,11 @@ if st.session_state.pop("_docking_entry", False):
 st.session_state.setdefault("docking", {})
 dock = st.session_state["docking"]
 
-# 每次进入本页时清理一次过期缓存(页内操作不重复清理)
+# 每次进入本页时清理一次过期缓存(页内操作不重复清理);
+# 顺手把旧版完整哈希命名的富集缓存改成短哈希命名,让下方文件选择列表命名统一可读
 if not st.session_state.get("_docking_cache_cleaned"):
     Utils.clean_docking_cache()
+    Utils.migrate_legacy_cache_names()
     st.session_state["_docking_cache_cleaned"] = True
 
 
@@ -65,11 +68,8 @@ if not st.session_state.get("_docking_cache_cleaned"):
 
 def _extract_label(file_name: str) -> str:
     """从富集结果文件名中解析出"药物_疾病"标识,用于命名后续结果。"""
-    m = re.match(r"^(?:gProfiler|Enrichr)_(.+)_[0-9a-f]{32}\.csv$", file_name)
-    if m:
-        return m.group(1)
-    m2 = re.match(r"^(?:gProfiler|Enrichr)_([0-9a-f]{32})\.csv$", file_name)
-    return m2.group(1) if m2 else ""
+    info = parse_enrichment_filename(file_name)
+    return info["label"] if info else ""
 
 
 def _parse_genes(raw: str) -> list[str]:
@@ -267,14 +267,17 @@ if dock.get("gene_src_mode") != src_mode:
     _reset_docking_downstream()
 
 if src_mode == "ppi":
-    # 只列出 PPI 分析结果目录,排除其他类型的文件夹
+    # 只列出 PPI 分析结果目录,排除其他类型的文件夹;目录名展示为"药物 → 疾病"
     dirs = Utils.list_download_dirs()
     ppi_dirs = dirs[dirs["Directory"].str.endswith("_data", na=False)] if not dirs.empty else dirs
     if ppi_dirs.empty:
         st.warning(t("dock.no_ppi_dirs"))
     else:
+        dir_disp = {d: Utils.humanize_analysis_label(d[:-5] if d.endswith("_data") else d)
+                    for d in ppi_dirs["Directory"]}
         sel_dir = st.selectbox(t("dock.sel_ppi_dir"), ppi_dirs["Directory"].tolist(), key="sel_ppi_dir",
-                               index=None, placeholder=t("dock.sel_ppi_dir_ph"))
+                               index=None, placeholder=t("dock.sel_ppi_dir_ph"),
+                               format_func=lambda d: dir_disp.get(d, d))
         # 选定目录后自动读取,无需再点按钮
         if sel_dir and dock.get("ppi_dir") != sel_dir:
             dock["ppi_dir"] = sel_dir
@@ -287,12 +290,24 @@ if src_mode == "ppi":
             dock["disease"] = parts[1] if len(parts) > 1 else ""
             _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
 else:
-    enr_files = Utils.list_cache_files("enrichment")
+    enr_files = Utils.list_cache_files("enrichment", exts=(".csv",))
+    # 只保留普通富集(ORA)结果供选择:GSEA 文件没有逐条目的基因列,选中也提不出候选基因;
+    # 按创建时间倒序,最近一次分析排最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称
+    if not enr_files.empty:
+        is_ora = enr_files["File name"].map(
+            lambda n: (parse_enrichment_filename(n) or {}).get("kind") == "ora")
+        enr_files = (enr_files[is_ora]
+                     .sort_values("Created time", ascending=False))
     if enr_files.empty:
         st.warning(t("dock.no_enr_files"))
     else:
-        sel_file = st.selectbox(t("dock.sel_enr_file"), enr_files["File name"], key="sel_enr",
-                                index=None, placeholder=t("dock.sel_enr_file_ph"))
+        # 同名分析可能有多份不同参数的缓存,展示名带上创建时间以便区分
+        file_disp = {row["File name"]:
+                     f"{Utils.enrichment_display_name(row['File name'])} · {row['Created time']}"
+                     for _, row in enr_files.iterrows()}
+        sel_file = st.selectbox(t("dock.sel_enr_file"), enr_files["File name"].tolist(), key="sel_enr",
+                                index=None, placeholder=t("dock.sel_enr_file_ph"),
+                                format_func=lambda n: file_disp.get(n, n))
         # 选定文件后自动读取
         if sel_file and dock.get("enr_file") != sel_file:
             dock["enr_file"] = sel_file

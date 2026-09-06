@@ -14,6 +14,7 @@ from .enrichment import (
     ENRICHR_LIB_MAP,
     _ENRICHR_ORGANISM_MAP,
     _enrichment_cache_key,
+    enrichment_cache_filename,
     fetch_enrichment_enrichr,
     fetch_enrichment_gprofiler,
 )
@@ -61,13 +62,15 @@ def _module_cache_files(genes: list[str], organism: str, sources: tuple,
     if not genes_clean:
         return files
     md5_gp = _enrichment_cache_key(genes_clean, organism, sources, pvalue)
-    files.append(os.path.join(config.ENRICHMENT_CACHE_DIR, f"gProfiler_{label}_{md5_gp}.csv"))
+    files.append(os.path.join(config.ENRICHMENT_CACHE_DIR,
+                              enrichment_cache_filename("gProfiler", label, md5_gp)))
     enrichr_org = _ENRICHR_ORGANISM_MAP.get(organism)
     if enrichr_org:
         libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
         if libs:
             md5_enr = _enrichment_cache_key(genes_clean, enrichr_org, libs, pvalue)
-            files.append(os.path.join(config.ENRICHMENT_CACHE_DIR, f"Enrichr_{label}_{md5_enr}.csv"))
+            files.append(os.path.join(config.ENRICHMENT_CACHE_DIR,
+                                      enrichment_cache_filename("Enrichr", label, md5_enr)))
     return files
 
 
@@ -126,9 +129,13 @@ def enrich_modules(
     top_n_modules: int = 10,
     sources: tuple | None = None,
     pvalue: float = 0.05,
+    label_prefix: str = "",
 ) -> tuple[pd.DataFrame, list[dict], list[int]]:
     """
     批量模块富集：对满足规模条件的模块（取规模最大的前 top_n_modules 个）逐个做 GO/KEGG 富集并汇总为长表。
+
+    label_prefix 为所属分析的"药物_疾病"标识,拼进缓存文件名
+    （如 gProfiler_aspirin_cancer_module1_<哈希>.csv）,让模块结果在文件列表里能认出归属。
 
     某模块富集失败时计入 failures（页面报错），并清除该模块可能产生的缓存文件，
     保证空表不会是失败残留；两链路成功但无显著条目的模块计入 no_sig（页面一般性提示）。
@@ -144,7 +151,7 @@ def enrich_modules(
 
         线程安全:各模块的缓存文件名互不相同,状态都记在局部变量里。
         """
-        label = f"module{m['module_id']}"
+        label = f"{label_prefix}_module{m['module_id']}" if label_prefix else f"module{m['module_id']}"
         cache_files = _module_cache_files(m["genes"], organism, sources, pvalue, label)
         try:
             df, used_source, failed, err = _enrich_single_module(
