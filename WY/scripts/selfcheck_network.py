@@ -29,6 +29,7 @@ from core.enrichment import (
     _normalize_enrichment_gsea,
     build_ranked_list,
     fetch_enrichment_gsea_prerank,
+    render_drug_target_pathway_plot,
 )
 from core.network_algorithms import (
     _multi_source_bfs,
@@ -40,6 +41,18 @@ from core.network_algorithms import (
     run_proximity_cached,
     run_rwr_cached,
 )
+from core.ppi import (
+    compute_mcc_scores,
+    pick_top_mcc_genes,
+    render_core_target_plot,
+)
+
+
+def _agg_backend():
+    """自检为无界面运行,绘图测试前统一切到 Agg 后端(幂等)。"""
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
 
 
 def _karate() -> nx.Graph:
@@ -697,6 +710,91 @@ def t_rwr_truncation_guarantee():
     assert scores == sorted(scores, reverse=True), "non-seed rows must be score-desc"
 
 
+def t_mcc_known_values():
+    """MCC 在已知小图上的取值:全三角每点=4;路径端点=1、中点=2;星形中心=度;孤立点=0。"""
+    tri = nx.Graph([("A", "B"), ("B", "C"), ("A", "C")])
+    assert compute_mcc_scores(tri) == {"A": 4.0, "B": 4.0, "C": 4.0}
+
+    path = nx.Graph([("A", "B"), ("B", "C")])
+    mcc = compute_mcc_scores(path)
+    assert mcc["A"] == 1.0 and mcc["C"] == 1.0 and mcc["B"] == 2.0, mcc
+
+    star = nx.star_graph(4)
+    star = nx.relabel_nodes(star, {0: "HUB", **{i: f"L{i}" for i in range(1, 5)}})
+    mcc = compute_mcc_scores(star)
+    assert mcc["HUB"] == 4.0 and all(mcc[f"L{i}"] == 1.0 for i in range(1, 5)), mcc
+
+    iso = nx.Graph()
+    iso.add_node("X")
+    assert compute_mcc_scores(iso) == {"X": 0.0}
+
+
+def t_mcc_pick_and_core_plot():
+    """pick_top_mcc_genes 排序正确且排除 0 分节点;核心靶点子网络图可渲染。"""
+    _agg_backend()
+    import matplotlib.pyplot as plt
+
+    G = _karate()
+    mcc = compute_mcc_scores(G)
+    df = pd.DataFrame({"gene": list(G.nodes()),
+                       "degree": [d for _, d in G.degree()]})
+    top = pick_top_mcc_genes(df, mcc, 10)
+    assert len(top) == 10 and len(set(top)) == 10, top
+    assert mcc[top[0]] >= mcc[top[-1]], "top list must be MCC-descending"
+    scores = [mcc[g] for g in top]
+    assert scores == sorted(scores, reverse=True), "top list must be MCC-sorted"
+
+    # MCC=0(无互作)的节点不入选;全零图返回空列表
+    G2 = G.copy()
+    G2.add_node("ORPHAN")
+    df2 = pd.DataFrame({"gene": list(G2.nodes()),
+                        "degree": [d for _, d in G2.degree()]})
+    mcc2 = compute_mcc_scores(G2)
+    assert "ORPHAN" not in pick_top_mcc_genes(df2, mcc2, len(G2))
+    assert pick_top_mcc_genes(df2, {n: 0.0 for n in G2.nodes()}, 10) == []
+
+    fig = render_core_target_plot(G, top, mcc)
+    assert fig is not None
+    plt.close(fig)
+
+
+def t_drug_target_pathway_plot():
+    """药物-靶点-通路网络图:KEGG 行参与构图、GO 行忽略;无 KEGG/无命中返回 None;
+    g:Profiler 列表样式 / 分号 / 逗号三种基因格式都兼容;
+    无药名与 drug_name=None 均按手动模式渲染。"""
+    _agg_backend()
+    import matplotlib.pyplot as plt
+
+    targets = ["TP53", "VEGFA", "TNF", "IL6", "AKT1", "STAT3", "CASP3", "MYC",
+               "EGFR", "PTGS2"]
+    enr = pd.DataFrame([
+        {"source": "KEGG", "term_id": "hsa04151", "term_name": "PI3K-Akt signaling pathway",
+         "p_value": 1e-4, "adjusted_p_value": 1e-4, "intersection_size": 4,
+         "query_size": 10, "genes": "['TP53', 'AKT1', 'MYC', 'EGFR']"},  # g:Profiler 格式
+        {"source": "KEGG", "term_id": "hsa04066", "term_name": "HIF-1 signaling pathway",
+         "p_value": 2e-4, "adjusted_p_value": 2e-4, "intersection_size": 3,
+         "query_size": 10, "genes": "VEGFA;STAT3;TP53"},                 # Enrichr 格式
+        {"source": "KEGG", "term_id": "hsa04917", "term_name": "Insulin signaling pathway",
+         "p_value": 3e-4, "adjusted_p_value": 3e-4, "intersection_size": 2,
+         "query_size": 10, "genes": "IL6,PTGS2"},                        # 逗号分隔
+        {"source": "GO:BP", "term_id": "GO:0000001", "term_name": "apoptotic process",
+         "p_value": 1e-5, "adjusted_p_value": 1e-5, "intersection_size": 2,
+         "query_size": 10, "genes": "TP53;TNF"},
+    ])
+    fig = render_drug_target_pathway_plot("metformin", targets, enr)
+    assert fig is not None
+    plt.close(fig)
+    assert render_drug_target_pathway_plot(
+        "metformin", targets, enr[enr["source"] == "GO:BP"]) is None
+    bad = enr.iloc[[0]].copy()
+    bad["genes"] = "ZZZ1;ZZZ2"  # 命中基因与输入靶点无交集
+    assert render_drug_target_pathway_plot("metformin", targets, bad) is None
+    for no_drug in ("", None):  # 手动模式(含 drug_name 缺省容错)照常出图
+        fig2 = render_drug_target_pathway_plot(no_drug, targets, enr)
+        assert fig2 is not None
+        plt.close(fig2)
+
+
 def main():
     tests = [
         ("detect basic properties", t_detect_basic),
@@ -730,6 +828,9 @@ def main():
         ("rwr enrichment synthetic", t_rwr_enrich_synthetic),
         ("rwr real interactome + cache (skip if not built)", t_rwr_real_and_cached),
         ("rwr truncation guarantee (large seed set)", t_rwr_truncation_guarantee),
+        ("mcc known values", t_mcc_known_values),
+        ("mcc pick + core target plot", t_mcc_pick_and_core_plot),
+        ("drug-target-pathway plot", t_drug_target_pathway_plot),
     ]
     run(tests, "network_algorithms selfcheck")
 

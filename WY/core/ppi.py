@@ -193,6 +193,112 @@ def mark_hub_genes(metrics_df: pd.DataFrame, min_degree: int = 3) -> pd.DataFram
     return df
 
 
+# MCC 的最大团枚举数量上限:超过按失败处理(由调用方跳过核心靶点图),
+# 防止病态稠密网络把 maximal clique 枚举拖成无限等待
+_MCC_CLIQUE_LIMIT = 500_000
+
+
+def compute_mcc_scores(graph: "nx.Graph") -> dict[str, float]:
+    """
+    计算每个节点的最大团中心性 MCC(Maximal Clique Centrality,CytoHubba 默认算法):
+
+        MCC(v) = Σ_{u∈N(v)} (C(v,u) - 1)!
+
+    其中 C(v,u) 为同时包含节点 v 与邻居 u 的最大团(maximal clique)的大小。
+    没有三角形的节点退化为 MCC = 度数;孤立节点为 0。
+
+    实现上对全图做一次最大团枚举(nx.find_cliques),对每对相邻节点记录
+    同时包含它们的所有最大团里的最大规模,再按公式聚合。
+    图的最大团数量超过 _MCC_CLIQUE_LIMIT 时抛 RuntimeError。
+    """
+    import networkx as nx
+    from math import factorial
+
+    # pair_clique[v][u] = 目前见过的同时包含 v、u 的最大团规模
+    pair_clique: dict[str, dict[str, int]] = {n: {} for n in graph.nodes()}
+    n_cliques = 0
+    for clique in nx.find_cliques(graph):
+        n_cliques += 1
+        if n_cliques > _MCC_CLIQUE_LIMIT:
+            raise RuntimeError(
+                f"maximal cliques exceed {_MCC_CLIQUE_LIMIT}, MCC computation aborted")
+        k = len(clique)
+        if k < 2:
+            continue  # 孤立点构成的长度 1 团没有 (v,u) 节点对
+        for v in clique:
+            cand = pair_clique[v]
+            for u in clique:
+                if u != v and cand.get(u, 0) < k:
+                    cand[u] = k
+    return {
+        v: float(sum(factorial(c - 1) for c in nbrs.values()))
+        for v, nbrs in pair_clique.items()
+    }
+
+
+def pick_top_mcc_genes(metrics_df: pd.DataFrame, mcc_map: dict[str, float],
+                       top_n: int = 10) -> list[str]:
+    """
+    按 MCC 从高到低取前 top_n 个基因,作为核心靶点。
+
+    MCC 并列时按度数、再按基因名稳定排序;MCC 为 0(无任何互作)的节点
+    不参与入选——全无互作时返回空列表,调用方据此跳过核心靶点图。
+    """
+    df = metrics_df[["gene", "degree"]].copy()
+    df["mcc"] = df["gene"].map(mcc_map).fillna(0.0)
+    df = df[df["mcc"] > 0]
+    df = df.sort_values(["mcc", "degree", "gene"],
+                        ascending=[False, False, True], kind="mergesort")
+    return df.head(top_n)["gene"].tolist()
+
+
+def render_core_target_plot(
+    graph: "nx.Graph",
+    top_genes: list[str],
+    mcc_map: dict[str, float],
+) -> "matplotlib.figure.Figure":
+    """
+    绘制 CytoHubba 风格的核心靶点子网络图(论文用)。
+
+    只画 top_genes 之间的互作;节点沿圆环按 MCC 排名从正上方顺时针排布,
+    颜色从红(排名第 1)渐变到黄(排名末位),与 CytoHubba 默认配色一致,
+    标签置于节点内部。
+    """
+    import networkx as nx
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+
+    # 按排名顺序重建子图:circular_layout 按节点插入顺序布点,
+    # 直接用 graph.subgraph 会保留原图顺序,排名与位置就对不上了
+    sub = nx.Graph()
+    sub.add_nodes_from(top_genes)
+    for u, v, data in graph.edges(data=True):
+        if u in sub and v in sub:
+            sub.add_edge(u, v, **data)
+
+    n = len(top_genes)
+    pos = nx.circular_layout(sub)
+    pos = {node: (-y, x) for node, (x, y) in pos.items()}  # 旋转 90°,第 1 名置于正上方
+
+    cmap = cm.autumn  # 红(0) → 黄(1),与 CytoHubba 红黄渐变一致
+    colors = [cmap(0.0)] if n == 1 else [cmap(i / (n - 1)) for i in range(n)]
+
+    fig, ax = plt.subplots(figsize=(7.5, 7))
+    nx.draw_networkx_edges(sub, pos, ax=ax, edge_color="#555555",
+                           width=1.1, alpha=0.85)
+    nx.draw_networkx_nodes(sub, pos, ax=ax, node_size=2300, node_color=colors,
+                           edgecolors="#7a1f1f", linewidths=0.8)
+    name_len = max(len(g) for g in top_genes)
+    font_size = 9 if name_len <= 5 else (8 if name_len <= 7 else 7)
+    nx.draw_networkx_labels(sub, pos, labels={g: g for g in top_genes},
+                            font_size=font_size, font_weight="bold", ax=ax)
+    ax.set_title(f"Core targets ranked by MCC (CytoHubba-style, top {n})",
+                 fontsize=13)
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
 # 模块着色用的 12 种颜色,循环使用
 _MODULE_PALETTE = [
     "#4E79A7", "#F28E2B", "#59A14F", "#E15759", "#76B7B2", "#EDC948",
@@ -310,6 +416,8 @@ def save_ppi_results(
     enrichment_df: pd.DataFrame | None = None,
     enrichment_bar_fig: "matplotlib.figure.Figure | None" = None,
     enrichment_dot_fig: "matplotlib.figure.Figure | None" = None,
+    core_fig: "matplotlib.figure.Figure | None" = None,
+    target_pathway_fig: "matplotlib.figure.Figure | None" = None,
 ) -> dict:
     """
     把一次 PPI 分析的全部结果保存到结果目录下的 <prefix>_data 文件夹。
@@ -318,7 +426,7 @@ def save_ppi_results(
     最新一次分析,不会越积越多。prefix 为文件名前缀(如 aspirin_cancer)。
 
     目录内容：
-      - {prefix}_nodes.csv      节点拓扑指标表（含 is_hub 列）
+      - {prefix}_nodes.csv      节点拓扑指标表（含 is_hub 列；算出 MCC 时含 mcc 列）
       - {prefix}_edges.csv      边表（protein_A / protein_B / score ...）
       - {prefix}_network.html   交互式网络
       - {prefix}_graph.graphml  可编辑网络文件（供 Cytoscape / Gephi 精修）
@@ -326,6 +434,8 @@ def save_ppi_results(
       - {prefix}_enrichment.csv           富集结果表（有富集数据时）
       - {prefix}_enrichment_bar.png/.svg  富集柱状图（有富集数据时）
       - {prefix}_enrichment_dot.png/.svg  富集气泡图（有富集数据时）
+      - {prefix}_core_targets.png/.svg    MCC 核心靶点子网络图（算出 MCC 时）
+      - {prefix}_enrichment_network.png/.svg  药物-靶点-通路网络图（有 KEGG 通路时）
 
     传入富集结果表/图时才保存对应的富集文件,不传则跳过。
     返回各文件的保存路径(含目录路径)。
@@ -372,6 +482,16 @@ def save_ppi_results(
         paths["enrichment_dot_svg"] = os.path.join(subdir, f"{prefix}_enrichment_dot.svg")
         enrichment_dot_fig.savefig(paths["enrichment_dot_png"], format="png", bbox_inches="tight")
         enrichment_dot_fig.savefig(paths["enrichment_dot_svg"], format="svg", bbox_inches="tight")
+    if core_fig is not None:
+        paths["core_png"] = os.path.join(subdir, f"{prefix}_core_targets.png")
+        paths["core_svg"] = os.path.join(subdir, f"{prefix}_core_targets.svg")
+        core_fig.savefig(paths["core_png"], format="png", bbox_inches="tight")
+        core_fig.savefig(paths["core_svg"], format="svg", bbox_inches="tight")
+    if target_pathway_fig is not None:
+        paths["dtp_png"] = os.path.join(subdir, f"{prefix}_enrichment_network.png")
+        paths["dtp_svg"] = os.path.join(subdir, f"{prefix}_enrichment_network.svg")
+        target_pathway_fig.savefig(paths["dtp_png"], format="png", bbox_inches="tight")
+        target_pathway_fig.savefig(paths["dtp_svg"], format="svg", bbox_inches="tight")
 
     paths["directory"] = subdir
     return paths

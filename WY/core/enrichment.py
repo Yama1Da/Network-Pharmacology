@@ -562,6 +562,151 @@ def render_enrichment_plots(df: pd.DataFrame) -> tuple:
     return fig_bar, fig_dot
 
 
+def _parse_hit_genes(raw) -> set[str]:
+    """把富集结果里的命中基因列解析成大写基因集合。
+
+    三种来源格式都兼容:g:Profiler 的列表样式字符串 "['A', 'B']"、
+    Enrichr 的分号分隔 "A;B"、以及逗号分隔 "A,B"。
+    """
+    import ast
+
+    s = str(raw).strip()
+    if not s or s.lower() == "nan":
+        return set()
+    if s.startswith("["):
+        try:
+            val = ast.literal_eval(s)
+            if isinstance(val, (list, tuple, set)):
+                return {str(g).strip().upper() for g in val if str(g).strip()}
+        except (ValueError, SyntaxError):
+            pass  # 不是合法的列表字面量,退回分隔符解析
+    return {g.strip().strip("'\"").upper()
+            for g in re.split(r"[;,]", s) if g.strip().strip("'\"")}
+
+
+def render_drug_target_pathway_plot(
+    drug_name: str,
+    targets: list[str],
+    enrichment_df: pd.DataFrame | None,
+    top_n_pathways: int | None = None,
+) -> "matplotlib.figure.Figure | None":
+    """
+    绘制"药物-靶点-通路"网络图（论文用）：红色三角为药物、黄色方块为靶点、
+    蓝色 V 为 KEGG 通路。通路取富集结果中 KEGG 来源、校正 p 值最小的前 N 条
+    （top_n_pathways，默认 config.PATHWAY_DISPLAY_NUM）；靶点排成居中网格，
+    只画命中至少一条所示通路的，药物节点连向全部所示靶点（手动基因模式无
+    药物名，省略药物节点）。无 KEGG 通路或无命中靶点时返回 None。
+    """
+    import textwrap
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import config
+
+    if enrichment_df is None or enrichment_df.empty:
+        return None
+    top_n = top_n_pathways or config.PATHWAY_DISPLAY_NUM
+    kegg = (enrichment_df[enrichment_df["source"] == "KEGG"]
+            .sort_values("adjusted_p_value").head(top_n))
+    if kegg.empty:
+        return None
+
+    # 每条通路的命中基因（见 _parse_hit_genes,兼容列表/分号/逗号三种格式），只保留输入靶点
+    target_set = {str(tg).strip().upper() for tg in targets}
+    pathway_hits: list[tuple[str, list[str]]] = []
+    hit_targets: set[str] = set()
+    for _, row in kegg.iterrows():
+        hits = _parse_hit_genes(row.get("genes", "")) & target_set
+        if hits:
+            pathway_hits.append((str(row["term_name"]), sorted(hits)))
+            hit_targets.update(hits)
+    if not pathway_hits or not hit_targets:
+        return None
+
+    # ---- 布局：靶点居中网格，通路沿外圈椭圆分布，药物置于网格下方 ----
+    shown = sorted(hit_targets)
+    n_t = len(shown)
+    n_cols = max(6, min(12, int(np.ceil(np.sqrt(n_t * 1.5)))))
+    n_rows = int(np.ceil(n_t / n_cols))
+    grid_pos: dict[str, tuple[float, float]] = {}
+    for i, gene in enumerate(shown):
+        r, c = divmod(i, n_cols)
+        row_len = min(n_cols, n_t - r * n_cols)
+        x = c - (n_cols - 1) / 2 + (n_cols - row_len) / 2  # 末行不满时居中
+        grid_pos[gene] = (x, (n_rows - 1) / 2 - r)
+
+    k = len(pathway_hits)
+    rx = n_cols / 2 + 2.6 + (0.8 if k > 24 else 0.0)  # 通路多时加大椭圆,给标签留出间距
+    ry = max(n_rows / 2 + 1.4, 2.4) + (0.5 if k > 24 else 0.0)
+    # 各节点整体偏移半个步长，避免正好落在正上/正下方与标题、药物挤在一起
+    pathway_pos = {
+        name: (rx * np.cos(ang), ry * np.sin(ang))
+        for name, ang in (
+            (name, np.pi / 2 + (i + 0.5) * 2 * np.pi / k)
+            for i, (name, _) in enumerate(pathway_hits)
+        )
+    }
+    drug_label = drug_name.strip().title() if drug_name and drug_name.strip() else ""
+    drug_xy = (0.0, -(ry + 1.5))
+
+    # ---- 画布与边（先画边再画节点，节点覆盖在线上层） ----
+    fig_w = max(12.0, 1.05 * n_cols + 7.0)
+    fig_h = max(8.0, 0.75 * n_rows + 4.5)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    if drug_label:
+        for x, y in grid_pos.values():
+            ax.plot([drug_xy[0], x], [drug_xy[1], y], color="#9a9a9a",
+                    lw=0.7, alpha=0.45, zorder=1)
+    for name, hits in pathway_hits:
+        px, py = pathway_pos[name]
+        for gene in hits:
+            x, y = grid_pos[gene]
+            ax.plot([px, x], [py, y], color="#9a9a9a", lw=0.6, alpha=0.25, zorder=1)
+
+    # ---- 节点：靶点（黄方块，基因名在块内）、通路（蓝 V，名字在外侧）、药物（红三角） ----
+    ax.scatter(*zip(*grid_pos.values()), marker="s", s=560, c="#F3C63F",
+               edgecolors="#8a7508", linewidths=0.6, zorder=3)
+    gene_font = 6.0 if n_t > 100 else (6.5 if n_t > 60 else 7.0)
+    for gene, (x, y) in grid_pos.items():
+        ax.annotate(gene, (x, y), ha="center", va="center",
+                    fontsize=gene_font, color="#222222", zorder=4)
+
+    ax.scatter(*zip(*pathway_pos.values()), marker="v", s=300, c="#8FD4E8",
+               edgecolors="#33708c", linewidths=0.6, zorder=3)
+    for i, (name, (x, y)) in enumerate(pathway_pos.items()):
+        # 标签沿椭圆法线方向外推;相邻节点按奇偶交错深浅两级偏移,
+        # 斜向区与顶/底帽区的标签因此错层,不再互相压叠
+        r = float(np.hypot(x, y))
+        ux, uy = (x / r, y / r) if r else (0.0, 1.0)
+        off = 0.85 if i % 2 else 0.3
+        anchor = (x + ux * off, y + uy * off)
+        if uy > 0.5:
+            va = "bottom"
+        elif uy < -0.5:
+            va = "top"
+        else:
+            va = "center"
+        ha = ("center" if abs(ux) < 0.35 else ("left" if ux > 0 else "right"))
+        ax.annotate("\n".join(textwrap.wrap(name, width=24, max_lines=2, placeholder="…")),
+                    anchor, ha=ha, va=va, fontsize=7, color="#1f4e5f", zorder=4)
+
+    if drug_label:
+        ax.scatter(*drug_xy, marker="^", s=1100, c="#E23B3B",
+                   edgecolors="#8f1d1d", linewidths=0.8, zorder=3)
+        ax.annotate(drug_label, drug_xy, xytext=(0, -16), textcoords="offset points",
+                    ha="center", va="top", fontsize=11, fontweight="bold",
+                    color="#8f1d1d", zorder=4)
+
+    title = f"{drug_label} – target – pathway network" if drug_label \
+        else "Target – pathway network"
+    ax.set_title(f"{title} · top {k} KEGG pathways", fontsize=13)
+    ax.set_xlim(-rx - 7.5, rx + 7.5)
+    ax.set_ylim(-(ry + 3.0), ry + 2.8)
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
 # ---------- 排序富集（GSEA prerank，仅智人） ----------
 # 与普通富集的区别：输入是"基因|分数"排序列表（如药物亲和力、疾病关联分），
 # 而非单纯的基因列表，用于检验高分靶点整体偏向哪些通路。
