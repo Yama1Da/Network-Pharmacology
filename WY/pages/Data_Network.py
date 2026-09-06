@@ -63,9 +63,9 @@ with col_input:
     if input_mode == "names":
         col_drug, col_dis = st.columns(2)
         with col_drug:
-            drug_name = st.text_input(t("net.drug_label"), value="aspirin")
+            drug_name = st.text_input(t("net.drug_label"), value="metformin")
         with col_dis:
-            disease_name = st.text_input(t("net.disease_label"), value="cancer")
+            disease_name = st.text_input(t("net.disease_label"), value="Type 2 diabetes mellitus")
         gene_text = ""
     else:
         drug_name, disease_name = "", ""
@@ -435,30 +435,36 @@ if run_btn:
         steps = ["targets", "string", "graph", "enrichment",
                  *(["gsea", "network"] if input_mode == "names" else []),
                  "modules", "save"]
-        ppi_result = _run_ppi_analysis(
-            input_mode,
-            drug_name.strip(),
-            disease_name.strip(),
-            gene_text.strip(),
-            config.SPECIES_MAP[species_label]["ncbi_taxon"],
-            config.SPECIES_MAP[species_label]["gprofiler"],
-            score,
-            int(min_degree),
-            progress=_ReportProgress(steps),
-        )
-        st.session_state.ppi = ppi_result
-        # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
-        st.session_state.ppi_gsea = {
-            side: {**info, "ppi_params": ppi_result["params"]}
-            for side, info in ppi_result.get("gsea", {}).items()
-        }
-        # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
-        mods_auto = ppi_result.get("modules")
-        st.session_state.ppi_modules = (
-            {**mods_auto, "ppi_params": ppi_result["params"]}
-            if mods_auto is not None else None
-        )
-        st.rerun()
+        try:
+            ppi_result = _run_ppi_analysis(
+                input_mode,
+                drug_name.strip(),
+                disease_name.strip(),
+                gene_text.strip(),
+                config.SPECIES_MAP[species_label]["ncbi_taxon"],
+                config.SPECIES_MAP[species_label]["gprofiler"],
+                score,
+                int(min_degree),
+                progress=_ReportProgress(steps),
+            )
+        except Exception:
+            # 面向用户只提示友好信息;完整堆栈经 logging.exception 写入日志文件供排查
+            logging.exception("PPI analysis failed")
+            st.error(t("net.analysis_fail"))
+        else:
+            st.session_state.ppi = ppi_result
+            # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
+            st.session_state.ppi_gsea = {
+                side: {**info, "ppi_params": ppi_result["params"]}
+                for side, info in ppi_result.get("gsea", {}).items()
+            }
+            # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
+            mods_auto = ppi_result.get("modules")
+            st.session_state.ppi_modules = (
+                {**mods_auto, "ppi_params": ppi_result["params"]}
+                if mods_auto is not None else None
+            )
+            st.rerun()
 
 # ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
 ppi = st.session_state.ppi
@@ -478,9 +484,11 @@ if ppi is not None:
 
     if not genes:
         st.warning(t("net.no_common"))
-    elif edges_df.empty:
-        st.error(t("net.no_interactions"))
     else:
+        # 交集过小(如降噪后)可能没有任何达到置信度的互作边:此时 PPI 网络为空,
+        # 但富集/GSEA/网络检验/下载等结果仍然有效,照常展示而非整页拦截
+        if edges_df.empty:
+            st.warning(t("net.no_interactions"))
         st.info(t("net.input_genes", n=len(genes)))
 
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
@@ -760,13 +768,18 @@ if ppi is not None:
                 else:
                     with st.spinner(t("net.modules_spinner_detect")):
                         # params[5] = 物种参数（organism）
-                        mods = _compute_ppi_modules(graph, current_params[5],
-                                                    saved["directory"], prefix)
-                        saved.update(mods["saved_paths"])
-                        st.session_state.ppi_modules = {
-                            **mods,
-                            "ppi_params": ppi["params"],
-                        }
+                        try:
+                            mods = _compute_ppi_modules(graph, current_params[5],
+                                                        saved["directory"], prefix)
+                        except Exception:
+                            logging.exception("Module analysis failed")
+                            st.error(t("net.analysis_fail"))
+                        else:
+                            saved.update(mods["saved_paths"])
+                            st.session_state.ppi_modules = {
+                                **mods,
+                                "ppi_params": ppi["params"],
+                            }
                     st.rerun()
 
             mods_res = st.session_state.ppi_modules

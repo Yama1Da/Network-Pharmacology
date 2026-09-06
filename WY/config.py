@@ -48,6 +48,27 @@ GPROFILER_CIRCUIT_TTL_SECONDS = 1800
 CACHE_TTL_SECONDS = 6 * 3600
 # 数据源 HTTP 响应缓存有效期(小时):DGIdb/Open Targets/DisGeNET 共用,与 ChEMBL 库默认一致
 HTTP_CACHE_TTL_HOURS = 24
+
+# ======== 靶点降噪过滤 ========
+# 药物/疾病靶点在整合(merge)时做降噪过滤,阈值集中在此配置,过滤逻辑在 core/targets.py。
+# 过滤规则或阈值变更后需把 TARGET_FILTER_VERSION 加 1:merged 整合缓存的文件名
+# 带该版本号,加 1 后旧缓存自动失效,下次分析按新阈值重建(原始缓存不受影响)。
+TARGET_FILTER_VERSION = 1
+# ChEMBL 黑名单:非特异性结合/药物代谢蛋白,不计入药物靶点
+# (白蛋白 ALB 与主要药物代谢 CYP 酶;CYP46A1 是脑特异胆固醇酶、可能是药效靶点,不列入)
+CHEMBL_TARGET_BLACKLIST = (
+    "ALB", "CYP1A2", "CYP2A6", "CYP2C9", "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4",
+)
+# ChEMBL pChEMBL 活性下限:基因的最大 pChEMBL 达到该值才保留;
+# 完全没有 pChEMBL 定量值的基因需被 DGIdb 佐证(通过 DGIDB_MIN_SCORE 过滤)才保留;
+# 仅有弱定量活性(0 < pChEMBL < 阈值)的基因剔除。
+# 注意:一刀切按阈值过滤会把靶点砍到个位数(多数活性记录无 pChEMBL 值),勿删 DGIdb 佐证通道
+CHEMBL_PCHEMBL_THRESHOLD = 4.8
+# DGIdb 交互分数下限,且要求至少 1 条 PMID 文献支撑,两条件同时满足才算有效相互作用
+DGIDB_MIN_SCORE = 0.05
+# Open Targets 总关联分数下限(保险丝:防少见病的 top200 混入极弱关联靶点);
+# 同时只保留蛋白编码(protein_coding)靶点。
+OT_MIN_SCORE = 0.1
 # ======== 文件存储路径配置 =========
 
 # cache目录 — 储存 API 返回的原始数据
@@ -70,6 +91,10 @@ DISEASE_CACHE_DIR = os.path.join(CACHE_DIR, "disease")
 
 # merged目录 — 去重整合后的药物/疾病靶点缓存
 MERGED_CACHE_DIR = os.path.join(CACHE_DIR, "merged")
+
+# merged 整合缓存文件名前缀(带降噪过滤规则版本号;版本升级后旧缓存自动失效重建)
+MERGED_DRUG_PREFIX = f"merged_drug_v{TARGET_FILTER_VERSION}_"
+MERGED_DISEASE_PREFIX = f"merged_disease_v{TARGET_FILTER_VERSION}_"
 
 # DisGeNET 限流状态文件(保存请求时间戳,页面刷新后仍生效)
 DISGENET_RATE_LIMIT_STATE_FILE = os.path.join(CACHE_DIR, "disgenet_rate_limit.json")

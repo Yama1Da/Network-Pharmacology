@@ -46,7 +46,7 @@ def _invalidate_merged_drug(drug_name: str) -> None:
     """更新来源文件后删除对应 merged 缓存，避免整合结果与来源不一致。"""
     # 传入的是原始药物名,文件名需走同样的 safe_name 规范化才能对上
     path = os.path.join(config.MERGED_CACHE_DIR,
-                        f"merged_drug_{Utils.safe_name(drug_name)}.csv")
+                        f"{config.MERGED_DRUG_PREFIX}{Utils.safe_name(drug_name)}.csv")
     if os.path.exists(path):
         os.remove(path)
 
@@ -54,7 +54,7 @@ def _invalidate_merged_drug(drug_name: str) -> None:
 _SPEC = {
     "cache_dir": config.DRUG_CACHE_DIR,
     "merged_dir": config.MERGED_CACHE_DIR,
-    "merged_prefix": "merged_drug_",
+    "merged_prefix": config.MERGED_DRUG_PREFIX,
     "source_prefixes": ("ChEMBL_", "DGIdb_"),
     "fetch_source": {"ChEMBL_": _fetch_chembl, "DGIdb_": _fetch_dgidb},
     "fetch_merged": Utils.get_drug_targets_merged,

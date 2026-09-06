@@ -355,6 +355,12 @@ if dock.get("enrichment_genes") is not None:
             if no_struct:
                 st.caption(t("dock.excluded_no_struct", n=len(no_struct))
                            + ", ".join(no_struct[:40]) + (" …" if len(no_struct) > 40 else ""))
+                # 被剔除的基因里有 hub 时要特别提醒:hub 是对接的核心对象,
+                # 无实验结构只能靠 AlphaFold 预测模型兜底,不提醒容易被忽略
+                hub_no_struct = sorted(hub_set & set(no_struct))
+                if hub_no_struct and not allow_af:
+                    st.warning(t("dock.hub_no_struct_warn", n=len(hub_no_struct),
+                                 genes=", ".join(hub_no_struct)))
         else:
             dock.pop("genes", None)
             st.info(t("dock.click_to_check"))

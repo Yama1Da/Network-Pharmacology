@@ -272,7 +272,8 @@ def render_static_plot(graph: "nx.Graph", metrics_df: pd.DataFrame) -> "matplotl
 
     degrees = dict(graph.degree())
     node_degrees = [degrees[n] for n in graph.nodes()]
-    max_deg = max(node_degrees, default=1)
+    # 交集过小且无互作边时所有节点度数全为 0,按 1 处理避免除零(节点统一用最小尺寸)
+    max_deg = max(max(node_degrees, default=0), 1)
     n_nodes = max(len(graph.nodes()), 1)
 
     fig, ax = plt.subplots(figsize=(12, 10))

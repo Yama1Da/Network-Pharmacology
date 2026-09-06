@@ -135,7 +135,7 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str) -> None:
 # 页面通过 spec 字典描述各自的数据源差异:
 #   cache_dir        来源文件所在目录
 #   merged_dir       merged 整合文件所在目录
-#   merged_prefix    整合文件前缀("merged_drug_" / "merged_disease_")
+#   merged_prefix    整合文件前缀("merged_drug_v1_" 等,带过滤规则版本号,取自 config)
 #   source_prefixes  来源文件前缀元组,如 ("ChEMBL_", "DGIdb_")
 #   fetch_source     {前缀: fn(name, cache_hours) -> (表, 是否成功)}:重新抓取一个来源文件
 #   fetch_merged     fn(name) -> 表:重建整合文件

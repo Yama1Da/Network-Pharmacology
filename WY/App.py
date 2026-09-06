@@ -282,11 +282,11 @@ st.divider()# 分隔管理按钮和搜索栏
 # ---------- Search bar ----------
 col_drug, col_disease = st.columns(2)# 两列分别输入药物名称和疾病名称
 with col_drug:
-    drug_name = st.text_input(t("app.drug_label"), value="aspirin",
+    drug_name = st.text_input(t("app.drug_label"), value="metformin",
                                label_visibility="collapsed",
                                placeholder=t("app.drug_placeholder"))
 with col_disease:
-    disease_name = st.text_input(t("app.disease_label"), value="cancer",
+    disease_name = st.text_input(t("app.disease_label"), value="Type 2 diabetes mellitus",
                                   label_visibility="collapsed",
                                   placeholder=t("app.disease_placeholder"))
 
