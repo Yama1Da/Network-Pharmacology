@@ -108,3 +108,20 @@ def make_dir_zip(directory: str) -> bytes:
                 if os.path.isfile(path):
                     zf.write(path, arcname=name)
     return _zip_bytes(write)
+
+
+def make_dirs_zip(dir_paths: dict) -> bytes:
+    """
+    把多个目录打包进同一个 zip(每个目录作为 zip 内的一层文件夹,保留其中的
+    子目录结构),供管理页批量下载选中的结果目录;空字典返回空 zip。
+    """
+    def write(zf):
+        for name, directory in dir_paths.items():
+            if not os.path.isdir(directory):
+                continue
+            for root, _, files in os.walk(directory):
+                for fn in files:
+                    fp = os.path.join(root, fn)
+                    # 相对各自父目录取弧名,得到 "目录名/文件名(相对路径)"
+                    zf.write(fp, arcname=os.path.relpath(fp, os.path.dirname(directory)))
+    return _zip_bytes(write)

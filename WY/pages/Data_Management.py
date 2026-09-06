@@ -15,12 +15,17 @@ from core.interactome import (
 
 st.set_page_config(page_title=t("data_mgmt.page_title"), layout="wide")
 
-# 隐藏侧边栏,全屏显示页面;Download 按钮(#207D62 底、#C8F0DF 字)
+# 隐藏侧边栏,全屏显示页面;Download 按钮(#207D62 底、#C8F0DF 字),删除按钮红底白字
 Utils.hide_sidebar("""
     .st-key-dir_rows button {
         background-color: #207D62;
         color: #C8F0DF;
         border: 1px solid #207D62;
+    }
+    .st-key-data_dirs_del_btn button {
+        background-color: #F53F3F;
+        color: #FFFFFF;
+        border: 1px solid #F53F3F;
     }
 """)
 
@@ -85,18 +90,24 @@ if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", 
 
 st.divider()
 
-dirs_df = Utils.list_download_dirs()
+dirs_df_all = Utils.list_download_dirs()
 # 分子对接成果区和收藏区由各自页面管理,这里不提供下载
 excluded = {os.path.basename(config.MD_RESULT_DIR), os.path.basename(config.MD_STAR_DIR)}
-dirs_df = dirs_df[~dirs_df["Directory"].isin(excluded)]
+dirs_df_all = dirs_df_all[~dirs_df_all["Directory"].isin(excluded)]
+# 批量删除结果提示(删除在确认弹窗内完成,结果跨 rerun 传递)
+Utils.show_file_op_result("data_dirs")
+
 query = st.text_input(t("common.search_placeholder"), key="search_dirs").strip().lower()
-if query:
-    dirs_df = dirs_df[dirs_df["Directory"].str.lower().str.contains(query, regex=False)]
+dirs_df = (dirs_df_all[dirs_df_all["Directory"].str.lower().str.contains(query, regex=False)]
+           if query else dirs_df_all)
 if dirs_df.empty:
     st.info(t("common.search_no_match", query=query) if query else t("data_mgmt.empty"))
 else:
-    # 表头
-    col_h_name, col_h_time, col_h_btn = st.columns([3, 2, 1])
+    all_dirs = dirs_df_all["Directory"].tolist()
+    # 表头(行首多选,支持批量下载/删除)
+    col_h_sel, col_h_name, col_h_time, col_h_btn = st.columns([0.5, 2.5, 2, 1])
+    with col_h_sel:
+        select_all = Utils.render_select_all_checkbox("data_dirs", all_dirs)
     col_h_name.markdown(t("common.col_directory"))
     col_h_time.markdown(t("common.col_created"))
     col_h_btn.markdown(t("common.col_download"))
@@ -105,7 +116,9 @@ else:
     with st.container(key="dir_rows"):
         for _, row in dirs_df.iterrows():
             dir_path = os.path.join(config.DOWNLOADS_DIR, row["Directory"])
-            col_name, col_time, col_btn = st.columns([3, 2, 1])
+            col_sel, col_name, col_time, col_btn = st.columns([0.5, 2.5, 2, 1])
+            with col_sel:
+                Utils.render_row_checkbox("data_dirs", row["Directory"], select_all)
             col_name.write(row["Directory"])
             col_time.write(row["Created time"])
             with col_btn:
@@ -117,3 +130,8 @@ else:
                     key=f"dl_{row['Directory']}",
                     width="stretch",
                 )
+
+    # 批量操作:下载选中(各目录打成一个 ZIP)/删除选中(确认弹窗)
+    Utils.collect_selected("data_dirs", all_dirs)
+    Utils.render_file_action_bar("data_dirs", config.DOWNLOADS_DIR, zip_name="Data_files.zip",
+                                 dirs=True)
