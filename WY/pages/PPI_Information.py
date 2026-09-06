@@ -29,4 +29,4 @@ if ppi_files.empty:
     st.info(t("ppi_info.empty"))
 else:
     # 每行一个 Download 按钮,下载对应的 PPI 结果 CSV
-    Utils.render_file_table(ppi_files, config.PPI_CACHE_DIR)
+    Utils.render_file_table(ppi_files, config.PPI_CACHE_DIR, search_key="search_ppi")

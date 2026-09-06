@@ -29,4 +29,4 @@ if enr_files.empty:
     st.info(t("enrich_info.empty"))
 else:
     # 每行一个 Download 按钮,下载对应的富集分析结果 CSV
-    Utils.render_file_table(enr_files, config.ENRICHMENT_CACHE_DIR)
+    Utils.render_file_table(enr_files, config.ENRICHMENT_CACHE_DIR, search_key="search_enrich")

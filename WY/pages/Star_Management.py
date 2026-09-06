@@ -55,12 +55,16 @@ if st.session_state.pop("_star_deleted", None):
     st.success(t("star.deleted"))
 
 star_dir = config.MD_STAR_DIR
-if not os.path.isdir(star_dir) or not any(
-        os.path.isdir(os.path.join(star_dir, n)) for n in os.listdir(star_dir)):
-    st.info(t("star.empty"))
-else:
+names = []
+if os.path.isdir(star_dir):
     names = sorted(n for n in os.listdir(star_dir)
                    if os.path.isdir(os.path.join(star_dir, n)))
+query = st.text_input(t("common.search_placeholder"), key="search_star").strip().lower()
+if query:
+    names = [n for n in names if query in n.lower()]
+if not names:
+    st.info(t("common.search_no_match", query=query) if query else t("star.empty"))
+else:
     st.caption(t("star.total", count=len(names)))
 
     # 表头

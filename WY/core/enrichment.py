@@ -624,23 +624,33 @@ def fetch_enrichment_gsea_prerank(
     import gseapy
 
     frames: list[pd.DataFrame] = []
-    try:
-        for lib, gmt_path in libs.items():
+    n_error = 0
+    for lib, gmt_path in libs.items():
+        try:
             res = gseapy.prerank(
                 rnk=rnk, gene_sets=gmt_path, outdir=None, verbose=False,
                 min_size=config.GSEA_SET_MIN_SIZE, max_size=config.GSEA_SET_MAX_SIZE,
                 permutation_num=config.GSEA_PERMUTATION_NUM, seed=config.GSEA_SEED,
             )
-            r2d = res.res2d
-            if r2d is not None and len(r2d) > 0:
-                frames.append(r2d.assign(source=lib))
-    except Exception:
-        logging.exception("GSEA prerank failed (%d genes, libs=%s)", len(rnk), list(libs))
-        _set_status(status, False, "request_failed")
-        return pd.DataFrame()
+        except LookupError:
+            # 该库与本次基因列表交集过小，没有基因集通过 min/max 过滤：
+            # 属数据特征而非服务失败，跳过该库，让其余库继续计算
+            logging.info("GSEA prerank: no gene sets in %s matched %d genes, skipped",
+                         lib, len(rnk))
+            continue
+        except Exception:
+            logging.exception("GSEA prerank failed for %s (%d genes)", lib, len(rnk))
+            n_error += 1
+            continue
+        r2d = res.res2d
+        if r2d is not None and len(r2d) > 0:
+            frames.append(r2d.assign(source=lib))
 
     if not frames:
-        # 各基因集库都算完了，但没有显著富集的通路
+        if n_error:
+            _set_status(status, False, "request_failed")
+            return pd.DataFrame()
+        # 各基因集库都没有可用的基因集或没有显著富集的通路——真"无显著结果"，非失败
         logging.info("GSEA prerank: no gene sets passed for %d genes", len(rnk))
         _set_status(status, True, "no_significant")
         return pd.DataFrame()
