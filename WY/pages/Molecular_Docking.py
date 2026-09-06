@@ -18,10 +18,12 @@ from core.docking import (
     parse_hetatm,
     pose_pdbqt_to_pdb,
     residues_in_box,
+    residues_near_ligand,
     resolve_cid,
     save_interactive_3d_html,
     smiles_to_sdf_3d,
 )
+from core.enrichment import parse_enrichment_filename
 
 st.set_page_config(page_title=t("dock.page_title"), layout="wide")
 
@@ -57,9 +59,11 @@ if st.session_state.pop("_docking_entry", False):
 st.session_state.setdefault("docking", {})
 dock = st.session_state["docking"]
 
-# 每次进入本页时清理一次过期缓存(页内操作不重复清理)
+# 每次进入本页时清理一次过期缓存(页内操作不重复清理);
+# 顺手把旧版完整哈希命名的富集缓存改成短哈希命名,让下方文件选择列表命名统一可读
 if not st.session_state.get("_docking_cache_cleaned"):
     Utils.clean_docking_cache()
+    Utils.migrate_legacy_cache_names()
     st.session_state["_docking_cache_cleaned"] = True
 
 
@@ -67,11 +71,8 @@ if not st.session_state.get("_docking_cache_cleaned"):
 
 def _extract_label(file_name: str) -> str:
     """从富集结果文件名中解析出"药物_疾病"标识,用于命名后续结果。"""
-    m = re.match(r"^(?:gProfiler|Enrichr)_(.+)_[0-9a-f]{32}\.csv$", file_name)
-    if m:
-        return m.group(1)
-    m2 = re.match(r"^(?:gProfiler|Enrichr)_([0-9a-f]{32})\.csv$", file_name)
-    return m2.group(1) if m2 else ""
+    info = parse_enrichment_filename(file_name)
+    return info["label"] if info else ""
 
 
 def _parse_genes(raw: str) -> list[str]:
@@ -171,8 +172,10 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
     return result_dir
 
 
-def _render_3d(pdb_path: str, pose_pdbqt: str) -> None:
-    """在页面内 3D 展示受体(卡通)与所选对接构象(棍状);缺少组件时仅给出提示。"""
+def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None) -> None:
+    """在页面内 3D 展示受体(卡通)、所选对接构象(绿棍)与结合位点残基
+    (橙棍并标注"残基名-编号"),并叠加共晶配体(灰色半透明)作天然口袋参照;
+    缺少组件时仅给出提示。"""
     try:
         import py3Dmol
     except ImportError:
@@ -188,17 +191,44 @@ def _render_3d(pdb_path: str, pose_pdbqt: str) -> None:
         receptor_pdb = f.read()
     with open(pose_pdb, encoding="utf-8") as f:
         ligand_pdb = f.read()
+    # 受体中的共晶配体(非水 HETATM),叠加作天然口袋参照
+    het_lines = [ln for ln in receptor_pdb.splitlines()
+                 if ln.startswith("HETATM")
+                 and ln[17:20].strip() not in ("HOH", "H2O", "WAT", "DOD")]
 
     view = py3Dmol.view(width=900, height=520)
     view.addModel(receptor_pdb, "pdb")
     view.addModel(ligand_pdb, "pdb")
     view.setStyle({"model": 0}, {"cartoon": {"color": "spectrum"}})
     view.setStyle({"model": 1}, {"stick": {"colorscheme": "greenCarbon"}})
+    if het_lines:
+        view.addModel("\n".join(het_lines) + "\n", "pdb")  # model 2:共晶配体参照
+        view.setStyle({"model": 2}, {"stick": {"colorscheme": "greyCarbon",
+                                               "opacity": 0.5, "radius": 0.15}})
+    # 结合位点残基:橙色棍状高亮,按链分组选择;无链号时不限定 chain
+    by_chain: dict[str, list] = {}
+    for r in pocket or []:
+        by_chain.setdefault(r["chain"], []).append(r["resi"])
+    for chain, resis in by_chain.items():
+        sel: dict = {"model": 0, "resi": resis}
+        if chain:
+            sel["chain"] = chain
+        view.setStyle(sel, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.2}})
+    # 残基名标签,位置取该残基 CA 原子(缺 CA 时用第一个原子)
+    for r in pocket or []:
+        x, y, z = r["pos"]
+        view.addLabel(f"{r['resn']}-{r['resi']}", {
+            "position": {"x": x, "y": y, "z": z},
+            "fontSize": 11, "fontColor": "black",
+            "showBackground": True, "backgroundColor": "white",
+            "backgroundOpacity": 0.7,
+        })
     view.zoomTo()
     try:
         html = view._make_html()
     except AttributeError:
         html = view.write()
+    st.caption(t("dock.legend_pose" if het_lines else "dock.legend_pose_apo"))
     st.components.v1.html(html, height=540)
 
 
@@ -274,14 +304,17 @@ if dock.get("gene_src_mode") != src_mode:
     _reset_docking_downstream()
 
 if src_mode == "ppi":
-    # 只列出 PPI 分析结果目录,排除其他类型的文件夹
+    # 只列出 PPI 分析结果目录,排除其他类型的文件夹;目录名展示为"药物 → 疾病"
     dirs = Utils.list_download_dirs()
     ppi_dirs = dirs[dirs["Directory"].str.endswith("_data", na=False)] if not dirs.empty else dirs
     if ppi_dirs.empty:
         st.warning(t("dock.no_ppi_dirs"))
     else:
+        dir_disp = {d: Utils.humanize_analysis_label(d[:-5] if d.endswith("_data") else d)
+                    for d in ppi_dirs["Directory"]}
         sel_dir = st.selectbox(t("dock.sel_ppi_dir"), ppi_dirs["Directory"].tolist(), key="sel_ppi_dir",
-                               index=None, placeholder=t("dock.sel_ppi_dir_ph"))
+                               index=None, placeholder=t("dock.sel_ppi_dir_ph"),
+                               format_func=lambda d: dir_disp.get(d, d))
         # 选定目录后自动读取,无需再点按钮
         if sel_dir and dock.get("ppi_dir") != sel_dir:
             dock["ppi_dir"] = sel_dir
@@ -294,12 +327,24 @@ if src_mode == "ppi":
             dock["disease"] = parts[1] if len(parts) > 1 else ""
             _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
 else:
-    enr_files = Utils.list_cache_files("enrichment")
+    enr_files = Utils.list_cache_files("enrichment", exts=(".csv",))
+    # 只保留普通富集(ORA)结果供选择:GSEA 文件没有逐条目的基因列,选中也提不出候选基因;
+    # 按创建时间倒序,最近一次分析排最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称
+    if not enr_files.empty:
+        is_ora = enr_files["File name"].map(
+            lambda n: (parse_enrichment_filename(n) or {}).get("kind") == "ora")
+        enr_files = (enr_files[is_ora]
+                     .sort_values("Created time", ascending=False))
     if enr_files.empty:
         st.warning(t("dock.no_enr_files"))
     else:
-        sel_file = st.selectbox(t("dock.sel_enr_file"), enr_files["File name"], key="sel_enr",
-                                index=None, placeholder=t("dock.sel_enr_file_ph"))
+        # 同名分析可能有多份不同参数的缓存,展示名带上创建时间以便区分
+        file_disp = {row["File name"]:
+                     f"{Utils.enrichment_display_name(row['File name'])} · {row['Created time']}"
+                     for _, row in enr_files.iterrows()}
+        sel_file = st.selectbox(t("dock.sel_enr_file"), enr_files["File name"].tolist(), key="sel_enr",
+                                index=None, placeholder=t("dock.sel_enr_file_ph"),
+                                format_func=lambda n: file_disp.get(n, n))
         # 选定文件后自动读取
         if sel_file and dock.get("enr_file") != sel_file:
             dock["enr_file"] = sel_file
@@ -362,6 +407,12 @@ if dock.get("enrichment_genes") is not None:
             if no_struct:
                 st.caption(t("dock.excluded_no_struct", n=len(no_struct))
                            + ", ".join(no_struct[:40]) + (" …" if len(no_struct) > 40 else ""))
+                # 被剔除的基因里有 hub 时要特别提醒:hub 是对接的核心对象,
+                # 无实验结构只能靠 AlphaFold 预测模型兜底,不提醒容易被忽略
+                hub_no_struct = sorted(hub_set & set(no_struct))
+                if hub_no_struct and not allow_af:
+                    st.warning(t("dock.hub_no_struct_warn", n=len(hub_no_struct),
+                                 genes=", ".join(hub_no_struct)))
         else:
             dock.pop("genes", None)
             st.info(t("dock.click_to_check"))
@@ -551,7 +602,8 @@ def _render_box_3d(pdb_path: str, box: dict) -> None:
     view.setStyle({"model": 0}, {"cartoon": {"color": "spectrum"}})
     if het_lines:
         view.addModel("\n".join(het_lines) + "\n", "pdb")  # model 1：共结晶配体
-        view.setStyle({"model": 1}, {"stick": {"colorscheme": "greenCarbon"}})
+        # 灰色=共晶配体(参考),与 Step 6 的叠加参照同色;绿色留给对接结果
+        view.setStyle({"model": 1}, {"stick": {"colorscheme": "greyCarbon"}})
     # 对接盒:橙色半透明线框
     view.addBox({
         "center": {"x": c[0], "y": c[1], "z": c[2]},
@@ -564,6 +616,7 @@ def _render_box_3d(pdb_path: str, box: dict) -> None:
         html = view._make_html()
     except AttributeError:
         html = view.write()
+    st.caption(t("dock.legend_box" if het_lines else "dock.legend_box_apo"))
     st.components.v1.html(html, height=540)
 
 
@@ -735,6 +788,13 @@ if dock.get("result"):
                 pose_path = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                          f"pose_{int(pose_sel)}.pdbqt")
                 extract_model(dock["result"]["out"], int(pose_sel), pose_path)
+                pocket = residues_near_ligand(dock["pdb_path"], pose_path)
+                _render_3d(dock["pdb_path"], pose_path, pocket)
+                if pocket:
+                    names = [f"{r['resn']}{r['resi']}" for r in pocket]
+                    st.caption(t("dock.pocket_caption", n=len(names))
+                               + ", ".join(names[:40])
+                               + (" …" if len(names) > 40 else ""))
                 _render_3d(dock["pdb_path"], pose_path)
                 _save_3d_html_ui(dock, dock["pdb_path"], pose_path, pose_sel)
             except Exception as exc:

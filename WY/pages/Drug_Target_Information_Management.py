@@ -46,7 +46,7 @@ def _invalidate_merged_drug(drug_name: str) -> None:
     """更新来源文件后删除对应 merged 缓存，避免整合结果与来源不一致。"""
     # 传入的是原始药物名,文件名需走同样的 safe_name 规范化才能对上
     path = os.path.join(config.MERGED_CACHE_DIR,
-                        f"merged_drug_{Utils.safe_name(drug_name)}.csv")
+                        f"{config.MERGED_DRUG_PREFIX}{Utils.safe_name(drug_name)}.csv")
     if os.path.exists(path):
         os.remove(path)
 
@@ -54,7 +54,7 @@ def _invalidate_merged_drug(drug_name: str) -> None:
 _SPEC = {
     "cache_dir": config.DRUG_CACHE_DIR,
     "merged_dir": config.MERGED_CACHE_DIR,
-    "merged_prefix": "merged_drug_",
+    "merged_prefix": config.MERGED_DRUG_PREFIX,
     "source_prefixes": ("ChEMBL_", "DGIdb_"),
     "fetch_source": {"ChEMBL_": _fetch_chembl, "DGIdb_": _fetch_dgidb},
     "fetch_merged": Utils.get_drug_targets_merged,
@@ -92,14 +92,39 @@ if all_update_clicked:
 
 st.divider()
 
-drug_files = Utils.list_cache_files("drug")
+source_files = Utils.list_cache_files("drug")
 merged_files = Utils.list_cache_files("merged")
 merged_files = merged_files[merged_files["File name"].str.startswith("merged_drug_")]
-drug_files = pd.concat([drug_files, merged_files], ignore_index=True)
+
+# 数据来源筛选(默认全开):ChEMBL/DGIdb 作用于来源文件;merged 为两来源的整合缓存,单独可筛
+st.caption(t("common.source_filter"))
+c_ch, c_dg, c_m = st.columns(3)
+with c_ch:
+    show_chembl = st.checkbox("ChEMBL", value=True, key="flt_chembl")
+with c_dg:
+    show_dgidb = st.checkbox("DGIdb", value=True, key="flt_dgidb")
+with c_m:
+    show_merged = st.checkbox(t("common.filter_merged"), value=True, key="flt_merged")
+
+def _match_source(n: str) -> bool:
+    if n.startswith("ChEMBL_"):
+        return show_chembl
+    if n.startswith("DGIdb_"):
+        return show_dgidb
+    return True
+
+n_source = len(source_files)
+n_merged = len(merged_files)
+if n_source:
+    source_files = source_files[source_files["File name"].map(_match_source)]
+if not show_merged:
+    merged_files = merged_files.iloc[0:0]
+drug_files = pd.concat([source_files, merged_files], ignore_index=True)
 clicked_file = None
 
 if drug_files.empty:
-    st.info(t("drug_mgmt.no_files"))
+    # 有文件但全被筛掉时,按"筛选无结果"提示,与"目录本来就空"区分开
+    st.info(t("common.filter_no_match") if (n_source or n_merged) else t("drug_mgmt.no_files"))
 else:
     clicked_file = Utils.render_updateable_file_table(drug_files, _SPEC, search_key="search_drug")
 

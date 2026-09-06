@@ -3,10 +3,11 @@
 import hashlib
 import logging
 import os
+import re
 
 import pandas as pd
 
-from .caching import open_csv_cache, save_csv_cache
+from .caching import _is_cache_fresh, read_cache_key, save_csv_cache
 
 # 两个数据源的基因集库名对应关系（GO 生物过程/分子功能/细胞组分、KEGG 通路）。
 ENRICHR_LIB_MAP = {
@@ -31,6 +32,130 @@ def _enrichment_cache_key(genes: list[str], organism: str, sources, pvalue: floa
         + f"|{organism}|{','.join(sources)}|{pvalue}"
     )
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+# 缓存文件名中哈希的保留长度:完整 md5 的前 12 位(48 位区分度,同一标识下几乎不会碰撞),
+# 避免整串 32 位哈希把文件名拖得又长又难认。
+_HASH_LEN = 12
+# 文件名解析时兼容的哈希长度:新文件 12 位,旧文件完整 32 位
+_HASH_RE = r"[0-9a-f]{8,32}"
+
+
+def enrichment_cache_filename(source_name: str, label: str | None, md5: str) -> str:
+    """构造富集缓存文件名:数据源_标识.csv,如 gProfiler_aspirin_cancer.csv。
+
+    同名覆盖式缓存:同一"药物_疾病"标识只保留一份结果,新结果直接覆盖旧文件;
+    是否命中由文件头部的缓存键(save_csv_cache 的 header_lines 写入)校验,
+    标识相同但基因集/参数变了会当作未命中重算后覆盖,不会返回过期结果。
+    label 为空(无标识的裸查询)退回短哈希命名,避免不同输入互相覆盖。
+    network_algorithms 推算模块缓存文件时也用它,保证命名规则只有一份。
+    """
+    if label:
+        return f"{source_name}_{label}.csv"
+    return f"{source_name}_{md5[:_HASH_LEN]}.csv"
+
+
+# ---------- 缓存文件名解析(页面友好展示与分子对接选择共用) ----------
+# 新版命名不带哈希(gProfiler_标识.csv);旧版带 8~32 位哈希的文件名同样兼容解析。
+
+_ORA_NAME_RE = re.compile(
+    r"^(?P<source>gProfiler|Enrichr)_(?P<label>.+?)(?:_(?P<hash>[0-9a-f]{8,32}))?\.csv$")
+_ORA_NAME_NO_LABEL_RE = re.compile(
+    r"^(?P<source>gProfiler|Enrichr)_(?P<hash>[0-9a-f]{8,32})\.csv$")
+_GSEA_NAME_RE = re.compile(r"^GSEA_(?P<rest>.+?)(?:_(?P<hash>[0-9a-f]{8,32}))?\.csv$")
+_GSEA_NAME_NO_LABEL_RE = re.compile(r"^GSEA_(?P<hash>[0-9a-f]{8,32})\.csv$")
+
+
+def parse_enrichment_filename(file_name: str) -> dict | None:
+    """解析富集缓存文件名;不是富集缓存命名规则时返回 None。
+
+    返回 {"kind", "source", "label", "side"}:
+      kind   "ora"（g:Profiler/Enrichr 普通富集）或 "gsea"（排序富集）;
+      source 数据源名;
+      label  "药物_疾病"等分析标识;
+      side   仅 GSEA 有:药物侧 "drug" / 疾病侧 "disease"。
+    新命名为 GSEA_侧_标识(无哈希);旧命名 GSEA_侧_标识_哈希 与 GSEA_标识_侧_哈希 也兼容解析。
+    """
+    if not isinstance(file_name, str):
+        return None
+    # 无标识的裸哈希命名先判(更具体),避免被通用规则当作带该哈希的 label
+    m = _ORA_NAME_NO_LABEL_RE.match(file_name)
+    if m:
+        return {"kind": "ora", "source": m.group("source"), "label": "", "side": None}
+    m = _ORA_NAME_RE.match(file_name)
+    if m:
+        return {"kind": "ora", "source": m.group("source"), "label": m.group("label"),
+                "side": None}
+    m = _GSEA_NAME_NO_LABEL_RE.match(file_name)
+    if m:
+        return {"kind": "gsea", "source": "GSEA", "label": "", "side": None}
+    m = _GSEA_NAME_RE.match(file_name)
+    if m:
+        rest = m.group("rest")
+        sm = re.match(r"^(?P<side>drug|disease)_(?P<prefix>.+)$", rest)      # 新命名:侧别在最前
+        if not sm:
+            sm = re.match(r"^(?P<prefix>.+)_(?P<side>drug|disease)$", rest)  # 旧命名:侧别在最后
+        if sm:
+            return {"kind": "gsea", "source": "GSEA",
+                    "label": sm.group("prefix"), "side": sm.group("side")}
+        return {"kind": "gsea", "source": "GSEA", "label": rest, "side": None}
+    return None
+
+
+def migrate_legacy_cache_names() -> int:
+    """把旧版带哈希命名的富集缓存改为"数据源_标识"同名覆盖式命名,返回处理(改名/去重)的文件数。
+
+    同一标识存在多个变体(旧缓存键不同)时保留最新一份、删除其余——与"同名覆盖只留最新"
+    的语义一致;同目标的新格式文件同样参与"最新者胜"。已是新命名的文件原样保留。
+    幂等:页面进入时重复调用无副作用。
+    """
+    import config
+
+    try:
+        names = sorted(os.listdir(config.ENRICHMENT_CACHE_DIR))
+    except OSError:
+        return 0
+    # 目标名 -> [(修改时间, 文件名)];新格式文件本身也是"最新者胜"的候选之一
+    groups: dict[str, list[tuple[float, str]]] = {}
+    for name in names:
+        info = parse_enrichment_filename(name)
+        if info is None:
+            continue
+        m = re.search(rf"_({_HASH_RE})\.csv$", name)
+        if m:
+            label = info["label"]
+            if info["kind"] == "gsea" and info["side"]:
+                label = f"{info['side']}_{label}"  # GSEA 统一为侧别在最前
+            target = enrichment_cache_filename(info["source"], label, m.group(1))
+        else:
+            target = name
+        path = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
+        try:
+            groups.setdefault(target, []).append((os.path.getmtime(path), name))
+        except OSError:
+            continue
+    moved = 0
+    for target, cands in groups.items():
+        if len(cands) == 1 and cands[0][1] == target:
+            continue
+        cands.sort(reverse=True)  # 最新在前
+        newest = cands[0]
+        for _, name in cands[1:]:
+            try:
+                os.remove(os.path.join(config.ENRICHMENT_CACHE_DIR, name))
+                moved += 1
+            except OSError:
+                logging.exception("Failed to remove duplicate enrichment cache %s", name)
+        if newest[1] != target:
+            try:
+                os.replace(os.path.join(config.ENRICHMENT_CACHE_DIR, newest[1]),
+                           os.path.join(config.ENRICHMENT_CACHE_DIR, target))
+                moved += 1
+            except OSError:
+                logging.exception("Failed to rename enrichment cache %s", newest[1])
+    if moved:
+        logging.info("Enrichment cache migrated to label-keyed naming: %d ops", moved)
+    return moved
 
 
 # ---------- g:Profiler 熔断 ----------
@@ -147,6 +272,21 @@ def _query_enrichr(genes: list[str], libs, organism: str, pvalue: float):
     ).results
 
 
+def _hit_csv_cache(cache_file: str, md5: str, label: str) -> pd.DataFrame | None:
+    """同名覆盖式缓存的命中判定:文件存在、有效期内、且头部键与当前查询一致。
+
+    键不一致(同一标识但基因集/参数变了)按未命中处理,重算后覆盖同名文件,
+    避免把旧输入的结果误当成新分析的结果;旧格式无键文件同样视为未命中。
+    """
+    if not _is_cache_fresh(cache_file):
+        return None
+    if read_cache_key(cache_file) != md5:
+        logging.info("%s: cache key changed, recompute %s", label, os.path.basename(cache_file))
+        return None
+    logging.info("Loading cached %s", label)
+    return pd.read_csv(cache_file, encoding="utf-8-sig", comment="#")
+
+
 def _fetch_enrichment_cached(
     genes: list[str],
     organism: str,
@@ -177,10 +317,10 @@ def _fetch_enrichment_cached(
         return pd.DataFrame()
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
     md5 = _enrichment_cache_key(genes, organism, cache_key_extra, pvalue)
-    name = f"{source_name}_{label}_{md5}.csv" if label else f"{source_name}_{md5}.csv"
-    cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR, name)
-    cached = open_csv_cache(cache_file, fresh=True,
-                            label=f"{source_name} enrichment for {len(genes)} genes")
+    cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR,
+                              enrichment_cache_filename(source_name, label, md5))
+    cached = _hit_csv_cache(cache_file, md5,
+                            f"{source_name} enrichment for {len(genes)} genes")
     if cached is not None:
         _set_status(status, True, "cache")
         return cached
@@ -212,7 +352,7 @@ def _fetch_enrichment_cached(
         _set_status(status, False, "normalize_empty")
         return df
     _set_status(status, True, "success")
-    save_csv_cache(df, cache_file)
+    save_csv_cache(df, cache_file, header_lines=[md5])
     logging.info("%s enrichment for %d genes: %d terms cached", source_name, len(genes), len(df))
     return df
 
@@ -570,8 +710,8 @@ def _normalize_enrichment_gsea(res2d: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None) -> str:
-    """GSEA 结果缓存路径：由基因排序与分数、基因集库、计算参数共同决定，相同输入命中同一缓存。"""
+def _gsea_cache_md5(rnk: pd.DataFrame, libs: dict[str, str]) -> str:
+    """GSEA 缓存键:由基因排序与分数、基因集库、计算参数共同决定,相同输入命中同一缓存。"""
     import config
 
     gene_part = "\r".join(rnk["gene"].astype(str))
@@ -580,9 +720,22 @@ def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None)
     payload = (gene_part + "||" + score_part + "||" + libs_part
                + f"|{config.GSEA_SET_MIN_SIZE}|{config.GSEA_SET_MAX_SIZE}"
                + f"|{config.GSEA_PERMUTATION_NUM}|{config.GSEA_SEED}")
-    md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
-    name = f"GSEA_{label}_{md5}.csv" if label else f"GSEA_{md5}.csv"
-    return os.path.join(config.ENRICHMENT_CACHE_DIR, name)
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None,
+                     md5: str | None = None) -> str:
+    """GSEA 结果缓存路径:同名覆盖式命名 GSEA_侧_标识.csv(键记录在文件头部,见 _hit_csv_cache)。
+
+    label 约定"侧别_分析标识"(如 disease_metformin_cancer),侧别放在最前,
+    避免与疾病名里的"disease"字样混淆。
+    """
+    import config
+
+    if md5 is None:
+        md5 = _gsea_cache_md5(rnk, libs)
+    return os.path.join(config.ENRICHMENT_CACHE_DIR,
+                        enrichment_cache_filename("GSEA", label, md5))
 
 
 def fetch_enrichment_gsea_prerank(
@@ -615,8 +768,9 @@ def fetch_enrichment_gsea_prerank(
         return pd.DataFrame()
 
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
-    cache_file = _gsea_cache_file(rnk, libs, label)
-    cached = open_csv_cache(cache_file, fresh=True, label=f"GSEA prerank result for {len(rnk)} genes")
+    gsea_md5 = _gsea_cache_md5(rnk, libs)
+    cache_file = _gsea_cache_file(rnk, libs, label, md5=gsea_md5)
+    cached = _hit_csv_cache(cache_file, gsea_md5, f"GSEA prerank result for {len(rnk)} genes")
     if cached is not None:
         _set_status(status, True, "cache")
         return cached
@@ -663,7 +817,7 @@ def fetch_enrichment_gsea_prerank(
         _set_status(status, False, "normalize_empty")
         return df
     _set_status(status, True, "success")
-    save_csv_cache(df, cache_file)
+    save_csv_cache(df, cache_file, header_lines=[gsea_md5])
     logging.info("GSEA prerank for %d genes: %d terms cached", len(rnk), len(df))
     return df
 

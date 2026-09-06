@@ -23,6 +23,122 @@ def _max_score_map(df: pd.DataFrame, score_col: str) -> dict[str, float]:
     return tmp.groupby("approvedSymbol")[score_col].max().to_dict()
 
 
+# ======== 数据源降噪过滤(阈值集中配在 config 的"靶点降噪过滤"段) ========
+
+# Open Targets 只保留这些生物类型:交集与后续分子对接都只关心蛋白靶点
+_OT_KEEP_BIOTYPES = {"protein_coding"}
+
+
+def _filter_dgidb_targets(df: pd.DataFrame) -> pd.DataFrame:
+    """DGIdb 降噪：保留交互分数达到下限、且有至少 1 条 PMID 文献支撑的记录。
+
+    单独卡分数或单独要求 PMID 都挡不住低质量预测,两条件需同时满足。
+    """
+    import config
+
+    if df.empty:
+        return df
+    out = df
+    if "interaction_score" in out.columns:
+        score = pd.to_numeric(out["interaction_score"], errors="coerce")
+        out = out[score >= config.DGIDB_MIN_SCORE]
+    if "interaction_pmids" in out.columns:
+        has_pmid = out["interaction_pmids"].fillna("").astype(str).str.strip() != ""
+        out = out[has_pmid]
+    return out
+
+
+def _filter_ot_targets(df: pd.DataFrame) -> pd.DataFrame:
+    """Open Targets 降噪：总关联分数达到下限,且只保留蛋白编码基因。"""
+    import config
+
+    if df.empty:
+        return df
+    out = df
+    if "association_score" in out.columns:
+        score = pd.to_numeric(out["association_score"], errors="coerce")
+        out = out[score >= config.OT_MIN_SCORE]
+    if "biotype" in out.columns:
+        out = out[out["biotype"].fillna("").isin(_OT_KEEP_BIOTYPES)]
+    return out
+
+
+def _filter_chembl_targets(df: pd.DataFrame, corroborated_genes: set[str],
+                           *, blacklist_only: bool = False) -> pd.DataFrame:
+    """ChEMBL 降噪：先剔黑名单,再按 pChEMBL 分层保留。
+
+    保留：基因的最大 pChEMBL 达到阈值；或全部活性记录都没有 pChEMBL
+    定量值、但被 DGIdb 佐证（corroborated_genes 为通过 DGIdb 过滤的
+    大写基因集合）。剔除：仅有弱定量活性（0 < pChEMBL < 阈值）的基因。
+    blacklist_only=True 时只做黑名单过滤,供整侧过滤后为空时的兜底。
+    """
+    import config
+
+    if df.empty:
+        return df
+    out = df.dropna(subset=["approvedSymbol"])
+    symbols = out["approvedSymbol"].str.upper()
+    out = out[~symbols.isin({g.upper() for g in config.CHEMBL_TARGET_BLACKLIST})]
+    if blacklist_only or "pchembl_value" not in out.columns:
+        return out
+
+    symbols = out["approvedSymbol"].str.upper()
+    pchem = pd.to_numeric(out["pchembl_value"], errors="coerce")
+    max_by_gene = pchem.groupby(symbols).max()
+    keep = set(max_by_gene[max_by_gene >= config.CHEMBL_PCHEMBL_THRESHOLD].index)
+    keep |= {g for g in max_by_gene[max_by_gene.isna()].index if g in corroborated_genes}
+    return out[symbols.isin(keep)]
+
+
+def _prepare_drug_sources(drug_name: str, chmbl_df: pd.DataFrame,
+                          dgidb_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """对药物两个数据源做降噪过滤,返回过滤后的 (ChEMBL, DGIdb) 两表。
+
+    DGIdb 先过滤（分数+PMID）,通过的基因集再用于佐证 ChEMBL 的
+    无定量活性基因;两源过滤后都为空但原始数据非空时（DGIdb 失败、
+    全部活性只有弱定量值等）,回退为 ChEMBL 仅黑名单过滤,避免整侧
+    结果为空导致交集无意义。
+    """
+    dgidb_f = _filter_dgidb_targets(dgidb_df)
+    corroborated = (
+        set(dgidb_f["approvedSymbol"].dropna().str.upper()) if not dgidb_f.empty else set()
+    )
+    chmbl_f = _filter_chembl_targets(chmbl_df, corroborated)
+    if chmbl_f.empty and dgidb_f.empty and not (chmbl_df.empty and dgidb_df.empty):
+        logging.warning(
+            "Drug '%s': noise filters emptied both sources; "
+            "falling back to blacklist-only ChEMBL filtering", drug_name)
+        chmbl_f = _filter_chembl_targets(chmbl_df, set(), blacklist_only=True)
+    logging.info(
+        "Drug noise filter '%s': ChEMBL %d->%d rows, DGIdb %d->%d rows",
+        drug_name, len(chmbl_df), len(chmbl_f), len(dgidb_df), len(dgidb_f))
+    return chmbl_f, dgidb_f
+
+
+def _prepare_disease_sources(disease_name: str, ot_df: pd.DataFrame,
+                             disgenet_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """对疾病两个数据源做降噪过滤,返回过滤后的 (OpenTargets, DisGeNET) 两表。
+
+    DisGeNET 结果本身按分数降序且只取第一页(相当于 top100),不再额外过滤。
+    """
+    ot_f = _filter_ot_targets(ot_df)
+    logging.info(
+        "Disease noise filter '%s': OpenTargets %d->%d rows",
+        disease_name, len(ot_df), len(ot_f))
+    return ot_f, disgenet_df
+
+
+def _merged_cache_path(kind: str, name: str) -> str:
+    """merged 整合缓存文件路径。
+
+    文件名带降噪过滤规则版本号（config.TARGET_FILTER_VERSION），
+    规则或阈值变更（版本号+1）后旧缓存自动失效,下次分析按新阈值重建。
+    """
+    import config
+    prefix = config.MERGED_DRUG_PREFIX if kind == "drug" else config.MERGED_DISEASE_PREFIX
+    return os.path.join(config.MERGED_CACHE_DIR, f"{prefix}{safe_name(name)}.csv")
+
+
 def _merge_source_pair(
     name: str,
     df_a: pd.DataFrame,
@@ -84,13 +200,13 @@ def _merge_source_pair(
 def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
     """整合 ChEMBL 与 DGIdb 两个数据库的药物靶点，按基因符号取并集去重。
 
+    整合前先做降噪过滤（ChEMBL 黑名单+pChEMBL 阈值与 DGIdb 佐证、
+    DGIdb 分数+PMID 双门槛,见 _prepare_drug_sources）。
     为每个基因标记来自哪些数据库（source_chmbl / source_dgidb），
     并保留各库的活性/交互分数。两个库都没有数据时返回空表；
     结果存为本地 CSV，已有缓存则直接复用。
     """
-    import config
-
-    cache_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_drug_{safe_name(drug_name)}.csv")
+    cache_path = _merged_cache_path("drug", drug_name)
     remember_name_mapping(drug_name)  # 记录安全文件名→原始名,供管理页还原
     cached = open_csv_cache(cache_path, label=f"merged drug targets for '{drug_name}'")
     if cached is not None:
@@ -98,6 +214,7 @@ def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
 
     chmbl_df, _ = fetch_drug_targets_chembl(drug_name)
     dgidb_df = fetch_drug_targets_dgidb(drug_name)
+    chmbl_df, dgidb_df = _prepare_drug_sources(drug_name, chmbl_df, dgidb_df)
     return _merge_source_pair(
         drug_name, chmbl_df, dgidb_df,
         cache_path=cache_path, kind="drug",
@@ -111,13 +228,13 @@ def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
 def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
     """整合 Open Targets 与 DisGeNET 两个数据库的疾病靶点，按基因符号取并集去重。
 
+    整合前先对 Open Targets 做降噪过滤（分数下限+只留蛋白编码,
+    DisGeNET 本身按分数取第一页,不过滤,见 _prepare_disease_sources）。
     为每个基因标记来自哪些数据库（source_ot / source_disgenet），
     并保留各库的关联分数。两个库都没有数据时返回空表；
     结果存为本地 CSV，已有缓存则直接复用。
     """
-    import config
-
-    cache_path = os.path.join(config.MERGED_CACHE_DIR, f"merged_disease_{safe_name(disease_name)}.csv")
+    cache_path = _merged_cache_path("disease", disease_name)
     remember_name_mapping(disease_name)  # 记录安全文件名→原始名,供管理页还原
     cached = open_csv_cache(cache_path, label=f"merged disease targets for '{disease_name}'")
     if cached is not None:
@@ -125,6 +242,7 @@ def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
 
     ot_df = get_disease_targets(disease_name)
     disgenet_df = fetch_disease_targets_disgenet(disease_name)
+    ot_df, disgenet_df = _prepare_disease_sources(disease_name, ot_df, disgenet_df)
     return _merge_source_pair(
         disease_name, ot_df, disgenet_df,
         cache_path=cache_path, kind="disease",
@@ -188,11 +306,8 @@ def get_targets_concurrent(
 
     import time
 
-    import config
-
-    drug_cache = os.path.join(config.MERGED_CACHE_DIR, f"merged_drug_{safe_name(drug_name)}.csv")
-    disease_cache = os.path.join(
-        config.MERGED_CACHE_DIR, f"merged_disease_{safe_name(disease_name)}.csv")
+    drug_cache = _merged_cache_path("drug", drug_name)
+    disease_cache = _merged_cache_path("disease", disease_name)
 
     drug_df = open_csv_cache(drug_cache, label=f"merged drug targets for '{drug_name}'")
     disease_df = open_csv_cache(disease_cache, label=f"merged disease targets for '{disease_name}'")
@@ -253,6 +368,7 @@ def get_targets_concurrent(
         dgidb_df = results.get("dgidb")
         if not isinstance(dgidb_df, pd.DataFrame):
             dgidb_df = pd.DataFrame()
+        chmbl_df, dgidb_df = _prepare_drug_sources(drug_name, chmbl_df, dgidb_df)
         drug_df = _merge_source_pair(
             drug_name, chmbl_df, dgidb_df,
             cache_path=drug_cache, kind="drug",
@@ -268,6 +384,7 @@ def get_targets_concurrent(
         disgenet_df = results.get("disgenet")
         ot_df = ot_df if isinstance(ot_df, pd.DataFrame) else pd.DataFrame()
         disgenet_df = disgenet_df if isinstance(disgenet_df, pd.DataFrame) else pd.DataFrame()
+        ot_df, disgenet_df = _prepare_disease_sources(disease_name, ot_df, disgenet_df)
         disease_df = _merge_source_pair(
             disease_name, ot_df, disgenet_df,
             cache_path=disease_cache, kind="disease",

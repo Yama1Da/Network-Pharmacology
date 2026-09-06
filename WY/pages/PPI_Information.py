@@ -6,12 +6,17 @@ from i18n import t
 
 st.set_page_config(page_title=t("ppi_info.page_title"), layout="wide")
 
-# 隐藏侧边栏,全屏显示页面;行内 Download 按钮(#207D62 底、#C8F0DF 字)
+# 隐藏侧边栏,全屏显示页面;行内 Download 按钮(#207D62 底、#C8F0DF 字),删除按钮红底白字
 Utils.hide_sidebar("""
     .st-key-file_rows [class*="st-key-download_"] button {
         background-color: #207D62;
         color: #C8F0DF;
         border: 1px solid #207D62;
+    }
+    .st-key-ppi_files_del_btn button {
+        background-color: #F53F3F;
+        color: #FFFFFF;
+        border: 1px solid #F53F3F;
     }
 """)
 
@@ -24,9 +29,13 @@ with col_back:
 
 st.divider()
 
+Utils.show_file_op_result("ppi_files")
+
 ppi_files = Utils.list_cache_files("ppi")
 if ppi_files.empty:
     st.info(t("ppi_info.empty"))
 else:
-    # 每行一个 Download 按钮,下载对应的 PPI 结果 CSV
-    Utils.render_file_table(ppi_files, config.PPI_CACHE_DIR, search_key="search_ppi")
+    # 多选文件表 + 批量操作:下载选中(ZIP)/删除(确认弹窗)
+    Utils.render_file_table(ppi_files, config.PPI_CACHE_DIR, search_key="search_ppi",
+                            ns="ppi_files")
+    Utils.render_file_action_bar("ppi_files", config.PPI_CACHE_DIR, zip_name="PPI_files.zip")

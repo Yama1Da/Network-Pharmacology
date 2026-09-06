@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+import config
 import Utils
 from i18n import t, set_lang, get_lang
 import matplotlib.pyplot as plt
@@ -96,6 +97,49 @@ st.markdown("""
         color: #FFFFFF;
         border: 1px solid #909399;
         box-shadow: none;
+    }
+    /* 左下角齿轮 FAB:无底色,只显示一个白色描边齿轮(带中孔);点击弹出设置悬浮窗 */
+    div.st-key-gear_fab {
+        position: fixed;
+        bottom: 1.5rem;
+        left: 1.5rem;
+        z-index: 9999;
+        width: 18px;
+        height: 18px;
+        pointer-events: auto;
+    }
+    div.st-key-gear_fab .stButton button {
+        width: 18px;
+        height: 18px;
+        min-height: 18px;
+        padding: 0;
+        border-radius: 50%;
+        background-color: rgba(255, 255, 255, 0.08);
+        color: transparent;
+        border: none;
+        box-shadow: none;
+        line-height: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        /* 齿轮用内联 SVG 绘制(白色描边、空心中心,40px):Streamlit 打包的
+           图标字体是静态实例,无可变轴,CSS 调不出空心,故不再依赖字体 */
+        background-image: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23ffffff%22 stroke-width=%221.6%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 0 0-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 0 0-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 0 0-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 0 0-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 0 0 1.066-2.573c-.94-1.543.826-3.31 2.37-2.37c1 .608 2.296.07 2.572-1.065z%22/%3E%3Ccircle cx=%2212%22 cy=%2212%22 r=%223%22/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: center;
+        background-size: 18px 18px;
+        filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.3));
+    }
+    /* Material 字体齿轮文字隐藏(齿轮由按钮背景 SVG 绘制) */
+    div.st-key-gear_fab .stButton button span[role="img"] {
+        color: transparent !important;
+    }
+    div.st-key-gear_fab .stButton button:hover,
+    div.st-key-gear_fab .stButton button:active {
+        background-color: rgba(255, 255, 255, 0.18);
+        color: transparent;
+        box-shadow: none;
+        filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.5));
     }
     /* 语言切换：iOS 风格滑动开关，文本直接嵌在开关轨道内
        （左=中文红 / 右=English蓝，文字始终位于滑块对侧） */
@@ -236,9 +280,56 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ---------- Settings floating window (modal dialog, opened by the bottom-left gear) ----------
+@st.dialog(t("app.settings.title"))
+def _open_settings_dialog() -> None:
+    """设置悬浮窗:靶点降噪阈值与黑名单、富集/模块参数,改动即时生效并持久化。"""
+    st.caption(t("app.settings.caption"))
+    # ChEMBL 黑名单:可在常用选项里勾选,也支持手输任意基因符号
+    new_bl = st.multiselect(
+        t("app.settings.blacklist"),
+        options=list(config.CHEMBL_BLACKLIST_OPTIONS),
+        default=list(config.CHEMBL_TARGET_BLACKLIST),
+        accept_new_options=True,
+        key="set_blacklist",
+    )
+    new_vals = {
+        "CHEMBL_PCHEMBL_THRESHOLD": st.number_input(
+            t("app.settings.pchembl"), min_value=0.0, max_value=12.0, step=0.1,
+            value=float(config.CHEMBL_PCHEMBL_THRESHOLD), key="set_pchembl"),
+        "DGIDB_MIN_SCORE": st.number_input(
+            t("app.settings.dgidb"), min_value=0.0, max_value=1.0, step=0.01,
+            value=float(config.DGIDB_MIN_SCORE), key="set_dgidb"),
+        "OT_MIN_SCORE": st.number_input(
+            t("app.settings.ot"), min_value=0.0, max_value=1.0, step=0.05,
+            value=float(config.OT_MIN_SCORE), key="set_ot"),
+        "ENRICHMENT_PVALUE": st.number_input(
+            t("app.settings.enr_p"), min_value=0.001, max_value=0.5, step=0.005,
+            value=float(config.ENRICHMENT_PVALUE), key="set_enr_p"),
+        "LOUVAIN_RESOLUTION": st.number_input(
+            t("app.settings.louvain"), min_value=0.3, max_value=3.0, step=0.1,
+            value=float(config.LOUVAIN_RESOLUTION), key="set_louvain"),
+    }
+    # 有变化才动手:改 config 运行时值 + 持久化 + 清 merged 整合缓存
+    changed = {k: v for k, v in new_vals.items() if v != getattr(config, k)}
+    if sorted(new_bl) != sorted(config.CHEMBL_TARGET_BLACKLIST):
+        changed["CHEMBL_TARGET_BLACKLIST"] = new_bl
+    if changed:
+        for _k, _v in changed.items():
+            setattr(config, _k, _v)
+        Utils.save_ui_settings(changed)
+        Utils.purge_merged_cache()
+        st.toast(t("app.settings.toast"))
+
+
 # ---------- Title ----------
 st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtitle")}</p></div>',
             unsafe_allow_html=True)
+
+# ---------- Bottom-left gear: opens the settings modal ----------
+with st.container(key="gear_fab"):
+    if st.button(":material/settings:", key="gear_fab_btn"):
+        _open_settings_dialog()
 
 # ---------- Language sliding switch + Logs button (fixed top-right) ----------
 with st.container(key="top_right_logs"):
@@ -282,11 +373,11 @@ st.divider()# 分隔管理按钮和搜索栏
 # ---------- Search bar ----------
 col_drug, col_disease = st.columns(2)# 两列分别输入药物名称和疾病名称
 with col_drug:
-    drug_name = st.text_input(t("app.drug_label"), value="aspirin",
+    drug_name = st.text_input(t("app.drug_label"), value="metformin",
                                label_visibility="collapsed",
                                placeholder=t("app.drug_placeholder"))
 with col_disease:
-    disease_name = st.text_input(t("app.disease_label"), value="cancer",
+    disease_name = st.text_input(t("app.disease_label"), value="Type 2 diabetes mellitus",
                                   label_visibility="collapsed",
                                   placeholder=t("app.disease_placeholder"))
 

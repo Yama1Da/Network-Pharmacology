@@ -47,7 +47,7 @@ def _invalidate_merged_disease(disease_name: str) -> None:
     """更新来源文件后删除对应 merged 缓存，避免整合结果与来源不一致。"""
     # 传入的是原始疾病名,文件名需走同样的 safe_name 规范化才能对上
     path = os.path.join(config.MERGED_CACHE_DIR,
-                        f"merged_disease_{Utils.safe_name(disease_name)}.csv")
+                        f"{config.MERGED_DISEASE_PREFIX}{Utils.safe_name(disease_name)}.csv")
     if os.path.exists(path):
         os.remove(path)
 
@@ -55,7 +55,7 @@ def _invalidate_merged_disease(disease_name: str) -> None:
 _SPEC = {
     "cache_dir": config.DISEASE_CACHE_DIR,
     "merged_dir": config.MERGED_CACHE_DIR,
-    "merged_prefix": "merged_disease_",
+    "merged_prefix": config.MERGED_DISEASE_PREFIX,
     "source_prefixes": ("OpenTargets_", "DisGeNET_"),
     "fetch_source": {"OpenTargets_": _fetch_opentargets, "DisGeNET_": _fetch_disgenet},
     "fetch_merged": Utils.get_disease_targets_merged,
@@ -93,14 +93,34 @@ if all_update_clicked:
 
 st.divider()
 
-disease_files = Utils.list_cache_files("disease")
+source_files = Utils.list_cache_files("disease")
 merged_files = Utils.list_cache_files("merged")
 merged_files = merged_files[merged_files["File name"].str.startswith("merged_disease_")]
-disease_files = pd.concat([disease_files, merged_files], ignore_index=True)
+
+# 数据来源筛选(默认全开):只作用于来源文件;merged 整合文件来自两个来源,始终显示
+st.caption(t("common.source_filter"))
+c_ot, c_dg = st.columns(2)
+with c_ot:
+    show_opentargets = st.checkbox("Open Targets", value=True, key="flt_opentargets")
+with c_dg:
+    show_disgenet = st.checkbox("DisGeNET", value=True, key="flt_disgenet")
+
+def _match_source(n: str) -> bool:
+    if n.startswith("OpenTargets_"):
+        return show_opentargets
+    if n.startswith("DisGeNET_"):
+        return show_disgenet
+    return True
+
+n_source = len(source_files)
+if n_source:
+    source_files = source_files[source_files["File name"].map(_match_source)]
+disease_files = pd.concat([source_files, merged_files], ignore_index=True)
 clicked_file = None
 
 if disease_files.empty:
-    st.info(t("disease_mgmt.no_files"))
+    # 有来源文件但全被筛掉时,按"筛选无结果"提示,与"目录本来就空"区分开
+    st.info(t("common.filter_no_match") if n_source else t("disease_mgmt.no_files"))
 else:
     clicked_file = Utils.render_updateable_file_table(disease_files, _SPEC, search_key="search_disease")
 
