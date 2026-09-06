@@ -795,7 +795,6 @@ if dock.get("result"):
                     st.caption(t("dock.pocket_caption", n=len(names))
                                + ", ".join(names[:40])
                                + (" …" if len(names) > 40 else ""))
-                _render_3d(dock["pdb_path"], pose_path)
                 _save_3d_html_ui(dock, dock["pdb_path"], pose_path, pose_sel)
             except Exception as exc:
                 st.warning(t("dock.preview3d_failed", exc=exc))
