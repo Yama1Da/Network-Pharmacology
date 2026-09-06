@@ -1094,11 +1094,36 @@ __LIB__
 (function () {
   var receptor = __RECEPTOR__;
   var ligand = __LIGAND__;
+  var het = __HET__;
+  var pocket = __POCKET__;
   var viewer = $3Dmol.createViewer("viewer", { backgroundColor: "white" });
   viewer.addModel(receptor, "pdb");
   viewer.setStyle({ model: 0 }, { cartoon: { color: "spectrum" } });
   viewer.addModel(ligand, "pdb");
   viewer.setStyle({ model: 1 }, { stick: { colorscheme: "greenCarbon" } });
+  if (het) {
+    viewer.addModel(het, "pdb");
+    viewer.setStyle({ model: 2 }, { stick: { colorscheme: "greyCarbon", opacity: 0.5, radius: 0.15 } });
+  }
+  if (pocket && pocket.length) {
+    var byChain = {};
+    pocket.forEach(function (r) {
+      (byChain[r.chain] = byChain[r.chain] || []).push(r.resi);
+    });
+    Object.keys(byChain).forEach(function (ch) {
+      var sel = { model: 0, resi: byChain[ch] };
+      if (ch) { sel.chain = ch; }
+      viewer.setStyle(sel, { stick: { colorscheme: "orangeCarbon", radius: 0.2 } });
+    });
+    pocket.forEach(function (r) {
+      viewer.addLabel(r.resn + "-" + r.resi, {
+        position: { x: r.pos[0], y: r.pos[1], z: r.pos[2] },
+        fontSize: 11, fontColor: "black",
+        showBackground: true, backgroundColor: "white",
+        backgroundOpacity: 0.7
+      });
+    });
+  }
   viewer.zoomTo();
   viewer.render();
   document.getElementById("viewer").ondblclick = function () {
@@ -1156,9 +1181,14 @@ def pose_pdbqt_to_pdb(pose_pdbqt: str, out_path: str) -> str:
 
 
 def build_interactive_3d_html(receptor_pdb: str, ligand_pdb: str, caption: str = "",
-                              lib_js: str | None = None) -> tuple[str, bool]:
-    """生成自包含的交互式 3D 视图 HTML,样式与页面内预览一致(受体卡通彩虹色、配体绿色棍状)。
+                              lib_js: str | None = None,
+                              pocket: list[dict] | None = None,
+                              het_pdb: str | None = None) -> tuple[str, bool]:
+    """生成自包含的交互式 3D 视图 HTML,样式与页面内预览一致(受体卡通彩虹色、
+    配体绿色棍状、结合位点残基橙色棍状并标注名称、共晶配体灰色半透明参照)。
 
+    pocket 传入 residues_near_ligand 的结果时,视图中高亮结合位点残基;
+    het_pdb 传入共晶配体的 HETATM 文本时,以半透明灰棍叠加作天然口袋参照。
     lib_js 传入 3Dmol.js 源码时内嵌进文件,双击即可离线打开;
     传 None 时改用在线引用,打开时需联网。返回 (html 文本, 是否离线可用)。
     """
@@ -1176,30 +1206,43 @@ def build_interactive_3d_html(receptor_pdb: str, ligand_pdb: str, caption: str =
            .replace("__LIB__", lib_tag)
            .replace("__TITLE__", caption or "3D view")
            .replace("__CAPTION__", caption)
+           .replace("__POCKET__", json.dumps(pocket or []))
+           .replace("__HET__", json.dumps(het_pdb))
            .replace("__RECEPTOR__", json.dumps(receptor_pdb))
            .replace("__LIGAND__", json.dumps(ligand_pdb)))
     return out, offline_ok
 
 
-def interactive_3d_html(pdb_path: str, pose_pdbqt: str, caption: str = "") -> tuple[str, bool]:
-    """由受体 PDB 与所选构象 pdbqt 生成可保存的交互式 3D 视图 HTML。"""
+def interactive_3d_html(pdb_path: str, pose_pdbqt: str, caption: str = "",
+                        pocket: list[dict] | None = None) -> tuple[str, bool]:
+    """由受体 PDB 与所选构象 pdbqt 生成可保存的交互式 3D 视图 HTML。
+
+    pocket 传入口袋残基列表时一并嵌入;受体含共晶配体(非水 HETATM)时
+    以半透明灰棍叠加,过滤规则与页面预览一致。
+    """
     pose_pdb = os.path.join(os.path.dirname(pose_pdbqt), "pose_view.pdb")
     pose_pdbqt_to_pdb(pose_pdbqt, pose_pdb)
     with open(pdb_path, encoding="utf-8", errors="replace") as f:
         receptor_pdb = f.read()
     with open(pose_pdb, encoding="utf-8") as f:
         ligand_pdb = f.read()
+    het_pdb = "\n".join(ln for ln in receptor_pdb.splitlines()
+                        if ln.startswith("HETATM")
+                        and ln[17:20].strip() not in _WATER_RESNAMES)
     return build_interactive_3d_html(receptor_pdb, ligand_pdb, caption,
-                                     lib_js=_load_3dmol_js())
+                                     lib_js=_load_3dmol_js(),
+                                     pocket=pocket, het_pdb=het_pdb or None)
 
 
 def save_interactive_3d_html(pdb_path: str, pose_pdbqt: str, out_path: str,
-                             caption: str = "") -> tuple[str, bool]:
+                             caption: str = "",
+                             pocket: list[dict] | None = None) -> tuple[str, bool]:
     """把交互式 3D 视图保存为单个 HTML 文件(同名覆盖,便于同一构象反复保存)。
 
     返回 (文件路径, 是否离线可用)。
     """
-    html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption)
+    html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption,
+                                                pocket=pocket)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html_text)
