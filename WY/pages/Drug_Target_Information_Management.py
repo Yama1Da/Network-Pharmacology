@@ -92,14 +92,34 @@ if all_update_clicked:
 
 st.divider()
 
-drug_files = Utils.list_cache_files("drug")
+source_files = Utils.list_cache_files("drug")
 merged_files = Utils.list_cache_files("merged")
 merged_files = merged_files[merged_files["File name"].str.startswith("merged_drug_")]
-drug_files = pd.concat([drug_files, merged_files], ignore_index=True)
+
+# 数据来源筛选(默认全开):只作用于来源文件;merged 整合文件来自两个来源,始终显示
+st.caption(t("common.source_filter"))
+c_ch, c_dg = st.columns(2)
+with c_ch:
+    show_chembl = st.checkbox("ChEMBL", value=True, key="flt_chembl")
+with c_dg:
+    show_dgidb = st.checkbox("DGIdb", value=True, key="flt_dgidb")
+
+def _match_source(n: str) -> bool:
+    if n.startswith("ChEMBL_"):
+        return show_chembl
+    if n.startswith("DGIdb_"):
+        return show_dgidb
+    return True
+
+n_source = len(source_files)
+if n_source:
+    source_files = source_files[source_files["File name"].map(_match_source)]
+drug_files = pd.concat([source_files, merged_files], ignore_index=True)
 clicked_file = None
 
 if drug_files.empty:
-    st.info(t("drug_mgmt.no_files"))
+    # 有来源文件但全被筛掉时,按"筛选无结果"提示,与"目录本来就空"区分开
+    st.info(t("common.filter_no_match") if n_source else t("drug_mgmt.no_files"))
 else:
     clicked_file = Utils.render_updateable_file_table(drug_files, _SPEC, search_key="search_drug")
 
