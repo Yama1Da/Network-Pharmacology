@@ -16,6 +16,7 @@ from core.docking import (
     fetch_alphafold_receptor,
     parse_hetatm,
     residues_in_box,
+    residues_near_ligand,
     resolve_cid,
     smiles_to_sdf_3d,
 )
@@ -168,8 +169,10 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
     return result_dir
 
 
-def _render_3d(pdb_path: str, pose_pdbqt: str) -> None:
-    """在页面内 3D 展示受体(卡通)与所选对接构象(棍状);缺少组件时仅给出提示。"""
+def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None) -> None:
+    """在页面内 3D 展示受体(卡通)、所选对接构象(绿棍)与结合位点残基
+    (橙棍并标注"残基名-编号"),并叠加共晶配体(灰色半透明)作天然口袋参照;
+    缺少组件时仅给出提示。"""
     try:
         import py3Dmol
     except ImportError:
@@ -188,17 +191,44 @@ def _render_3d(pdb_path: str, pose_pdbqt: str) -> None:
         receptor_pdb = f.read()
     with open(pose_pdb, encoding="utf-8") as f:
         ligand_pdb = f.read()
+    # 受体中的共晶配体(非水 HETATM),叠加作天然口袋参照
+    het_lines = [ln for ln in receptor_pdb.splitlines()
+                 if ln.startswith("HETATM")
+                 and ln[17:20].strip() not in ("HOH", "H2O", "WAT", "DOD")]
 
     view = py3Dmol.view(width=900, height=520)
     view.addModel(receptor_pdb, "pdb")
     view.addModel(ligand_pdb, "pdb")
     view.setStyle({"model": 0}, {"cartoon": {"color": "spectrum"}})
     view.setStyle({"model": 1}, {"stick": {"colorscheme": "greenCarbon"}})
+    if het_lines:
+        view.addModel("\n".join(het_lines) + "\n", "pdb")  # model 2:共晶配体参照
+        view.setStyle({"model": 2}, {"stick": {"colorscheme": "greyCarbon",
+                                               "opacity": 0.5, "radius": 0.15}})
+    # 结合位点残基:橙色棍状高亮,按链分组选择;无链号时不限定 chain
+    by_chain: dict[str, list] = {}
+    for r in pocket or []:
+        by_chain.setdefault(r["chain"], []).append(r["resi"])
+    for chain, resis in by_chain.items():
+        sel: dict = {"model": 0, "resi": resis}
+        if chain:
+            sel["chain"] = chain
+        view.setStyle(sel, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.2}})
+    # 残基名标签,位置取该残基 CA 原子(缺 CA 时用第一个原子)
+    for r in pocket or []:
+        x, y, z = r["pos"]
+        view.addLabel(f"{r['resn']}-{r['resi']}", {
+            "position": {"x": x, "y": y, "z": z},
+            "fontSize": 11, "fontColor": "black",
+            "showBackground": True, "backgroundColor": "white",
+            "backgroundOpacity": 0.7,
+        })
     view.zoomTo()
     try:
         html = view._make_html()
     except AttributeError:
         html = view.write()
+    st.caption(t("dock.legend_pose" if het_lines else "dock.legend_pose_apo"))
     st.components.v1.html(html, height=540)
 
 
@@ -514,7 +544,8 @@ def _render_box_3d(pdb_path: str, box: dict) -> None:
     view.setStyle({"model": 0}, {"cartoon": {"color": "spectrum"}})
     if het_lines:
         view.addModel("\n".join(het_lines) + "\n", "pdb")  # model 1：共结晶配体
-        view.setStyle({"model": 1}, {"stick": {"colorscheme": "greenCarbon"}})
+        # 灰色=共晶配体(参考),与 Step 6 的叠加参照同色;绿色留给对接结果
+        view.setStyle({"model": 1}, {"stick": {"colorscheme": "greyCarbon"}})
     # 对接盒:橙色半透明线框
     view.addBox({
         "center": {"x": c[0], "y": c[1], "z": c[2]},
@@ -527,6 +558,7 @@ def _render_box_3d(pdb_path: str, box: dict) -> None:
         html = view._make_html()
     except AttributeError:
         html = view.write()
+    st.caption(t("dock.legend_box" if het_lines else "dock.legend_box_apo"))
     st.components.v1.html(html, height=540)
 
 
@@ -698,7 +730,13 @@ if dock.get("result"):
                 pose_path = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                          f"pose_{int(pose_sel)}.pdbqt")
                 extract_model(dock["result"]["out"], int(pose_sel), pose_path)
-                _render_3d(dock["pdb_path"], pose_path)
+                pocket = residues_near_ligand(dock["pdb_path"], pose_path)
+                _render_3d(dock["pdb_path"], pose_path, pocket)
+                if pocket:
+                    names = [f"{r['resn']}{r['resi']}" for r in pocket]
+                    st.caption(t("dock.pocket_caption", n=len(names))
+                               + ", ".join(names[:40])
+                               + (" …" if len(names) > 40 else ""))
             except Exception as exc:
                 st.warning(t("dock.preview3d_failed", exc=exc))
 else:

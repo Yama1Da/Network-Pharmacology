@@ -126,6 +126,61 @@ def residues_in_box(pdb_path: str, box: dict) -> list[str]:
     return sorted(res)
 
 
+def residues_near_ligand(receptor_pdb: str, ligand_pdbqt: str, cutoff: float = 4.0) -> list[dict]:
+    """找出对接构象(配体)周围 cutoff Å 以内的蛋白残基,即结合位点残基。
+
+    只统计受体 PDB 中的蛋白原子(ATOM 记录),水与共晶配体不参与;
+    返回按链与残基编号排序、去重后的残基列表,每项含链号 chain、
+    残基编号 resi、残基名 resn,以及标注名称用的代表原子坐标 pos(CA 原子优先)。
+    """
+    import re
+
+    lig: list[tuple] = []
+    with open(ligand_pdbqt, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line[:6].strip() not in ("ATOM", "HETATM"):
+                continue
+            try:
+                lig.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
+            except ValueError:
+                continue
+    if not lig:
+        return []
+
+    cutoff2 = cutoff * cutoff
+    found: dict[tuple, dict] = {}
+    with open(receptor_pdb, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if not line.startswith("ATOM") or line[16:17] not in ("", " ", "A"):
+                continue  # 非蛋白记录与 altloc 冗余构象不参与位点判定
+            try:
+                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            except ValueError:
+                continue
+            key = (line[21:22].strip(), line[22:26].strip())
+            info = found.get(key)
+            if info is None:
+                info = {"resn": line[17:20].strip(), "ca": None, "pos": xyz, "near": False}
+                found[key] = info
+            if info["ca"] is None and line[12:16].strip() == "CA":
+                info["ca"] = xyz
+            if not info["near"]:
+                for lx, ly, lz in lig:
+                    dx, dy, dz = xyz[0] - lx, xyz[1] - ly, xyz[2] - lz
+                    if (abs(dx) <= cutoff and abs(dy) <= cutoff and abs(dz) <= cutoff
+                            and dx * dx + dy * dy + dz * dz <= cutoff2):
+                        info["near"] = True
+                        break
+    residues = [
+        {"chain": chain, "resi": resi, "resn": info["resn"],
+         "pos": info["ca"] or info["pos"]}
+        for (chain, resi), info in found.items() if info["near"]
+    ]
+    residues.sort(key=lambda r: (r["chain"], int(re.match(r"\d+", r["resi"]).group())
+                                 if re.match(r"\d+", r["resi"]) else 0, r["resi"]))
+    return residues
+
+
 def download_pdb(pdb_id: str) -> str:
     """按 PDB 编号下载受体结构文件;之前下载过则直接复用本地文件。返回本地路径。"""
     import config
