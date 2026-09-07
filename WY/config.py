@@ -146,6 +146,8 @@ ENRICHMENT_TOP_PER_SOURCE = 10
 PATHWAY_DISPLAY_NUM = 30
 # 最小度数过滤:连接数不超过该值的节点不作为核心靶点(兜底过滤)
 MIN_DEGREE_FILTER = 3
+# CytoHubba 式核心靶点:按 MCC(Maximal Clique Centrality)排序取前 N 个画核心靶点子网络图
+MCC_TOP_N = 10
 # 网络图布局迭代次数:值越大节点分布越散,不易挤在一起
 PHYSICS_ITERATIONS = 500
 
