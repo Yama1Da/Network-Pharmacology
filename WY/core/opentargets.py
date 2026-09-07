@@ -14,11 +14,8 @@ from .text_utils import _safe_round, remember_name_mapping, safe_name
 def find_disease_id(disease_name: str,
                     prefer_prefixes: tuple[str, ...] = ("MONDO", "UMLS")) -> str | None:
     """按疾病英文名搜索,返回疾病编号(EFO/MONDO 等);找不到返回 None。
-
-    同名疾病常有多个词表编号(如 MONDO 与 EFO),命中多个时按 prefer_prefixes
-    优先返回(下游 DisGeNET 只认 MONDO/UMLS 等编号,不认 EFO)。
+    同名疾病常有多个词表编号(如 MONDO 与 EFO),命中多个时按 prefer_prefixes 优先返回(下游 DisGeNET 只认 MONDO/UMLS 等编号,不认 EFO)。
     """
-    # 第一步：按疾病英文名搜索，取匹配到的疾病编号（EFO/MONDO 等）。
     search_query = """
     query SearchDisease($queryString: String!) {
         search(queryString: $queryString) {
@@ -52,10 +49,7 @@ def find_disease_id(disease_name: str,
 
 @st.cache_data
 def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
-    """
-    通过 Open Targets 查询疾病的关联靶点：先按疾病英文名找到疾病编号，
-    再取关联分数最高的前 top_n 个靶点，附带总关联分数、新颖性、
-    各证据类型（遗传、突变、文献等）分数及基因基本信息。
+    """通过 Open Targets 查询疾病的关联靶点：先按疾病英文名找到疾病编号，再取关联分数最高的前 top_n 个靶点，附带总关联分数、新颖性、各证据类型（遗传、突变、文献等）分数及基因基本信息。
     查询失败或找不到该疾病时返回空表；结果存为本地 CSV，已有缓存则直接复用。
     """
     import config
@@ -63,7 +57,6 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
     csv_path = os.path.join(config.DISEASE_CACHE_DIR, f"OpenTargets_{safe_name(disease_name)}.csv")
     remember_name_mapping(disease_name)  # 记录安全文件名→原始名,供管理页还原
 
-    # 已有缓存则直接读取本地文件
     cached = open_csv_cache(csv_path, label=f"disease targets for '{disease_name}'")
     if cached is not None:
         return cached
@@ -119,10 +112,8 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             return pd.DataFrame()
 
         rows = payload["data"]["disease"]["associatedTargets"]["rows"]
-        # 按关联分数从高到低排序，取前 top_n 条
         rows_sorted = sorted(rows, key=lambda r: r.get("score", 0.0), reverse=True)[:top_n]
 
-        # 每条关联记录整理成表格的一行
         records: list[dict] = []
         for r in rows_sorted:
             tgt = r.get("target", {})

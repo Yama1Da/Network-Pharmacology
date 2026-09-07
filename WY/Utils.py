@@ -68,6 +68,19 @@ from core.text_utils import resolve_original_name, safe_name
 
 # ---------- 界面公共组件 ----------
 
+# 常用按钮配色(与各页 hide_sidebar 的 extra_css 拼接;红/删除按钮因键名各页不同,留在页内)
+CSS_BTN_DOWNLOAD = """    .st-key-file_rows [class*="st-key-download_"] button {
+        background-color: #207D62;
+        color: #C8F0DF;
+        border: 1px solid #207D62;
+    }"""
+CSS_BTN_UPDATE = """    .st-key-update_btn button,
+    .st-key-file_rows [class*="st-key-update_"] button {
+        background-color: #6347A1;
+        color: #E0D8F2;
+        border: 1px solid #6347A1;
+    }"""
+
 
 def hide_sidebar(extra_css: str = "") -> None:
     """隐藏 Streamlit 侧边栏,全屏显示页面;extra_css 为该页面额外的样式规则。"""
@@ -107,12 +120,6 @@ def download_file_button(label_key: str, path: str, file_name: str, mime: str) -
         return
     with open(path, "rb") as f:
         download_button(label_key, f.read(), file_name, mime)
-
-
-def df_download_button(df, file_name: str, *, key: str) -> None:
-    """行内 CSV 下载按钮:直接下载内存中的 DataFrame(utf-8-sig 编码,Excel 可直接打开)。"""
-    st.download_button(t("common.download"), data=df.to_csv(index=False).encode("utf-8-sig"),
-                       file_name=file_name, mime="text/csv", key=key)
 
 
 # ---------- 多选小件(文件表与目录表共用) ----------
@@ -345,8 +352,6 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
     文件名里的名字是 safe_name 有损转换的结果(如 Alzheimer_s_Disease),
     先按映射还原成原始查询名(Alzheimer's Disease)再抓取,否则查不到数据。
     """
-    import logging
-
     # merged 整合文件:先更新两个来源文件,再重建
     if filename.startswith(spec["merged_prefix"]):
         stem = filename[len(spec["merged_prefix"]):-len(".csv")]
@@ -403,8 +408,6 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
 
 def update_all_cache_files(spec: dict, cache_hours: int | None = None):
     """更新某类别全部来源文件并重建全部整合文件,返回结果表(File/Status/Message)。"""
-    import logging
-
     rows: list[dict] = []
     # 第一步:先更新所有来源文件
     names = set()
@@ -502,7 +505,6 @@ def purge_merged_cache() -> int:
     下次分析按新参数从原始缓存重建(原始缓存不受影响,无需重新联网)。
     """
     import glob
-    import logging
 
     import config
 

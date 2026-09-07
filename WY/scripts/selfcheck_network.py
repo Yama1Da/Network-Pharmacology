@@ -553,8 +553,6 @@ def t_prox_real_and_cached():
 
 def t_rwr_direction_and_mass():
     """验证游走方向：从星形图中心出发，扩散一步后每个叶子各得 0.25，总和为 1。"""
-    import scipy.sparse as sp
-
     G = nx.star_graph(4)  # 节点0为中心，度4；叶1..4度1
     G = nx.relabel_nodes(G, {i: f"N{i}" for i in G.nodes()})
     W, nodes = build_sparse_adj(G)

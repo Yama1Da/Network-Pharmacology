@@ -16,9 +16,7 @@ _rate_limit_lock = threading.Lock()
 
 def _acquire_disgenet_rate_limit_slot() -> None:
     """DisGeNET 主动限流：发请求前检查官方配额（每分钟/每天/每月），避免超限被拒。
-
-    每分钟配额用满时短暂等待；每天/每月配额用满时直接报错（由调用方返回空表）。
-    本地限额值已按学术计划官方配额(50/分、25,000/天、500,000/月)留余量,见 config。
+    每分钟配额用满时短暂等待；每天/每月配额用满时直接报错（由调用方返回空表）。本地限额值已按学术计划官方配额(50/分、25,000/天、500,000/月)留余量,见 config。
     """
     import json
     import time
@@ -79,10 +77,7 @@ def _acquire_disgenet_rate_limit_slot() -> None:
 
 def _resolve_disgenet_query(disease_name: str) -> str:
     """把疾病输入转成 DisGeNET 认的查询串。
-
-    DisGeNET 的 disease 参数只认带词表前缀的编号(UMLS_/MONDO_ 等),
-    自由文本疾病名恒返回 0 行;裸 CUI(如 C0002395)需补 UMLS_ 前缀。
-    自由文本先借 Open Targets 的疾病搜索解析成编号(解析结果有 HTTP 缓存)。
+    DisGeNET 的 disease 参数只认带词表前缀的编号(UMLS_/MONDO_ 等),自由文本疾病名恒返回 0 行;裸 CUI(如 C0002395)需补 UMLS_ 前缀。自由文本先借 Open Targets 的疾病搜索解析成编号(解析结果有 HTTP 缓存)。
     """
     import re
 
@@ -102,11 +97,8 @@ def _resolve_disgenet_query(disease_name: str) -> str:
 
 
 def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
-    """从 DisGeNET 获取疾病的关联基因（gene-disease association, GDA）。
-
-    学术(Academic)账号只能访问 CURATED 来源(CLINVAR、UNIPROT、ORPHANET 等),
-    每页返回 100 条;查询只取第一页结果。遇到限流（429）时做有限次等待重试。
-    失败或无数据时返回空表；结果存为本地 CSV，已有缓存则直接复用。
+    """从 DisGeNET 获取疾病的关联基因（gene-disease association, GDA）;失败或无数据时返回空表,结果存为本地 CSV,已有缓存则直接复用。
+    学术(Academic)账号只能访问 CURATED 来源(CLINVAR、UNIPROT、ORPHANET 等),每页返回 100 条只取第一页结果;遇到限流（429）时做有限次等待重试。
     """
     import time
     import config
@@ -114,7 +106,6 @@ def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
     csv_path = os.path.join(config.DISEASE_CACHE_DIR, f"DisGeNET_{safe_name(disease_name)}.csv")
     remember_name_mapping(disease_name)  # 记录安全文件名→原始名,供管理页还原
 
-    # 已有缓存则直接读取本地文件
     cached = open_csv_cache(csv_path, label=f"DisGeNET targets for '{disease_name}'")
     if cached is not None:
         return cached
@@ -131,7 +122,6 @@ def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
     request_timeout = (10, 30)
 
     try:
-        # 发请求前先过限流检查；遇到 429 限流时按服务器指示等待后重试
         resp = None
         for _ in range(config.ENRICHMENT_MAX_RETRIES + 1):
             _acquire_disgenet_rate_limit_slot()

@@ -104,7 +104,6 @@ TEXT: dict[str, dict[str, str]] = {
         "data_mgmt.itx_cached": "cached, skipped",
         "data_mgmt.itx_stage_processing": "Parsing & cleaning (filter → symbol mapping → dedupe)…",
         "data_mgmt.itx_stage_writing": "Writing local cache…",
-        "data_mgmt.itx_stage_done": "Build finished",
         "data_mgmt.itx_build_done": "✅ Build finished: {nodes} genes / {edges} edges, {secs:.0f} s.",
         "data_mgmt.itx_build_fail": "❌ Build failed: {err} — check the network and retry, or run scripts/build_interactome.py from CLI.",
         # ---- Star_Management.py ----
@@ -134,7 +133,6 @@ TEXT: dict[str, dict[str, str]] = {
         "common.search_placeholder": "🔍 Search files…",
         "common.search_no_match": "No files matching \"{query}\"",
         # ---- 文件/目录表多选与批量操作(删除/打包下载) ----
-        "common.col_select": "**✓**",
         "common.select_all": "Select all",
         "common.selected_count": "{n} selected",
         "common.download_selected": "⬇️ Download selected (ZIP)",
@@ -536,7 +534,6 @@ TEXT: dict[str, dict[str, str]] = {
         "data_mgmt.itx_cached": "已有缓存，跳过下载",
         "data_mgmt.itx_stage_processing": "解析与清洗（过滤→符号映射→去自环→去重）…",
         "data_mgmt.itx_stage_writing": "写入本地缓存…",
-        "data_mgmt.itx_stage_done": "构建完成",
         "data_mgmt.itx_build_done": "✅ 构建完成：{nodes} 基因 / {edges} 边，用时 {secs:.0f} 秒。",
         "data_mgmt.itx_build_fail": "❌ 构建失败：{err}。请检查网络后重试，或用命令行运行 scripts/build_interactome.py。",
         # ---- Star_Management.py ----
@@ -566,7 +563,6 @@ TEXT: dict[str, dict[str, str]] = {
         "common.search_placeholder": "🔍 搜索文件名…",
         "common.search_no_match": "没有匹配“{query}”的文件",
         # ---- 文件/目录表多选与批量操作(删除/打包下载) ----
-        "common.col_select": "**✓**",
         "common.select_all": "全选",
         "common.selected_count": "已选 {n} 个",
         "common.download_selected": "⬇️ 下载选中(ZIP)",

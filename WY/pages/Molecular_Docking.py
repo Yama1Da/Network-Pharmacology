@@ -286,10 +286,8 @@ def _cached_pdb_candidates(gene: str, allow_alphafold: bool = False) -> pd.DataF
 @st.cache_data(ttl=3600)
 def _cached_pdb_candidates_batch(genes: tuple, allow_alphafold: bool = False) -> dict[str, pd.DataFrame]:
     """一次批量查询多个基因的受体结构(近期查过则复用);返回 {基因: 候选表}。
-
     搜索合并成少数几次批量请求 + GraphQL 批量归因,速度与基因数基本无关;
-    查无实验结构的基因按开关附加 AlphaFold 预测结构。
-    """
+    查无实验结构的基因按开关附加 AlphaFold 预测结构。"""
     return Utils.fetch_receptor_candidates_batch(list(genes), max_hits=20,
                                                  allow_alphafold=allow_alphafold)
 
@@ -402,7 +400,6 @@ if dock.get("enrichment_genes") is not None:
                                                if not df.empty}
                     dock["batch_results"] = results
                 except Exception as exc:
-                    # 查询失败时提示错误原因
                     dock.pop("gene_structures", None)
                     st.error(t("dock.error_occurred", exc=exc))
         if dock.get("gene_structures") is not None:

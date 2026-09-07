@@ -26,9 +26,7 @@ _chembl_cache_hours: float | None = None
 
 def set_chembl_cache_ttl(hours: int | None) -> None:
     """调整 ChEMBL 请求结果的缓存有效期(默认与全局 HTTP 缓存一致,24 小时)。
-
-    hours 为缓存小时数:设得越小,数据越新、联网请求越频繁;
-    超过有效期的旧数据会自动重新联网获取。
+    hours 为缓存小时数:设得越小,数据越新、联网请求越频繁;超过有效期的旧数据会自动重新联网获取。
     """
     global _chembl_cache_hours
     _chembl_cache_hours = hours
@@ -58,9 +56,7 @@ def _abort_fetch() -> tuple[pd.DataFrame, None]:
 
 def _chembl_get(path: str, params: dict, label: str) -> dict | None:
     """向 ChEMBL REST 发一次带缓存的重试 GET;全部失败返回 None。
-
-    ChEMBL 服务端偶发很慢,超时与重试次数都比轻量接口放宽,
-    避免个别慢请求导致整个靶点抓取中止。
+    ChEMBL 服务端偶发很慢,超时与重试次数都比轻量接口放宽,避免个别慢请求导致整个靶点抓取中止。
     """
     import config
 
@@ -113,9 +109,7 @@ def _fetch_all_activities(chembl_id: str) -> list[dict] | None:
 
 def _fetch_targets_batched(tids: list[str]) -> dict[str, dict] | None:
     """按编号批量取靶点详情(25 个/批,一次请求顶过去 25 次);失败返回 None 表示中止。
-
-    每批一次请求即可:批内编号数就是返回条数上限,不需要翻页;
-    实测对 __in 过滤请求越界的 offset 会得到服务端 500,故绝不发空页请求。
+    每批一次请求即可:批内编号数就是返回条数上限,不需要翻页;实测对 __in 过滤请求越界的 offset 会得到服务端 500,故绝不发空页请求。
     """
     targets: dict[str, dict] = {}
     for start in range(0, len(tids), _TARGET_PAGE_SIZE):
@@ -148,27 +142,19 @@ def _extract_gene_name(t: dict) -> str | None:
 
 
 def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]:
-    """
-    从 ChEMBL 获取药物的全部活性靶点（全靶点模式）：不按活性值过滤，
-    靶点更全，但会包含 ALB、CYP450 等弱关联/非特异性结合的蛋白；
-    仅保留人类靶点，按 pChEMBL 活性值降序排列。
-    请求全部批量分页:activity 1000 条/页、靶点详情 50 个/批,
-    慢药物(如 metformin 数千条活性)也只需约 10 个请求。
-    已有本地缓存时直接复用；请求失败时返回空表。
+    """从 ChEMBL 获取药物的全部活性靶点（全靶点模式）：不按活性值过滤，靶点更全，但会包含 ALB、CYP450 等弱关联/非特异性结合的蛋白；仅保留人类靶点，按 pChEMBL 活性值降序排列。
+    请求全部批量分页:activity 1000 条/页、靶点详情 50 个/批,慢药物(如 metformin 数千条活性)也只需约 10 个请求;已有本地缓存时直接复用，请求失败时返回空表。
     """
     import config
 
     csv_path = os.path.join(config.DRUG_CACHE_DIR, f"ChEMBL_{safe_name(drug_name)}.csv")
     remember_name_mapping(drug_name)  # 记录安全文件名→原始名,供管理页还原
 
-    # 已有缓存则直接读取本地文件
     cached = open_csv_cache(csv_path, label=f"ChEMBL targets for '{drug_name}'")
     if cached is not None:
         return _sort_drug_df_by_pchembl(cached), csv_path
 
-    # 无缓存时联网查询
     try:
-        # 第一步：按药物名查找化合物
         chembl_id = _find_chembl_id(drug_name)
         if not chembl_id:
             # 查无此药属正常业务情况:返回空表并带上路径(不写文件),
@@ -183,7 +169,6 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
         if acts is None:
             return _abort_fetch()  # 拉取失败即停止，且不保存缓存
 
-        # 第三步：汇总去重后的靶点编号,批量获取靶点详情
         tids: list[str] = []
         for act in acts:
             tid = act.get("target_chembl_id")
@@ -194,7 +179,6 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
         if targets is None:
             return _abort_fetch()  # 拉取失败即停止，且不保存缓存
 
-        # 第四步：给每条活性记录补上靶点信息，整理成表格行
         rows: list[dict] = []
         seen: set[tuple] = set()
         for act in acts:

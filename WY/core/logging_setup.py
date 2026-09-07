@@ -7,9 +7,7 @@ import os
 
 class _DailyRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
     """按天存日志的文件(每天零点切换到新文件)。
-
-    对过期日志的自动清理做了修正:只删除真正过期的旧日志文件,
-    不误删当前正在写入的日志(否则在 Windows 上会报错)。
+    修正过期日志的自动清理:只删除真正过期的旧日志文件,不误删当前正在写入的日志(否则在 Windows 上会报错)。
     """
 
     def getFilesToDelete(self) -> list[str]:
@@ -19,16 +17,14 @@ class _DailyRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
 
 
 def setup_logging() -> None:
-    """初始化日志:同时输出到屏幕和按天滚动的日志文件,保留两年。
-
-    过期日志自动删除;只记录重要信息,屏蔽画图库的琐碎调试信息;
-    重复调用不会重复设置;日志目录创建失败时只在屏幕输出,不影响程序运行。
+    """初始化日志:同时输出到屏幕和按天滚动的日志文件,保留两年;重复调用不会重复设置。
+    过期日志自动删除;只记录重要信息,屏蔽画图库的琐碎调试信息;日志目录创建失败时只在屏幕输出,不影响程序运行。
     """
     import config
 
     logger = logging.getLogger()
     if logger.hasHandlers():
-        return  # 已初始化过
+        return
 
     level = getattr(logging, str(config.LOG_LEVEL).upper(), logging.INFO)
     if not isinstance(level, int):

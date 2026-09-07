@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 
 import pandas as pd
@@ -140,10 +139,8 @@ class _ReportProgress:
 
 
 def _compute_modules_data(graph, organism, label_prefix: str = "") -> dict:
-    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）。
-
-    label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。
-    """
+    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）；
+    label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。"""
     modules = detect_louvain_modules(
         graph,
         resolution=config.LOUVAIN_RESOLUTION,
@@ -182,10 +179,8 @@ def _compute_modules_data(graph, organism, label_prefix: str = "") -> dict:
 
 
 def _save_modules_data(directory, prefix, computed: dict) -> dict:
-    """模块计算结果落盘并附上保存路径(自动流程与交互区手动重跑共用)。
-
-    空结果不保存。保存到分析目录后,打包下载（ZIP）会自动包含模块文件。
-    """
+    """模块计算结果落盘并附上保存路径(自动流程与交互区手动重跑共用)；
+    空结果不保存。保存到分析目录后,打包下载（ZIP）会自动包含模块文件。"""
     mod_saved = save_module_results(directory, prefix,
                                     computed["summary_df"], computed["long_df"])
     return {**computed, "saved_paths": mod_saved}
@@ -198,10 +193,8 @@ def _compute_ppi_modules(graph, organism, directory, prefix) -> dict:
 
 
 def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
-    """对药物/疾病一侧构建排秩表并运行 GSEA prerank（Build Report 自动流程与手动重跑共用）。
-
-    返回 (结果表, 排秩统计, 状态原因)。
-    """
+    """对药物/疾病一侧构建排秩表并运行 GSEA prerank（Build Report 自动流程与手动重跑共用）；
+    返回 (结果表, 排秩统计, 状态原因)。"""
     if side == "drug":
         src_df = Utils.get_drug_targets_merged(drug_name.strip())
         score_col = "score_pchembl"
@@ -220,18 +213,8 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
                       rwr_expand: int = 0, hub_top_n: int = 10, hub_method: str = "degree",
                       progress: "_ReportProgress | None" = None) -> dict:
     """执行完整分析（交集→[RWR扩展]→STRING→建图→指标→富集→可视化→保存），返回结果字典。
-
-    物种固定为人类（疾病靶点数据源仅有人类数据）；PPI 建网只隐藏孤立节点
-    （min_degree=1），不再做最低连接度剪枝——文献惯例为置信度过滤 + 隐藏孤立节点,
-    且最低连接度剪枝会抵消 RWR 扩展拉入的外周靶点。
-
-    rwr_expand > 0 时以交集靶点为种子做 RWR 扩散,取得分最高的前 N 个非种子基因
-    与种子取并集作为查询集。扩展只作用于 STRING 建网/拓扑/hub/模块/富集;
-    邻近度与 GSEA 仍基于原始药物/疾病靶点集,统计语义不变。
-    hub 筛选为排名制 top-N + 小网络保护,规则见 core.ppi.mark_hub_genes。
-
-    progress 传入 _ReportProgress 时,在各阶段边界刷新进度面板;不影响计算逻辑。
-    """
+    物种固定为人类（疾病靶点数据源仅有人类数据）；PPI 建网只隐藏孤立节点、不做最低连接度剪枝
+    （会抵消 RWR 扩展拉入的外周靶点）；RWR 扩展只作用于建网/拓扑/hub/模块/富集,邻近度与 GSEA 仍基于原始靶点集。"""
     species_id = config.SPECIES_MAP["Human"]["ncbi_taxon"]
     organism = config.SPECIES_MAP["Human"]["gprofiler"]
     def _prog(step: str | None = None, state: str | None = None,
@@ -701,6 +684,7 @@ if ppi is not None:
                                   f"{proximity_result['p_excl']:.4f}"
                                   if proximity_result.get("p_excl") is not None else "—")
                 elif proximity_result.get("ok"):
+                    # 外层分支已保证 ok=True,走到这里说明 d_c_excl 缺失
                     st.caption(t("net.prox_excl_unavailable"))
 
         # ---------- 靶点优先级排序（RWR，仅 names 模式） ----------

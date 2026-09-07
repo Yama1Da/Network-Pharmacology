@@ -66,10 +66,7 @@ def _strip_receptor_pdb(pdb_path: str, out_path: str) -> None:
 
 
 def _pdb_coords(pdb_path: str) -> tuple[list, list]:
-    """解析 PDB 文件中的原子坐标(单位 Å)。
-
-    返回 (蛋白原子坐标列表, 非水其他分子坐标列表),坐标为 (x, y, z)。
-    """
+    """解析 PDB 文件中的原子坐标(单位 Å),返回 (蛋白原子坐标列表, 非水其他分子坐标列表)。"""
     protein, het = [], []
     with open(pdb_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -87,10 +84,7 @@ def _pdb_coords(pdb_path: str) -> tuple[list, list]:
 
 
 def parse_hetatm(pdb_path: str) -> list[tuple[str, str, str, tuple]]:
-    """找出 PDB 结构中的共结晶配体/辅因子(水分子除外)及其位置。
-
-    返回 (残基名, 链, 残基编号, (x, y, z)) 列表,供对接盒推断与 3D 预览使用。
-    """
+    """找出 PDB 中的共晶配体/辅因子(水除外),返回 (残基名, 链, 残基编号, (x, y, z)) 列表,供对接盒推断与 3D 预览使用。"""
     het = []
     with open(pdb_path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -127,11 +121,8 @@ def residues_in_box(pdb_path: str, box: dict) -> list[str]:
 
 
 def residues_near_ligand(receptor_pdb: str, ligand_pdbqt: str, cutoff: float = 4.0) -> list[dict]:
-    """找出对接构象(配体)周围 cutoff Å 以内的蛋白残基,即结合位点残基。
-
-    只统计受体 PDB 中的蛋白原子(ATOM 记录),水与共晶配体不参与;
-    返回按链与残基编号排序、去重后的残基列表,每项含链号 chain、
-    残基编号 resi、残基名 resn,以及标注名称用的代表原子坐标 pos(CA 原子优先)。
+    """找出对接构象(配体)周围 cutoff Å 以内的结合位点残基,只统计受体 ATOM 记录(水与共晶配体不参与)。
+    返回按链与残基编号排序、去重后的残基列表,每项含链号 chain、残基编号 resi、残基名 resn 及标注名称用的代表原子坐标 pos(CA 原子优先)。
     """
     import re
 
@@ -243,9 +234,7 @@ def smiles_to_sdf_3d(smiles: str, out_path: str, seed: int = 0, n_confs: int = 2
 
 
 def fetch_ligand_sdf_3d(cid: int, out_dir: str | None = None) -> str:
-    """从 PubChem 下载配体的现成 3D 结构(SDF 文件)。
-
-    cid 为 PubChem 化合物编号;无此化合物或无 3D 结构时返回空字符串。
+    """从 PubChem 下载配体的现成 3D 结构(SDF);无此化合物或无 3D 结构时返回空字符串。
     同一化合物下载过一次后直接复用缓存。
     """
     import config
@@ -269,10 +258,7 @@ def fetch_ligand_sdf_3d(cid: int, out_dir: str | None = None) -> str:
 
 
 def prepare_ligand_pdbqt(sdf_path: str, out_path: str | None = None) -> str:
-    """把配体 3D SDF 转成对接所需的 pdbqt 格式,转换结果可复用。
-
-    读取失败或缺少 3D 坐标时直接报错。返回生成的 pdbqt 文件路径。
-    """
+    """把配体 3D SDF 转成对接所需的 pdbqt 格式,转换结果可复用;读取失败或缺少 3D 坐标时直接报错。"""
     import config
     from meeko import MoleculePreparation, PDBQTWriterLegacy
     from rdkit import Chem
@@ -287,7 +273,7 @@ def prepare_ligand_pdbqt(sdf_path: str, out_path: str | None = None) -> str:
         raise RuntimeError(f"rdkit failed to read ligand SDF: {sdf_path}")
     if mol.GetNumConformers() == 0:
         raise RuntimeError(f"ligand SDF has no 3D conformer: {sdf_path}（需 record_type=3d）")
-    mol = Chem.AddHs(mol)  # 补全氢原子
+    mol = Chem.AddHs(mol)
 
     preparator = MoleculePreparation()
     mol_setups = preparator.prepare(mol)
@@ -332,7 +318,6 @@ query ($ids: [String!]!) {
 
 def _rcsb_search_entry_ids(gene_symbol: str, max_hits: int) -> list[str]:
     """在 RCSB 中用基因符号精确检索结构,返回 entry 编号列表(最多 max_hits 条)。
-
     与旧的逐基因检索完全同一查询,保证召回一致;失败向上抛错。
     """
     import config
@@ -365,9 +350,7 @@ def _rcsb_search_entry_ids(gene_symbol: str, max_hits: int) -> list[str]:
 
 def _rcsb_graphql_entries(entry_ids: list[str]) -> dict[str, dict]:
     """按 entry 编号批量取分辨率/实验方法/标题元数据;返回 {entry号: 信息字典}。
-
-    一次请求即可覆盖最多 100 个 entry;GraphQL 层面的软错误记录日志后
-    按缺数据处理,不中断整体。
+    一次请求即可覆盖最多 100 个 entry;GraphQL 层面的软错误记录日志后按缺数据处理,不中断整体。
     """
     import config
     from .http_client import request_with_retry
@@ -403,12 +386,8 @@ def _rcsb_graphql_entries(entry_ids: list[str]) -> dict[str, dict]:
 def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
                                     allow_alphafold: bool = False, taxon: int = 9606,
                                     progress_cb=None) -> dict[str, pd.DataFrame]:
-    """批量查询多个基因的 PDB 候选结构,返回 {基因符号: 候选表}。
-
-    搜索阶段与旧的逐基因检索完全同一查询(保证召回一致),但按 4 路并发执行;
-    元数据阶段合并为 GraphQL 批量请求,总请求数与基因数解耦。
-    查无实验结构的基因在 allow_alphafold 开启时追加 AlphaFold 预测结构兜底。
-    progress_cb(0~1) 可选,用于页面进度条。
+    """批量查询多个基因的 PDB 候选结构,返回 {基因符号: 候选表};progress_cb(0~1) 可选,用于页面进度条。
+    搜索与旧的逐基因检索同一查询保证召回一致、按 4 路并发,元数据合并为 GraphQL 批量请求使总请求数与基因数解耦;查无实验结构的基因在 allow_alphafold 开启时追加 AlphaFold 预测结构兜底。
     """
     import config
 
@@ -439,7 +418,6 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
             if progress_cb:
                 progress_cb((i + 1) / len(uniq) * 0.7)
 
-    # 2) 所有命中 entry 去重后,合并为 GraphQL 批量元数据请求
     all_ids = sorted({eid for ids in gene_ids.values() for eid in ids})
     meta: dict[str, dict] = {}
     gql_chunks = [all_ids[i:i + _RCSB_GRAPHQL_CHUNK]
@@ -459,7 +437,6 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
         if rows:
             results[g] = pd.DataFrame(rows)
 
-    # 4) 无实验结构且开启开关时,逐基因追加 AlphaFold 预测结构兜底
     if allow_alphafold and config.ALPHAFOLD_ENABLED:
         for g in uniq:
             if not results[g].empty:
@@ -483,16 +460,12 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
 def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
                                   allow_alphafold: bool = False,
                                   taxon: int = 9606) -> pd.DataFrame:
-    """按基因符号在 PDB 数据库(RCSB)中查找该靶蛋白的候选结构。
-
-    返回表格含结构编号、分辨率、实验方法、标题等信息;查无结果时返回空表。
-    开启 AlphaFold 选项且查无实验结构时,追加一条 AlphaFold 预测结构作兜底
-    (预测结构查询失败不影响空表正常返回)。
+    """按基因符号在 PDB 数据库(RCSB)中查找该靶蛋白的候选结构;查无结果时返回空表。
+    开启 AlphaFold 选项且查无实验结构时,追加一条 AlphaFold 预测结构作兜底(查询失败不影响空表正常返回)。
     """
     import config
     from .http_client import request_with_retry
 
-    # 1) 在 RCSB 中用基因符号精确检索结构
     query = {
         "query": {
             "type": "terminal",
@@ -506,10 +479,10 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
     # 注意:检索成功但没有命中结构不算失败——RCSB 对 0 命中返回 204 空响应体。
     try:
         resp = request_with_retry(
-            "https://search.rcsb.org/rcsbsearch/v2/query", json=query,
+            _RCSB_SEARCH_URL, json=query,
             max_retries=config.RCSB_SEARCH_MAX_RETRIES, timeout=config.API_TIMEOUT,
             label=f"RCSB search for {gene_symbol}", throttle_key="rcsb_search",
-            headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
+            headers=_RCSB_HEADERS,
             raise_on_exhausted=True, no_retry_status=(204,),
         )
     except Exception as exc:
@@ -522,12 +495,11 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
     else:
         hits = resp.json().get("result_set", [])[:max_hits]
 
-    # 2) 补充每个结构的分辨率、实验方法、标题等信息
     def _fetch_meta(entry_id: str) -> tuple[str, float | None, str, str]:
         resp = request_with_retry(
             f"https://data.rcsb.org/rest/v1/core/entry/{entry_id}", method="get",
             max_retries=2, timeout=15, label="RCSB meta", throttle_key="rcsb_data",
-            headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"}, retry_delay=1,
+            headers=_RCSB_HEADERS, retry_delay=1,
         )
         if resp is not None:
             try:
@@ -556,7 +528,6 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
                      "title": title, "source": "experiment"})
     df = pd.DataFrame(rows)
 
-    # 3) 无实验结构且开启开关时,追加 AlphaFold 预测结构
     if allow_alphafold and config.ALPHAFOLD_ENABLED and df.empty:
         try:
             acc = fetch_uniprot_accession(gene_symbol, taxon=taxon)
@@ -579,10 +550,8 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
 
 
 def prepare_receptor_pdbqt(pdb_path: str, out_path: str | None = None) -> str:
-    """把受体蛋白 PDB 转成对接所需的 pdbqt 格式。
-
-    处理包括:去水去杂原子、加氢(pH 7.4)、分配 AutoDock 原子类型;
-    同一文件转换结果可复用。失败时报错,成功返回 pdbqt 文件路径。
+    """把受体蛋白 PDB 转成对接所需的 pdbqt 格式:去水去杂原子、加氢(pH 7.4)、分配 AutoDock 原子类型,结果可复用。
+    失败时报错,成功返回 pdbqt 文件路径。
     """
     import config
     from openbabel import openbabel as ob
@@ -620,11 +589,8 @@ def prepare_receptor_pdbqt(pdb_path: str, out_path: str | None = None) -> str:
 
 
 def infer_box_from_cofactor(pdb_path: str, padding: float = 8.0) -> dict:
-    """根据 PDB 中共晶配体/辅因子的位置推断对接盒(结合口袋范围)。
-
-    有配体/辅因子时以其位置圈定口袋,没有时用整个蛋白的范围;
-    外扩距离默认 8 Å。结果仅供参考,使用前需人工确认口袋位置。
-    返回口袋中心和尺寸(单位 Å)。
+    """根据 PDB 中共晶配体/辅因子的位置推断对接盒(结合口袋范围);没有配体/辅因子时用整个蛋白的范围,外扩默认 8 Å。
+    结果仅供参考,使用前需人工确认口袋位置。返回口袋中心和尺寸(单位 Å)。
     """
     protein, het = _pdb_coords(pdb_path)
     if not protein and not het:
@@ -652,10 +618,7 @@ def run_vina(
     box: dict,
     out_path: str | None = None,
 ) -> "subprocess.CompletedProcess":
-    """调用 AutoDock Vina,在指定口袋范围内对受体和配体执行分子对接。
-
-    超时或运行失败时报错;运行日志(含打分)保留在返回结果中。
-    """
+    """调用 AutoDock Vina,在指定口袋范围内对受体和配体执行分子对接;超时或运行失败时报错,运行日志(含打分)保留在返回结果中。"""
     import subprocess
     import config
 
@@ -724,10 +687,8 @@ def _split_models_python(out_pdbqt: str, out_dir: str) -> list[str]:
 
 
 def split_vina(out_pdbqt: str, out_dir: str | None = None) -> list[str]:
-    """把 vina 输出按结合模式拆成一个个独立的构象(pose)文件。
-
+    """把 vina 输出按结合模式拆成一个个独立的构象(pose)文件,返回各 pose 文件路径。
     拆分工具不可用时自动改用内置方式,不影响流程;两种方式都失败才报错。
-    返回各 pose 文件路径。
     """
     import subprocess
     import glob
@@ -737,7 +698,6 @@ def split_vina(out_pdbqt: str, out_dir: str | None = None) -> list[str]:
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(out_pdbqt))[0]
 
-    # 优先使用 vina_split 工具拆分
     split_exe = config.VINA_SPLIT_EXE
     if os.path.isfile(split_exe) and os.path.getsize(split_exe) > 0:
         cmd = [split_exe, "--input", out_pdbqt]
@@ -753,7 +713,6 @@ def split_vina(out_pdbqt: str, out_dir: str | None = None) -> list[str]:
         except OSError:
             logging.warning("vina_split unavailable (%s), fallback to python split", split_exe)
 
-    # 备用:内置方式拆分
     files = _split_models_python(out_pdbqt, out_dir)
     if not files:
         raise RuntimeError(f"failed to split vina output: {out_pdbqt}")
@@ -773,10 +732,8 @@ def extract_model(out_pdbqt: str, mode: int, out_path: str) -> str:
 
 
 def parse_vina_scores(out_pdbqt: str) -> pd.DataFrame:
-    """从 vina 输出中读取各结合模式的打分(结合能)与 RMSD。
-
-    按结合能从低到高排序(数值越负结合越强),第 1 名即最佳构象;
-    无可解析结果时返回空表。
+    """从 vina 输出中读取各结合模式的打分(结合能)与 RMSD;无可解析结果时返回空表。
+    按结合能从低到高排序(数值越负结合越强),第 1 名即最佳构象。
     """
     modes = []
     for block in _iter_vina_models(out_pdbqt):
@@ -801,10 +758,7 @@ def parse_vina_scores(out_pdbqt: str) -> pd.DataFrame:
 
 
 def write_docking_metadata(meta_path: str, fields: dict) -> str:
-    """把本次对接的关键信息(药物、靶点、参数等)写成 # 开头的文本记录,便于追溯。
-
-    同名时自动换新文件名,不覆盖旧记录;返回实际写入的文件路径。
-    """
+    """把本次对接的关键信息(药物、靶点、参数等)写成 # 开头的文本记录,便于追溯;同名时自动换新文件名,返回实际写入的文件路径。"""
     lines = [f"# {key}: {value}" for key, value in fields.items()]
     lines.append(f"# timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     path = _unique_path(meta_path)
@@ -816,10 +770,7 @@ def write_docking_metadata(meta_path: str, fields: dict) -> str:
 
 
 def star_docking_result(result_dir: str) -> str:
-    """把本次对接成果目录完整复制到收藏区长期保存,不会被自动清理。
-
-    原目录仍按版本控制自动管理,收藏副本独立存在;返回收藏副本路径。
-    """
+    """把本次对接成果目录完整复制到收藏区长期保存,不会被自动清理;原目录仍按版本控制自动管理,返回收藏副本路径。"""
     import shutil
     import config
 
@@ -831,10 +782,7 @@ def star_docking_result(result_dir: str) -> str:
 
 
 def prune_docking_results(result_dir: str, max_versions: int | None = None) -> list[str]:
-    """成果版本控制:同一药物-疾病-靶点组合的结果目录超过保留上限时,删除最旧的。
-
-    返回本次删除的目录列表;无需删除时返回空列表。
-    """
+    """成果版本控制:同一药物-疾病-靶点组合的结果目录超过保留上限时删除最旧的;返回本次删除的目录列表,无需删除时返回空列表。"""
     import re
     import shutil
     import glob
@@ -864,10 +812,7 @@ def prune_docking_results(result_dir: str, max_versions: int | None = None) -> l
 
 
 def clean_docking_cache(ttl_days: int | None = None) -> int:
-    """清理对接过程中的缓存中间文件:原始文件保留 1 天,加工产物保留 7 天。
-
-    传入 ttl_days 时所有目录统一按该天数清理(如传 0 可全清);返回删除的文件数。
-    """
+    """清理对接过程中的缓存中间文件:原始文件保留 1 天,加工产物保留 7 天;传 ttl_days 时统一按该天数清理(0 可全清),返回删除的文件数。"""
     import time
     import config
 
@@ -917,9 +862,7 @@ def _gene_names_from_ebi_entry(entry: dict) -> set:
 
 def _lookup_uniprot_ebi(gene_symbol: str, taxon: int) -> str:
     """在 EBI 数据库按基因符号查找已校验(reviewed)蛋白的条目号。
-
-    接口按名称模糊匹配,易混入同源基因,拿到结果后需再按基因名精确筛选;
-    只取主条目,跳过异构体(isoform)。
+    接口按名称模糊匹配,易混入同源基因,拿到结果后需再按基因名精确筛选;只取主条目,跳过异构体(isoform)。
     """
     import config
     from .http_client import throttle
@@ -928,7 +871,7 @@ def _lookup_uniprot_ebi(gene_symbol: str, taxon: int) -> str:
     resp = requests.get(
         config.EBI_PROTEINS_API_URL,
         params={"gene": gene_symbol, "taxid": taxon, "reviewed": "true", "format": "json"},
-        timeout=config.API_TIMEOUT, headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
+        timeout=config.API_TIMEOUT, headers=_RCSB_HEADERS,
     )
     resp.raise_for_status()
     for entry in resp.json():
@@ -950,7 +893,7 @@ def _lookup_uniprot_rest(gene_symbol: str, taxon: int) -> str:
     resp = requests.get(
         config.UNIPROT_SEARCH_URL,
         params={"query": query, "format": "tsv", "fields": "accession,id", "size": "10"},
-        timeout=config.API_TIMEOUT, headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
+        timeout=config.API_TIMEOUT, headers=_RCSB_HEADERS,
     )
     resp.raise_for_status()
     for line in resp.text.strip().splitlines()[1:]:  # 首行为表头
@@ -961,11 +904,8 @@ def _lookup_uniprot_rest(gene_symbol: str, taxon: int) -> str:
 
 
 def fetch_uniprot_accession(gene_symbol: str, taxon: int = 9606) -> str:
-    """
-    基因符号 → UniProt 蛋白条目号,依次尝试多个数据源。
-
-    查询结果会永久缓存,包括"确认查无"的情况;但网络失败不写入缓存,下次会重查。
-    所有数据源都失败时报错;确认查无条目返回空字符串。
+    """基因符号 → UniProt 蛋白条目号,依次尝试多个数据源;全失败报错,确认查无条目返回空字符串。
+    查询结果永久缓存,包括"确认查无"的情况;但网络失败不写入缓存,下次会重查。
     """
     import json
 
@@ -1015,9 +955,7 @@ def fetch_uniprot_accession(gene_symbol: str, taxon: int = 9606) -> str:
 
 
 def fetch_alphafold_pdb(accession: str) -> str:
-    """
-    下载 AlphaFold 预测结构 PDB 文件,下载过的直接复用缓存。
-
+    """下载 AlphaFold 预测结构 PDB 文件,下载过的直接复用缓存。
     下载内容异常(文件过小或不含原子坐标)时报错,不会保存坏文件。
     """
     import requests
@@ -1035,10 +973,10 @@ def fetch_alphafold_pdb(accession: str) -> str:
     throttle("alphafold")
     url = config.ALPHAFOLD_FILE_URL_TEMPLATE.format(accession=acc, version=version)
     resp = requests.get(url, timeout=config.API_TIMEOUT,
-                        headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"})
+                        headers=_RCSB_HEADERS)
     resp.raise_for_status()
     if len(resp.text) < 1024 or "\nATOM" not in resp.text:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        # 目录在函数开头已创建;这里只报错,不落盘
         raise RuntimeError(f"AlphaFold PDB unexpected content for {acc}: {url}")
     with open(path, "w", encoding="utf-8") as f:
         f.write(resp.text)
@@ -1057,9 +995,7 @@ def fetch_alphafold_receptor(gene_symbol: str, taxon: int = 9606) -> tuple:
 
 
 def clamp_box(box: dict, max_size: float) -> dict:
-    """
-    对接盒边长超过上限时,以中心为准把尺寸压缩到上限。
-
+    """对接盒边长超过上限时,以中心为准把尺寸压缩到上限。
     这只保证对接能运行,不保证口袋位置正确,需人工在 3D 预览中确认。
     """
     size = tuple(round(min(float(v), float(max_size)), 4) for v in box["size"])
@@ -1139,7 +1075,6 @@ __LIB__
 
 def _load_3dmol_js() -> str | None:
     """读取 3Dmol.js 库源码:本地有缓存直接用,没有则下载一次并长期缓存。
-
     两个下载地址都失败时返回 None,HTML 将改用在线引用(打开时需联网)。
     """
     import config
@@ -1154,7 +1089,7 @@ def _load_3dmol_js() -> str | None:
     for url in _3DMOL_JS_URLS:
         try:
             resp = requests.get(url, timeout=config.API_TIMEOUT,
-                                headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"})
+                                headers=_RCSB_HEADERS)
             resp.raise_for_status()
             if "$3Dmol" not in resp.text or "</script" in resp.text:
                 raise RuntimeError(f"unexpected content from {url}")
@@ -1184,13 +1119,8 @@ def build_interactive_3d_html(receptor_pdb: str, ligand_pdb: str, caption: str =
                               lib_js: str | None = None,
                               pocket: list[dict] | None = None,
                               het_pdb: str | None = None) -> tuple[str, bool]:
-    """生成自包含的交互式 3D 视图 HTML,样式与页面内预览一致(受体卡通彩虹色、
-    配体绿色棍状、结合位点残基橙色棍状并标注名称、共晶配体灰色半透明参照)。
-
-    pocket 传入 residues_near_ligand 的结果时,视图中高亮结合位点残基;
-    het_pdb 传入共晶配体的 HETATM 文本时,以半透明灰棍叠加作天然口袋参照。
-    lib_js 传入 3Dmol.js 源码时内嵌进文件,双击即可离线打开;
-    传 None 时改用在线引用,打开时需联网。返回 (html 文本, 是否离线可用)。
+    """生成自包含的交互式 3D 视图 HTML,样式与页面内预览一致(受体卡通彩虹色、配体绿色棍状、结合位点残基橙色棍状并标注名称、共晶配体灰色半透明参照),返回 (html 文本, 是否离线可用)。
+    pocket 传入 residues_near_ligand 的结果时高亮结合位点残基;het_pdb 传入共晶配体的 HETATM 文本时以半透明灰棍叠加作天然口袋参照;lib_js 传入 3Dmol.js 源码时内嵌进文件双击即可离线打开,传 None 改用在线引用(打开时需联网)。
     """
     import html as _html
     import json
@@ -1216,9 +1146,7 @@ def build_interactive_3d_html(receptor_pdb: str, ligand_pdb: str, caption: str =
 def interactive_3d_html(pdb_path: str, pose_pdbqt: str, caption: str = "",
                         pocket: list[dict] | None = None) -> tuple[str, bool]:
     """由受体 PDB 与所选构象 pdbqt 生成可保存的交互式 3D 视图 HTML。
-
-    pocket 传入口袋残基列表时一并嵌入;受体含共晶配体(非水 HETATM)时
-    以半透明灰棍叠加,过滤规则与页面预览一致。
+    pocket 传入口袋残基列表时一并嵌入;受体含共晶配体(非水 HETATM)时以半透明灰棍叠加,过滤规则与页面预览一致。
     """
     pose_pdb = os.path.join(os.path.dirname(pose_pdbqt), "pose_view.pdb")
     pose_pdbqt_to_pdb(pose_pdbqt, pose_pdb)
@@ -1237,10 +1165,7 @@ def interactive_3d_html(pdb_path: str, pose_pdbqt: str, caption: str = "",
 def save_interactive_3d_html(pdb_path: str, pose_pdbqt: str, out_path: str,
                              caption: str = "",
                              pocket: list[dict] | None = None) -> tuple[str, bool]:
-    """把交互式 3D 视图保存为单个 HTML 文件(同名覆盖,便于同一构象反复保存)。
-
-    返回 (文件路径, 是否离线可用)。
-    """
+    """把交互式 3D 视图保存为单个 HTML 文件(同名覆盖,便于同一构象反复保存);返回 (文件路径, 是否离线可用)。"""
     html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption,
                                                 pocket=pocket)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)

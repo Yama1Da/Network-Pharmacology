@@ -10,20 +10,8 @@ from i18n import t
 
 st.set_page_config(page_title=t("disease_mgmt.page_title"), layout="wide")
 
-# 隐藏侧边栏,全屏显示页面;行内 Update 按钮(#6347A1 底、#E0D8F2 字)、Download 按钮(#207D62 底、#C8F0DF 字)
-Utils.hide_sidebar("""
-    .st-key-update_btn button,
-    .st-key-file_rows [class*="st-key-update_"] button {
-        background-color: #6347A1;
-        color: #E0D8F2;
-        border: 1px solid #6347A1;
-    }
-    .st-key-file_rows [class*="st-key-download_"] button {
-        background-color: #207D62;
-        color: #C8F0DF;
-        border: 1px solid #207D62;
-    }
-""")
+# 隐藏侧边栏,全屏显示页面;行内 Update 按钮紫底、Download 按钮绿底
+Utils.hide_sidebar(Utils.CSS_BTN_UPDATE + "\n" + Utils.CSS_BTN_DOWNLOAD)
 
 # 各来源文件的抓取逻辑:返回 (表, 是否成功),供 Utils.refresh_cache_file 调用
 def _fetch_opentargets(name: str, cache_hours):

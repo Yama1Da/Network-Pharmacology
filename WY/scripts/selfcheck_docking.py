@@ -152,6 +152,7 @@ def t_candidates_af_fallback_row():
 
     class _FakeResp:
         status_code = 200
+        content = b'{"result_set": []}'  # 生产代码会检查响应体非空/非 204
 
         def raise_for_status(self):
             return None

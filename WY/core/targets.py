@@ -30,10 +30,8 @@ _OT_KEEP_BIOTYPES = {"protein_coding"}
 
 
 def _filter_dgidb_targets(df: pd.DataFrame) -> pd.DataFrame:
-    """DGIdb 降噪：保留交互分数达到下限、且有至少 1 条 PMID 文献支撑的记录。
-
-    单独卡分数或单独要求 PMID 都挡不住低质量预测,两条件需同时满足。
-    """
+    """DGIdb 降噪：保留交互分数达到下限、且有至少 1 条 PMID 文献支撑的记录;
+    单独卡分数或单独要求 PMID 都挡不住低质量预测,两条件需同时满足。"""
     import config
 
     if df.empty:
@@ -65,13 +63,9 @@ def _filter_ot_targets(df: pd.DataFrame) -> pd.DataFrame:
 
 def _filter_chembl_targets(df: pd.DataFrame, corroborated_genes: set[str],
                            *, blacklist_only: bool = False) -> pd.DataFrame:
-    """ChEMBL 降噪：先剔黑名单,再按 pChEMBL 分层保留。
-
-    保留：基因的最大 pChEMBL 达到阈值；或全部活性记录都没有 pChEMBL
-    定量值、但被 DGIdb 佐证（corroborated_genes 为通过 DGIdb 过滤的
-    大写基因集合）。剔除：仅有弱定量活性（0 < pChEMBL < 阈值）的基因。
-    blacklist_only=True 时只做黑名单过滤,供整侧过滤后为空时的兜底。
-    """
+    """ChEMBL 降噪：先剔黑名单,再按 pChEMBL 分层保留——保留：基因的最大 pChEMBL 达到阈值;或全部活性记录都
+    没有 pChEMBL 定量值、但被 DGIdb 佐证(corroborated_genes 为通过 DGIdb 过滤的大写基因集合);剔除：仅有弱定量
+    活性(0 < pChEMBL < 阈值)的基因。blacklist_only=True 时只做黑名单过滤,供整侧过滤后为空时的兜底。"""
     import config
 
     if df.empty:
@@ -92,13 +86,9 @@ def _filter_chembl_targets(df: pd.DataFrame, corroborated_genes: set[str],
 
 def _prepare_drug_sources(drug_name: str, chmbl_df: pd.DataFrame,
                           dgidb_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """对药物两个数据源做降噪过滤,返回过滤后的 (ChEMBL, DGIdb) 两表。
-
-    DGIdb 先过滤（分数+PMID）,通过的基因集再用于佐证 ChEMBL 的
-    无定量活性基因;两源过滤后都为空但原始数据非空时（DGIdb 失败、
-    全部活性只有弱定量值等）,回退为 ChEMBL 仅黑名单过滤,避免整侧
-    结果为空导致交集无意义。
-    """
+    """对药物两个数据源做降噪过滤,返回过滤后的 (ChEMBL, DGIdb) 两表。DGIdb 先过滤(分数+PMID),通过的基因集
+    再用于佐证 ChEMBL 的无定量活性基因;两源过滤后都为空但原始数据非空时(DGIdb 失败、全部活性只有弱定量值等),
+    回退为 ChEMBL 仅黑名单过滤,避免整侧结果为空导致交集无意义。"""
     dgidb_f = _filter_dgidb_targets(dgidb_df)
     corroborated = (
         set(dgidb_f["approvedSymbol"].dropna().str.upper()) if not dgidb_f.empty else set()
@@ -117,10 +107,8 @@ def _prepare_drug_sources(drug_name: str, chmbl_df: pd.DataFrame,
 
 def _prepare_disease_sources(disease_name: str, ot_df: pd.DataFrame,
                              disgenet_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """对疾病两个数据源做降噪过滤,返回过滤后的 (OpenTargets, DisGeNET) 两表。
-
-    DisGeNET 结果本身按分数降序且只取第一页(相当于 top100),不再额外过滤。
-    """
+    """对疾病两个数据源做降噪过滤,返回过滤后的 (OpenTargets, DisGeNET) 两表;
+    DisGeNET 结果本身按分数降序且只取第一页(相当于 top100),不再额外过滤。"""
     ot_f = _filter_ot_targets(ot_df)
     logging.info(
         "Disease noise filter '%s': OpenTargets %d->%d rows",
@@ -129,11 +117,8 @@ def _prepare_disease_sources(disease_name: str, ot_df: pd.DataFrame,
 
 
 def _merged_cache_path(kind: str, name: str) -> str:
-    """merged 整合缓存文件路径。
-
-    文件名带降噪过滤规则版本号（config.TARGET_FILTER_VERSION），
-    规则或阈值变更（版本号+1）后旧缓存自动失效,下次分析按新阈值重建。
-    """
+    """merged 整合缓存文件路径。文件名带降噪过滤规则版本号（config.TARGET_FILTER_VERSION）,
+    规则或阈值变更（版本号+1）后旧缓存自动失效,下次分析按新阈值重建。"""
     import config
     prefix = config.MERGED_DRUG_PREFIX if kind == "drug" else config.MERGED_DISEASE_PREFIX
     return os.path.join(config.MERGED_CACHE_DIR, f"{prefix}{safe_name(name)}.csv")
@@ -153,12 +138,9 @@ def _merge_source_pair(
     sources_desc: tuple[str, str],
     save: bool = True,
 ) -> pd.DataFrame:
-    """两个数据源的靶点按基因符号取并集去重，并保留各源分数最大值。
-
-    kind 为 "drug"/"disease"，用于日志；src_a/src_b 为来源标记列名；
-    score_a/score_b 为 (输出列名, 源分数列名)；两源都没有数据时返回空表。
-    save=False 时不写缓存(某路数据源失败时,避免把残缺结果永久缓存)。
-    """
+    """两个数据源的靶点按基因符号取并集去重，并保留各源分数最大值。kind 为 "drug"/"disease"，用于日志;
+    src_a/src_b 为来源标记列名；score_a/score_b 为 (输出列名, 源分数列名)；两源都没有数据时返回空表。
+    save=False 时不写缓存(某路数据源失败时,避免把残缺结果永久缓存)。"""
     genes_a = set(df_a["approvedSymbol"].dropna().str.upper()) if not df_a.empty else set()
     genes_b = set(df_b["approvedSymbol"].dropna().str.upper()) if not df_b.empty else set()
     all_genes = sorted(genes_a | genes_b)
@@ -198,14 +180,9 @@ def _merge_source_pair(
 
 
 def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
-    """整合 ChEMBL 与 DGIdb 两个数据库的药物靶点，按基因符号取并集去重。
-
-    整合前先做降噪过滤（ChEMBL 黑名单+pChEMBL 阈值与 DGIdb 佐证、
-    DGIdb 分数+PMID 双门槛,见 _prepare_drug_sources）。
-    为每个基因标记来自哪些数据库（source_chmbl / source_dgidb），
-    并保留各库的活性/交互分数。两个库都没有数据时返回空表；
-    结果存为本地 CSV，已有缓存则直接复用。
-    """
+    """整合 ChEMBL 与 DGIdb 两个数据库的药物靶点，按基因符号取并集去重;整合前先做降噪过滤(ChEMBL 黑名单+
+    pChEMBL 阈值与 DGIdb 佐证、DGIdb 分数+PMID 双门槛,见 _prepare_drug_sources)。为每个基因标记来自哪些数据库
+    (source_chmbl / source_dgidb)并保留各库的活性/交互分数;两个库都没有数据时返回空表;结果存为本地 CSV,已有缓存则直接复用。"""
     cache_path = _merged_cache_path("drug", drug_name)
     remember_name_mapping(drug_name)  # 记录安全文件名→原始名,供管理页还原
     cached = open_csv_cache(cache_path, label=f"merged drug targets for '{drug_name}'")
@@ -226,14 +203,9 @@ def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
 
 
 def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
-    """整合 Open Targets 与 DisGeNET 两个数据库的疾病靶点，按基因符号取并集去重。
-
-    整合前先对 Open Targets 做降噪过滤（分数下限+只留蛋白编码,
-    DisGeNET 本身按分数取第一页,不过滤,见 _prepare_disease_sources）。
-    为每个基因标记来自哪些数据库（source_ot / source_disgenet），
-    并保留各库的关联分数。两个库都没有数据时返回空表；
-    结果存为本地 CSV，已有缓存则直接复用。
-    """
+    """整合 Open Targets 与 DisGeNET 两个数据库的疾病靶点，按基因符号取并集去重;整合前先对 Open Targets 做
+    降噪过滤(分数下限+只留蛋白编码;DisGeNET 本身按分数取第一页,不过滤,见 _prepare_disease_sources)。
+    为每个基因标记来自哪些数据库(source_ot / source_disgenet)并保留各库的关联分数;两个库都没有数据时返回空表;结果存为本地 CSV,已有缓存则直接复用。"""
     cache_path = _merged_cache_path("disease", disease_name)
     remember_name_mapping(disease_name)  # 记录安全文件名→原始名,供管理页还原
     cached = open_csv_cache(cache_path, label=f"merged disease targets for '{disease_name}'")
@@ -254,17 +226,11 @@ def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
 
 
 def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> list[str]:
-    """
-    取药物靶点与疾病靶点的交集基因，作为后续 PPI 网络分析的输入。
-
-    按字母序排序，最多返回 top_n 个（默认 1000，对齐 STRING 查询上限）；
-    任一侧无数据时返回空列表。
-    """
+    """取药物靶点与疾病靶点的交集基因，作为后续 PPI 网络分析的输入;按字母序排序,最多返回 top_n 个
+    (默认 1000,对齐 STRING 查询上限);任一侧无数据时返回空列表。"""
     drug_df, disease_df, _failed = get_targets_concurrent(drug_name, disease_name)
-    # 提取药物和疾病两侧的基因符号
     drug_set = set(drug_df["approvedSymbol"].dropna()) if not drug_df.empty else set()
     disease_set = set(disease_df["approvedSymbol"].dropna()) if not disease_df.empty else set()
-    # 取交集，按字母序排序并截断到 top_n
     return sorted(drug_set & disease_set)[:top_n]
 
 
@@ -284,23 +250,9 @@ _SOURCE_DEADLINE_SECONDS = {
 def get_targets_concurrent(
     drug_name: str, disease_name: str, progress_cb=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    """并发获取药物与疾病两侧靶点(四路数据源同时请求),供分析页一次拿全。
-
-    语义与分别串行调用 get_drug_targets_merged + get_disease_targets_merged 一致:
-    两侧 merged 缓存都命中时直接返回;否则只对缺失的一侧并发联网。
-
-    progress_cb: 可选进度回调,每 0.5 秒或某路完成时被调用一次(始终在主线程,
-    可安全更新 Streamlit 组件),签名 progress_cb(done: list[str], total: int),
-    done 为已完成的数据源 key(chembl/dgidb/opentargets/disgenet)。
-
-    返回 (药物靶点表, 疾病靶点表, 失败数据源 key 列表)。
-    失败的数据源按空表参与展示,且该侧不写 merged 缓存——避免把残缺结果
-    永久缓存;失败源下次分析自动重试,成功的源已缓存、秒回。
-
-    并发写安全性:四路数据源的来源 CSV 文件名互不相同,各自单线程写自己的文件;
-    merged 整合表只在主线程写一次;DisGeNET 限流记录文件内部有锁保护;
-    共享 HTTP 缓存 sqlite 由 requests-cache 的线程本地连接保证安全。
-    """
+    """并发获取药物与疾病两侧靶点(四路数据源同时请求),供分析页一次拿全;语义与分别串行调用 get_drug_targets_merged + get_disease_targets_merged 一致:两侧 merged 缓存都命中时直接返回,否则只对缺失的一侧并发联网。progress_cb: 可选进度回调,每 0.5 秒或某路完成时被调用一次(始终在主线程,可安全更新 Streamlit 组件),签名 progress_cb(done: list[str], total: int),done 为已完成的数据源 key(chembl/dgidb/opentargets/disgenet)。
+    返回 (药物靶点表, 疾病靶点表, 失败数据源 key 列表);失败的数据源按空表参与展示,且该侧不写 merged 缓存——避免把残缺结果永久缓存;失败源下次分析自动重试,成功的源已缓存、秒回。
+    并发写安全性:四路数据源的来源 CSV 文件名互不相同,各自单线程写自己的文件;merged 整合表只在主线程写一次;DisGeNET 限流记录文件内部有锁保护;共享 HTTP 缓存 sqlite 由 requests-cache 的线程本地连接保证安全。"""
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
     from concurrent.futures import wait as wait_futures
 

@@ -9,7 +9,6 @@ from matplotlib_venn import venn2
 # 初始化日志:每天一个日志文件,保留两年。
 Utils.setup_logging()
 
-#页面布局
 st.set_page_config(page_title=t("app.page_title"), layout="centered")
 
 is_en = get_lang() == "en"
@@ -368,10 +367,10 @@ with st.container(key="top_left_buttons"):
             st.session_state["_docking_entry"] = True  # 通知对接页:从入口进入并重置状态
             st.switch_page("pages/Molecular_Docking.py")
 
-st.divider()# 分隔管理按钮和搜索栏
+st.divider()
 
 # ---------- Search bar ----------
-col_drug, col_disease = st.columns(2)# 两列分别输入药物名称和疾病名称
+col_drug, col_disease = st.columns(2)
 with col_drug:
     drug_name = st.text_input(t("app.drug_label"), value="metformin",
                                label_visibility="collapsed",
@@ -437,7 +436,7 @@ if analyze_btn:
         st.metric(t("app.metric_common"), len(common))
 
         # ----- Venn diagram -----
-        fig, ax = plt.subplots(figsize=(6, 4))# 创建 6x4 英寸画布
+        fig, ax = plt.subplots(figsize=(6, 4))
         # 图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。
         v = venn2(
             subsets=(len(drug_set - disease_set),
@@ -445,11 +444,11 @@ if analyze_btn:
                      len(common)),
             set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
             ax=ax,
-        )# 绘制韦恩图
+        )
         if v and v.get_label_by_id("11"):
             v.get_label_by_id("11").set_fontsize(12)# 设置交集区域字号
-        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)# 设置图标题
-        st.pyplot(fig)# 显示韦恩图
+        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
+        st.pyplot(fig)
 
         with st.expander(t("app.expander_targets"), expanded=False):
             # ----- 药物靶点表 -----

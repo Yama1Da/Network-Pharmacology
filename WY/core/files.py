@@ -13,12 +13,7 @@ def _ctime_str(path: str) -> str:
 def _list_to_table(directory: str, *, name_col: str, dirs: bool,
                    skip_suffixes: tuple = (), name_pred=None,
                    with_mtime: bool = False, exts: tuple = ()) -> pd.DataFrame:
-    """列出 directory 下满足条件的条目名与创建时间;目录不存在时返回空表。
-
-    dirs=True 选子目录,False 选文件;skip_suffixes 跳过指定后缀(如更新过程的备份/临时文件);
-    name_pred 为额外的文件名过滤;exts 非空时只保留这些扩展名的文件;
-    隐藏文件(以 . 开头,如熔断状态标记)一律不列出;with_mtime=True 时附带修改时间列。
-    """
+    """列出 directory 下满足条件的条目名与创建时间;目录不存在时返回空表,隐藏文件(以 . 开头,如熔断状态标记)一律不列出。"""
     cols = [name_col, "Created time"] + (["Modified time"] if with_mtime else [])
     if not os.path.isdir(directory):
         return pd.DataFrame(columns=cols)
@@ -43,10 +38,7 @@ def _list_to_table(directory: str, *, name_col: str, dirs: bool,
 
 
 def list_cache_files(category: str, *, exts: tuple = ()) -> pd.DataFrame:
-    """列出指定类别缓存目录（如 "drug" 或 "disease"）下的文件名与创建时间；目录为空时返回空表。
-
-    exts 非空时只列出这些扩展名的文件(如富集目录传 (".csv",) 排除非结果的杂项文件)。
-    """
+    """列出指定类别缓存目录（如 "drug" 或 "disease"）下的文件名与创建时间；目录为空时返回空表。"""
     import config
 
     return _list_to_table(os.path.join(config.CACHE_DIR, category), name_col="File name",
@@ -62,7 +54,6 @@ def list_download_dirs() -> pd.DataFrame:
 
 def list_log_files() -> pd.DataFrame:
     """列出日志文件的文件名、创建与修改时间；无日志文件时返回空表。
-
     app.log 为当前正在写入的日志（即"今天"的），app.log.日期 为历史日志。
     """
     import config
@@ -85,10 +76,7 @@ def _zip_bytes(writer) -> bytes:
 
 
 def make_ppi_zip(file_paths: dict) -> bytes:
-    """
-    把一次分析产生的全部结果文件（PPI 网络、富集结果等已落盘的文件）
-    打包为 zip，供页面直接下载，解压后即得该次分析的全部成品。
-    """
+    """把一次分析产生的全部结果文件（PPI 网络、富集结果等已落盘的文件）打包为 zip,供页面直接下载。"""
     def write(zf):
         for name, path in file_paths.items():
             if name != "directory" and path and os.path.exists(path):
@@ -97,10 +85,7 @@ def make_ppi_zip(file_paths: dict) -> bytes:
 
 
 def make_dir_zip(directory: str) -> bytes:
-    """
-    把某个目录下的全部文件打包为 zip，供管理页按目录整体下载；
-    目录不存在或为空时返回空 zip。
-    """
+    """把某个目录下的全部文件打包为 zip,供管理页按目录整体下载;目录不存在或为空时返回空 zip。"""
     def write(zf):
         if os.path.isdir(directory):
             for name in sorted(os.listdir(directory)):
@@ -111,10 +96,7 @@ def make_dir_zip(directory: str) -> bytes:
 
 
 def make_dirs_zip(dir_paths: dict) -> bytes:
-    """
-    把多个目录打包进同一个 zip(每个目录作为 zip 内的一层文件夹,保留其中的
-    子目录结构),供管理页批量下载选中的结果目录;空字典返回空 zip。
-    """
+    """把多个目录打包进同一个 zip(每个目录作为 zip 内的一层文件夹,保留子目录结构),供管理页批量下载;空字典返回空 zip。"""
     def write(zf):
         for name, directory in dir_paths.items():
             if not os.path.isdir(directory):

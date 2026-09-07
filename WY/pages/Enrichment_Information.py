@@ -6,13 +6,8 @@ from i18n import t
 
 st.set_page_config(page_title=t("enrich_info.page_title"), layout="wide")
 
-# 隐藏侧边栏,全屏显示页面;行内 Download 按钮(#207D62 底、#C8F0DF 字),删除按钮红底白字
-Utils.hide_sidebar("""
-    .st-key-file_rows [class*="st-key-download_"] button {
-        background-color: #207D62;
-        color: #C8F0DF;
-        border: 1px solid #207D62;
-    }
+# 隐藏侧边栏,全屏显示页面;行内 Download 按钮绿底、删除按钮红底白字
+Utils.hide_sidebar(Utils.CSS_BTN_DOWNLOAD + """
     .st-key-enr_files_del_btn button {
         background-color: #F53F3F;
         color: #FFFFFF;
