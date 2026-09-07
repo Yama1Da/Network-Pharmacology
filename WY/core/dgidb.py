@@ -6,6 +6,7 @@ import pandas as pd
 
 from .caching import open_named_csv_cache, save_csv_cache
 from .http_client import request_with_retry
+from .text_utils import remember_name_mapping
 
 
 def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:

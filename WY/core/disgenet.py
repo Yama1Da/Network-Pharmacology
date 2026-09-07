@@ -6,7 +6,7 @@ import threading
 
 import pandas as pd
 
-from .caching import open_named_csv_cache, save_csv_cache
+from .caching import load_json_file, open_named_csv_cache, save_csv_cache, save_json_file
 from .http_client import _get_session
 from .text_utils import remember_name_mapping
 
@@ -18,24 +18,21 @@ def _acquire_disgenet_rate_limit_slot() -> None:
     """DisGeNET 主动限流：发请求前检查官方配额（每分钟/每天/每月），避免超限被拒。
     每分钟配额用满时短暂等待；每天/每月配额用满时直接报错（由调用方返回空表）。本地限额值已按学术计划官方配额(50/分、25,000/天、500,000/月)留余量,见 config。
     """
-    import json
     import time
     import config
 
-    with _rate_limit_lock:
+    with _rate_limit_lock:  # 读-改-写整段互斥:配额统计和写入必须视为一个事务
         now = time.time()
         minute_window = 60.0
         day_window = 24 * 3600.0
         month_window = 30 * day_window
 
         state_file = config.DISGENET_RATE_LIMIT_STATE_FILE
-        timestamps: list[float] = []
-        if os.path.exists(state_file):
-            try:
-                with open(state_file, "r", encoding="utf-8") as f:
-                    timestamps = [float(t) for t in json.load(f)]
-            except Exception:
-                logging.warning("Failed to load DisGeNET rate-limit state; resetting")
+        timestamps = load_json_file(state_file, [])
+        try:
+            timestamps = [float(t) for t in timestamps]
+        except (TypeError, ValueError):
+            logging.warning("Failed to load DisGeNET rate-limit state; resetting")
 
         # 只保留一个月内的请求记录(同时供月/日/分钟三级配额统计)
         timestamps = [t for t in timestamps if now - t <= month_window]
@@ -67,12 +64,8 @@ def _acquire_disgenet_rate_limit_slot() -> None:
 
         timestamps.append(now)
 
-        # 先写临时文件再替换，避免同时写入弄坏记录文件
-        os.makedirs(os.path.dirname(state_file), exist_ok=True)
-        tmp_file = state_file + ".tmp"
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(timestamps, f)
-        os.replace(tmp_file, state_file)
+        # 原子写入(临时文件+替换),并发写不会弄坏记录文件
+        save_json_file(state_file, timestamps)
 
 
 def _resolve_disgenet_query(disease_name: str) -> str:

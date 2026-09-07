@@ -2,11 +2,46 @@
 
 import logging
 import os
+import threading
 from collections.abc import Callable
 
 import pandas as pd
 
-from .text_utils import safe_name
+# JSON 状态文件按路径的写锁:同一文件的并发写串行化,不同文件互不阻塞
+_json_path_locks: dict[str, threading.Lock] = {}
+_json_locks_guard = threading.Lock()
+
+
+def _json_lock(path: str) -> threading.Lock:
+    with _json_locks_guard:
+        return _json_path_locks.setdefault(os.path.abspath(path), threading.Lock())
+
+
+def load_json_file(path: str, default=None):
+    """读取 JSON 状态文件;不存在或损坏时返回 default(损坏按不存在处理,由调用方决定是否重建)。"""
+    import json
+
+    try:
+        with _json_lock(path), open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except Exception:
+        logging.exception("Failed to load JSON state file: %s", path)
+        return default
+
+
+def save_json_file(path: str, value, *, indent: int | None = None,
+                   sort_keys: bool = False) -> None:
+    """把 JSON 值写入状态文件:先写 .tmp 再原子替换,并发写不会弄坏文件;目录不存在时自动创建。"""
+    import json
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with _json_lock(path):
+        tmp_file = path + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(value, f, ensure_ascii=False, indent=indent, sort_keys=sort_keys)
+        os.replace(tmp_file, path)
 
 
 def _read_cache_csv(cache_file: str) -> pd.DataFrame:
@@ -48,6 +83,8 @@ def open_named_csv_cache(
     <cache_dir>/<prefix><safe_name(name)>.csv,与既有各处的拼接方式逐字一致
     (绝不改变文件名,否则会作废用户现有缓存);命中返回读到的 DataFrame,未命中返回 None。
     remember 为可选的名称映射回调(如 remember_name_mapping),在读缓存前以原始名调用一次。"""
+    from .text_utils import safe_name  # 函数内导入:text_utils 反向依赖本模块的 JSON 助手,避免循环导入
+
     csv_path = os.path.join(cache_dir, f"{prefix}{safe_name(name)}.csv")
     if remember is not None:
         remember(name)

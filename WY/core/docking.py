@@ -13,6 +13,7 @@ from typing import Iterator, NamedTuple
 import pandas as pd
 import requests
 
+from .caching import load_json_file, save_json_file
 from i18n import t
 
 # PDB 结构中的水分子残基名,不参与结合位点定位与共晶配体识别
@@ -379,11 +380,33 @@ def _rcsb_graphql_entries(entry_ids: list[str]) -> dict[str, dict]:
     return out
 
 
+def _friendly_rcsb_error(gene_symbol: str, exc: Exception) -> RuntimeError:
+    """把 RCSB 检索的底层网络异常翻译成普通用户可读的失败提示(原始异常已在日志中)。"""
+    if isinstance(exc, requests.exceptions.Timeout):
+        hint = "RCSB 检索请求超时，请稍后重试"
+    elif isinstance(exc, requests.exceptions.ConnectionError):
+        hint = "无法连接 RCSB 服务器，请检查网络连接后重试"
+    elif isinstance(exc, requests.exceptions.HTTPError):
+        code = getattr(exc.response, "status_code", None)
+        if code == 429:
+            hint = "RCSB 检索请求过于频繁被限流，请等待约 1 分钟后再试"
+        elif code and code >= 500:
+            hint = "RCSB 服务器暂时故障，请稍后重试"
+        else:
+            hint = f"RCSB 检索返回异常状态（HTTP {code}），请稍后重试"
+    else:
+        hint = "RCSB 检索失败，请稍后重试"
+    return RuntimeError(f"RCSB 搜索失败（{gene_symbol}）：{hint}")
+
+
 def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
                                     allow_alphafold: bool = False, taxon: int = 9606,
-                                    progress_cb=None) -> dict[str, pd.DataFrame]:
+                                    progress_cb=None,
+                                    raise_on_search_failure: bool = False) -> dict[str, pd.DataFrame]:
     """批量查询多个基因的 PDB 候选结构,返回 {基因符号: 候选表};progress_cb(0~1) 可选,用于页面进度条。
     搜索与旧的逐基因检索同一查询保证召回一致、按 4 路并发,元数据合并为 GraphQL 批量请求使总请求数与基因数解耦;查无实验结构的基因在 allow_alphafold 开启时追加 AlphaFold 预测结构兜底。
+    raise_on_search_failure=True 时检索服务不可达直接抛出底层异常(单基因入口用,
+    由包装层翻译成可读错误);默认 False 按无结构处理,不让整批报废。
     """
     import config
 
@@ -402,6 +425,8 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
         try:
             return g, _rcsb_search_entry_ids(g, max_hits)
         except Exception:
+            if raise_on_search_failure:
+                raise
             # 单基因检索失败只影响该基因:记日志、按无结构处理,不让整批报废;
             # 无结构基因仍可被后续的 AlphaFold 兜底接住
             logging.exception("RCSB batch search failed for gene %s; treating as no-hit", g)
@@ -428,7 +453,8 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
         rows = [{"pdb_id": eid,
                  "resolution": meta.get(eid, {}).get("resolution"),
                  "method": meta.get(eid, {}).get("method", ""),
-                 "title": meta.get(eid, {}).get("title", "")}
+                 "title": meta.get(eid, {}).get("title", ""),
+                 "source": "experiment"}
                 for eid in ids]
         if rows:
             results[g] = pd.DataFrame(rows)
@@ -456,93 +482,21 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
 def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
                                   allow_alphafold: bool = False,
                                   taxon: int = 9606) -> pd.DataFrame:
-    """按基因符号在 PDB 数据库(RCSB)中查找该靶蛋白的候选结构;查无结果时返回空表。
-    开启 AlphaFold 选项且查无实验结构时,追加一条 AlphaFold 预测结构作兜底(查询失败不影响空表正常返回)。
+    """按基因符号在 PDB 数据库(RCSB)中查找该靶蛋白的候选结构(单基因入口,即批量版的单基因形式)。
+    查无实验结构时返回空表;开启 AlphaFold 选项且查无实验结构时,追加一条 AlphaFold 预测结构作兜底。
+    与批量版的差异:检索服务不可达(网络断开/限流/服务器故障)时抛出带中文提示的 RuntimeError
+    供页面展示,而不是按"无结构"静默处理——单基因场景没有其它候选来源,静默会让用户误以为
+    该蛋白确实没有可用结构。
     """
-    import config
-    from .http_client import request_with_retry
-
-    query = {
-        "query": {
-            "type": "terminal",
-            "service": "full_text",
-            "parameters": {"value": f'"{gene_symbol.strip().upper()}"'},
-        },
-        "return_type": "entry",
-        "request_options": {"return_all_hits": True},
-    }
-    # 查询有频率限制,失败会自动重试几次,全部失败才报错。
-    # 注意:检索成功但没有命中结构不算失败——RCSB 对 0 命中返回 204 空响应体。
+    gene = gene_symbol.strip().upper()
     try:
-        resp = request_with_retry(
-            _RCSB_SEARCH_URL, json=query,
-            max_retries=config.RCSB_SEARCH_MAX_RETRIES, timeout=config.API_TIMEOUT,
-            label=f"RCSB search for {gene_symbol}", throttle_key="rcsb_search",
-            headers=_RCSB_HEADERS,
-            raise_on_exhausted=True, no_retry_status=(204,),
-        )
+        results = fetch_receptor_candidates_batch(
+            [gene], max_hits=max_hits, allow_alphafold=allow_alphafold, taxon=taxon,
+            raise_on_search_failure=True)
     except Exception as exc:
-        # 搜索失败要报错供页面提示;查无结构属正常情况
         logging.exception("RCSB search failed for gene %s", gene_symbol)
-        raise RuntimeError(f"RCSB 搜索失败（{gene_symbol}）：{exc}")
-    if resp is None or resp.status_code == 204 or not resp.content.strip():
-        logging.info("RCSB search: no experimental structures for %s", gene_symbol)
-        hits = []
-    else:
-        hits = resp.json().get("result_set", [])[:max_hits]
-
-    def _fetch_meta(entry_id: str) -> tuple[str, float | None, str, str]:
-        resp = request_with_retry(
-            f"https://data.rcsb.org/rest/v1/core/entry/{entry_id}", method="get",
-            max_retries=2, timeout=15, label="RCSB meta", throttle_key="rcsb_data",
-            headers=_RCSB_HEADERS, retry_delay=1,
-        )
-        if resp is not None:
-            try:
-                d = resp.json()
-                res = d.get("rcsb_entry_info", {}).get("resolution_combined")
-                res = res[0] if isinstance(res, list) and res else res
-                method = ", ".join(m.get("method", "") for m in (d.get("exptl") or [])) or ""
-                title = (d.get("struct") or {}).get("title", "") or ""
-                return entry_id, res, method, title
-            except Exception:
-                pass  # 元数据解析失败按缺信息处理,不影响主流程
-        return entry_id, None, "", ""
-
-    ids = [hit.get("identifier", "") for hit in hits if hit.get("identifier")]
-    meta = {}
-    if ids:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=config.RCSB_DATA_MAX_WORKERS) as pool:
-            for eid, res, method, title in pool.map(_fetch_meta, ids):
-                meta[eid] = (res, method, title)
-
-    rows = []
-    for eid in ids:
-        res, method, title = meta.get(eid, (None, "", ""))
-        rows.append({"pdb_id": eid, "resolution": res, "method": method,
-                     "title": title, "source": "experiment"})
-    df = pd.DataFrame(rows)
-
-    if allow_alphafold and config.ALPHAFOLD_ENABLED and df.empty:
-        try:
-            acc = fetch_uniprot_accession(gene_symbol, taxon=taxon)
-            if acc:
-                df = pd.DataFrame([{
-                    "pdb_id": f"AFDB:{acc}",
-                    "resolution": None,
-                    "method": f"AlphaFold predicted ({config.ALPHAFOLD_MODEL_VERSION})",
-                    "title": f"AlphaFold {config.ALPHAFOLD_MODEL_VERSION} monomer model "
-                             f"for {gene_symbol.strip().upper()}",
-                    "source": "alphafold",
-                }])
-        except Exception:
-            # 预测结构查询失败不影响空表正常返回
-            logging.exception("AlphaFold fallback lookup failed for gene %s", gene_symbol)
-    if df.empty:
-        # 空表也保留统一的列名,方便后续处理
-        df = pd.DataFrame(columns=["pdb_id", "resolution", "method", "title", "source"])
-    return df
+        raise _friendly_rcsb_error(gene_symbol, exc)
+    return results[gene]
 
 
 def prepare_receptor_pdbqt(pdb_path: str, out_path: str | None = None) -> str:
@@ -903,19 +857,11 @@ def fetch_uniprot_accession(gene_symbol: str, taxon: int = 9606) -> str:
     """基因符号 → UniProt 蛋白条目号,依次尝试多个数据源;全失败报错,确认查无条目返回空字符串。
     查询结果永久缓存,包括"确认查无"的情况;但网络失败不写入缓存,下次会重查。
     """
-    import json
-
     import config
 
     gene = gene_symbol.strip().upper()
     cache_file = config.UNIPROT_LOOKUP_CACHE
-    os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
-    db: dict = {}
-    try:
-        with open(cache_file, "r", encoding="utf-8") as f:
-            db = json.load(f)
-    except Exception:
-        db = {}
+    db = load_json_file(cache_file, {}) or {}
     key = f"{gene}_{taxon}"
     if key in db:
         return str(db[key])
@@ -939,8 +885,7 @@ def fetch_uniprot_accession(gene_symbol: str, taxon: int = 9606) -> str:
 
     db[key] = acc
     try:
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(db, f, ensure_ascii=False, sort_keys=True)
+        save_json_file(cache_file, db, sort_keys=True)
     except Exception:
         logging.exception("Failed to write UniProt lookup cache: %s", cache_file)
     if acc:

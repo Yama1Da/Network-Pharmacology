@@ -319,142 +319,146 @@ def _cached_pdb_candidates_batch(genes: tuple, allow_alphafold: bool = False) ->
 
 
 # ===== Step 1 候选基因筛选 =====
-st.subheader(t("dock.step1"))
+def _step1_select_source(dock: dict) -> None:
+    """数据来源选择:PPI 分析结果目录 或 富集缓存文件,选中后自动读取候选基因集。"""
+    src_mode = st.radio(t("dock.src_mode"),
+                        ["ppi", "enr"],
+                        format_func=lambda v: t("dock.src_ppi") if v == "ppi" else t("dock.src_enr"),
+                        horizontal=True, key="gene_src_mode")
 
-src_mode = st.radio(t("dock.src_mode"),
-                    ["ppi", "enr"],
-                    format_func=lambda v: t("dock.src_ppi") if v == "ppi" else t("dock.src_enr"),
-                    horizontal=True, key="gene_src_mode")
+    # 切换数据来源时清空旧选择和后续结果,按新来源重新读取
+    if dock.get("gene_src_mode") != src_mode:
+        dock["gene_src_mode"] = src_mode
+        for _k in ("ppi_dir", "enr_file", "hub_genes", "enrichment_genes",
+                   "label", "drug", "disease", "genes"):
+            dock.pop(_k, None)
+        _reset_docking_downstream()
 
-# 切换数据来源时清空旧选择和后续结果,按新来源重新读取
-if dock.get("gene_src_mode") != src_mode:
-    dock["gene_src_mode"] = src_mode
-    for _k in ("ppi_dir", "enr_file", "hub_genes", "enrichment_genes",
-               "label", "drug", "disease", "genes"):
-        dock.pop(_k, None)
-    _reset_docking_downstream()
-
-if src_mode == "ppi":
-    # 只列出 PPI 分析结果目录,排除其他类型的文件夹;目录名展示为"药物 → 疾病"
-    dirs = Utils.list_download_dirs()
-    ppi_dirs = dirs[dirs["Directory"].str.endswith("_data", na=False)] if not dirs.empty else dirs
-    if ppi_dirs.empty:
-        st.warning(t("dock.no_ppi_dirs"))
-    else:
-        dir_disp = {d: Utils.humanize_analysis_label(d[:-5] if d.endswith("_data") else d)
-                    for d in ppi_dirs["Directory"]}
-        sel_dir = st.selectbox(t("dock.sel_ppi_dir"), ppi_dirs["Directory"].tolist(), key="sel_ppi_dir",
-                               index=None, placeholder=t("dock.sel_ppi_dir_ph"),
-                               format_func=lambda d: dir_disp.get(d, d))
-        # 选定目录后自动读取,无需再点按钮
-        if sel_dir and dock.get("ppi_dir") != sel_dir:
-            dock["ppi_dir"] = sel_dir
-            dock["hub_genes"], dock["enrichment_genes"] = _read_ppi_dataset(sel_dir)
-            # 从目录名拆出药物名和疾病名,供 Step 2 自动获取配体
-            prefix = sel_dir[:-5] if sel_dir.endswith("_data") else sel_dir
-            dock["label"] = prefix
-            parts = prefix.split("_", 1)
-            dock["drug"] = parts[0] if parts[0] else ""
-            dock["disease"] = parts[1] if len(parts) > 1 else ""
-            _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
-else:
-    enr_files = Utils.list_cache_files("enrichment", exts=(".csv",))
-    # 只保留普通富集(ORA)结果供选择:GSEA 文件没有逐条目的基因列,选中也提不出候选基因;
-    # 按创建时间倒序,最近一次分析排最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称
-    if not enr_files.empty:
-        is_ora = enr_files["File name"].map(
-            lambda n: (parse_enrichment_filename(n) or {}).get("kind") == "ora")
-        enr_files = (enr_files[is_ora]
-                     .sort_values("Created time", ascending=False))
-    if enr_files.empty:
-        st.warning(t("dock.no_enr_files"))
-    else:
-        # 同名分析可能有多份不同参数的缓存,展示名带上创建时间以便区分
-        file_disp = {row["File name"]:
-                     f"{Utils.enrichment_display_name(row['File name'])} · {row['Created time']}"
-                     for _, row in enr_files.iterrows()}
-        sel_file = st.selectbox(t("dock.sel_enr_file"), enr_files["File name"].tolist(), key="sel_enr",
-                                index=None, placeholder=t("dock.sel_enr_file_ph"),
-                                format_func=lambda n: file_disp.get(n, n))
-        # 选定文件后自动读取
-        if sel_file and dock.get("enr_file") != sel_file:
-            dock["enr_file"] = sel_file
-            df = pd.read_csv(os.path.join(config.ENRICHMENT_CACHE_DIR, sel_file),
-                             encoding="utf-8-sig", comment="#")
-            dock["enrichment_genes"] = sorted(_genes_from_df(df))
-            dock["hub_genes"] = []  # 没有 HUB 信息,只按富集基因筛选
-            label = _extract_label(sel_file)
-            dock["label"] = label
-            parts = label.split("_", 1)
-            dock["drug"] = parts[0] if parts[0] else ""
-            dock["disease"] = parts[1] if len(parts) > 1 else ""
-            _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
-
-if dock.get("enrichment_genes") is not None:
-    hub_set = set(dock.get("hub_genes") or [])
-    enr_set = set(dock["enrichment_genes"])
-    candidate = sorted(hub_set & enr_set) if hub_set else sorted(enr_set)
-    dock["candidate_pre"] = candidate
-
-    col_h, col_e, col_c = st.columns(3)
-    col_h.metric(t("dock.hub_metric"), len(hub_set))
-    col_e.metric(t("dock.enr_metric"), len(enr_set))
-    col_c.metric(t("dock.cand_metric"), len(candidate))
-    if candidate:
-        st.write(", ".join(candidate[:60]) + (" …" if len(candidate) > 60 else ""))
-    else:
-        st.warning(t("dock.no_intersection"))
-
-    # 结构可用性筛选:默认开启;若想保留查不到结构的基因,可关闭
-    st.markdown(t("dock.struct_filter_title"))
-    use_struct = st.checkbox(t("dock.enable_struct_filter"), key="use_struct",
-                             disabled=not candidate, value=True)
-    # AF 预测结构开关(默认关):没有实验结构的基因也能用预测结构对接
-    allow_af = config.ALPHAFOLD_ENABLED and st.checkbox(
-        t("dock.af_toggle"), key="allow_af", value=False, help=t("dock.af_toggle_help"))
-    if use_struct:
-        if st.button(t("dock.check_struct_btn"), key="check_struct"):
-            with st.spinner(t("dock.checking_rcsb")):
-                try:
-                    # 批量检索:4 路并发逐基因搜索(召回与旧版一致),
-                    # 元数据合并为 GraphQL 批量请求;进度条按两阶段推进
-                    progress = st.progress(0.0)
-                    results = _cached_pdb_candidates_batch(
-                        tuple(candidate), allow_alphafold=allow_af)
-                    progress.progress(1.0)
-                    dock["gene_structures"] = {g: len(df) for g, df in results.items()
-                                               if not df.empty}
-                    dock["batch_results"] = results
-                except Exception as exc:
-                    dock.pop("gene_structures", None)
-                    st.error(t("dock.error_occurred", exc=exc))
-        if dock.get("gene_structures") is not None:
-            struct_ok = sorted(dock["gene_structures"])
-            dock["genes"] = struct_ok
-            no_struct = [g for g in candidate if g not in dock["gene_structures"]]
-            st.success(t("dock.genes_with_struct", n=len(struct_ok))
-                       + ", ".join(struct_ok[:40]) + (" …" if len(struct_ok) > 40 else ""))
-            if no_struct:
-                st.caption(t("dock.excluded_no_struct", n=len(no_struct))
-                           + ", ".join(no_struct[:40]) + (" …" if len(no_struct) > 40 else ""))
-                # 被剔除的基因里有 hub 时要特别提醒:hub 是对接的核心对象,
-                # 无实验结构只能靠 AlphaFold 预测模型兜底,不提醒容易被忽略
-                hub_no_struct = sorted(hub_set & set(no_struct))
-                if hub_no_struct and not allow_af:
-                    st.warning(t("dock.hub_no_struct_warn", n=len(hub_no_struct),
-                                 genes=", ".join(hub_no_struct)))
+    if src_mode == "ppi":
+        # 只列出 PPI 分析结果目录,排除其他类型的文件夹;目录名展示为"药物 → 疾病"
+        dirs = Utils.list_download_dirs()
+        ppi_dirs = dirs[dirs["Directory"].str.endswith("_data", na=False)] if not dirs.empty else dirs
+        if ppi_dirs.empty:
+            st.warning(t("dock.no_ppi_dirs"))
         else:
-            dock.pop("genes", None)
-            st.info(t("dock.click_to_check"))
+            dir_disp = {d: Utils.humanize_analysis_label(d[:-5] if d.endswith("_data") else d)
+                        for d in ppi_dirs["Directory"]}
+            sel_dir = st.selectbox(t("dock.sel_ppi_dir"), ppi_dirs["Directory"].tolist(), key="sel_ppi_dir",
+                                   index=None, placeholder=t("dock.sel_ppi_dir_ph"),
+                                   format_func=lambda d: dir_disp.get(d, d))
+            # 选定目录后自动读取,无需再点按钮
+            if sel_dir and dock.get("ppi_dir") != sel_dir:
+                dock["ppi_dir"] = sel_dir
+                dock["hub_genes"], dock["enrichment_genes"] = _read_ppi_dataset(sel_dir)
+                # 从目录名拆出药物名和疾病名,供 Step 2 自动获取配体
+                prefix = sel_dir[:-5] if sel_dir.endswith("_data") else sel_dir
+                dock["label"] = prefix
+                parts = prefix.split("_", 1)
+                dock["drug"] = parts[0] if parts[0] else ""
+                dock["disease"] = parts[1] if len(parts) > 1 else ""
+                _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
     else:
-        # 不做结构筛选时,候选基因直接作为最终靶点列表
-        dock["genes"] = candidate
-        if candidate:
-            st.caption(t("dock.final_candidates", n=len(candidate))
-                       + ", ".join(candidate[:60]) + (" …" if len(candidate) > 60 else ""))
+        enr_files = Utils.list_cache_files("enrichment", exts=(".csv",))
+        # 只保留普通富集(ORA)结果供选择:GSEA 文件没有逐条目的基因列,选中也提不出候选基因;
+        # 按创建时间倒序,最近一次分析排最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称
+        if not enr_files.empty:
+            is_ora = enr_files["File name"].map(
+                lambda n: (parse_enrichment_filename(n) or {}).get("kind") == "ora")
+            enr_files = (enr_files[is_ora]
+                         .sort_values("Created time", ascending=False))
+        if enr_files.empty:
+            st.warning(t("dock.no_enr_files"))
+        else:
+            # 同名分析可能有多份不同参数的缓存,展示名带上创建时间以便区分
+            file_disp = {row["File name"]:
+                         f"{Utils.enrichment_display_name(row['File name'])} · {row['Created time']}"
+                         for _, row in enr_files.iterrows()}
+            sel_file = st.selectbox(t("dock.sel_enr_file"), enr_files["File name"].tolist(), key="sel_enr",
+                                    index=None, placeholder=t("dock.sel_enr_file_ph"),
+                                    format_func=lambda n: file_disp.get(n, n))
+            # 选定文件后自动读取
+            if sel_file and dock.get("enr_file") != sel_file:
+                dock["enr_file"] = sel_file
+                df = pd.read_csv(os.path.join(config.ENRICHMENT_CACHE_DIR, sel_file),
+                                 encoding="utf-8-sig", comment="#")
+                dock["enrichment_genes"] = sorted(_genes_from_df(df))
+                dock["hub_genes"] = []  # 没有 HUB 信息,只按富集基因筛选
+                label = _extract_label(sel_file)
+                dock["label"] = label
+                parts = label.split("_", 1)
+                dock["drug"] = parts[0] if parts[0] else ""
+                dock["disease"] = parts[1] if len(parts) > 1 else ""
+                _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
 
-# 没有可选数据文件时,允许手动输入基因列表
-if dock.get("enrichment_genes") is None:
+
+def _step1_filter_genes(dock: dict) -> None:
+    """候选基因确认:HUB∩富集交集展示、RCSB 结构可用性批量筛选(可选 AlphaFold 兜底)。"""
+    if dock.get("enrichment_genes") is not None:
+        hub_set = set(dock.get("hub_genes") or [])
+        enr_set = set(dock["enrichment_genes"])
+        candidate = sorted(hub_set & enr_set) if hub_set else sorted(enr_set)
+        dock["candidate_pre"] = candidate
+
+        col_h, col_e, col_c = st.columns(3)
+        col_h.metric(t("dock.hub_metric"), len(hub_set))
+        col_e.metric(t("dock.enr_metric"), len(enr_set))
+        col_c.metric(t("dock.cand_metric"), len(candidate))
+        if candidate:
+            st.write(", ".join(candidate[:60]) + (" …" if len(candidate) > 60 else ""))
+        else:
+            st.warning(t("dock.no_intersection"))
+
+        # 结构可用性筛选:默认开启;若想保留查不到结构的基因,可关闭
+        st.markdown(t("dock.struct_filter_title"))
+        use_struct = st.checkbox(t("dock.enable_struct_filter"), key="use_struct",
+                                 disabled=not candidate, value=True)
+        # AF 预测结构开关(默认关):没有实验结构的基因也能用预测结构对接
+        allow_af = config.ALPHAFOLD_ENABLED and st.checkbox(
+            t("dock.af_toggle"), key="allow_af", value=False, help=t("dock.af_toggle_help"))
+        if use_struct:
+            if st.button(t("dock.check_struct_btn"), key="check_struct"):
+                with st.spinner(t("dock.checking_rcsb")):
+                    try:
+                        # 批量检索:4 路并发逐基因搜索(召回与旧版一致),
+                        # 元数据合并为 GraphQL 批量请求;进度条按两阶段推进
+                        progress = st.progress(0.0)
+                        results = _cached_pdb_candidates_batch(
+                            tuple(candidate), allow_alphafold=allow_af)
+                        progress.progress(1.0)
+                        dock["gene_structures"] = {g: len(df) for g, df in results.items()
+                                                   if not df.empty}
+                        dock["batch_results"] = results
+                    except Exception as exc:
+                        dock.pop("gene_structures", None)
+                        st.error(t("dock.error_occurred", exc=exc))
+            if dock.get("gene_structures") is not None:
+                struct_ok = sorted(dock["gene_structures"])
+                dock["genes"] = struct_ok
+                no_struct = [g for g in candidate if g not in dock["gene_structures"]]
+                st.success(t("dock.genes_with_struct", n=len(struct_ok))
+                           + ", ".join(struct_ok[:40]) + (" …" if len(struct_ok) > 40 else ""))
+                if no_struct:
+                    st.caption(t("dock.excluded_no_struct", n=len(no_struct))
+                               + ", ".join(no_struct[:40]) + (" …" if len(no_struct) > 40 else ""))
+                    # 被剔除的基因里有 hub 时要特别提醒:hub 是对接的核心对象,
+                    # 无实验结构只能靠 AlphaFold 预测模型兜底,不提醒容易被忽略
+                    hub_no_struct = sorted(hub_set & set(no_struct))
+                    if hub_no_struct and not allow_af:
+                        st.warning(t("dock.hub_no_struct_warn", n=len(hub_no_struct),
+                                     genes=", ".join(hub_no_struct)))
+            else:
+                dock.pop("genes", None)
+                st.info(t("dock.click_to_check"))
+        else:
+            # 不做结构筛选时,候选基因直接作为最终靶点列表
+            dock["genes"] = candidate
+            if candidate:
+                st.caption(t("dock.final_candidates", n=len(candidate))
+                           + ", ".join(candidate[:60]) + (" …" if len(candidate) > 60 else ""))
+
+
+def _step1_manual_genes(dock: dict) -> None:
+    """没有可选数据文件时的兜底入口:手动粘贴基因列表。"""
     manual = st.text_area(t("dock.manual_genes_label"), key="manual_genes")
     if st.button(t("dock.use_manual_btn"), key="load_genes_manual"):
         dock["genes"] = sorted({g.strip().upper() for g in re.split(r"[,;\s]+", manual) if g.strip()})
@@ -463,6 +467,15 @@ if dock.get("enrichment_genes") is None:
         dock["disease"] = ""
         dock["hub_genes"], dock["enrichment_genes"] = [], []
         _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
+
+
+st.subheader(t("dock.step1"))
+_step1_select_source(dock)
+_step1_filter_genes(dock)
+
+# 没有可选数据文件时,允许手动输入基因列表
+if dock.get("enrichment_genes") is None:
+    _step1_manual_genes(dock)
 
 if dock.get("genes"):
     shown = ", ".join(dock["genes"][:60]) + (" …" if len(dock["genes"]) > 60 else "")

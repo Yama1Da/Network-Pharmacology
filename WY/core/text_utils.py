@@ -3,6 +3,8 @@
 import os
 import threading
 
+from .caching import load_json_file, save_json_file
+
 # safe 名 → 原始名 映射文件的进程内互斥锁(并发抓取时防止同时读写弄坏文件)
 _name_map_lock = threading.Lock()
 
@@ -28,46 +30,25 @@ def remember_name_mapping(original: str) -> None:
     """记录 safe_name(名) → 原始名 的映射,供管理页按文件名还原原始查询名。
     safe_name 是有损转换,管理页按文件名反推名字重新抓取时查不到数据,故各抓取函数存文件时顺带记录映射;无损转换不写盘。
     """
-    import json
-
     import config
 
     original = str(original).strip()
     key = safe_name(original)
     if key == original:
         return
-    with _name_map_lock:
-        mapping: dict = {}
+    with _name_map_lock:  # 读-改-写整段互斥,避免并发时丢映射
         path = _name_map_file()
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    mapping = json.load(f)
-            except Exception:
-                mapping = {}
+        mapping = load_json_file(path, {}) or {}
         if mapping.get(key) == original:
             return
         mapping[key] = original
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp_file = path + ".tmp"
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(mapping, f, ensure_ascii=False, indent=1)
-        os.replace(tmp_file, path)
+        save_json_file(path, mapping, indent=1)
 
 
 def resolve_original_name(stem: str) -> str | None:
     """按 safe 名还原记录的原始名;没有映射记录(旧文件/无损名字)时返回 None。"""
-    import json
-
-    with _name_map_lock:
-        path = _name_map_file()
-        if not os.path.exists(path):
-            return None
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                mapping = json.load(f)
-        except Exception:
-            return None
+    path = _name_map_file()
+    mapping = load_json_file(path, {}) or {}
     original = mapping.get(stem)
     return str(original) if original else None
 

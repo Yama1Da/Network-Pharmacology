@@ -123,23 +123,34 @@ def t_af_pdb_skip_existing():
 
 def t_candidates_af_fallback_row():
     """实验结构查不到且允许 AlphaFold 时,追加预测结构作候选;关闭时不追加。"""
-    class _FakeResp:
-        status_code = 200
-        content = b'{"result_set": []}'  # 生产代码会检查响应体非空/非 204
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"result_set": []}  # RCSB 确定无实验结构
-
+    # 单基因入口是批量版的薄包装,检索统一走 _rcsb_search_entry_ids(带 HTTP 缓存会话),
+    # 打桩层级在检索函数而不是 requests.post
     with patch_attr(dock, "fetch_uniprot_accession", lambda gene, taxon=9606: "P99999"), \
-            patch_attr(requests, "post", lambda *a, **k: _FakeResp()):
+            patch_attr(dock, "_rcsb_search_entry_ids", lambda gene, max_hits: []):
         df = dock.fetch_receptor_pdb_candidates("FAKEGENE", allow_alphafold=True)
         assert len(df) == 1 and df.iloc[0]["pdb_id"] == "AFDB:P99999", df
         assert df.iloc[0]["source"] == "alphafold"
         df2 = dock.fetch_receptor_pdb_candidates("FAKEGENE", allow_alphafold=False)
         assert df2.empty and "source" in df2.columns
+
+
+def t_candidates_search_failure_friendly_error():
+    """检索服务不可达时,单基因入口抛出普通用户可读的中文错误(而不是静默按无结构处理)。"""
+    def _boom(gene, max_hits):
+        raise requests.exceptions.ConnectionError("simulated outage")
+
+    with patch_attr(dock, "_rcsb_search_entry_ids", _boom):
+        try:
+            dock.fetch_receptor_pdb_candidates("TP53")
+            raise AssertionError("expected RuntimeError")
+        except RuntimeError as e:
+            msg = str(e)
+            assert "RCSB 搜索失败（TP53）" in msg, msg
+            assert "无法连接 RCSB 服务器" in msg, msg
+    # 批量模式保持原语义:单基因失败不中断整批,按无结构处理
+    with patch_attr(dock, "_rcsb_search_entry_ids", _boom):
+        results = dock.fetch_receptor_candidates_batch(["TP53", "EGFR"])
+        assert results["TP53"].empty and results["EGFR"].empty
 
 
 def t_throttle_spacing():
@@ -214,6 +225,7 @@ def main():
         ("uniprot network failure not cached", t_uniprot_network_failure_not_cached),
         ("alphafold pdb skip-if-exists", t_af_pdb_skip_existing),
         ("candidates AF fallback row", t_candidates_af_fallback_row),
+        ("candidates search failure friendly error", t_candidates_search_failure_friendly_error),
         ("interactive 3D html embed", t_interactive_3d_html),
     ]
     run(tests, "docking AlphaFold selfcheck")

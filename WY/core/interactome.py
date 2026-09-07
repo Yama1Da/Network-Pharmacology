@@ -10,6 +10,7 @@ import json
 import logging
 import os
 
+import numpy as np
 import pandas as pd
 
 
@@ -160,11 +161,12 @@ def _links_to_edges(links_df: pd.DataFrame, id2sym: dict, confidence: int) -> pd
     edges = edges.dropna(subset=["protein_a", "protein_b"])
     edges = edges[edges["protein_a"] != edges["protein_b"]]
 
-    lo = pd.Series([min(a, b) for a, b in zip(edges["protein_a"], edges["protein_b"])],
-                   index=edges.index)
-    hi = pd.Series([max(a, b) for a, b in zip(edges["protein_a"], edges["protein_b"])],
-                   index=edges.index)
-    edges["_lo"], edges["_hi"] = lo, hi
+    # 向量化配对规范化:lo/hi 使 (A,B) 与 (B,A) 归为同一条边;
+    # 列此时已是 dropna 后的纯字符串,逐元素字符串比较与逐行 min/max 结果一致
+    a = edges["protein_a"].to_numpy()
+    b = edges["protein_b"].to_numpy()
+    edges["_lo"] = pd.Series(np.where(a <= b, a, b), index=edges.index)
+    edges["_hi"] = pd.Series(np.where(a <= b, b, a), index=edges.index)
     edges = (edges.sort_values("combined_score", ascending=False)
                   .drop_duplicates(subset=["_lo", "_hi"]))
     out = (edges[["_lo", "_hi", "combined_score"]]
