@@ -43,6 +43,7 @@ from core.network_algorithms import (
 )
 from core.ppi import (
     compute_mcc_scores,
+    mark_hub_genes,
     pick_top_mcc_genes,
     render_core_target_plot,
 )
@@ -758,6 +759,54 @@ def t_mcc_pick_and_core_plot():
     plt.close(fig)
 
 
+def t_hub_rank_topn_and_fallback():
+    """mark_hub_genes 排名制/小网络回退/MCC 兜底:
+    大网络(>=2N 节点)按 method 取前 N;小网络回退阈值法;MCC 缺失/全零退 degree;
+    并列按(分数降序,基因名升序)稳定排序;空表不崩溃。"""
+    G = _karate()  # 34 节点 >= 2*10 → 排名制生效
+    df = pd.DataFrame({"gene": list(G.nodes()),
+                       "degree": [d for _, d in G.degree()],
+                       "betweenness": 0.0, "closeness": 0.0})
+    out = mark_hub_genes(df, top_n=10, method="degree")
+    assert (out["hub_rule"] == "top10").all(), out["hub_rule"].unique()
+    assert int(out["is_hub"].sum()) == 10
+    assert list(out["hub_rank"]) == list(range(1, 35)), "rows must be rank-ordered"
+    degs = list(out["degree"])
+    assert degs == sorted(degs, reverse=True), "rows must be degree-descending"
+    for i in range(len(out) - 1):  # 并列度数按基因名升序,保证可复现
+        r1, r2 = out.iloc[i], out.iloc[i + 1]
+        if r1["degree"] == r2["degree"]:
+            assert str(r1["gene"]) <= str(r2["gene"]), "degree ties must sort by gene name"
+    assert set(out[out["is_hub"]]["gene"]) == set(out.head(10)["gene"])
+
+    # 小网络(<2N):回退阈值法——星形中心(度>中位数)入选,叶子(度=中位数)不入选
+    star = nx.relabel_nodes(nx.star_graph(9),
+                            {0: "CENTER", **{i: f"L{i}" for i in range(1, 10)}})
+    sdf = pd.DataFrame({"gene": list(star.nodes()),
+                        "degree": [d for _, d in star.degree()],
+                        "betweenness": 0.0, "closeness": 0.0})
+    s = mark_hub_genes(sdf, top_n=10, method="degree")
+    assert (s["hub_rule"] == "threshold").all()
+    assert list(s[s["is_hub"]]["gene"]) == ["CENTER"], s[s["is_hub"]]["gene"].tolist()
+
+    # MCC 不可用(空 map)时回退 degree 排名,且不新增 mcc 列
+    m0 = mark_hub_genes(df, top_n=10, method="mcc", mcc_map={})
+    assert (m0["hub_rule"] == "top10").all()
+    assert "mcc" not in m0.columns, "fallback to degree must not add mcc column"
+    assert list(m0["gene"]) == list(out["gene"]), "fallback order must equal degree order"
+
+    # MCC 可用时按 mcc 排名:把度数最低节点的 mcc 抬到最高,它必须升到第一
+    mcc_map = {g: 0.0 for g in G.nodes()}
+    mcc_map[out.iloc[-1]["gene"]] = 99.0
+    m1 = mark_hub_genes(df, top_n=10, method="mcc", mcc_map=mcc_map)
+    assert m1.iloc[0]["gene"] == out.iloc[-1]["gene"], "highest MCC must rank first"
+    assert "mcc" in m1.columns and int(m1["is_hub"].sum()) == 10
+
+    # 空表安全返回
+    empty = mark_hub_genes(df.iloc[0:0])
+    assert len(empty) == 0 and {"is_hub", "hub_rank", "hub_rule"} <= set(empty.columns)
+
+
 def t_drug_target_pathway_plot():
     """药物-靶点-通路网络图:KEGG 行参与构图、GO 行忽略;无 KEGG/无命中返回 None;
     g:Profiler 列表样式 / 分号 / 逗号三种基因格式都兼容;
@@ -830,6 +879,7 @@ def main():
         ("rwr truncation guarantee (large seed set)", t_rwr_truncation_guarantee),
         ("mcc known values", t_mcc_known_values),
         ("mcc pick + core target plot", t_mcc_pick_and_core_plot),
+        ("hub rank top-N + small-net fallback", t_hub_rank_topn_and_fallback),
         ("drug-target-pathway plot", t_drug_target_pathway_plot),
     ]
     run(tests, "network_algorithms selfcheck")

@@ -144,10 +144,21 @@ ENRICHMENT_SOURCES = ("GO:BP", "GO:MF", "GO:CC", "KEGG")
 ENRICHMENT_TOP_PER_SOURCE = 10
 # 通路展示数量上限
 PATHWAY_DISPLAY_NUM = 30
-# 最小度数过滤:连接数不超过该值的节点不作为核心靶点(兜底过滤)
-MIN_DEGREE_FILTER = 3
+# PPI 建网的孤立节点隐藏阈值:仅剔除完全无互作的节点(=1),对齐文献
+# "置信度过滤 + disconnected nodes were hidden" 的做法;更高的连接度剪枝
+# 非文献标准,且会抵消 RWR 扩展拉入的外周靶点
+MIN_DEGREE_FILTER = 1
 # CytoHubba 式核心靶点:按 MCC(Maximal Clique Centrality)排序取前 N 个画核心靶点子网络图
 MCC_TOP_N = 10
+
+# ======== Hub 基因筛选(排名制 top-N + 小网络保护) ========
+# 排名依据:"degree"(对齐文献按度数取前 N 的惯例)或 "mcc"(cytoHubba 默认算法)
+HUB_METHOD = "degree"
+# 排名制取前 N 个作为 Hub(文献惯例为 cytoHubba top 10)
+HUB_TOP_N = 10
+# 小网络保护系数:节点数 < HUB_SMALL_NET_FACTOR*HUB_TOP_N 时 top-N 覆盖面过大,
+# 回退为阈值法(度 > 全部节点中位数)
+HUB_SMALL_NET_FACTOR = 2
 # 网络图布局迭代次数:值越大节点分布越散,不易挤在一起
 PHYSICS_ITERATIONS = 500
 
@@ -220,6 +231,9 @@ RWR_TOL = 1e-8
 RWR_MAX_ITER = 200
 # 页面展示的非种子基因数量(已知靶点单独全量展示,不占此数)
 RWR_TOP_N = 50
+# RWR 扩展靶点数:分析时取 RWR 得分最高的前 N 个非种子基因与交集靶点取并集
+# 作为查询集(0 = 关闭扩展)。默认 30,与文献交叉靶点规模对齐。
+RWR_EXPAND_TOP_N = 30
 # 缓存中保留的非种子排名行数(已知靶点全量另存,不占此名额)。
 RWR_CACHE_TOP_N = 500
 # 度匹配校正检验的置换次数与种子:检验 Top 排名是否只是高连接度带来的假象。

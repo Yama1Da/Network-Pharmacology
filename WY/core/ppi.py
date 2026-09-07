@@ -37,7 +37,7 @@ def fetch_string_ppi(
     score: float = 0.7,
     network_type: str = "full",
     label: str | None = None,
-    min_degree: int = 3,
+    min_degree: int = 1,
 ) -> pd.DataFrame:
     """
     从 STRING 数据库获取基因列表的蛋白互作边表。
@@ -45,7 +45,8 @@ def fetch_string_ppi(
     分两步:先把基因符号映射为 STRING 蛋白 ID(STRING 不认识的基因被剔除),
     再按置信度阈值 score(0~1)筛选互作边。network_type 默认 "full" 为功能关联,
     "physical" 仅保留有物理结合证据的互作;species 为物种编号,人类是 "9606"。
-    基因列表会自动去重排序,最多取 1000 个。
+    基因列表会自动去重排序,最多取 1000 个。min_degree 为建网后按连接数隐藏
+    节点的阈值,默认 1 即只隐藏孤立节点(对齐文献惯例,不做更高连接度剪枝)。
 
     相同参数的结果存为本地缓存,有效期内直接复用,不再重复请求。
     请求失败、基因全部不被识别或没有达到阈值的边时,返回空表。
@@ -181,16 +182,60 @@ def compute_ppi_metrics(graph: "nx.Graph") -> pd.DataFrame:
     return df.sort_values("degree", ascending=False).reset_index(drop=True)
 
 
-def mark_hub_genes(metrics_df: pd.DataFrame, min_degree: int = 3) -> pd.DataFrame:
+def mark_hub_genes(metrics_df: pd.DataFrame,
+                   top_n: int = 10, method: str = "degree",
+                   mcc_map: dict[str, float] | None = None,
+                   small_net_factor: int = 2) -> pd.DataFrame:
     """
-    标记 Hub 基因:连接数高于全部节点中位数、且不低于 min_degree 的节点。
+    标记 Hub 基因(排名制 top-N + 小网络保护),在原表基础上新增三列:
 
-    在原表基础上新增 is_hub 一列(True 为 Hub 基因)。
+    - is_hub: True 为 Hub 基因
+    - hub_rank: 按排名依据的位次(1 起;并列按度数、基因名稳定排序)
+    - hub_rule: 本次采用的规则,排名制为 "top{N}",小网络回退为 "threshold"
+
+    规则:节点数 >= small_net_factor*top_n 时,按 method 指定的拓扑量(degree 或
+    mcc)取前 top_n 个——与文献按 cytoHubba top-10 筛选核心靶点的惯例一致;
+    网络过小时 top-N 覆盖面过大(超过 1/small_net_factor),回退为阈值法:
+    连接数高于全部节点中位数(建网时孤立节点已被隐藏,中位数 >= 1,
+    故等价于要求至少两条互作)。
+
+    method="mcc" 但 mcc_map 缺失/为空时自动回退 degree 排名(MCC 计算失败或
+    图过度稀疏的兜底)。返回表按排名依据降序重排。
     """
     df = metrics_df.copy()
-    threshold = df["degree"].median()
-    df["is_hub"] = (df["degree"] > threshold) & (df["degree"] >= min_degree)
-    return df
+    n = len(df)
+    if n == 0:
+        df["is_hub"] = []
+        df["hub_rank"] = []
+        df["hub_rule"] = []
+        return df
+
+    eff_method = method if method in ("degree", "mcc") else "degree"
+    use_rank = n >= max(2, int(small_net_factor)) * int(top_n)
+
+    if use_rank and eff_method == "mcc":
+        if not mcc_map or not (df["gene"].map(mcc_map).fillna(0.0) > 0).any():
+            eff_method = "degree"  # MCC 缺失/全零(稀疏图)时退回度排名
+
+    if use_rank:
+        if eff_method == "mcc":
+            df["mcc"] = df["gene"].map(mcc_map).fillna(0.0)
+            df = df.sort_values(["mcc", "degree", "gene"],
+                                ascending=[False, False, True], kind="mergesort")
+        else:
+            df = df.sort_values(["degree", "gene"],
+                                ascending=[False, True], kind="mergesort")
+        df["hub_rank"] = range(1, n + 1)
+        df["is_hub"] = df["hub_rank"] <= int(top_n)
+        df["hub_rule"] = f"top{int(top_n)}"
+    else:
+        threshold = df["degree"].median()
+        df["is_hub"] = df["degree"] > threshold
+        df = df.sort_values(["degree", "gene"],
+                            ascending=[False, True], kind="mergesort")
+        df["hub_rank"] = range(1, n + 1)
+        df["hub_rule"] = "threshold"
+    return df.reset_index(drop=True)
 
 
 # MCC 的最大团枚举数量上限:超过按失败处理(由调用方跳过核心靶点图),
@@ -567,6 +612,21 @@ def save_rwr_results(
     return _save_optional_csvs(directory, "RWR results", (
         ("rwr_disease_csv", f"{prefix}_rwr_disease_seeds.csv", disease_df),
         ("rwr_drug_csv", f"{prefix}_rwr_drug_seeds.csv", drug_df),
+    ))
+
+
+def save_query_genes(directory: str, prefix: str,
+                     expansion_df: pd.DataFrame | None) -> dict:
+    """
+    保存分析查询集清单({prefix}_query_genes.csv),gene/source/rwr_score 三列。
+
+    RWR 扩展启用时记录每个基因来自种子(seed)还是扩展(expanded)及对应得分,
+    保证富集查询集可审计、可复现;未启用扩展(expansion_df 为 None)不落盘。
+    """
+    if expansion_df is None or expansion_df.empty:
+        return {}
+    return _save_optional_csvs(directory, "Query genes", (
+        ("query_genes_csv", f"{prefix}_query_genes.csv", expansion_df),
     ))
 
 

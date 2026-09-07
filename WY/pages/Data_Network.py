@@ -29,6 +29,7 @@ from core.ppi import (
     save_gsea_results,
     save_module_results,
     save_proximity_results,
+    save_query_genes,
     save_rwr_results,
 )
 
@@ -86,10 +87,20 @@ with col_input:
         )
 
 with col_params:
-    # 物种选择：目前仅开放“人类”，因为疾病靶点数据源（Open Targets）只有人类数据。
-    species_label = st.selectbox(t("net.species"), ["Human"])
+    # 物种固定为人类:疾病靶点数据源(Open Targets/DisGeNET)只有人类数据,
+    # 药物靶点与富集库亦以人类为准;多物种支持待接入相应疾病数据源后再议。
     score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
-    min_degree = st.number_input(t("net.min_degree"), 1, 20, config.MIN_DEGREE_FILTER, 1)
+    rwr_expand = st.number_input(
+        t("net.rwr_expand"), 0, 100, config.RWR_EXPAND_TOP_N, 1,
+        help=t("net.rwr_expand_help"))
+    hub_top_n = st.number_input(
+        t("net.hub_top_n"), 5, 20, config.HUB_TOP_N, 1,
+        help=t("net.hub_top_n_help", factor=config.HUB_SMALL_NET_FACTOR))
+    hub_method = st.selectbox(
+        t("net.hub_method"), ("degree", "mcc"),
+        index=0 if config.HUB_METHOD == "degree" else 1,
+        format_func=lambda v: t("net.hub_method_degree") if v == "degree" else t("net.hub_method_mcc"),
+        help=t("net.hub_method_help"))
 
 run_btn = st.button(t("net.build_report"), key="run_btn", type="primary", width="stretch")
 
@@ -205,12 +216,24 @@ def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str
     return gdf, rstats, gsea_status.get("reason", "")
 
 
-def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree,
+def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
+                      rwr_expand: int = 0, hub_top_n: int = 10, hub_method: str = "degree",
                       progress: "_ReportProgress | None" = None) -> dict:
-    """执行完整分析（交集→STRING→建图→指标→富集→可视化→保存），返回结果字典。
+    """执行完整分析（交集→[RWR扩展]→STRING→建图→指标→富集→可视化→保存），返回结果字典。
+
+    物种固定为人类（疾病靶点数据源仅有人类数据）；PPI 建网只隐藏孤立节点
+    （min_degree=1），不再做最低连接度剪枝——文献惯例为置信度过滤 + 隐藏孤立节点,
+    且最低连接度剪枝会抵消 RWR 扩展拉入的外周靶点。
+
+    rwr_expand > 0 时以交集靶点为种子做 RWR 扩散,取得分最高的前 N 个非种子基因
+    与种子取并集作为查询集。扩展只作用于 STRING 建网/拓扑/hub/模块/富集;
+    邻近度与 GSEA 仍基于原始药物/疾病靶点集,统计语义不变。
+    hub 筛选为排名制 top-N + 小网络保护,规则见 core.ppi.mark_hub_genes。
 
     progress 传入 _ReportProgress 时,在各阶段边界刷新进度面板;不影响计算逻辑。
     """
+    species_id = config.SPECIES_MAP["Human"]["ncbi_taxon"]
+    organism = config.SPECIES_MAP["Human"]["gprofiler"]
     def _prog(step: str | None = None, state: str | None = None,
               fraction: float | None = None) -> None:
         if progress is not None:
@@ -231,20 +254,57 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         tokens = re.split(r"[\s,;]+", gene_text)
         genes = sorted({t.strip().upper() for t in tokens if t.strip()})
         prefix = "manual"
+
+    # Step 0.5: RWR 扩展(可选)。游走结果只依赖种子与 α,与 N 无关,因此缓存 label
+    # 不带 _rwr{N}(改 N 复用同一份游走);只有下游(STRING/富集)的 prefix 带 _rwr{N}。
+    expansion_df: pd.DataFrame | None = None
+    if int(rwr_expand) > 0 and genes:
+        rwr_res = run_rwr_cached(genes, label=f"expand_{prefix}")
+        if rwr_res.get("ok"):
+            # 平局按基因名稳定排序,保证扩展清单可复现
+            top = sorted(rwr_res.get("top_nonseed", []),
+                         key=lambda r: (-float(r["score"]), str(r["gene"])))[:int(rwr_expand)]
+            expansion_df = pd.DataFrame(
+                [{"gene": g, "source": "seed", "rwr_score": ""} for g in genes]
+                + [{"gene": str(r["gene"]), "source": "expanded", "rwr_score": float(r["score"])}
+                   for r in top])
+            genes = sorted(set(genes) | {str(r["gene"]) for r in top})
+        else:
+            # 背景网络未构建等原因导致扩展失败:按原始交集继续,不让整个分析挂掉
+            logging.warning("RWR expansion skipped: %s", rwr_res.get("error"))
+            expansion_df = pd.DataFrame(
+                [{"gene": g, "source": "seed", "rwr_score": ""} for g in genes])
+    if int(rwr_expand) > 0:
+        prefix = f"{prefix}_rwr{int(rwr_expand)}"
     _prog("targets", "done", 0.08)
 
-    # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数和最低连接数过滤）
+    # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,并隐藏孤立节点）
     _prog("string", "running", 0.08)
     edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score,
-                                      label=prefix, min_degree=int(min_degree))
+                                      label=prefix, min_degree=config.MIN_DEGREE_FILTER)
     _prog("string", "done", 0.30)
 
-    # Step 2-4: 建图 + 拓扑指标 + Hub 筛选
+    # Step 2-4: 建图 + 拓扑指标 + Hub 筛选(排名制 top-N + 小网络保护)。
+    # hub_method="mcc" 时 MCC 须在标记前算好,后面核心靶点图复用同一份结果。
     _prog("graph", "running", 0.30)
     graph = Utils.build_ppi_graph(edges_df, genes)
     metrics_df = Utils.compute_ppi_metrics(graph)
-    metrics_df = Utils.mark_hub_genes(metrics_df, min_degree=min_degree)
+    mcc_map: dict[str, float] = {}
+    if hub_method == "mcc":
+        try:
+            mcc_map = compute_mcc_scores(graph)
+        except Exception:
+            logging.exception("MCC computation failed — hub ranking falls back to degree")
+    metrics_df = Utils.mark_hub_genes(metrics_df,
+                                      top_n=hub_top_n, method=hub_method,
+                                      mcc_map=mcc_map,
+                                      small_net_factor=config.HUB_SMALL_NET_FACTOR)
     hub_df = metrics_df[metrics_df["is_hub"]]
+    hub_rule = str(metrics_df["hub_rule"].iloc[0]) if len(metrics_df) else ""
+    # MCC 排名被 mark_hub_genes 回退为 degree 时,metrics_df 不会出现 mcc 列
+    hub_method_eff = ("degree"
+                      if hub_rule.startswith("top") and hub_method == "mcc"
+                      and "mcc" not in metrics_df.columns else hub_method)
     _prog("graph", "done", 0.36)
 
     # ---- Step 4.5-5.5(数据部分):富集/GSEA/邻近度+RWR/模块检测四个互相独立的任务并发执行 ----
@@ -333,12 +393,13 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         html_content = Utils.render_pyvis_html(graph, metrics_df)
         static_fig = Utils.render_static_plot(graph, metrics_df)
         # MCC(CytoHubba 默认算法)与核心靶点图:失败只跳过自身,不影响主报告;
-        # MCC 得分并入 metrics_df,随节点 CSV 一起落盘
-        mcc_map: dict[str, float] = {}
-        try:
-            mcc_map = compute_mcc_scores(graph)
-        except Exception:
-            logging.exception("MCC computation failed — core target figure skipped")
+        # MCC 得分并入 metrics_df,随节点 CSV 一起落盘。
+        # hub_method="mcc" 时已在 Hub 筛选阶段算过,此处直接复用。
+        if not mcc_map:
+            try:
+                mcc_map = compute_mcc_scores(graph)
+            except Exception:
+                logging.exception("MCC computation failed — core target figure skipped")
         if mcc_map:
             metrics_df["mcc"] = metrics_df["gene"].map(mcc_map)
             hub_df = metrics_df[metrics_df["is_hub"]]  # 重取让 Hub 表带上 mcc 列
@@ -402,6 +463,8 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
     # GSEA 结果 CSV 保存进分析目录（空结果不保存），打包下载时自动包含
     gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
     saved.update(gsea_saved)
+    # 查询集清单：RWR 扩展启用时记录种子/扩展来源与得分,未启用不落盘
+    saved.update(save_query_genes(saved["directory"], prefix, expansion_df))
     # RWR 结果保存：种子基因（全量）与非种子候选蛋白（前若干名）合并为一张表，is_seed 列区分；
     # 空结果或失败时不保存。
     if rwr_results:
@@ -446,6 +509,9 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         "graph": graph,
         "metrics_df": metrics_df,
         "hub_df": hub_df,
+        "hub_rule": hub_rule,
+        "hub_method_eff": hub_method_eff,
+        "expansion_df": expansion_df,
         "html_content": html_content,
         "static_fig": static_fig,
         "mcc_map": mcc_map,
@@ -462,7 +528,8 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         "modules": modules_result,
         "saved": saved,
         "prefix": prefix,
-        "params": (mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree),
+        "params": (mode, drug_name, disease_name, gene_text, score,
+                   int(rwr_expand), int(hub_top_n), hub_method),
     }
 
 
@@ -475,10 +542,10 @@ current_params = (
     drug_name.strip(),
     disease_name.strip(),
     gene_text.strip(),
-    config.SPECIES_MAP[species_label]["ncbi_taxon"],
-    config.SPECIES_MAP[species_label]["gprofiler"],
     score,
-    int(min_degree),
+    int(rwr_expand),
+    int(hub_top_n),
+    hub_method,
 )
 
 if run_btn:
@@ -495,10 +562,10 @@ if run_btn:
                 drug_name.strip(),
                 disease_name.strip(),
                 gene_text.strip(),
-                config.SPECIES_MAP[species_label]["ncbi_taxon"],
-                config.SPECIES_MAP[species_label]["gprofiler"],
                 score,
-                int(min_degree),
+                rwr_expand=int(rwr_expand),
+                hub_top_n=int(hub_top_n),
+                hub_method=hub_method,
                 progress=_ReportProgress(steps),
             )
         except Exception:
@@ -551,9 +618,22 @@ if ppi is not None:
         col_m3.metric(t("net.metric_edges"), len(edges_df))
         col_m4.metric(t("net.metric_hubs"), len(hub_df))
 
+        expansion_df = ppi.get("expansion_df")
+        if expansion_df is not None:
+            n_seed = int((expansion_df["source"] == "seed").sum())
+            n_exp = int((expansion_df["source"] == "expanded").sum())
+            st.caption(t("net.expansion_caption", s=n_seed, e=n_exp, k=n_seed + n_exp,
+                         alpha=config.RWR_ALPHA, f=ppi.get("prefix", "")))
+
         st.divider()
 
-        st.subheader(t("net.hub_subheader", d=int(min_degree)))
+        hub_rule = ppi.get("hub_rule", "")
+        if hub_rule.startswith("top"):
+            st.subheader(t("net.hub_top_subheader", n=int(hub_top_n),
+                           method=ppi.get("hub_method_eff", "degree"),
+                           t=config.HUB_SMALL_NET_FACTOR * int(hub_top_n)))
+        else:
+            st.subheader(t("net.hub_subheader"))
         if hub_df.empty:
             st.info(t("net.no_hubs"))
         else:
@@ -833,10 +913,11 @@ if ppi is not None:
                     st.warning(t("net.params_changed"))
                 else:
                     with st.spinner(t("net.modules_spinner_detect")):
-                        # params[5] = 物种参数（organism）
+                        # 物种固定人类;organism 取 Human 的 gProfiler 代码
                         try:
-                            mods = _compute_ppi_modules(graph, current_params[5],
-                                                        saved["directory"], prefix)
+                            mods = _compute_ppi_modules(
+                                graph, config.SPECIES_MAP["Human"]["gprofiler"],
+                                saved["directory"], prefix)
                         except Exception:
                             logging.exception("Module analysis failed")
                             st.error(t("net.analysis_fail"))
@@ -912,72 +993,45 @@ if ppi is not None:
 
         # ---------- 下载区 ----------
         with st.expander(t("net.download_expander")):
-            col_d1, col_d2, col_d3 = st.columns(3)
-            with col_d1:
-                Utils.download_button(
-                    "net.dl_nodes",
-                    metrics_df.to_csv(index=False).encode("utf-8-sig"),
-                    f"{prefix}_nodes.csv", "text/csv",
-                )
-            with col_d2:
-                Utils.download_button(
-                    "net.dl_edges",
-                    edges_df.to_csv(index=False).encode("utf-8-sig"),
-                    f"{prefix}_edges.csv", "text/csv",
-                )
-            with col_d3:
-                Utils.download_button(
-                    "net.dl_html", html_content, f"{prefix}_network.html", "text/html",
-                )
-            col_d4, col_d5, col_d6 = st.columns(3)
-            with col_d4:
-                Utils.download_file_button(
-                    "net.dl_graphml", saved["graphml"], f"{prefix}_graph.graphml",
-                    "application/xml",
-                )
-            with col_d5:
-                Utils.download_file_button(
-                    "net.dl_svg", saved["svg"], f"{prefix}_network.svg", "image/svg+xml",
-                )
-            with col_d6:
-                # 富集气泡图（有富集结果时显示）
-                if "enrichment_csv" in saved:
-                    Utils.download_file_button(
-                        "net.dl_bubble", saved["enrichment_dot_png"],
-                        f"{prefix}_enrichment_dot.png", "image/png",
-                    )
-            # 下一行：富集 CSV / 条形图下载（有富集结果时）
-            col_e1, col_e2, _ = st.columns(3)
+            # 先收集全部可用下载项,再按 3 列网格逐行铺满——
+            # 条件产物(富集/核心靶点/靶点-通路图)缺失时不会留下空洞
+            items: list[tuple[str, object, str, str]] = [
+                ("net.dl_nodes", metrics_df.to_csv(index=False).encode("utf-8-sig"),
+                 f"{prefix}_nodes.csv", "text/csv"),
+                ("net.dl_edges", edges_df.to_csv(index=False).encode("utf-8-sig"),
+                 f"{prefix}_edges.csv", "text/csv"),
+                ("net.dl_html", html_content.encode("utf-8"),
+                 f"{prefix}_network.html", "text/html"),
+                ("net.dl_graphml", saved["graphml"], f"{prefix}_graph.graphml",
+                 "application/xml"),
+                ("net.dl_svg", saved["svg"], f"{prefix}_network.svg", "image/svg+xml"),
+            ]
             if "enrichment_csv" in saved:
-                with col_e1:
-                    Utils.download_file_button(
-                        "net.dl_enrich_csv", saved["enrichment_csv"],
-                        f"{prefix}_enrichment.csv", "text/csv",
-                    )
-                with col_e2:
-                    Utils.download_file_button(
-                        "net.dl_enrich_bar", saved["enrichment_bar_png"],
-                        f"{prefix}_enrichment_bar.png", "image/png",
-                    )
-            # 最后一行：核心靶点图 / 靶点-通路网络图下载（有对应结果时）+ ZIP 打包下载
-            col_f1, col_f2, col_f3 = st.columns(3)
+                items.append(("net.dl_enrich_csv", saved["enrichment_csv"],
+                              f"{prefix}_enrichment.csv", "text/csv"))
+            if "enrichment_bar_png" in saved:
+                items.append(("net.dl_enrich_bar", saved["enrichment_bar_png"],
+                              f"{prefix}_enrichment_bar.png", "image/png"))
+            if "enrichment_dot_png" in saved:
+                items.append(("net.dl_bubble", saved["enrichment_dot_png"],
+                              f"{prefix}_enrichment_dot.png", "image/png"))
             if "core_png" in saved:
-                with col_f1:
-                    Utils.download_file_button(
-                        "net.dl_core_png", saved["core_png"],
-                        f"{prefix}_core_targets.png", "image/png",
-                    )
+                items.append(("net.dl_core_png", saved["core_png"],
+                              f"{prefix}_core_targets.png", "image/png"))
             if "dtp_png" in saved:
-                with col_f2:
-                    Utils.download_file_button(
-                        "net.dl_dtp_png", saved["dtp_png"],
-                        f"{prefix}_enrichment_network.png", "image/png",
-                    )
-            with col_f3:
-                Utils.download_button(
-                    "net.dl_zip", Utils.make_ppi_zip(saved),
-                    f"{prefix}_results.zip", "application/zip",
-                )
+                items.append(("net.dl_dtp_png", saved["dtp_png"],
+                              f"{prefix}_enrichment_network.png", "image/png"))
+            items.append(("net.dl_zip", Utils.make_ppi_zip(saved),
+                          f"{prefix}_results.zip", "application/zip"))
+
+            for start in range(0, len(items), 3):
+                cols = st.columns(3)
+                for col, (label_key, data, file_name, mime) in zip(cols, items[start:start + 3]):
+                    with col:
+                        if isinstance(data, (bytes, bytearray)):
+                            Utils.download_button(label_key, data, file_name, mime)
+                        else:
+                            Utils.download_file_button(label_key, data, file_name, mime)
             st.caption(
                 t("net.files_grouped", dir=saved["directory"])
             )
