@@ -11,6 +11,7 @@ import Utils
 from i18n import t
 from core.docking import (
     clamp_box,
+    cofactor_hetatm_pdb,
     download_pdb,
     extract_model,
     fetch_alphafold_receptor,
@@ -110,6 +111,27 @@ def _reset_docking_downstream() -> None:
         dock.pop(_k, None)
 
 
+def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
+                            auto_mode: bool = False) -> None:
+    """Step 2 的 PubChem 配体获取公共链路:药物名/CID → 3D SDF → pdbqt,成功后写入 dock。
+    查无化合物/无 3D 结构两种失败提示的文案由 i18n 键区分;auto_mode 为真时失败也置
+    lig_auto_done,本次会话不再自动重试。"""
+    cid = resolve_cid(query)
+    if cid is None:
+        if auto_mode:
+            dock["lig_auto_done"] = True
+        st.error(t(not_found_key, drug=query, q=query))
+        return
+    sdf_path = Utils.fetch_ligand_sdf_3d(cid)
+    if not sdf_path:
+        if auto_mode:
+            dock["lig_auto_done"] = True
+        st.error(t(no_3d_key, cid=cid))
+        return
+    dock["cid"] = cid
+    dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+
+
 def _read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
     """读取所选 PPI 结果目录,返回 HUB 基因集合与富集验证基因集合;
     对应文件缺失时返回空集合。"""
@@ -172,37 +194,40 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
     return result_dir
 
 
-def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None) -> None:
+def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None,
+               pose_pdb: str | None = None, receptor_text: str | None = None) -> None:
     """在页面内 3D 展示受体(卡通)、所选对接构象(绿棍)与结合位点残基
     (橙棍并标注"残基名-编号"),并叠加共晶配体(灰色半透明)作天然口袋参照;
-    缺少组件时仅给出提示。"""
+    缺少组件时仅给出提示。
+    pose_pdb 传入已转换好的构象 PDB、receptor_text 传入已读取的受体 PDB 全文时直接复用,
+    与「保存交互式 3D 视图」共用一次转换、一次读盘,不传时保持原有的自足行为。"""
     try:
         import py3Dmol
     except ImportError:
         st.info(t("dock.py3dmol_pose"))
         return
-    pose_pdb = os.path.join(os.path.dirname(pose_pdbqt), "pose_view.pdb")
-    try:
-        pose_pdbqt_to_pdb(pose_pdbqt, pose_pdb)
-    except Exception:
-        st.warning(t("dock.pose_pdb_failed"))
-        return
-    with open(pdb_path, encoding="utf-8", errors="replace") as f:
-        receptor_pdb = f.read()
+    if pose_pdb is None:
+        pose_pdb = os.path.join(os.path.dirname(pose_pdbqt), "pose_view.pdb")
+        try:
+            pose_pdbqt_to_pdb(pose_pdbqt, pose_pdb)
+        except Exception:
+            st.warning(t("dock.pose_pdb_failed"))
+            return
+    if receptor_text is None:
+        with open(pdb_path, encoding="utf-8", errors="replace") as f:
+            receptor_text = f.read()
     with open(pose_pdb, encoding="utf-8") as f:
         ligand_pdb = f.read()
     # 受体中的共晶配体(非水 HETATM),叠加作天然口袋参照
-    het_lines = [ln for ln in receptor_pdb.splitlines()
-                 if ln.startswith("HETATM")
-                 and ln[17:20].strip() not in ("HOH", "H2O", "WAT", "DOD")]
+    het_pdb = cofactor_hetatm_pdb(pdb_path, receptor_text=receptor_text)
 
     view = py3Dmol.view(width=900, height=520)
-    view.addModel(receptor_pdb, "pdb")
+    view.addModel(receptor_text, "pdb")
     view.addModel(ligand_pdb, "pdb")
     view.setStyle({"model": 0}, {"cartoon": {"color": "spectrum"}})
     view.setStyle({"model": 1}, {"stick": {"colorscheme": "greenCarbon"}})
-    if het_lines:
-        view.addModel("\n".join(het_lines) + "\n", "pdb")  # model 2:共晶配体参照
+    if het_pdb:
+        view.addModel(het_pdb + "\n", "pdb")  # model 2:共晶配体参照
         view.setStyle({"model": 2}, {"stick": {"colorscheme": "greyCarbon",
                                                "opacity": 0.5, "radius": 0.15}})
     # 结合位点残基:橙色棍状高亮,按链分组选择;无链号时不限定 chain
@@ -228,26 +253,27 @@ def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None)
         html = view._make_html()
     except AttributeError:
         html = view.write()
-    st.caption(t("dock.legend_pose" if het_lines else "dock.legend_pose_apo"))
+    st.caption(t("dock.legend_pose" if het_pdb else "dock.legend_pose_apo"))
     st.components.v1.html(html, height=540)
 
 
 def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel,
-                     pocket: list[dict] | None = None) -> None:
+                     pocket: list[dict] | None = None,
+                     pose_pdb: str | None = None, receptor_text: str | None = None) -> None:
     """「保存交互式 3D 视图」:把受体、当前构象、结合位点残基标注与共晶配体参照打包成
     单个自包含 HTML(内嵌 3Dmol.js 与坐标),可下载或存入结果目录;
-    之后双击即可在任意浏览器打开,可拖动旋转,离线可用。"""
+    之后双击即可在任意浏览器打开,可拖动旋转,离线可用。
+    pose_pdb / receptor_text 传入 3D 预览已转换/已读取的结果时直接复用,不再重复转换与读盘。"""
     gene = Utils.safe_name(str(dock.get("gene") or "target"))
     pose_n = int(pose_sel)
-    # 图例随视图一并写入,离线打开时颜色含义不靠猜
-    with open(pdb_path, encoding="utf-8", errors="replace") as f:
-        has_het = any(ln.startswith("HETATM")
-                      and ln[17:20].strip() not in ("HOH", "H2O", "WAT", "DOD") for ln in f)
+    # 图例随视图一并写入,离线打开时颜色含义不靠猜;共晶配体判定与 HTML 生成共用同一份受体文本
+    has_het = bool(cofactor_hetatm_pdb(pdb_path, receptor_text=receptor_text))
     caption = (t("dock.save3d_caption", gene=dock.get("gene") or "?", pose=pose_n,
                  drug=dock.get("drug") or "-", disease=dock.get("disease") or "-")
                + "  |  " + t("dock.legend_pose" if has_het else "dock.legend_pose_apo"))
     try:
-        html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption, pocket=pocket)
+        html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption, pocket=pocket,
+                                                    receptor_text=receptor_text, pose_pdb=pose_pdb)
     except Exception as exc:
         st.warning(t("dock.save3d_failed", exc=exc))
         return
@@ -459,18 +485,8 @@ if lig_source == "pubchem":
     # 已识别到药物名时自动从 PubChem 获取配体,只自动执行一次
     if default_drug and not dock.get("lig_pdbqt") and not dock.get("lig_auto_done"):
         with st.spinner(t("dock.auto_fetching", drug=default_drug)):
-            cid = resolve_cid(default_drug)
-            if cid is None:
-                dock["lig_auto_done"] = True
-                st.error(t("dock.pubchem_not_found", drug=default_drug))
-            else:
-                sdf_path = Utils.fetch_ligand_sdf_3d(cid)
-                if not sdf_path:
-                    dock["lig_auto_done"] = True
-                    st.error(t("dock.cid_no_3d", cid=cid))
-                else:
-                    dock["cid"] = cid
-                    dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+            _fetch_ligand_into_dock(default_drug, "dock.pubchem_not_found",
+                                    "dock.cid_no_3d", auto_mode=True)
 
     # 只有自动获取失败或没有药物名时,才显示手动输入框
     lig_ready = bool(dock.get("lig_pdbqt"))
@@ -482,16 +498,8 @@ if lig_source == "pubchem":
         if st.button(t("dock.fetch_ligand_btn"), key="prep_lig"):
             dock["lig_auto_done"] = True  # 手动指定后不再自动获取
             with st.spinner(t("dock.fetching_pubchem")):
-                cid = resolve_cid(lig_query)
-                if cid is None:
-                    st.error(t("dock.pubchem_no_compound", q=lig_query))
-                else:
-                    sdf_path = Utils.fetch_ligand_sdf_3d(cid)
-                    if not sdf_path:
-                        st.error(t("dock.cid_try_another", cid=cid))
-                    else:
-                        dock["cid"] = cid
-                        dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+                _fetch_ligand_into_dock(lig_query, "dock.pubchem_no_compound",
+                                        "dock.cid_try_another")
 else:
     smiles = st.text_area("SMILES", height=90, key="lig_smiles",
                           placeholder=t("dock.smiles_placeholder"))
@@ -595,17 +603,17 @@ def _render_box_3d(pdb_path: str, box: dict) -> None:
         st.info(t("dock.py3dmol_box"))
         return
     with open(pdb_path, encoding="utf-8", errors="replace") as f:
-        lines = f.read().splitlines()
-    atom_lines = [ln for ln in lines if ln.startswith(("ATOM", "TER", "END"))]
-    het_lines = [ln for ln in lines
-                 if ln.startswith("HETATM") and ln[17:20].strip() not in ("HOH", "H2O", "WAT", "DOD")]
+        text = f.read()
+    atom_lines = [ln for ln in text.splitlines() if ln.startswith(("ATOM", "TER", "END"))]
+    # 共晶配体(非水 HETATM)叠加作参照,过滤规则与 Step 6 的 3D 预览一致
+    het_pdb = cofactor_hetatm_pdb(pdb_path, receptor_text=text)
 
     c, s = box["center"], box["size"]
     view = py3Dmol.view(width=900, height=520)
     view.addModel("\n".join(atom_lines) + "\n", "pdb")  # model 0：蛋白
     view.setStyle({"model": 0}, {"cartoon": {"color": "spectrum"}})
-    if het_lines:
-        view.addModel("\n".join(het_lines) + "\n", "pdb")  # model 1：共结晶配体
+    if het_pdb:
+        view.addModel(het_pdb + "\n", "pdb")  # model 1：共结晶配体
         # 灰色=共晶配体(参考),与 Step 6 的叠加参照同色;绿色留给对接结果
         view.setStyle({"model": 1}, {"stick": {"colorscheme": "greyCarbon"}})
     # 对接盒:橙色半透明线框
@@ -620,7 +628,7 @@ def _render_box_3d(pdb_path: str, box: dict) -> None:
         html = view._make_html()
     except AttributeError:
         html = view.write()
-    st.caption(t("dock.legend_box" if het_lines else "dock.legend_box_apo"))
+    st.caption(t("dock.legend_box" if het_pdb else "dock.legend_box_apo"))
     st.components.v1.html(html, height=540)
 
 
@@ -793,13 +801,24 @@ if dock.get("result"):
                                          f"pose_{int(pose_sel)}.pdbqt")
                 extract_model(dock["result"]["out"], int(pose_sel), pose_path)
                 pocket = residues_near_ligand(dock["pdb_path"], pose_path)
-                _render_3d(dock["pdb_path"], pose_path, pocket)
+                # 构象 pdbqt→pdb 只转换一次、受体 PDB 全文只读一次,
+                # 3D 预览与保存 HTML 复用同一份结果(每次刷新少一次转换、少两次读盘)
+                pose_pdb = os.path.join(os.path.dirname(pose_path), "pose_view.pdb")
+                try:
+                    pose_pdbqt_to_pdb(pose_path, pose_pdb)
+                except Exception:
+                    pose_pdb = None  # 转换失败:预览按原样提示,保存时由 core 内部重试
+                with open(dock["pdb_path"], encoding="utf-8", errors="replace") as f:
+                    receptor_text = f.read()
+                _render_3d(dock["pdb_path"], pose_path, pocket,
+                           pose_pdb=pose_pdb, receptor_text=receptor_text)
                 if pocket:
                     names = [f"{r['resn']}{r['resi']}" for r in pocket]
                     st.caption(t("dock.pocket_caption", n=len(names))
                                + ", ".join(names[:40])
                                + (" …" if len(names) > 40 else ""))
-                _save_3d_html_ui(dock, dock["pdb_path"], pose_path, pose_sel, pocket)
+                _save_3d_html_ui(dock, dock["pdb_path"], pose_path, pose_sel, pocket,
+                                 pose_pdb=pose_pdb, receptor_text=receptor_text)
             except Exception as exc:
                 st.warning(t("dock.preview3d_failed", exc=exc))
 else:

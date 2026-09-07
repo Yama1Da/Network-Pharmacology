@@ -517,8 +517,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
 
 
 # ---------- 结果暂存：页面上点下载等操作引起刷新时，不会重复跑分析 ----------
-if "ppi" not in st.session_state:
-    st.session_state.ppi = None
+st.session_state.setdefault("ppi", None)
 
 current_params = (
     input_mode,
@@ -572,8 +571,18 @@ if run_btn:
 
 # ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
 ppi = st.session_state.ppi
+
+
+def _params_stale() -> bool:
+    """当前页面参数与暂存分析结果的参数是否不一致（结果已过期）。
+
+    结果展示区各小节与 GSEA/模块手动重跑处共用此防呆判断。
+    """
+    return current_params != ppi["params"]
+
+
 if ppi is not None:
-    if current_params != ppi["params"]:
+    if _params_stale():
         st.info(t("net.params_changed"))
 
     genes = ppi["genes"]
@@ -806,7 +815,7 @@ if ppi is not None:
                 # 非请求失败)时禁用重跑按钮,避免误点重复计算;自动步骤失败时按钮
                 # 保持可用,作为手动兜底入口。
                 gsea_res = st.session_state.ppi_gsea.get(gsea_side)
-                params_stale = current_params != ppi["params"]
+                params_stale = _params_stale()
                 gsea_reason = (gsea_res or {}).get("reason", "")
                 gsea_done = (gsea_res is not None and not params_stale
                              and gsea_reason not in ("request_failed", "circuit_open",
@@ -818,7 +827,7 @@ if ppi is not None:
                           else t("net.gsea_done_hint") if gsea_done else None),
                 )
                 if run_clicked:
-                    if current_params != ppi["params"]:
+                    if _params_stale():
                         # 防呆：主分析参数已变，先重跑主分析再 GSEA
                         st.warning(t("net.params_changed"))
                     else:
@@ -888,11 +897,10 @@ if ppi is not None:
             st.caption(t("net.modules_caption",
                          min_size=config.LOUVAIN_MIN_MODULE_SIZE,
                          top_n=config.LOUVAIN_MAX_ENRICH_MODULES))
-            if "ppi_modules" not in st.session_state:
-                st.session_state.ppi_modules = None
+            st.session_state.setdefault("ppi_modules", None)
 
             if st.button(t("net.modules_run"), key="modules_run_btn", width="stretch"):
-                if current_params != ppi["params"]:
+                if _params_stale():
                     # 防呆：主分析参数已变，图与旧结果不对应，先重跑主分析
                     st.warning(t("net.params_changed"))
                 else:

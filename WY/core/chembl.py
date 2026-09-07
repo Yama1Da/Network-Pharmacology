@@ -1,14 +1,13 @@
 """ChEMBL 数据源：查询药物的全部人类活性靶点（直接 REST 批量分页），并提供缓存有效期调整。"""
 
 import logging
-import os
 
 import pandas as pd
 import streamlit as st
 
-from .caching import open_csv_cache, save_csv_cache
+from .caching import open_named_csv_cache, save_csv_cache
 from .http_client import request_with_retry
-from .text_utils import remember_name_mapping, safe_name
+from .text_utils import remember_name_mapping
 
 # ChEMBL REST 基地址:加 .json 后缀直接返回 JSON,
 # 用统一的 request_with_retry 直连,不再依赖 chembl_webresource_client
@@ -147,10 +146,11 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
     """
     import config
 
-    csv_path = os.path.join(config.DRUG_CACHE_DIR, f"ChEMBL_{safe_name(drug_name)}.csv")
-    remember_name_mapping(drug_name)  # 记录安全文件名→原始名,供管理页还原
-
-    cached = open_csv_cache(csv_path, label=f"ChEMBL targets for '{drug_name}'")
+    csv_path, cached = open_named_csv_cache(
+        config.DRUG_CACHE_DIR, "ChEMBL_", drug_name,
+        label=f"ChEMBL targets for '{drug_name}'",
+        remember=remember_name_mapping,  # 记录安全文件名→原始名,供管理页还原
+    )
     if cached is not None:
         return _sort_drug_df_by_pchembl(cached), csv_path
 
@@ -169,11 +169,9 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
         if acts is None:
             return _abort_fetch()  # 拉取失败即停止，且不保存缓存
 
-        tids: list[str] = []
-        for act in acts:
-            tid = act.get("target_chembl_id")
-            if tid and tid not in tids:
-                tids.append(tid)
+        # 保序去重(dict.fromkeys 比 循环+list 成员判断 快,慢药物有数千条活性记录)
+        tids = list(dict.fromkeys(
+            act.get("target_chembl_id") for act in acts if act.get("target_chembl_id")))
 
         targets = _fetch_targets_batched(tids) if tids else {}
         if targets is None:

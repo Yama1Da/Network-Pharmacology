@@ -1,14 +1,13 @@
 """Open Targets 数据源：按疾病名称查询关联靶点。"""
 
 import logging
-import os
 
 import pandas as pd
 import streamlit as st
 
-from .caching import open_csv_cache, save_csv_cache
+from .caching import open_named_csv_cache, save_csv_cache
 from .http_client import _opentargets_post
-from .text_utils import _safe_round, remember_name_mapping, safe_name
+from .text_utils import _safe_round, remember_name_mapping
 
 
 def find_disease_id(disease_name: str,
@@ -54,10 +53,11 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
     """
     import config
 
-    csv_path = os.path.join(config.DISEASE_CACHE_DIR, f"OpenTargets_{safe_name(disease_name)}.csv")
-    remember_name_mapping(disease_name)  # 记录安全文件名→原始名,供管理页还原
-
-    cached = open_csv_cache(csv_path, label=f"disease targets for '{disease_name}'")
+    csv_path, cached = open_named_csv_cache(
+        config.DISEASE_CACHE_DIR, "OpenTargets_", disease_name,
+        label=f"disease targets for '{disease_name}'",
+        remember=remember_name_mapping,  # 记录安全文件名→原始名,供管理页还原
+    )
     if cached is not None:
         return cached
 

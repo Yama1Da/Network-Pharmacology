@@ -11,9 +11,9 @@ import os
 import pandas as pd
 
 from .enrichment import (
-    ENRICHR_LIB_MAP,
     _ENRICHR_ORGANISM_MAP,
     _enrichment_cache_key,
+    _enrichr_libs,
     enrichment_cache_filename,
     fetch_enrichment_enrichr,
     fetch_enrichment_gprofiler,
@@ -63,7 +63,7 @@ def _module_cache_files(genes: list[str], organism: str, sources: tuple,
                               enrichment_cache_filename("gProfiler", label, md5_gp)))
     enrichr_org = _ENRICHR_ORGANISM_MAP.get(organism)
     if enrichr_org:
-        libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
+        libs = _enrichr_libs(sources)
         if libs:
             md5_enr = _enrichment_cache_key(genes_clean, enrichr_org, libs, pvalue)
             files.append(os.path.join(config.ENRICHMENT_CACHE_DIR,
@@ -95,7 +95,7 @@ def _enrich_single_module(genes: list[str], organism: str, sources: tuple,
         return df, False, ""
 
     enrichr_org = _ENRICHR_ORGANISM_MAP.get(organism)
-    libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP] if enrichr_org else []
+    libs = _enrichr_libs(sources) if enrichr_org else []
     st_enr: dict = {}
     if enrichr_org and libs:
         df = fetch_enrichment_enrichr(genes, libs=libs, organism=enrichr_org,
@@ -296,32 +296,6 @@ def degree_matched_sample(degree_map: dict, seeds: list, bin_size: int, rng,
         if chosen is not None:
             picked.append(chosen)
     return picked
-
-
-def network_proximity(graph: "nx.Graph", set_a: list, set_b: list) -> float:
-    """参考实现：两组蛋白的网络平均距离 d_c(A,B) = mean_{b∈B} min_{a∈A} d(a,b)。
-    仅供小图与自检交叉验证;图中不存在的基因被忽略,B 中有从 A 不可达的节点时抛错。
-    """
-    a = {str(g) for g in set_a if g in graph}
-    b = {str(g) for g in set_b if g in graph}
-    if not a or not b:
-        raise ValueError("network_proximity: empty set after filtering to graph")
-    dist: dict[str, int] = {g: 0 for g in a}
-    frontier = set(a)
-    depth = 0
-    while frontier:
-        depth += 1
-        nxt: set[str] = set()
-        for u in frontier:
-            for v in graph[u]:
-                if v not in dist:
-                    dist[v] = depth
-                    nxt.add(v)
-        frontier = nxt
-    unreachable = b - dist.keys()
-    if unreachable:
-        raise ValueError(f"network_proximity: {len(unreachable)} nodes in B unreachable from A")
-    return sum(dist[g] for g in b) / len(b)
 
 
 def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: list,
@@ -533,24 +507,6 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
 # 继续游走、以 (1-α) 概率回到种子；稳态得分高的非种子基因即种子网络邻域内的候选靶点。
 
 
-def build_sparse_adj(graph: "nx.Graph") -> tuple:
-    """0-1 邻接 → 列随机转移矩阵 W（W[j,i] = P(i→j)，每列和为 1）。
-    度为 0 的节点会永久截留游走概率,故图必须连通（如限制在 LCC 内）。
-    """
-    import networkx as nx
-    import numpy as np
-    import scipy.sparse as sp
-
-    nodes = sorted(graph.nodes())
-    adj = nx.to_scipy_sparse_array(graph, nodelist=nodes, weight=None, format="csr")
-    col_deg = np.asarray(adj.sum(axis=0)).ravel()
-    if (col_deg == 0).any():
-        raise ValueError("zero-degree nodes in graph; restrict to a connected component")
-    # 右乘对角阵 = 按列缩放：W[:, i] = adj[:, i] / deg(i)
-    W = adj @ sp.diags(1.0 / col_deg)
-    return W, nodes
-
-
 def _rwr_power_iteration(W, seed_idx: list, alpha: float, tol: float, max_iter: int) -> tuple:
     """幂迭代求解 r = α·W·r + (1-α)·p。返回 (得分向量, 迭代轮数, 是否收敛)。"""
     import numpy as np
@@ -569,28 +525,6 @@ def _rwr_power_iteration(W, seed_idx: list, alpha: float, tol: float, max_iter: 
             break
         r = r_new
     return r, iters, converged
-
-
-def rwr_prioritize(graph: "nx.Graph", seed_genes: list, alpha: float = 0.7,
-                   tol: float = 1e-8, max_iter: int = 200) -> pd.DataFrame:
-    """参考入口（直接吃 networkx 图）：返回全节点 RWR 打分表,列 gene/score/is_seed 按 score 降序。
-    图需连通（建议 LCC）;不在图内的种子被忽略。
-    """
-    W, nodes = build_sparse_adj(graph)
-    idx = {g: i for i, g in enumerate(nodes)}
-    seeds = sorted({str(g) for g in seed_genes if g in idx})
-    if not seeds:
-        raise ValueError("rwr_prioritize: no seed gene present in graph")
-    scores, iters, converged = _rwr_power_iteration(
-        W, [idx[g] for g in seeds], alpha, tol, max_iter)
-    seed_set = set(seeds)
-    out = pd.DataFrame({
-        "gene": nodes,
-        "score": scores,
-        "is_seed": [g in seed_set for g in nodes],
-    })
-    logging.info("RWR done: %d seeds, %d iters, converged=%s", len(seeds), iters, converged)
-    return out.sort_values("score", ascending=False).reset_index(drop=True)
 
 
 def _rwr_from_context(ctx: tuple, seed_genes: list, alpha: float,

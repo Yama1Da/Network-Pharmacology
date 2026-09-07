@@ -6,9 +6,9 @@ import threading
 
 import pandas as pd
 
-from .caching import open_csv_cache, save_csv_cache
+from .caching import open_named_csv_cache, save_csv_cache
 from .http_client import _get_session
-from .text_utils import remember_name_mapping, safe_name
+from .text_utils import remember_name_mapping
 
 # 限流记录文件的进程内互斥锁:并发获取靶点时防止同时读写把时间戳记乱
 _rate_limit_lock = threading.Lock()
@@ -103,10 +103,11 @@ def fetch_disease_targets_disgenet(disease_name: str) -> pd.DataFrame:
     import time
     import config
 
-    csv_path = os.path.join(config.DISEASE_CACHE_DIR, f"DisGeNET_{safe_name(disease_name)}.csv")
-    remember_name_mapping(disease_name)  # 记录安全文件名→原始名,供管理页还原
-
-    cached = open_csv_cache(csv_path, label=f"DisGeNET targets for '{disease_name}'")
+    csv_path, cached = open_named_csv_cache(
+        config.DISEASE_CACHE_DIR, "DisGeNET_", disease_name,
+        label=f"DisGeNET targets for '{disease_name}'",
+        remember=remember_name_mapping,  # 记录安全文件名→原始名,供管理页还原
+    )
     if cached is not None:
         return cached
 

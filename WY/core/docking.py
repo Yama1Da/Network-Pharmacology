@@ -8,7 +8,7 @@ import hashlib
 import logging
 import os
 from datetime import datetime
-from typing import Iterator
+from typing import Iterator, NamedTuple
 
 import pandas as pd
 import requests
@@ -65,39 +65,52 @@ def _strip_receptor_pdb(pdb_path: str, out_path: str) -> None:
         f.write("\n".join(lines) + "\n")
 
 
-def _pdb_coords(pdb_path: str) -> tuple[list, list]:
-    """解析 PDB 文件中的原子坐标(单位 Å),返回 (蛋白原子坐标列表, 非水其他分子坐标列表)。"""
-    protein, het = [], []
+class _AtomRecord(NamedTuple):
+    """PDB 原子记录的公共字段(仅产出坐标解析成功的行)。"""
+    rec: str      # 记录类型:"ATOM" / "HETATM"
+    resn: str     # 残基名
+    chain: str    # 链 ID(单字符,原样保留)
+    resi: str     # 残基编号
+    x: float
+    y: float
+    z: float
+    altloc: str   # 冗余构象标志(单字符)
+    atom: str     # 原子名
+
+
+def _iter_atom_records(pdb_path: str) -> Iterator[_AtomRecord]:
+    """逐行流式读取 PDB 的 ATOM/HETATM 记录并解析坐标,逐条产出公共字段;
+    非原子记录与坐标残缺的坏行直接跳过(配体 pdbqt 文件同样按此规则解析)。
+    """
     with open(pdb_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             rec = line[:6].strip()
             if rec not in ("ATOM", "HETATM"):
                 continue
-            if line[17:20].strip() in _WATER_RESNAMES:
-                continue  # 水分子不参与结合位点定位
             try:
-                coord = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+                x, y, z = float(line[30:38]), float(line[38:46]), float(line[46:54])
             except ValueError:
                 continue
-            (het if rec == "HETATM" else protein).append(coord)
+            yield _AtomRecord(rec, line[17:20].strip(), line[21], line[22:26].strip(),
+                              x, y, z, line[16], line[12:16].strip())
+
+
+def _pdb_coords(pdb_path: str) -> tuple[list, list]:
+    """解析 PDB 文件中的原子坐标(单位 Å),返回 (蛋白原子坐标列表, 非水其他分子坐标列表)。"""
+    protein, het = [], []
+    for r in _iter_atom_records(pdb_path):
+        if r.resn in _WATER_RESNAMES:
+            continue  # 水分子不参与结合位点定位
+        (het if r.rec == "HETATM" else protein).append((r.x, r.y, r.z))
     return protein, het
 
 
 def parse_hetatm(pdb_path: str) -> list[tuple[str, str, str, tuple]]:
     """找出 PDB 中的共晶配体/辅因子(水除外),返回 (残基名, 链, 残基编号, (x, y, z)) 列表,供对接盒推断与 3D 预览使用。"""
     het = []
-    with open(pdb_path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if not line.startswith("HETATM"):
-                continue
-            resn = line[17:20].strip()
-            if resn in _WATER_RESNAMES:
-                continue
-            try:
-                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
-            except ValueError:
-                continue
-            het.append((resn, line[21], line[22:26].strip(), xyz))
+    for r in _iter_atom_records(pdb_path):
+        if r.rec == "HETATM" and r.resn not in _WATER_RESNAMES:
+            het.append((r.resn, r.chain, r.resi, (r.x, r.y, r.z)))
     return het
 
 
@@ -107,16 +120,11 @@ def residues_in_box(pdb_path: str, box: dict) -> list[str]:
     lo = (c[0] - s[0] / 2, c[1] - s[1] / 2, c[2] - s[2] / 2)
     hi = (c[0] + s[0] / 2, c[1] + s[1] / 2, c[2] + s[2] / 2)
     res = set()
-    with open(pdb_path, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if not line.startswith("ATOM"):
-                continue
-            try:
-                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
-            except ValueError:
-                continue
-            if lo[0] <= xyz[0] <= hi[0] and lo[1] <= xyz[1] <= hi[1] and lo[2] <= xyz[2] <= hi[2]:
-                res.add(f"{line[21]}{line[22:26].strip()}:{line[17:20].strip()}")
+    for r in _iter_atom_records(pdb_path):
+        if r.rec != "ATOM":
+            continue
+        if lo[0] <= r.x <= hi[0] and lo[1] <= r.y <= hi[1] and lo[2] <= r.z <= hi[2]:
+            res.add(f"{r.chain}{r.resi}:{r.resn}")
     return sorted(res)
 
 
@@ -126,42 +134,30 @@ def residues_near_ligand(receptor_pdb: str, ligand_pdbqt: str, cutoff: float = 4
     """
     import re
 
-    lig: list[tuple] = []
-    with open(ligand_pdbqt, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if line[:6].strip() not in ("ATOM", "HETATM"):
-                continue
-            try:
-                lig.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
-            except ValueError:
-                continue
+    lig = [(r.x, r.y, r.z) for r in _iter_atom_records(ligand_pdbqt)]
     if not lig:
         return []
 
     cutoff2 = cutoff * cutoff
     found: dict[tuple, dict] = {}
-    with open(receptor_pdb, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            if not line.startswith("ATOM") or line[16:17] not in ("", " ", "A"):
-                continue  # 非蛋白记录与 altloc 冗余构象不参与位点判定
-            try:
-                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
-            except ValueError:
-                continue
-            key = (line[21:22].strip(), line[22:26].strip())
-            info = found.get(key)
-            if info is None:
-                info = {"resn": line[17:20].strip(), "ca": None, "pos": xyz, "near": False}
-                found[key] = info
-            if info["ca"] is None and line[12:16].strip() == "CA":
-                info["ca"] = xyz
-            if not info["near"]:
-                for lx, ly, lz in lig:
-                    dx, dy, dz = xyz[0] - lx, xyz[1] - ly, xyz[2] - lz
-                    if (abs(dx) <= cutoff and abs(dy) <= cutoff and abs(dz) <= cutoff
-                            and dx * dx + dy * dy + dz * dz <= cutoff2):
-                        info["near"] = True
-                        break
+    for r in _iter_atom_records(receptor_pdb):
+        if r.rec != "ATOM" or r.altloc not in ("", " ", "A"):
+            continue  # 非蛋白记录与 altloc 冗余构象不参与位点判定
+        xyz = (r.x, r.y, r.z)
+        key = (r.chain.strip(), r.resi)
+        info = found.get(key)
+        if info is None:
+            info = {"resn": r.resn, "ca": None, "pos": xyz, "near": False}
+            found[key] = info
+        if info["ca"] is None and r.atom == "CA":
+            info["ca"] = xyz
+        if not info["near"]:
+            for lx, ly, lz in lig:
+                dx, dy, dz = xyz[0] - lx, xyz[1] - ly, xyz[2] - lz
+                if (abs(dx) <= cutoff and abs(dy) <= cutoff and abs(dz) <= cutoff
+                        and dx * dx + dy * dy + dz * dz <= cutoff2):
+                    info["near"] = True
+                    break
     residues = [
         {"chain": chain, "resi": resi, "resn": info["resn"],
          "pos": info["ca"] or info["pos"]}
@@ -1143,21 +1139,36 @@ def build_interactive_3d_html(receptor_pdb: str, ligand_pdb: str, caption: str =
     return out, offline_ok
 
 
+def cofactor_hetatm_pdb(pdb_path: str, receptor_text: str | None = None) -> str:
+    """提取受体 PDB 中的非水 HETATM(共晶配体/辅因子)行,拼成 PDB 文本,供 3D 渲染叠加天然口袋参照;
+    无共晶配体时返回空字符串。receptor_text 传入已读取的 PDB 全文时不再重复读盘。"""
+    if receptor_text is None:
+        with open(pdb_path, encoding="utf-8", errors="replace") as f:
+            receptor_text = f.read()
+    return "\n".join(ln for ln in receptor_text.splitlines()
+                     if ln.startswith("HETATM")
+                     and ln[17:20].strip() not in _WATER_RESNAMES)
+
+
 def interactive_3d_html(pdb_path: str, pose_pdbqt: str, caption: str = "",
-                        pocket: list[dict] | None = None) -> tuple[str, bool]:
+                        pocket: list[dict] | None = None,
+                        receptor_text: str | None = None,
+                        pose_pdb: str | None = None) -> tuple[str, bool]:
     """由受体 PDB 与所选构象 pdbqt 生成可保存的交互式 3D 视图 HTML。
     pocket 传入口袋残基列表时一并嵌入;受体含共晶配体(非水 HETATM)时以半透明灰棍叠加,过滤规则与页面预览一致。
+    receptor_text 传入已读取的受体 PDB 全文、pose_pdb 传入已转换好的构象 PDB 路径时直接复用,
+    供页面在同一次刷新里让预览与保存 HTML 共用一次转换、一次读盘;不传时保持原有的自足行为。
     """
-    pose_pdb = os.path.join(os.path.dirname(pose_pdbqt), "pose_view.pdb")
-    pose_pdbqt_to_pdb(pose_pdbqt, pose_pdb)
-    with open(pdb_path, encoding="utf-8", errors="replace") as f:
-        receptor_pdb = f.read()
+    if pose_pdb is None:
+        pose_pdb = os.path.join(os.path.dirname(pose_pdbqt), "pose_view.pdb")
+        pose_pdbqt_to_pdb(pose_pdbqt, pose_pdb)
+    if receptor_text is None:
+        with open(pdb_path, encoding="utf-8", errors="replace") as f:
+            receptor_text = f.read()
     with open(pose_pdb, encoding="utf-8") as f:
         ligand_pdb = f.read()
-    het_pdb = "\n".join(ln for ln in receptor_pdb.splitlines()
-                        if ln.startswith("HETATM")
-                        and ln[17:20].strip() not in _WATER_RESNAMES)
-    return build_interactive_3d_html(receptor_pdb, ligand_pdb, caption,
+    het_pdb = cofactor_hetatm_pdb(pdb_path, receptor_text=receptor_text)
+    return build_interactive_3d_html(receptor_text, ligand_pdb, caption,
                                      lib_js=_load_3dmol_js(),
                                      pocket=pocket, het_pdb=het_pdb or None)
 

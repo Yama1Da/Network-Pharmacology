@@ -6,19 +6,22 @@
     python scripts/selfcheck_docking.py
 """
 
+import json
 import os
 import sys
 import tempfile
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from selfcheck_common import run
+from selfcheck_common import _tmp_uniprot_cache, patch_attr, run
 
 import requests
 
 import config
 import core.docking as dock
+import core.http_client as hc
 from core.http_client import throttle
 
 
@@ -64,60 +67,36 @@ def t_ebi_gene_names():
 
 def t_uniprot_negative_cache():
     """数据库里查无此基因时记入缓存,第二次查询不再重复发请求。"""
-    orig_cache = config.UNIPROT_LOOKUP_CACHE
-    orig_ebi = dock._lookup_uniprot_ebi
     calls = {"n": 0}
 
     def fake_ebi(gene, taxon):
         calls["n"] += 1
         return ""  # 确定性"查无"
 
-    tmp = os.path.join(tempfile.gettempdir(), "selfcheck_uniprot_map.json")
-    if os.path.exists(tmp):
-        os.remove(tmp)
-    config.UNIPROT_LOOKUP_CACHE = tmp
-    dock._lookup_uniprot_ebi = fake_ebi
-    try:
+    with _tmp_uniprot_cache(config, "selfcheck_uniprot_map.json"), \
+            patch_attr(dock, "_lookup_uniprot_ebi", fake_ebi):
         assert dock.fetch_uniprot_accession("NOPE_X", 9606) == ""
         assert dock.fetch_uniprot_accession("NOPE_X", 9606) == ""
         assert calls["n"] == 1, f"negative cache failed: {calls['n']} calls"
-    finally:
-        dock._lookup_uniprot_ebi = orig_ebi
-        config.UNIPROT_LOOKUP_CACHE = orig_cache
-        if os.path.exists(tmp):
-            os.remove(tmp)
 
 
 def t_uniprot_network_failure_not_cached():
     """网络全部失败时应当报错且不写缓存,避免把临时故障当成"查无此基因"。"""
-    orig_cache = config.UNIPROT_LOOKUP_CACHE
-    orig = (dock._lookup_uniprot_ebi, dock._lookup_uniprot_rest)
-
     def boom(gene, taxon):
         raise ConnectionError("simulated network outage")
 
-    tmp = os.path.join(tempfile.gettempdir(), "selfcheck_uniprot_map2.json")
-    if os.path.exists(tmp):
-        os.remove(tmp)
-    config.UNIPROT_LOOKUP_CACHE = tmp
-    dock._lookup_uniprot_ebi = boom
-    dock._lookup_uniprot_rest = boom
-    try:
+    with _tmp_uniprot_cache(config, "selfcheck_uniprot_map2.json") as tmp, \
+            patch_attr(dock, "_lookup_uniprot_ebi", boom), \
+            patch_attr(dock, "_lookup_uniprot_rest", boom):
         try:
             dock.fetch_uniprot_accession("TP53", 9606)
             raise AssertionError("all sources down must raise RuntimeError")
         except RuntimeError:
             pass
         assert not os.path.exists(tmp) or not _json_nonempty(tmp), "failure must not be cached"
-    finally:
-        dock._lookup_uniprot_ebi, dock._lookup_uniprot_rest = orig
-        config.UNIPROT_LOOKUP_CACHE = orig_cache
-        if os.path.exists(tmp):
-            os.remove(tmp)
 
 
 def _json_nonempty(path):
-    import json
     try:
         with open(path, encoding="utf-8") as f:
             return bool(json.load(f))
@@ -128,28 +107,22 @@ def _json_nonempty(path):
 def t_af_pdb_skip_existing():
     """AlphaFold 模型文件已存在时直接复用,不再发网络请求。"""
     tmpdir = tempfile.mkdtemp()
-    orig_dir, orig_get = config.DOCKING_RECEPTOR_CACHE_DIR, requests.get
-    config.DOCKING_RECEPTOR_CACHE_DIR = tmpdir
     pre = os.path.join(tmpdir, f"AF_P99999_{config.ALPHAFOLD_MODEL_VERSION}.pdb")
     with open(pre, "w", encoding="utf-8") as f:
         f.write("REMARK x\n" + "ATOM " * 300)
-    requests.get = lambda *a, **k: (_ for _ in ()).throw(AssertionError("network call made"))
     try:
-        path = dock.fetch_alphafold_pdb("P99999")
-        assert path == pre
+        with patch_attr(config, "DOCKING_RECEPTOR_CACHE_DIR", tmpdir), \
+                patch_attr(requests, "get",
+                           lambda *a, **k: (_ for _ in ()).throw(AssertionError("network call made"))):
+            path = dock.fetch_alphafold_pdb("P99999")
+            assert path == pre
     finally:
-        requests.get = orig_get
-        config.DOCKING_RECEPTOR_CACHE_DIR = orig_dir
         os.remove(pre)
         os.rmdir(tmpdir)
 
 
 def t_candidates_af_fallback_row():
     """实验结构查不到且允许 AlphaFold 时,追加预测结构作候选;关闭时不追加。"""
-    orig_acc = dock.fetch_uniprot_accession
-    orig_post = requests.post
-    dock.fetch_uniprot_accession = lambda gene, taxon=9606: "P99999"
-
     class _FakeResp:
         status_code = 200
         content = b'{"result_set": []}'  # 生产代码会检查响应体非空/非 204
@@ -160,25 +133,17 @@ def t_candidates_af_fallback_row():
         def json(self):
             return {"result_set": []}  # RCSB 确定无实验结构
 
-    requests.post = lambda *a, **k: _FakeResp()
-    try:
+    with patch_attr(dock, "fetch_uniprot_accession", lambda gene, taxon=9606: "P99999"), \
+            patch_attr(requests, "post", lambda *a, **k: _FakeResp()):
         df = dock.fetch_receptor_pdb_candidates("FAKEGENE", allow_alphafold=True)
         assert len(df) == 1 and df.iloc[0]["pdb_id"] == "AFDB:P99999", df
         assert df.iloc[0]["source"] == "alphafold"
         df2 = dock.fetch_receptor_pdb_candidates("FAKEGENE", allow_alphafold=False)
         assert df2.empty and "source" in df2.columns
-    finally:
-        dock.fetch_uniprot_accession = orig_acc
-        requests.post = orig_post
 
 
 def t_throttle_spacing():
     """对同一网站的请求有最小时间间隔;未配置的请求不限速;并发调用也正确排队。"""
-    import threading
-    import time as _t
-
-    import core.http_client as hc
-
     orig = config.HOST_MIN_REQUEST_INTERVAL
     config.HOST_MIN_REQUEST_INTERVAL = dict(orig or {})
     config.HOST_MIN_REQUEST_INTERVAL["selftest"] = 0.3
@@ -186,26 +151,26 @@ def t_throttle_spacing():
         hc._next_allowed_at.pop("selftest", None)
     try:
         # 串行 3 次 → 至少跨越 2 个完整间隔
-        t0 = _t.monotonic()
+        t0 = time.monotonic()
         for _ in range(3):
             throttle("selftest")
-        el = _t.monotonic() - t0
+        el = time.monotonic() - t0
         assert el >= 0.6, f"3 calls in {el:.3f}s, expected >= 0.6 (2 intervals)"
 
         # 未知键 = 不限速
-        t0 = _t.monotonic()
+        t0 = time.monotonic()
         for _ in range(3):
             throttle("unknown_host_x")
-        assert _t.monotonic() - t0 < 0.05
+        assert time.monotonic() - t0 < 0.05
 
         # 4 个线程同时请求 → 总耗时至少 3 个间隔(不会一起放行)
         barrier = threading.Barrier(4)
-        t0 = _t.monotonic()
+        t0 = time.monotonic()
         threads = [threading.Thread(target=lambda: (barrier.wait(), throttle("selftest")))
                    for _ in range(4)]
         [t.start() for t in threads]
         [t.join() for t in threads]
-        el = _t.monotonic() - t0
+        el = time.monotonic() - t0
         assert el >= 0.9, f"4 concurrent calls in {el:.3f}s, expected >= 0.9 (3 intervals)"
     finally:
         config.HOST_MIN_REQUEST_INTERVAL = orig
@@ -215,8 +180,6 @@ def t_throttle_spacing():
 
 def t_interactive_3d_html():
     """交互式 3D HTML:坐标须以合法 JSON 内嵌,离线/在线两种模式标记正确。"""
-    import json as _json
-
     receptor = "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
     ligand = "ATOM      1  N   LIG B   1       1.000   1.000   1.000  1.00  0.00           N\n"
     # 离线模式:传入库源码,HTML 直接内嵌且标记为离线可用
@@ -226,7 +189,7 @@ def t_interactive_3d_html():
     assert 'var receptor = "ATOM' in html, "receptor must be embedded as a JSON string"
     # 内嵌的坐标文本必须是合法 JSON(转义正确,浏览器端才能还原)
     embedded = html.split("var receptor = ", 1)[1].split(";\n", 1)[0]
-    assert _json.loads(embedded) == receptor, "embedded receptor must round-trip"
+    assert json.loads(embedded) == receptor, "embedded receptor must round-trip"
     # 在线模式:不传库源码,应改用 CDN 引用并明确标记非离线
     html2, offline2 = dock.build_interactive_3d_html(receptor, ligand)
     assert not offline2 and 'src="https://3dmol.org' in html2

@@ -2,8 +2,11 @@
 
 import logging
 import os
+from collections.abc import Callable
 
 import pandas as pd
+
+from .text_utils import safe_name
 
 
 def _read_cache_csv(cache_file: str) -> pd.DataFrame:
@@ -35,6 +38,20 @@ def open_csv_cache(cache_file: str, *, fresh: bool = False, label: str = "") -> 
         return None
     logging.info("Loading cached %s", label or os.path.basename(cache_file))
     return _read_cache_csv(cache_file)
+
+
+def open_named_csv_cache(
+    cache_dir: str, prefix: str, name: str, *,
+    label: str = "", remember: Callable[[str], None] | None = None,
+) -> tuple[str, pd.DataFrame | None]:
+    """统一各数据源"按规范名拼缓存路径+读缓存"的样板:路径固定为
+    <cache_dir>/<prefix><safe_name(name)>.csv,与既有各处的拼接方式逐字一致
+    (绝不改变文件名,否则会作废用户现有缓存);命中返回读到的 DataFrame,未命中返回 None。
+    remember 为可选的名称映射回调(如 remember_name_mapping),在读缓存前以原始名调用一次。"""
+    csv_path = os.path.join(cache_dir, f"{prefix}{safe_name(name)}.csv")
+    if remember is not None:
+        remember(name)
+    return csv_path, open_csv_cache(csv_path, label=label)
 
 
 def save_csv_cache(df: pd.DataFrame, cache_file: str, *, skip_empty: bool = True,

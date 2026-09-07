@@ -433,28 +433,30 @@ def save_ppi_results(
         paths["enrichment_csv"] = os.path.join(subdir, f"{prefix}_enrichment.csv")
         enrichment_df.to_csv(paths["enrichment_csv"], index=False, encoding="utf-8-sig")
     if enrichment_bar_fig is not None:
-        paths["enrichment_bar_png"] = os.path.join(subdir, f"{prefix}_enrichment_bar.png")
-        paths["enrichment_bar_svg"] = os.path.join(subdir, f"{prefix}_enrichment_bar.svg")
-        enrichment_bar_fig.savefig(paths["enrichment_bar_png"], format="png", bbox_inches="tight")
-        enrichment_bar_fig.savefig(paths["enrichment_bar_svg"], format="svg", bbox_inches="tight")
+        paths["enrichment_bar_png"], paths["enrichment_bar_svg"] = _save_fig_pair(
+            enrichment_bar_fig, subdir, prefix, "enrichment_bar")
     if enrichment_dot_fig is not None:
-        paths["enrichment_dot_png"] = os.path.join(subdir, f"{prefix}_enrichment_dot.png")
-        paths["enrichment_dot_svg"] = os.path.join(subdir, f"{prefix}_enrichment_dot.svg")
-        enrichment_dot_fig.savefig(paths["enrichment_dot_png"], format="png", bbox_inches="tight")
-        enrichment_dot_fig.savefig(paths["enrichment_dot_svg"], format="svg", bbox_inches="tight")
+        paths["enrichment_dot_png"], paths["enrichment_dot_svg"] = _save_fig_pair(
+            enrichment_dot_fig, subdir, prefix, "enrichment_dot")
     if core_fig is not None:
-        paths["core_png"] = os.path.join(subdir, f"{prefix}_core_targets.png")
-        paths["core_svg"] = os.path.join(subdir, f"{prefix}_core_targets.svg")
-        core_fig.savefig(paths["core_png"], format="png", bbox_inches="tight")
-        core_fig.savefig(paths["core_svg"], format="svg", bbox_inches="tight")
+        paths["core_png"], paths["core_svg"] = _save_fig_pair(
+            core_fig, subdir, prefix, "core_targets")
     if target_pathway_fig is not None:
-        paths["dtp_png"] = os.path.join(subdir, f"{prefix}_enrichment_network.png")
-        paths["dtp_svg"] = os.path.join(subdir, f"{prefix}_enrichment_network.svg")
-        target_pathway_fig.savefig(paths["dtp_png"], format="png", bbox_inches="tight")
-        target_pathway_fig.savefig(paths["dtp_svg"], format="svg", bbox_inches="tight")
+        paths["dtp_png"], paths["dtp_svg"] = _save_fig_pair(
+            target_pathway_fig, subdir, prefix, "enrichment_network")
 
     paths["directory"] = subdir
     return paths
+
+
+def _save_fig_pair(fig: "matplotlib.figure.Figure", subdir: str,
+                   prefix: str, stem: str) -> tuple[str, str]:
+    """把图保存为 <prefix>_<stem>.png + .svg 一对,返回 (png 路径, svg 路径)。"""
+    png = os.path.join(subdir, f"{prefix}_{stem}.png")
+    svg = os.path.join(subdir, f"{prefix}_{stem}.svg")
+    fig.savefig(png, format="png", bbox_inches="tight")
+    fig.savefig(svg, format="svg", bbox_inches="tight")
+    return png, svg
 
 
 def _save_optional_csvs(directory: str, label: str,

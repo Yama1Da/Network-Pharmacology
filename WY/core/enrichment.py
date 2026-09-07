@@ -25,6 +25,11 @@ _ENRICHR_ORGANISM_MAP = {
 }
 
 
+def _enrichr_libs(sources) -> list[str]:
+    """把 g:Profiler 数据源名映射为对应的 Enrichr 库名，过滤掉 Enrichr 没有的数据源。"""
+    return [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
+
+
 def _enrichment_cache_key(genes: list[str], organism: str, sources, pvalue: float) -> str:
     """根据基因列表与查询参数生成富集缓存文件名（md5）：相同输入命中同一缓存文件。"""
     payload = (
@@ -465,7 +470,7 @@ def run_enrichment(
     # 备：Enrichr（不支持大鼠，跳过）
     enrichr_organism = _ENRICHR_ORGANISM_MAP.get(organism)
     if enrichr_organism:
-        libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
+        libs = _enrichr_libs(sources)
         df = fetch_enrichment_enrichr(genes, libs=libs, organism=enrichr_organism, pvalue=pvalue, label=label)
         if not df.empty:
             return df, "Enrichr"
