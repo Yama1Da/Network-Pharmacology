@@ -18,9 +18,13 @@ from core.enrichment import (
     build_ranked_list,
     fetch_enrichment_gsea_prerank,
     gsea_gene_sets,
+    render_drug_target_pathway_plot,
     render_gsea_plot,
 )
 from core.ppi import (
+    compute_mcc_scores,
+    pick_top_mcc_genes,
+    render_core_target_plot,
     render_pyvis_html,
     save_gsea_results,
     save_module_results,
@@ -325,9 +329,28 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
             _prog(k, "running")
         _prog(fraction=0.40)
 
-        # 主线程在等待期间做 pyvis 交互图与静态图渲染(纯本地计算)
+        # 主线程在等待期间做 pyvis 交互图、静态图与核心靶点图渲染(纯本地计算)
         html_content = Utils.render_pyvis_html(graph, metrics_df)
         static_fig = Utils.render_static_plot(graph, metrics_df)
+        # MCC(CytoHubba 默认算法)与核心靶点图:失败只跳过自身,不影响主报告;
+        # MCC 得分并入 metrics_df,随节点 CSV 一起落盘
+        mcc_map: dict[str, float] = {}
+        try:
+            mcc_map = compute_mcc_scores(graph)
+        except Exception:
+            logging.exception("MCC computation failed — core target figure skipped")
+        if mcc_map:
+            metrics_df["mcc"] = metrics_df["gene"].map(mcc_map)
+            hub_df = metrics_df[metrics_df["is_hub"]]  # 重取让 Hub 表带上 mcc 列
+        core_fig = None
+        core_genes: list[str] = []
+        if mcc_map:
+            core_genes = pick_top_mcc_genes(metrics_df, mcc_map, config.MCC_TOP_N)
+            if core_genes:
+                try:
+                    core_fig = render_core_target_plot(graph, core_genes, mcc_map)
+                except Exception:
+                    logging.exception("Core target figure failed — skipped")
         _prog(fraction=0.48)
 
         # 轮询任务完成情况并刷新进度面板(Streamlit 组件只能在脚本主线程更新)
@@ -344,6 +367,15 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         enrichment_bar_fig = enrichment_dot_fig = None
         if not enrichment_df.empty:
             enrichment_bar_fig, enrichment_dot_fig = Utils.render_enrichment_plots(enrichment_df)
+        # 药物-靶点-通路网络图(纯本地绘图,基于富集结果):无 KEGG 通路时为 None,
+        # 失败只跳过自身
+        dtp_fig = None
+        if not enrichment_df.empty:
+            try:
+                dtp_fig = render_drug_target_pathway_plot(
+                    drug_name.strip() if mode == "names" else "", genes, enrichment_df)
+            except Exception:
+                logging.exception("Drug-target-pathway network figure failed — skipped")
 
         gsea_results: dict = {}
         gsea_drug_df = gsea_disease_df = None
@@ -364,6 +396,8 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         enrichment_df=enrichment_df if not enrichment_df.empty else None,
         enrichment_bar_fig=enrichment_bar_fig,
         enrichment_dot_fig=enrichment_dot_fig,
+        core_fig=core_fig,
+        target_pathway_fig=dtp_fig,
     )
     # GSEA 结果 CSV 保存进分析目录（空结果不保存），打包下载时自动包含
     gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
@@ -414,10 +448,14 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         "hub_df": hub_df,
         "html_content": html_content,
         "static_fig": static_fig,
+        "mcc_map": mcc_map,
+        "core_fig": core_fig,
+        "core_genes": core_genes,
         "enrichment_df": enrichment_df,
         "enrichment_source": enrichment_source,
         "enrichment_bar_fig": enrichment_bar_fig,
         "enrichment_dot_fig": enrichment_dot_fig,
+        "dtp_fig": dtp_fig,
         "gsea": gsea_results,
         "proximity": proximity_result,
         "rwr": rwr_results,
@@ -526,6 +564,13 @@ if ppi is not None:
 
         st.subheader(t("net.static"))
         st.pyplot(static_fig)
+
+        # ---------- 核心靶点子网络（CytoHubba 式 MCC Top N） ----------
+        core_fig = ppi.get("core_fig")
+        if core_fig is not None:
+            st.subheader(t("net.core_subheader"))
+            st.caption(t("net.core_caption", n=config.MCC_TOP_N))
+            st.pyplot(core_fig)
 
         # ---------- 网络邻近度检验（仅 names 模式） ----------
         # 随主分析自动计算；手动输入基因模式无药物/疾病之分，不展示。
@@ -665,6 +710,11 @@ if ppi is not None:
             if enrichment_dot_fig is not None:
                 st.caption(t("net.bubble_caption"))
                 st.pyplot(enrichment_dot_fig)
+            # 药物-靶点-通路网络图（基于 KEGG 富集结果构建）
+            dtp_fig = ppi.get("dtp_fig")
+            if dtp_fig is not None:
+                st.caption(t("net.dtp_caption"))
+                st.pyplot(dtp_fig)
 
         # ---------- 排序富集（GSEA prerank，仅人类） ----------
         # Build Report 已自动跑完两侧并保存，此处可换侧重跑；
@@ -896,8 +946,8 @@ if ppi is not None:
                         "net.dl_bubble", saved["enrichment_dot_png"],
                         f"{prefix}_enrichment_dot.png", "image/png",
                     )
-            # 下一行：富集 CSV / 条形图下载（有富集结果时）+ ZIP 打包下载（始终显示）
-            col_e1, col_e2, col_e3 = st.columns(3)
+            # 下一行：富集 CSV / 条形图下载（有富集结果时）
+            col_e1, col_e2, _ = st.columns(3)
             if "enrichment_csv" in saved:
                 with col_e1:
                     Utils.download_file_button(
@@ -909,7 +959,21 @@ if ppi is not None:
                         "net.dl_enrich_bar", saved["enrichment_bar_png"],
                         f"{prefix}_enrichment_bar.png", "image/png",
                     )
-            with col_e3:
+            # 最后一行：核心靶点图 / 靶点-通路网络图下载（有对应结果时）+ ZIP 打包下载
+            col_f1, col_f2, col_f3 = st.columns(3)
+            if "core_png" in saved:
+                with col_f1:
+                    Utils.download_file_button(
+                        "net.dl_core_png", saved["core_png"],
+                        f"{prefix}_core_targets.png", "image/png",
+                    )
+            if "dtp_png" in saved:
+                with col_f2:
+                    Utils.download_file_button(
+                        "net.dl_dtp_png", saved["dtp_png"],
+                        f"{prefix}_enrichment_network.png", "image/png",
+                    )
+            with col_f3:
                 Utils.download_button(
                     "net.dl_zip", Utils.make_ppi_zip(saved),
                     f"{prefix}_results.zip", "application/zip",

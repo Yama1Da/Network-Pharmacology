@@ -229,6 +229,15 @@ def t_interactive_3d_html():
     # 在线模式:不传库源码,应改用 CDN 引用并明确标记非离线
     html2, offline2 = dock.build_interactive_3d_html(receptor, ligand)
     assert not offline2 and 'src="https://3dmol.org' in html2
+    # 默认导出:无口袋残基、无共晶配体参照,浏览器端不渲染对应元素
+    assert "var pocket = []" in html and "var het = null" in html
+    # 传入口袋残基与共晶配体:两类数据须以合法 JSON 嵌入(浏览器端据此还原样式与标注)
+    pocket = [{"chain": "A", "resi": "1", "resn": "ALA", "pos": (0.0, 0.0, 0.0)}]
+    html3, _ = dock.build_interactive_3d_html(
+        receptor, ligand, pocket=pocket,
+        het_pdb="HETATM    1  O   LIG B   2       2.000   1.000   1.000  1.00  0.00           O\n")
+    assert 'var pocket = [{"chain": "A"' in html3, "pocket must be embedded as JSON"
+    assert 'var het = "HETATM' in html3, "co-crystal ligand text must be embedded as JSON"
 
 
 def main():

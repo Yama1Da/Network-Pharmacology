@@ -232,15 +232,22 @@ def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None)
     st.components.v1.html(html, height=540)
 
 
-def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel) -> None:
-    """「保存交互式 3D 视图」:把受体与当前构象打包成单个自包含 HTML(内嵌 3Dmol.js 与坐标),
-    可下载或存入结果目录;之后双击即可在任意浏览器打开,可拖动旋转,离线可用。"""
+def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel,
+                     pocket: list[dict] | None = None) -> None:
+    """「保存交互式 3D 视图」:把受体、当前构象、结合位点残基标注与共晶配体参照打包成
+    单个自包含 HTML(内嵌 3Dmol.js 与坐标),可下载或存入结果目录;
+    之后双击即可在任意浏览器打开,可拖动旋转,离线可用。"""
     gene = Utils.safe_name(str(dock.get("gene") or "target"))
     pose_n = int(pose_sel)
-    caption = t("dock.save3d_caption", gene=dock.get("gene") or "?", pose=pose_n,
-                drug=dock.get("drug") or "-", disease=dock.get("disease") or "-")
+    # 图例随视图一并写入,离线打开时颜色含义不靠猜
+    with open(pdb_path, encoding="utf-8", errors="replace") as f:
+        has_het = any(ln.startswith("HETATM")
+                      and ln[17:20].strip() not in ("HOH", "H2O", "WAT", "DOD") for ln in f)
+    caption = (t("dock.save3d_caption", gene=dock.get("gene") or "?", pose=pose_n,
+                 drug=dock.get("drug") or "-", disease=dock.get("disease") or "-")
+               + "  |  " + t("dock.legend_pose" if has_het else "dock.legend_pose_apo"))
     try:
-        html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption)
+        html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption, pocket=pocket)
     except Exception as exc:
         st.warning(t("dock.save3d_failed", exc=exc))
         return
@@ -258,7 +265,7 @@ def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel) -> No
                 try:
                     out_path, offline_ok = save_interactive_3d_html(
                         pdb_path, pose_pdbqt,
-                        os.path.join(dock["result_dir"], file_name), caption)
+                        os.path.join(dock["result_dir"], file_name), caption, pocket=pocket)
                     key = "dock.save3d_ok" if offline_ok else "dock.save3d_ok_online"
                     st.success(t(key, path=out_path))
                 except Exception as exc:
@@ -795,8 +802,7 @@ if dock.get("result"):
                     st.caption(t("dock.pocket_caption", n=len(names))
                                + ", ".join(names[:40])
                                + (" …" if len(names) > 40 else ""))
-                _render_3d(dock["pdb_path"], pose_path)
-                _save_3d_html_ui(dock, dock["pdb_path"], pose_path, pose_sel)
+                _save_3d_html_ui(dock, dock["pdb_path"], pose_path, pose_sel, pocket)
             except Exception as exc:
                 st.warning(t("dock.preview3d_failed", exc=exc))
 else:
