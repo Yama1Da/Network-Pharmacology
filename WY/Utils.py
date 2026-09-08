@@ -489,6 +489,10 @@ def save_ui_settings(overrides: dict) -> None:
         if k == "CHEMBL_TARGET_BLACKLIST":
             if isinstance(v, (list, tuple)):
                 clean[k] = sorted({str(x).strip().upper() for x in v if str(x).strip()})
+        elif k in config.UI_SETTINGS_KEYS and isinstance(v, bool):
+            clean[k] = v
+        elif k in config.UI_SETTINGS_KEYS and isinstance(v, int):
+            clean[k] = v  # 步进器参数按整数保存,避免 +- 调节后出现小数
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, (int, float)) \
                 and not isinstance(v, bool):
             clean[k] = float(v)

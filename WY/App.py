@@ -292,6 +292,37 @@ def _open_settings_dialog() -> None:
         accept_new_options=True,
         key="set_blacklist",
     )
+    def _stepper(label: str, cfg_key: str, lo: int, hi: int, step: int, skey: str) -> int:
+        """+- 步进器:只允许按钮加减(不提供键入入口),到达上下限后对应按钮立即置灰。
+        用 on_click 回调改值(回调先于本次渲染执行),保证同一次点击里数值与按钮置灰状态同步刷新。"""
+        if skey not in st.session_state:
+            st.session_state[skey] = int(getattr(config, cfg_key))
+
+        def _dec() -> None:
+            st.session_state[skey] = max(lo, int(st.session_state[skey]) - step)
+
+        def _inc() -> None:
+            st.session_state[skey] = min(hi, int(st.session_state[skey]) + step)
+
+        val = int(st.session_state[skey])
+        col_dec, col_val, col_inc = st.columns([1, 2, 1])
+        with col_dec:
+            st.button("−", key=f"{skey}_dec", on_click=_dec,
+                      disabled=val <= lo, use_container_width=True)
+        with col_val:
+            st.markdown(f"<p style='text-align:center;margin:0.35rem 0 0'>"
+                        f"<b>{val}</b></p>",
+                        unsafe_allow_html=True)
+        with col_inc:
+            st.button("+", key=f"{skey}_inc", on_click=_inc,
+                      disabled=val >= hi, use_container_width=True)
+        st.caption(label)
+        return val
+
+    ot_topn = _stepper(t("app.settings.ot_topn"), "OT_TOP_N",
+                       lo=200, hi=1000, step=50, skey="set_ot_topn")
+    dg_pages = _stepper(t("app.settings.dg_pages"), "DISGENET_PAGES",
+                        lo=1, hi=10, step=1, skey="set_dg_pages")
     new_vals = {
         "CHEMBL_PCHEMBL_THRESHOLD": st.number_input(
             t("app.settings.pchembl"), min_value=0.0, max_value=12.0, step=0.1,
@@ -299,9 +330,14 @@ def _open_settings_dialog() -> None:
         "DGIDB_MIN_SCORE": st.number_input(
             t("app.settings.dgidb"), min_value=0.0, max_value=1.0, step=0.01,
             value=float(config.DGIDB_MIN_SCORE), key="set_dgidb"),
+        "CHEMBL_CORROBORATION_REQUIRED": st.checkbox(
+            t("app.settings.corroboration"),
+            value=bool(config.CHEMBL_CORROBORATION_REQUIRED), key="set_corroboration"),
         "OT_MIN_SCORE": st.number_input(
             t("app.settings.ot"), min_value=0.0, max_value=1.0, step=0.05,
             value=float(config.OT_MIN_SCORE), key="set_ot"),
+        "OT_TOP_N": ot_topn,
+        "DISGENET_PAGES": dg_pages,
         "ENRICHMENT_PVALUE": st.number_input(
             t("app.settings.enr_p"), min_value=0.001, max_value=0.5, step=0.005,
             value=float(config.ENRICHMENT_PVALUE), key="set_enr_p"),

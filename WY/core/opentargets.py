@@ -1,11 +1,12 @@
 """Open Targets 数据源：按疾病名称查询关联靶点。"""
 
 import logging
+import os
 
 import pandas as pd
 import streamlit as st
 
-from .caching import open_named_csv_cache, save_csv_cache
+from .caching import load_json_file, open_named_csv_cache, save_csv_cache, save_json_file
 from .http_client import _opentargets_post
 from .text_utils import _safe_round, remember_name_mapping
 
@@ -47,8 +48,10 @@ def find_disease_id(disease_name: str,
 
 
 @st.cache_data
-def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
-    """通过 Open Targets 查询疾病的关联靶点：先按疾病英文名找到疾病编号，再取关联分数最高的前 top_n 个靶点，附带总关联分数、新颖性、各证据类型（遗传、突变、文献等）分数及基因基本信息。
+def get_disease_targets(disease_name: str, need_rows: int | None = None) -> pd.DataFrame:
+    """通过 Open Targets 查询疾病的关联靶点：先按疾病英文名找到疾病编号，再按关联分数从高到低固定抓取
+    config.OT_FETCH_SIZE 条(截断到分析所需的 Top-N 在整合侧完成,见 core.targets)。need_rows 为本次分析
+    至少需要的条数(即 config.OT_TOP_N,参与缓存键),原始缓存行数不足时自动重新抓取,否则直接复用缓存。
     查询失败或找不到该疾病时返回空表；结果存为本地 CSV，已有缓存则直接复用。
     """
     import config
@@ -58,7 +61,12 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
         label=f"disease targets for '{disease_name}'",
         remember=remember_name_mapping,  # 记录安全文件名→原始名,供管理页还原
     )
-    if cached is not None:
+    # 隐藏哨兵文件记录上次是否已取完全部关联靶点:疾病关联总数不足抓取上限时,缓存行数永远到不了
+    # need_rows,若只按行数判断命中会导致每次分析都重新联网
+    meta_path = os.path.join(os.path.dirname(csv_path), "." + os.path.basename(csv_path) + ".meta")
+    meta = load_json_file(meta_path, {}) or {}
+    if cached is not None and (need_rows is None or meta.get("complete")
+                               or len(cached) >= need_rows):
         return cached
 
     try:
@@ -102,7 +110,8 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             }
         }
         """
-        payload = _opentargets_post(disease_query, {"diseaseId": disease_id, "size": top_n},
+        payload = _opentargets_post(disease_query,
+                                    {"diseaseId": disease_id, "size": config.OT_FETCH_SIZE},
                                     use_cache=True)
         if payload is None:
             return pd.DataFrame()
@@ -112,7 +121,8 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
             return pd.DataFrame()
 
         rows = payload["data"]["disease"]["associatedTargets"]["rows"]
-        rows_sorted = sorted(rows, key=lambda r: r.get("score", 0.0), reverse=True)[:top_n]
+        rows_sorted = sorted(rows, key=lambda r: r.get("score", 0.0),
+                             reverse=True)[:config.OT_FETCH_SIZE]
 
         records: list[dict] = []
         for r in rows_sorted:
@@ -143,7 +153,9 @@ def get_disease_targets(disease_name: str, top_n: int = 200) -> pd.DataFrame:
 
         df = pd.DataFrame(records)
         # 保存到本地缓存（空结果也缓存，避免反复查询同一无效疾病名）
-        save_csv_cache(df, csv_path, skip_empty=False)
+        save_csv_cache(df, csv_path)
+        # 抓取行数不足单次上限 => 已拿全该疾病的关联靶点(总数不足),记入哨兵避免日后反复重抓
+        save_json_file(meta_path, {"complete": len(df) < config.OT_FETCH_SIZE})
         logging.info("Disease '%s' (%s): %d targets fetched", disease_name, disease_id, len(df))
         return df
 

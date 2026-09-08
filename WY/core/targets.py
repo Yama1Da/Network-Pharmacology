@@ -63,8 +63,9 @@ def _filter_ot_targets(df: pd.DataFrame) -> pd.DataFrame:
 def _filter_chembl_targets(df: pd.DataFrame, corroborated_genes: set[str],
                            *, blacklist_only: bool = False) -> pd.DataFrame:
     """ChEMBL 降噪：先剔黑名单,再按 pChEMBL 分层保留——保留：基因的最大 pChEMBL 达到阈值;或全部活性记录都
-    没有 pChEMBL 定量值、但被 DGIdb 佐证(corroborated_genes 为通过 DGIdb 过滤的大写基因集合);剔除：仅有弱定量
-    活性(0 < pChEMBL < 阈值)的基因。blacklist_only=True 时只做黑名单过滤,供整侧过滤后为空时的兜底。"""
+    没有 pChEMBL 定量值的基因,CHEMBL_CORROBORATION_REQUIRED 开启时须被 DGIdb 佐证(corroborated_genes 为
+    通过 DGIdb 过滤的大写基因集合),关闭时无条件保留;剔除：仅有弱定量活性(0 < pChEMBL < 阈值)的基因。
+    blacklist_only=True 时只做黑名单过滤,供整侧过滤后为空时的兜底。"""
     import config
 
     if df.empty:
@@ -79,7 +80,11 @@ def _filter_chembl_targets(df: pd.DataFrame, corroborated_genes: set[str],
     pchem = pd.to_numeric(out["pchembl_value"], errors="coerce")
     max_by_gene = pchem.groupby(symbols).max()
     keep = set(max_by_gene[max_by_gene >= config.CHEMBL_PCHEMBL_THRESHOLD].index)
-    keep |= {g for g in max_by_gene[max_by_gene.isna()].index if g in corroborated_genes}
+    no_quant = set(max_by_gene[max_by_gene.isna()].index)
+    if config.CHEMBL_CORROBORATION_REQUIRED:
+        keep |= {g for g in no_quant if g in corroborated_genes}
+    else:
+        keep |= no_quant
     return out[symbols.isin(keep)]
 
 
@@ -106,8 +111,16 @@ def _prepare_drug_sources(drug_name: str, chmbl_df: pd.DataFrame,
 
 def _prepare_disease_sources(disease_name: str, ot_df: pd.DataFrame,
                              disgenet_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """对疾病两个数据源做降噪过滤,返回过滤后的 (OpenTargets, DisGeNET) 两表;
-    DisGeNET 结果本身按分数降序且只取第一页(相当于 top100),不再额外过滤。"""
+    """对疾病两个数据源做规模控制与降噪过滤,返回过滤后的 (OpenTargets, DisGeNET) 两表。
+    规模控制(设置面板可调):Open Targets 截取关联分数前 OT_TOP_N 个、DisGeNET 截取前 DISGENET_PAGES 页
+    (两张原始表均按分数降序存放);随后 Open Targets 再做降噪过滤(分数下限+只留蛋白编码)。"""
+    import config
+
+    if not ot_df.empty:
+        ot_df = ot_df.head(int(config.OT_TOP_N))
+    if not disgenet_df.empty:
+        disgenet_df = disgenet_df.head(
+            int(config.DISGENET_PAGES) * int(config.DISGENET_PAGE_SIZE))
     ot_f = _filter_ot_targets(ot_df)
     logging.info(
         "Disease noise filter '%s': OpenTargets %d->%d rows",
@@ -221,8 +234,9 @@ def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
     if cached is not None:
         return cached
 
-    ot_df = get_disease_targets(disease_name)
-    disgenet_df = fetch_disease_targets_disgenet(disease_name)
+    ot_df = get_disease_targets(disease_name, need_rows=int(config.OT_TOP_N))
+    disgenet_df = fetch_disease_targets_disgenet(
+        disease_name, need_rows=int(config.DISGENET_PAGES) * int(config.DISGENET_PAGE_SIZE))
     ot_df, disgenet_df = _prepare_disease_sources(disease_name, ot_df, disgenet_df)
     return _merge_source_pair(disease_name, ot_df, disgenet_df,
                               cache_path=cache_path, **_DISEASE_MERGE)
@@ -278,8 +292,11 @@ def get_targets_concurrent(
         futures["chembl"] = pool.submit(fetch_drug_targets_chembl, drug_name)
         futures["dgidb"] = pool.submit(fetch_drug_targets_dgidb, drug_name)
     if disease_df is None:
-        futures["opentargets"] = pool.submit(get_disease_targets, disease_name)
-        futures["disgenet"] = pool.submit(fetch_disease_targets_disgenet, disease_name)
+        futures["opentargets"] = pool.submit(
+            get_disease_targets, disease_name, int(config.OT_TOP_N))
+        futures["disgenet"] = pool.submit(
+            fetch_disease_targets_disgenet, disease_name,
+            int(config.DISGENET_PAGES) * int(config.DISGENET_PAGE_SIZE))
 
     total = len(futures)
     results: dict = {}

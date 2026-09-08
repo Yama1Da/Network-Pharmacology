@@ -53,7 +53,7 @@ HTTP_CACHE_TTL_HOURS = 24
 # 药物/疾病靶点在整合(merge)时做降噪过滤,阈值集中在此配置,过滤逻辑在 core/targets.py。
 # 过滤规则或阈值变更后需把 TARGET_FILTER_VERSION 加 1:merged 整合缓存的文件名
 # 带该版本号,加 1 后旧缓存自动失效,下次分析按新阈值重建(原始缓存不受影响)。
-TARGET_FILTER_VERSION = 1
+TARGET_FILTER_VERSION = 2
 # ChEMBL 黑名单:非特异性结合/药物代谢蛋白,不计入药物靶点
 # (白蛋白 ALB 与主要药物代谢 CYP 酶;CYP46A1 是脑特异胆固醇酶、可能是药效靶点,不列入)
 CHEMBL_TARGET_BLACKLIST = (
@@ -65,10 +65,23 @@ CHEMBL_BLACKLIST_OPTIONS = (
     "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4", "CYP3A5", "CES1", "GSTP1", "F2", "UGT1A1",
 )
 # ChEMBL pChEMBL 活性下限:基因的最大 pChEMBL 达到该值才保留;
-# 完全没有 pChEMBL 定量值的基因需被 DGIdb 佐证(通过 DGIDB_MIN_SCORE 过滤)才保留;
 # 仅有弱定量活性(0 < pChEMBL < 阈值)的基因剔除。
+# 完全没有 pChEMBL 定量值的基因默认需被 DGIdb 佐证(通过 DGIDB_MIN_SCORE 过滤)才保留;
+# 关闭 CHEMBL_CORROBORATION_REQUIRED 后无定量值的基因无条件保留
+# (配合阈值为 0、DGIDB_MIN_SCORE 为 0 即"无降噪")。
 # 注意:一刀切按阈值过滤会把靶点砍到个位数(多数活性记录无 pChEMBL 值),勿删 DGIdb 佐证通道
 CHEMBL_PCHEMBL_THRESHOLD = 4.8
+# 无 pChEMBL 定量值的 ChEMBL 基因是否必须被 DGIdb 佐证才保留(分析参数,可在主页齿轮调整)
+CHEMBL_CORROBORATION_REQUIRED = True
+# ======== 疾病靶点规模(分析参数,主页齿轮 +- 调节) ========
+# Open Targets 整合时取关联分数前 OT_TOP_N 个靶点。原始抓取固定拉满 OT_FETCH_SIZE 条(按分数降序
+# 全量落盘),因此调整 Top-N 不需要重新联网;仅当原始缓存行数不足 Top-N 时才自动补抓。
+OT_FETCH_SIZE = 1000
+OT_TOP_N = 200
+# DisGeNET 抓取前 DISGENET_PAGES 页(page_number 分页,学术账号每页固定 100 条,API 硬性规定);
+# 整合时按页数×每页条数截断,原始缓存行数不足时自动补抓缺的页。
+DISGENET_PAGE_SIZE = 100
+DISGENET_PAGES = 1
 # DGIdb 交互分数下限,且要求至少 1 条 PMID 文献支撑,两条件同时满足才算有效相互作用
 DGIDB_MIN_SCORE = 0.05
 # Open Targets 总关联分数下限(保险丝:防少见病的 top200 混入极弱关联靶点);
@@ -355,6 +368,7 @@ UI_SETTINGS_FILE = os.path.join(CACHE_DIR, "ui_settings.json")
 UI_SETTINGS_KEYS = (
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION", "POCKET_CUTOFF",
+    "CHEMBL_CORROBORATION_REQUIRED", "OT_TOP_N", "DISGENET_PAGES",
 )
 if os.path.exists(UI_SETTINGS_FILE):
     try:
@@ -366,6 +380,8 @@ if os.path.exists(UI_SETTINGS_FILE):
                 # 黑名单是字符串列表,单独校验后套用
                 if isinstance(_v, list) and all(isinstance(_i, str) for _i in _v):
                     globals()[_k] = tuple(_v)
+            elif _k in UI_SETTINGS_KEYS and isinstance(_v, bool):
+                globals()[_k] = _v
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, (int, float)) \
                     and not isinstance(_v, bool):
                 globals()[_k] = _v
