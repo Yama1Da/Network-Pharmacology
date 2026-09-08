@@ -308,6 +308,9 @@ def _open_settings_dialog() -> None:
         "LOUVAIN_RESOLUTION": st.number_input(
             t("app.settings.louvain"), min_value=0.3, max_value=3.0, step=0.1,
             value=float(config.LOUVAIN_RESOLUTION), key="set_louvain"),
+        "POCKET_CUTOFF": st.number_input(
+            t("app.settings.pocket"), min_value=3.0, max_value=6.0, step=0.5,
+            value=float(config.POCKET_CUTOFF), key="set_pocket"),
     }
     # 有变化才动手:改 config 运行时值 + 持久化 + 清 merged 整合缓存
     changed = {k: v for k, v in new_vals.items() if v != getattr(config, k)}

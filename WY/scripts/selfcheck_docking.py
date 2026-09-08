@@ -22,6 +22,7 @@ import requests
 import config
 import core.docking as dock
 import core.http_client as hc
+import Utils
 from core.http_client import throttle
 
 
@@ -189,6 +190,79 @@ def t_throttle_spacing():
             hc._next_allowed_at.pop("selftest", None)
 
 
+def _atom_line(rec: str, serial: int, name: str, resn: str, chain: str,
+               resi: int, x: float, y: float, z: float, elem: str) -> str:
+    """按 PDB/pdbqt 列格式拼一条原子记录(elem 处 pdbqt 传 AutoDock 原子类型)。"""
+    return (f"{rec:<6s}{serial:5d}  {name:<3s} {resn:>3s} {chain}{resi:>4d}    "
+            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {elem:>2s}\n")
+
+
+def _write_tmp(path: str, lines: list[str]) -> str:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("".join(lines))
+    return path
+
+
+def t_residues_near_ligand_cutoff():
+    """口袋残基判定半径应可调:同一体系 4.0 Å 判不进、5.0 Å 判得进。"""
+    tmpdir = tempfile.mkdtemp()
+    lig = _write_tmp(os.path.join(tmpdir, "lig.pdbqt"), [
+        _atom_line("ATOM", 1, "N1", "LIG", "B", 1, 0.0, 0.0, 0.0, "N")])
+    # CA 在 4.5 Å 处:默认 4 Å 不算口袋残基,放宽到 5 Å 才算
+    rec = _write_tmp(os.path.join(tmpdir, "rec.pdb"), [
+        _atom_line("ATOM", 1, "CA", "ALA", "A", 10, 4.5, 0.0, 0.0, "C"),
+        _atom_line("ATOM", 2, "CB", "ALA", "A", 10, 5.6, 0.9, 0.0, "C")])
+    try:
+        assert dock.residues_near_ligand(rec, lig) == [], "4.5 Å residue must be out at 4.0 Å"
+        near5 = dock.residues_near_ligand(rec, lig, cutoff=5.0)
+        assert len(near5) == 1 and near5[0]["resn"] == "ALA", near5
+        assert near5[0]["chain"] == "A" and near5[0]["resi"] == "10", near5
+    finally:
+        for p in (lig, rec):
+            os.remove(p)
+        os.rmdir(tmpdir)
+
+
+def t_interactions_near_ligand():
+    """几何判据检测氢键/盐桥/疏水:类型、去重(盐桥优先)、排序与坐标须正确。"""
+    tmpdir = tempfile.mkdtemp()
+    # 配体三个原子彼此相距 5 Å 以上,互不干扰:N1(原点) O1(5,0,0) C1(0,6,0)
+    lig = _write_tmp(os.path.join(tmpdir, "lig.pdbqt"), [
+        _atom_line("ATOM", 1, "N1", "LIG", "B", 1, 0.0, 0.0, 0.0, "N"),
+        _atom_line("ATOM", 2, "O1", "LIG", "B", 1, 5.0, 0.0, 0.0, "OA"),
+        _atom_line("ATOM", 3, "C1", "LIG", "B", 1, 0.0, 6.0, 0.0, "A")])
+    rec = _write_tmp(os.path.join(tmpdir, "rec.pdb"), [
+        # LYS NZ:碱性 N,距 O1 3.0 Å → 盐桥(不再重复记氢键);距 N1 2.0 Å → 氢键
+        _atom_line("ATOM", 1, "NZ", "LYS", "A", 10, 2.0, 0.0, 0.0, "N"),
+        # GLU OE1:酸性 O,距 O1 2.5 Å → 氢键(酸 O↔配体 O 不算盐桥)
+        _atom_line("ATOM", 2, "OE1", "GLU", "A", 11, 5.0, 2.5, 0.0, "O"),
+        # ALA CB:距 C1 2.2 Å → 疏水接触
+        _atom_line("ATOM", 3, "CB", "ALA", "A", 12, 0.0, 3.8, 0.0, "C"),
+        # 远处残基:不应产生任何相互作用
+        _atom_line("ATOM", 4, "CA", "VAL", "A", 13, 30.0, 30.0, 30.0, "C")])
+    try:
+        its = dock.interactions_near_ligand(rec, lig)
+        kinds = [it["kind"] for it in its]
+        assert kinds == ["salt", "hbond", "hbond", "hydro"], kinds  # 盐桥优先、同类型按距离
+        salt = its[0]
+        assert (salt["resn"], salt["res_atom"], salt["lig_atom"], salt["dist"]) \
+            == ("LYS", "NZ", "O1", 3.0), salt
+        hb_lig_n = next(it for it in its if it["lig_atom"] == "N1")
+        assert (hb_lig_n["resn"], hb_lig_n["res_atom"], hb_lig_n["dist"]) \
+            == ("LYS", "NZ", 2.0), hb_lig_n
+        hb_glu = next(it for it in its if it["resn"] == "GLU")
+        assert (hb_glu["kind"], hb_glu["lig_atom"], hb_glu["dist"]) == ("hbond", "O1", 2.5), hb_glu
+        hydro = its[3]
+        assert (hydro["resn"], hydro["res_atom"], hydro["lig_atom"], hydro["dist"]) \
+            == ("ALA", "CB", "C1", 2.2), hydro
+        # 画虚线用的两端坐标须与原子坐标一致
+        assert salt["pos1"] == (2.0, 0.0, 0.0) and salt["pos2"] == (5.0, 0.0, 0.0), salt
+    finally:
+        for p in (lig, rec):
+            os.remove(p)
+        os.rmdir(tmpdir)
+
+
 def t_interactive_3d_html():
     """交互式 3D HTML:坐标须以合法 JSON 内嵌,离线/在线两种模式标记正确。"""
     receptor = "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
@@ -204,15 +278,53 @@ def t_interactive_3d_html():
     # 在线模式:不传库源码,应改用 CDN 引用并明确标记非离线
     html2, offline2 = dock.build_interactive_3d_html(receptor, ligand)
     assert not offline2 and 'src="https://3dmol.org' in html2
-    # 默认导出:无口袋残基、无共晶配体参照,浏览器端不渲染对应元素
+    # 3Dmol.js 许可标注:内嵌/CDN 两种模式措辞不同,但版权行与完整许可文本都必须随文件提供
+    assert "内嵌 3Dmol.js (BSD-3-Clause)" in html, html[html.find("#lic"):html.find("#lic") + 200]
+    assert "本页面通过 CDN 加载 3Dmol.js (BSD-3-Clause)" in html2
+    for h in (html, html2):
+        assert "Copyright (c) 2014, University of Pittsburgh" in h, "attribution missing"
+        assert "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS" in h, "license text missing"
+    # 默认导出:无口袋残基、无相互作用、无共晶配体参照,浏览器端不渲染对应元素
     assert "var pocket = []" in html and "var het = null" in html
-    # 传入口袋残基与共晶配体:两类数据须以合法 JSON 嵌入(浏览器端据此还原样式与标注)
+    assert "var interactions = []" in html, "default interactions must be empty"
+    assert "Focus pocket" in html, "focus button must exist"
+    # 传入口袋残基、相互作用与共晶配体:三类数据须以合法 JSON 嵌入(浏览器端据此还原样式与标注)
     pocket = [{"chain": "A", "resi": "1", "resn": "ALA", "pos": (0.0, 0.0, 0.0)}]
+    inter = [{"kind": "salt", "chain": "A", "resi": "1", "resn": "ALA",
+              "res_atom": "CA", "lig_atom": "N", "dist": 3.0,
+              "pos1": (0.0, 0.0, 0.0), "pos2": (1.0, 1.0, 1.0)}]
     html3, _ = dock.build_interactive_3d_html(
-        receptor, ligand, pocket=pocket,
+        receptor, ligand, pocket=pocket, interactions=inter, focus_label="聚焦口袋",
         het_pdb="HETATM    1  O   LIG B   2       2.000   1.000   1.000  1.00  0.00           O\n")
     assert 'var pocket = [{"chain": "A"' in html3, "pocket must be embedded as JSON"
+    assert 'var interactions = [{"kind": "salt"' in html3, "interactions must be embedded as JSON"
     assert 'var het = "HETATM' in html3, "co-crystal ligand text must be embedded as JSON"
+    assert "聚焦口袋" in html3, "focus button label must be localized"
+    # 相互作用用虚线圆柱绘制(1px 线白底下看不清),且配色与页面图例一致
+    assert "addCylinder" in html3 and 'hbond: "#0f62fe"' in html3, html3[html3.find("lineColors"):][:200]
+
+
+def t_ui_settings_roundtrip():
+    """口袋半径作为全局分析参数:在齿轮白名单内,经 Utils.save_ui_settings 落盘到
+    ui_settings.json,且多次写入按键合并(对接页与齿轮面板互不覆盖)。"""
+    assert "POCKET_CUTOFF" in config.UI_SETTINGS_KEYS, config.UI_SETTINGS_KEYS
+    tmp = os.path.join(tempfile.gettempdir(), "selfcheck_ui_settings.json")
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    try:
+        with patch_attr(config, "UI_SETTINGS_FILE", tmp):
+            Utils.save_ui_settings({"POCKET_CUTOFF": 4.5})
+            Utils.save_ui_settings({"DGIDB_MIN_SCORE": 0.1})
+            with open(tmp, encoding="utf-8") as f:
+                saved = json.load(f)
+            assert saved == {"POCKET_CUTOFF": 4.5, "DGIDB_MIN_SCORE": 0.1}, saved
+            # 白名单外的键(如黑名单以外的任意字符串值)不落盘
+            Utils.save_ui_settings({"NOT_IN_WHITELIST": 1.0})
+            with open(tmp, encoding="utf-8") as f:
+                assert "NOT_IN_WHITELIST" not in json.load(f)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def main():
@@ -227,6 +339,9 @@ def main():
         ("candidates AF fallback row", t_candidates_af_fallback_row),
         ("candidates search failure friendly error", t_candidates_search_failure_friendly_error),
         ("interactive 3D html embed", t_interactive_3d_html),
+        ("pocket residues cutoff param", t_residues_near_ligand_cutoff),
+        ("interactions near ligand", t_interactions_near_ligand),
+        ("ui settings roundtrip", t_ui_settings_roundtrip),
     ]
     run(tests, "docking AlphaFold selfcheck")
 

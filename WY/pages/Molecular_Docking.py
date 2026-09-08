@@ -15,6 +15,7 @@ from core.docking import (
     download_pdb,
     extract_model,
     fetch_alphafold_receptor,
+    interactions_near_ligand,
     interactive_3d_html,
     parse_hetatm,
     pose_pdbqt_to_pdb,
@@ -194,11 +195,17 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
     return result_dir
 
 
+# 相互作用虚线圆柱配色与 3Dmol 视图/导出 HTML 保持一致:蓝=氢键 紫=盐桥 灰=疏水
+_INTERACTION_COLORS = {"hbond": "#0f62fe", "salt": "#c026d3", "hydro": "#808080"}
+
+
 def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None,
+               interactions: list[dict] | None = None, focus_pocket: bool = False,
                pose_pdb: str | None = None, receptor_text: str | None = None) -> None:
     """在页面内 3D 展示受体(卡通)、所选对接构象(绿棍)与结合位点残基
-    (橙棍并标注"残基名-编号"),并叠加共晶配体(灰色半透明)作天然口袋参照;
-    缺少组件时仅给出提示。
+    (橙棍并标注"残基名-编号"),相互作用以虚线画出(绿=氢键 紫=盐桥 灰=疏水,
+    氢键与盐桥在中点标注距离),并叠加共晶配体(灰色半透明)作天然口袋参照;
+    focus_pocket 为真时以配体为中心聚焦口袋,否则展示整体视图;缺少组件时仅给出提示。
     pose_pdb 传入已转换好的构象 PDB、receptor_text 传入已读取的受体 PDB 全文时直接复用,
     与「保存交互式 3D 视图」共用一次转换、一次读盘,不传时保持原有的自足行为。"""
     try:
@@ -248,21 +255,60 @@ def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None,
             "showBackground": True, "backgroundColor": "white",
             "backgroundOpacity": 0.7,
         })
-    view.zoomTo()
+    # 相互作用虚线圆柱(1px 线白底下看不清,故用带半径的虚线圆柱);
+    # 氢键与盐桥在中点标注距离,疏水接触只画线不标注
+    for it in interactions or []:
+        view.addCylinder({"dashed": True, "radius": 0.06, "dashLength": 0.3, "gapLength": 0.22,
+                          "color": _INTERACTION_COLORS.get(it["kind"], "#777777"),
+                          "start": {"x": it["pos1"][0], "y": it["pos1"][1], "z": it["pos1"][2]},
+                          "end": {"x": it["pos2"][0], "y": it["pos2"][1], "z": it["pos2"][2]}})
+        if it["kind"] != "hydro":
+            mid = [(a + b) / 2 for a, b in zip(it["pos1"], it["pos2"])]
+            view.addLabel(f'{it["dist"]:.1f} Å', {
+                "position": {"x": mid[0], "y": mid[1], "z": mid[2]},
+                "fontSize": 10, "fontColor": "#333333",
+                "showBackground": True, "backgroundColor": "white",
+                "backgroundOpacity": 0.6,
+            })
+    if focus_pocket:
+        # 以配体为中心取景,再拉远把口袋残基框进来;整体视图仍可拖动/滚轮还原
+        view.zoomTo({"model": 1})
+        view.zoom(0.55)
+    else:
+        view.zoomTo()
     try:
         html = view._make_html()
     except AttributeError:
         html = view.write()
-    st.caption(t("dock.legend_pose" if het_pdb else "dock.legend_pose_apo"))
+    legend = t("dock.legend_pose" if het_pdb else "dock.legend_pose_apo")
+    if interactions:
+        legend += "  |  " + t("dock.legend_inter")
+    st.caption(legend)
     st.components.v1.html(html, height=540)
+
+
+def _interactions_table(interactions: list[dict]) -> pd.DataFrame:
+    """把相互作用原子对列表转成展示表格(类型本地化,残基带链号),列顺序固定。"""
+    kind_label = {"hbond": t("dock.inter_hbond"), "salt": t("dock.inter_salt"),
+                  "hydro": t("dock.inter_hydro")}
+    rows = [{
+        t("dock.inter_col_kind"): kind_label.get(it["kind"], it["kind"]),
+        t("dock.inter_col_residue"): (it["chain"] + "/" if it["chain"] else "")
+                                     + f'{it["resn"]}{it["resi"]}',
+        t("dock.inter_col_res_atom"): it["res_atom"],
+        t("dock.inter_col_lig_atom"): it["lig_atom"],
+        t("dock.inter_col_dist"): it["dist"],
+    } for it in interactions]
+    return pd.DataFrame(rows)
 
 
 def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel,
                      pocket: list[dict] | None = None,
+                     interactions: list[dict] | None = None,
                      pose_pdb: str | None = None, receptor_text: str | None = None) -> None:
-    """「保存交互式 3D 视图」:把受体、当前构象、结合位点残基标注与共晶配体参照打包成
-    单个自包含 HTML(内嵌 3Dmol.js 与坐标),可下载或存入结果目录;
-    之后双击即可在任意浏览器打开,可拖动旋转,离线可用。
+    """「保存交互式 3D 视图」:把受体、当前构象、结合位点残基标注、相互作用虚线
+    与共晶配体参照打包成单个自包含 HTML(内嵌 3Dmol.js 与坐标),可下载或存入结果目录;
+    之后双击即可在任意浏览器打开,可拖动旋转、聚焦口袋,离线可用。
     pose_pdb / receptor_text 传入 3D 预览已转换/已读取的结果时直接复用,不再重复转换与读盘。"""
     gene = Utils.safe_name(str(dock.get("gene") or "target"))
     pose_n = int(pose_sel)
@@ -270,10 +316,14 @@ def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel,
     has_het = bool(cofactor_hetatm_pdb(pdb_path, receptor_text=receptor_text))
     caption = (t("dock.save3d_caption", gene=dock.get("gene") or "?", pose=pose_n,
                  drug=dock.get("drug") or "-", disease=dock.get("disease") or "-")
-               + "  |  " + t("dock.legend_pose" if has_het else "dock.legend_pose_apo"))
+               + "  |  " + t("dock.legend_pose" if has_het else "dock.legend_pose_apo")
+               + (("  |  " + t("dock.legend_inter")) if interactions else ""))
+    focus_label = t("dock.focus_btn")
     try:
         html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption, pocket=pocket,
-                                                    receptor_text=receptor_text, pose_pdb=pose_pdb)
+                                                    receptor_text=receptor_text, pose_pdb=pose_pdb,
+                                                    interactions=interactions,
+                                                    focus_label=focus_label)
     except Exception as exc:
         st.warning(t("dock.save3d_failed", exc=exc))
         return
@@ -291,7 +341,8 @@ def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel,
                 try:
                     out_path, offline_ok = save_interactive_3d_html(
                         pdb_path, pose_pdbqt,
-                        os.path.join(dock["result_dir"], file_name), caption, pocket=pocket)
+                        os.path.join(dock["result_dir"], file_name), caption, pocket=pocket,
+                        interactions=interactions, focus_label=focus_label)
                     key = "dock.save3d_ok" if offline_ok else "dock.save3d_ok_online"
                     st.success(t(key, path=out_path))
                 except Exception as exc:
@@ -813,7 +864,33 @@ if dock.get("result"):
                 pose_path = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                          f"pose_{int(pose_sel)}.pdbqt")
                 extract_model(dock["result"]["out"], int(pose_sel), pose_path)
-                pocket = residues_near_ligand(dock["pdb_path"], pose_path)
+                # 半径默认取全局分析参数(config.POCKET_CUTOFF,齿轮面板可改、重启仍生效);
+                # −/+ 步进按钮 + 滑条。按钮必须写在滑条实例化之前
+                # (控件键在其控件创建后不可再写),点击当轮即生效;步进 0.5 Å,边界夹紧
+                if "pocket_cutoff" not in st.session_state:
+                    st.session_state.pocket_cutoff = float(config.POCKET_CUTOFF)
+                cbtn, cslider = st.columns([1.2, 6])
+                with cbtn:
+                    bminus, bplus = st.columns(2)
+                    with bminus:
+                        minus = st.button("−", key="cutoff_minus", use_container_width=True)
+                    with bplus:
+                        plus = st.button("+", key="cutoff_plus", use_container_width=True)
+                if minus:
+                    st.session_state.pocket_cutoff = max(
+                        3.0, st.session_state.pocket_cutoff - 0.5)
+                if plus:
+                    st.session_state.pocket_cutoff = min(
+                        6.0, st.session_state.pocket_cutoff + 0.5)
+                with cslider:
+                    cutoff = st.slider(t("dock.cutoff_label"), 3.0, 6.0,
+                                       step=0.5, key="pocket_cutoff")
+                # 与全局参数不同步时更新运行时配置并持久化到 ui_settings.json
+                if cutoff != float(config.POCKET_CUTOFF):
+                    config.POCKET_CUTOFF = cutoff
+                    Utils.save_ui_settings({"POCKET_CUTOFF": cutoff})
+                pocket = residues_near_ligand(dock["pdb_path"], pose_path, cutoff=cutoff)
+                interactions = interactions_near_ligand(dock["pdb_path"], pose_path)
                 # 构象 pdbqt→pdb 只转换一次、受体 PDB 全文只读一次,
                 # 3D 预览与保存 HTML 复用同一份结果(每次刷新少一次转换、少两次读盘)
                 pose_pdb = os.path.join(os.path.dirname(pose_path), "pose_view.pdb")
@@ -823,14 +900,23 @@ if dock.get("result"):
                     pose_pdb = None  # 转换失败:预览按原样提示,保存时由 core 内部重试
                 with open(dock["pdb_path"], encoding="utf-8", errors="replace") as f:
                     receptor_text = f.read()
+                focus_pocket = st.toggle(t("dock.focus_toggle"), key="focus_pocket")
                 _render_3d(dock["pdb_path"], pose_path, pocket,
+                           interactions=interactions, focus_pocket=focus_pocket,
                            pose_pdb=pose_pdb, receptor_text=receptor_text)
                 if pocket:
                     names = [f"{r['resn']}{r['resi']}" for r in pocket]
-                    st.caption(t("dock.pocket_caption", n=len(names))
+                    st.caption(t("dock.pocket_caption", n=len(names), cutoff=f"{cutoff:g}")
                                + ", ".join(names[:40])
                                + (" …" if len(names) > 40 else ""))
+                if interactions:
+                    with st.expander(t("dock.inter_expander", n=len(interactions))):
+                        st.dataframe(_interactions_table(interactions),
+                                     use_container_width=True, hide_index=True)
+                else:
+                    st.caption(t("dock.inter_none"))
                 _save_3d_html_ui(dock, dock["pdb_path"], pose_path, pose_sel, pocket,
+                                 interactions=interactions,
                                  pose_pdb=pose_pdb, receptor_text=receptor_text)
             except Exception as exc:
                 st.warning(t("dock.preview3d_failed", exc=exc))

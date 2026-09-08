@@ -474,10 +474,11 @@ def render_updateable_file_table(files_df, spec: dict, *, search_key: str) -> st
 # ---------- 设置面板(主页面板齿轮)公共逻辑 ----------
 
 def save_ui_settings(overrides: dict) -> None:
-    """把齿轮面板修改的分析参数持久化到 ui_settings.json。
+    """把齿轮面板/对接页修改的分析参数持久化到 ui_settings.json。
 
     config.py 启动时会读取该文件套用覆盖值,因此设置重启后仍生效;
     只写白名单内的键(数值参数与 ChEMBL 黑名单),其余忽略。
+    与文件中已有内容按键合并(不同入口各自改各自的参数,互不覆盖)。
     """
     import json
 
@@ -493,9 +494,17 @@ def save_ui_settings(overrides: dict) -> None:
             clean[k] = float(v)
     if not clean:
         return
+    merged: dict = {}
+    if os.path.exists(config.UI_SETTINGS_FILE):
+        try:
+            with open(config.UI_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                merged = json.load(f) or {}
+        except Exception:
+            merged = {}  # 旧文件损坏时按空文件处理,以本次写入为准
+    merged.update(clean)
     os.makedirs(os.path.dirname(config.UI_SETTINGS_FILE), exist_ok=True)
     with open(config.UI_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(clean, f, ensure_ascii=False, indent=2)
+        json.dump(merged, f, ensure_ascii=False, indent=2)
 
 
 def purge_merged_cache() -> int:

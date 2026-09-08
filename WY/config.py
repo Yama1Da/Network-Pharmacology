@@ -333,6 +333,9 @@ DOCKING_BOX_MAX_SIZE_AF = 40.0
 # RCSB 检索失败重试次数;RCSB 元数据下载并发数
 RCSB_SEARCH_MAX_RETRIES = 3
 RCSB_DATA_MAX_WORKERS = 4
+# 对接口袋残基判定半径(埃):配体周围该距离内的受体残基视为结合位点残基,文献常用 4 Å。
+# 属于分析参数,可在主页齿轮(Analysis settings)调整,持久化到 ui_settings.json。
+POCKET_CUTOFF = 4.0
 
 # ======== 各数据源最小请求间隔(秒) ========
 # 只对需要连续快速请求的站点做限速,未列出的数据源请求量小,不做额外限制。
@@ -351,7 +354,7 @@ HOST_MIN_REQUEST_INTERVAL = {
 UI_SETTINGS_FILE = os.path.join(CACHE_DIR, "ui_settings.json")
 UI_SETTINGS_KEYS = (
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
-    "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION",
+    "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION", "POCKET_CUTOFF",
 )
 if os.path.exists(UI_SETTINGS_FILE):
     try:
