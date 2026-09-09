@@ -873,7 +873,9 @@ def prune_docking_results(result_dir: str, max_versions: int | None = None) -> l
 
 
 def clean_docking_cache(ttl_days: int | None = None) -> int:
-    """清理对接过程中的缓存中间文件:原始文件保留 1 天,加工产物保留 7 天;传 ttl_days 时统一按该天数清理(0 可全清),返回删除的文件数。"""
+    """清理对接过程中的缓存中间文件:原始文件保留 1 天,加工产物保留 7 天;传 ttl_days 时统一按该天数清理(0 可全清),返回删除的文件数。
+    只扫 raw/ligand/receptor 三个已知子目录;缓存根目录下的文件(UniProt 基因映射、
+    3Dmol.js 库等按设计长期有效的缓存)一律不动,否则会被 TTL 误删后反复重下、浪费配额。"""
     import time
     import config
 
@@ -882,21 +884,26 @@ def clean_docking_cache(ttl_days: int | None = None) -> int:
     else:
         cache_ttl = config.DOCKING_CACHE_TTL_DAYS
         raw_ttl = config.DOCKING_RAW_TTL_DAYS
+    now = time.time()
     removed = 0
-    if not os.path.isdir(config.DOCKING_CACHE_DIR):
-        return 0
-    raw_dir = config.DOCKING_RAW_CACHE_DIR
-    for root, _, files in os.walk(config.DOCKING_CACHE_DIR):
-        for name in files:
-            path = os.path.join(root, name)
-            ttl = raw_ttl if root == raw_dir else cache_ttl
-            cutoff = time.time() - ttl * 86400
-            try:
-                if os.path.getmtime(path) < cutoff:
-                    os.remove(path)
-                    removed += 1
-            except OSError:
-                logging.warning("clean_docking_cache: cannot remove %s", path)
+    scan_dirs = (
+        (config.DOCKING_RAW_CACHE_DIR, raw_ttl),
+        (config.DOCKING_LIGAND_CACHE_DIR, cache_ttl),
+        (config.DOCKING_RECEPTOR_CACHE_DIR, cache_ttl),
+    )
+    for scan_dir, ttl in scan_dirs:
+        if not os.path.isdir(scan_dir):
+            continue
+        cutoff = now - ttl * 86400
+        for root, _, files in os.walk(scan_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                try:
+                    if os.path.getmtime(path) < cutoff:
+                        os.remove(path)
+                        removed += 1
+                except OSError:
+                    logging.warning("clean_docking_cache: cannot remove %s", path)
     if removed:
         logging.info("Docking cache cleaned: %d files removed", removed)
     return removed

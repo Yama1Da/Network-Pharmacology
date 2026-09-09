@@ -473,7 +473,7 @@ TEXT: dict[str, dict[str, str]] = {
         "dock.save3d_ok_online": "✅ Saved: `{path}` — note: 3Dmol.js could not be embedded, the file needs internet to display",
         "dock.save3d_failed": "Failed to save interactive 3D view: {exc}",
         "dock.run_to_interpret": "Run a docking to interpret and archive results here.",
-        "dock.cache_policy": "Cache policy: raw files (SDF/PDB/vina output) are auto-cleaned with a 24-hour TTL; processed ligand/receptor pdbqt files with a 7-day TTL; results under downloads/MDresult keep at most 3 versions (oldest auto-deleted). Starred results can be viewed and managed on the Star Management page.",
+        "dock.cache_policy": "Cache policy: raw files (SDF/PDB/vina output) are auto-cleaned with a 24-hour TTL; processed ligand/receptor pdbqt files with a 7-day TTL; results under downloads/MDresult keep at most 3 versions (oldest auto-deleted). The UniProt gene map and the 3Dmol.js library are long-term caches and are never auto-cleaned. Starred results can be viewed and managed on the Star Management page.",
     },
     # ==================== 中文 ====================
     "zh": {
@@ -937,7 +937,7 @@ TEXT: dict[str, dict[str, str]] = {
         "dock.save3d_ok_online": "✅ 已保存：`{path}` — 注意：3Dmol.js 库未能内嵌，该文件需联网才能显示结构",
         "dock.save3d_failed": "交互式 3D 视图保存失败：{exc}",
         "dock.run_to_interpret": "运行对接后可在此解读并归档。",
-        "dock.cache_policy": "缓存策略：raw 原始文件（SDF/PDB/vina 输出）按 24 小时 TTL 自动清理；ligand/receptor pdbqt 加工产物按 7 天 TTL 清理；成果在 downloads/MDresult 下按条件最多保留 3 版，旧版自动删除。收藏的成果可在 Star Management 页面查看与管理。",
+        "dock.cache_policy": "缓存策略：raw 原始文件（SDF/PDB/vina 输出）按 24 小时 TTL 自动清理；ligand/receptor pdbqt 加工产物按 7 天 TTL 清理；成果在 downloads/MDresult 下按条件最多保留 3 版，旧版自动删除。UniProt 基因映射与 3Dmol.js 库为长期缓存，不参与自动清理。收藏的成果可在 Star Management 页面查看与管理。",
     },
 }
 

@@ -360,6 +360,56 @@ def t_docking_result_prefix():
     assert f("", "", "") == "docking"
 
 
+def t_clean_docking_cache_exempts_permanent():
+    """缓存清理只扫 raw/ligand/receptor 三个子目录:过期文件按各自 TTL 删除,
+    缓存根目录下的长期缓存(UniProt 基因映射 / 3Dmol.js 库)即使 mtime 很老也不动。"""
+    import shutil
+
+    base = tempfile.mkdtemp(prefix="selfcheck_dockcache_")
+    cache_dir = os.path.join(base, "docking")
+    raw_dir = os.path.join(cache_dir, "raw")
+    lig_dir = os.path.join(cache_dir, "ligand")
+    rec_dir = os.path.join(cache_dir, "receptor")
+    for d in (raw_dir, lig_dir, rec_dir):
+        os.makedirs(d)
+
+    def _aged(path: str, days: float) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("x")
+        old = time.time() - days * 86400 - 60
+        os.utime(path, (old, old))
+
+    old_raw = os.path.join(raw_dir, "vina_out_old.pdbqt")
+    old_lig = os.path.join(lig_dir, "ligand_old.pdbqt")
+    new_lig = os.path.join(lig_dir, "ligand_new.pdbqt")
+    new_rec = os.path.join(rec_dir, "receptor_fresh.pdbqt")
+    uniprot_map = os.path.join(cache_dir, "uniprot_gene_map.json")
+    threedmol = os.path.join(cache_dir, "3Dmol-min.js")
+    _aged(old_raw, 3)        # raw 超过 1 天 → 删
+    _aged(old_lig, 9)        # ligand 超过 7 天 → 删
+    _aged(new_lig, 3)        # ligand 未过期 → 留
+    _aged(new_rec, 0)        # receptor 新文件 → 留
+    _aged(uniprot_map, 30)   # 根目录长期缓存(故意做旧) → 必须豁免
+    _aged(threedmol, 30)     # 同上
+    try:
+        with patch_attr(config, "DOCKING_CACHE_DIR", cache_dir), \
+                patch_attr(config, "DOCKING_RAW_CACHE_DIR", raw_dir), \
+                patch_attr(config, "DOCKING_LIGAND_CACHE_DIR", lig_dir), \
+                patch_attr(config, "DOCKING_RECEPTOR_CACHE_DIR", rec_dir):
+            removed = dock.clean_docking_cache()
+            assert removed == 2, removed
+            assert not os.path.exists(old_raw) and not os.path.exists(old_lig)
+            assert os.path.exists(new_lig) and os.path.exists(new_rec)
+            assert os.path.exists(uniprot_map), "UniProt 映射缓存不得被 TTL 清理"
+            assert os.path.exists(threedmol), "3Dmol.js 库缓存不得被 TTL 清理"
+            # ttl_days=0 的"全清"同样只清三个子目录,根目录长期缓存仍豁免
+            removed0 = dock.clean_docking_cache(ttl_days=0)
+            assert removed0 == 2, removed0  # new_lig / new_rec 此时全部过期
+            assert os.path.exists(uniprot_map) and os.path.exists(threedmol)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def main():
     tests = [
         ("clamp_box under/over limit", t_clamp_box),
@@ -376,6 +426,7 @@ def main():
         ("interactions near ligand", t_interactions_near_ligand),
         ("ui settings roundtrip", t_ui_settings_roundtrip),
         ("docking result prefix sanitize", t_docking_result_prefix),
+        ("cache clean exempts permanent files", t_clean_docking_cache_exempts_permanent),
     ]
     run(tests, "docking AlphaFold selfcheck")
 
