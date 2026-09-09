@@ -1,17 +1,7 @@
-import logging
 import os
-
-import pandas as pd
-import streamlit as st
 
 import config
 import Utils
-from i18n import t
-
-st.set_page_config(page_title=t("disease_mgmt.page_title"), layout="wide")
-
-# 隐藏侧边栏,全屏显示页面;行内 Update 按钮紫底、Download 按钮绿底
-Utils.hide_sidebar(Utils.CSS_BTN_UPDATE + "\n" + Utils.CSS_BTN_DOWNLOAD)
 
 # 各来源文件的抓取逻辑:返回 (表, 是否成功),供 Utils.refresh_cache_file 调用
 def _fetch_opentargets(name: str, cache_hours):
@@ -50,75 +40,9 @@ _SPEC = {
     "invalidate_merged": _invalidate_merged_disease,
 }
 
-st.title(t("disease_mgmt.title"))
-st.caption(t("disease_mgmt.caption"))
-
-# 展示上一次单文件更新的结果
-last_update = st.session_state.pop("last_update", None)
-if last_update:
-    if last_update["Status"] == "OK":
-        st.success(t("common.file_updated", file=last_update["File"], msg=last_update["Message"]))
-    else:
-        st.error(t("common.file_update_failed", file=last_update["File"], msg=last_update["Message"]))
-
-col_back, col_update = st.columns([1, 1])
-with col_back:
-    Utils.back_button()
-with col_update:
-    all_update_clicked = st.button(t("common.all_updates"), key="update_btn")
-
-if all_update_clicked:
-    with st.spinner(t("disease_mgmt.updating_all")):
-        results = Utils.update_all_cache_files(_SPEC)
-    if results.empty:
-        st.info(t("disease_mgmt.no_files_to_update"))
-    else:
-        st.dataframe(results, width="stretch", hide_index=True)
-        if results["Status"].eq("OK").all():
-            st.success(t("common.all_complete"))
-        else:
-            st.warning(t("common.some_failed"))
-
-st.divider()
-
-source_files = Utils.list_cache_files("disease")
-merged_files = Utils.list_cache_files("merged")
-merged_files = merged_files[merged_files["File name"].str.startswith("merged_disease_")]
-
-# 数据来源筛选(默认全开):只作用于来源文件;merged 整合文件来自两个来源,始终显示
-st.caption(t("common.source_filter"))
-c_ot, c_dg = st.columns(2)
-with c_ot:
-    show_opentargets = st.checkbox("Open Targets", value=True, key="flt_opentargets")
-with c_dg:
-    show_disgenet = st.checkbox("DisGeNET", value=True, key="flt_disgenet")
-
-def _match_source(n: str) -> bool:
-    if n.startswith("OpenTargets_"):
-        return show_opentargets
-    if n.startswith("DisGeNET_"):
-        return show_disgenet
-    return True
-
-n_source = len(source_files)
-if n_source:
-    source_files = source_files[source_files["File name"].map(_match_source)]
-disease_files = pd.concat([source_files, merged_files], ignore_index=True)
-clicked_file = None
-
-if disease_files.empty:
-    # 有来源文件但全被筛掉时,按"筛选无结果"提示,与"目录本来就空"区分开
-    st.info(t("common.filter_no_match") if n_source else t("disease_mgmt.no_files"))
-else:
-    clicked_file = Utils.render_updateable_file_table(disease_files, _SPEC, search_key="search_disease")
-
-# 单文件更新在页面渲染完成后执行,完成或出错都会记录结果并刷新页面
-if clicked_file:
-    with st.spinner(t("common.updating_file", file=clicked_file)):
-        try:
-            result = Utils.refresh_cache_file(clicked_file, _SPEC)
-        except Exception:
-            logging.exception("update failed for '%s'", clicked_file)
-            result = {"Status": "FAILED", "Message": "update error"}
-    st.session_state["last_update"] = {"File": clicked_file, **result}
-    st.rerun()
+# 渲染流程与药物管理页共用(Utils.render_source_management_page);
+# 更新 TTL 走 refresh 系列默认值
+Utils.render_source_management_page(
+    "disease", _SPEC,
+    source_filters=[("Open Targets", "flt_opentargets"), ("DisGeNET", "flt_disgenet")],
+)
