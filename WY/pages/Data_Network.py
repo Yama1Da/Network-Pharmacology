@@ -303,6 +303,7 @@ def _render_main_figures(graph, metrics_df, edges_df, hub_method: str, mcc_map: 
             mcc_map = compute_mcc_scores(graph)
         except Exception:
             logging.exception("MCC computation failed — core target figure skipped")
+    hub_df = metrics_df[metrics_df["is_hub"]]  # 默认值:MCC 失败时 hub 表不带 mcc 列
     if mcc_map:
         metrics_df["mcc"] = metrics_df["gene"].map(mcc_map)
         hub_df = metrics_df[metrics_df["is_hub"]]  # 重取让 Hub 表带上 mcc 列
