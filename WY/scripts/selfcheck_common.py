@@ -1,9 +1,26 @@
 """自检脚本公共 runner:通过/失败统计与退出码,供 selfcheck_*.py 共用。"""
 
+import logging
 import os
 import sys
 import tempfile
 from contextlib import contextmanager
+
+
+def silence_streamlit_bare_mode_warnings() -> None:
+    """压掉裸脚本运行时的 streamlit 警告(如 missing ScriptRunContext,官方注明可忽略)。
+    streamlit 给每个子 logger 单独设级别且不向父级传播,必须逐个压。
+    仅影响自检输出整洁,不影响 streamlit run 正常运行。"""
+    import streamlit  # noqa: F401  确保其子 logger 已全部创建
+
+    for name in list(logging.root.manager.loggerDict):
+        if name == "streamlit" or name.startswith("streamlit."):
+            logging.getLogger(name).setLevel(logging.ERROR)
+
+
+# 自检脚本 import Utils 等模块时就会触发 @st.cache_data 初始化并刷 bare-mode 警告,
+# 因此须在本模块被导入时(import 链最早处)就完成静音,等测试函数里再调就晚了。
+silence_streamlit_bare_mode_warnings()
 
 
 def check(name: str, fn) -> bool:

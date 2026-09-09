@@ -633,8 +633,10 @@ if run_btn:
                 {**mods_auto, "ppi_params": ppi_result["params"]}
                 if mods_auto is not None else None
             )
-            # 新报告生成后,网络图视图选择回到默认交互式(清掉组件记忆,选择框按 index=0 初始化)
-            st.session_state.pop("ppi_view", None)
+            # 新报告生成后,网络图视图选择回到默认交互式:视图选择框的 key 绑定报告实例
+            # (见下方显示段),这里清掉旧报告的键,避免会话内键随分析次数无限累积
+            for _k in [k for k in st.session_state if str(k).startswith("ppi_view::")]:
+                st.session_state.pop(_k, None)
             st.rerun()
 
 # ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
@@ -1115,11 +1117,15 @@ if ppi is not None:
         if ppi.get("cyto_fig") is not None:
             available.append("cytoscape")
         # 上次选中的图这次不存在(旧结果/渲染失败)时清掉,让选择框回到默认交互式
-        if st.session_state.get("ppi_view") not in available:
-            st.session_state.pop("ppi_view", None)
+        # key 绑定报告实例(id 每次新分析都不同;旧 ppi 被替换前一直存活,id 不会复用):
+        # 直接复用固定 key 时,streamlit 前端控件不会跟随服务端 pop 重置,仍显示用户
+        # 上次选的旧选项,与服务端实际渲染的默认交互式图脱节;换 key 即换新控件,彻底同步。
+        view_key = f"ppi_view::{id(ppi)}"
+        if st.session_state.get(view_key) not in available:
+            st.session_state.pop(view_key, None)
         st.subheader(t("net.view_subheader"))
         view = st.selectbox(t("net.view_label"), available, index=0,
-                            format_func=lambda v: views[v][0], key="ppi_view")
+                            format_func=lambda v: views[v][0], key=view_key)
         view_caption = views[view][1]
         if view_caption:
             st.caption(view_caption)

@@ -15,7 +15,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from selfcheck_common import _tmp_uniprot_cache, patch_attr, run
+from selfcheck_common import (_tmp_uniprot_cache, patch_attr, run,
+                              silence_streamlit_bare_mode_warnings)
 
 import requests
 
@@ -333,6 +334,8 @@ def t_docking_result_prefix():
     """归档前缀消毒:空段剔除(不出现 unnamed)、路径穿越/分隔符净化、正常名与主分析页命名对齐。"""
     import streamlit as _st
 
+    # 裸脚本导入页面模块会触发 streamlit bare-mode 警告,统一压掉保持输出干净
+    silence_streamlit_bare_mode_warnings()
     # 页面模块导入期会顺手清理过期缓存,先置位跳过,避免测试触碰真实缓存目录
     _st.session_state["_docking_cache_cleaned"] = True
     pages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pages")
