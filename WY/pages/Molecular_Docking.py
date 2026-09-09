@@ -151,6 +151,19 @@ def _read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
     return hub, enr
 
 
+def _docking_result_prefix(drug: str, disease: str, gene: str) -> str:
+    """归档结果目录名前缀:三段各自过 safe_name 消毒,防止用户输入中的路径分隔符等
+    特殊字符进入文件路径;空段必须先剔除再消毒(safe_name 对空串返回 "unnamed",
+    直接套会凭空出现 unnamed 段),全空回退 "docking"。safe_name 只用于目录命名,
+    meta 等人读字段仍用原始输入。"""
+    parts = []
+    for seg in (drug, disease, gene):
+        seg = (seg or "").strip()
+        if seg:
+            parts.append(Utils.safe_name(seg))
+    return "_".join(parts) or "docking"
+
+
 def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, box: dict,
                          out_pdbqt: str, scores: pd.DataFrame, conclusion: str,
                          receptor_source: str = "experiment") -> str:
@@ -823,7 +836,7 @@ if dock.get("result"):
         with col_save:
             if st.button(t("dock.save_btn"), key="save_result"):
                 gene = dock.get("gene", "gene")
-                prefix = f"{drug}_{disease}_{gene}".strip("_").replace(" ", "_")
+                prefix = _docking_result_prefix(drug, disease, gene)
                 try:
                     result_dir = _save_docking_result(
                         prefix, gene, dock.get("pdb_id", ""), dock.get("cid"),

@@ -329,6 +329,37 @@ def t_ui_settings_roundtrip():
             os.remove(tmp)
 
 
+def t_docking_result_prefix():
+    """归档前缀消毒:空段剔除(不出现 unnamed)、路径穿越/分隔符净化、正常名与主分析页命名对齐。"""
+    import streamlit as _st
+
+    # 页面模块导入期会顺手清理过期缓存,先置位跳过,避免测试触碰真实缓存目录
+    _st.session_state["_docking_cache_cleaned"] = True
+    pages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pages")
+    if pages_dir not in sys.path:
+        sys.path.insert(0, pages_dir)
+    import Molecular_Docking as md
+
+    f = md._docking_result_prefix
+    # 正常名:与主分析页(Data_Network)的前缀命名规则一致
+    assert f("metformin", "Type 2 diabetes mellitus", "EGFR") == \
+        "metformin_Type_2_diabetes_mellitus_EGFR"
+    # 手动基因模式 drug/disease 为空:空段剔除,不出现 unnamed、不产生前导下划线
+    assert f("", "", "TP53") == "TP53"
+    assert f("  ", "", "TP53") == "TP53"
+    # 路径穿越与分隔符:目录名不含 / 等字符,不逃出结果目录(旧实现 ".." 可逃逸一级)
+    assert f("../evil", "a/b", "TP53") == "evil_a_b_TP53"
+    assert f("..", "", "TP53") == "unnamed_TP53"
+    # 含点/撇号的名字:统一归下划线,与分析页产物命名对齐
+    assert f("St. John's Wort", "", "TP53") == "St_John_s_Wort_TP53"
+    # 中文输入保留
+    assert f("二甲双胍", "2型糖尿病", "EGFR") == "二甲双胍_2型糖尿病_EGFR"
+    # 全部为纯特殊字符段:safe_name 各自兜底为 unnamed
+    assert f(".", "..", "!") == "unnamed_unnamed_unnamed"
+    # 全空:回退固定名,避免空文件名
+    assert f("", "", "") == "docking"
+
+
 def main():
     tests = [
         ("clamp_box under/over limit", t_clamp_box),
@@ -344,6 +375,7 @@ def main():
         ("pocket residues cutoff param", t_residues_near_ligand_cutoff),
         ("interactions near ligand", t_interactions_near_ligand),
         ("ui settings roundtrip", t_ui_settings_roundtrip),
+        ("docking result prefix sanitize", t_docking_result_prefix),
     ]
     run(tests, "docking AlphaFold selfcheck")
 
