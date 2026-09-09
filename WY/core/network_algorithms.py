@@ -83,6 +83,31 @@ def _purge_module_cache(files: list[str], module_id: int, reason: str) -> None:
             logging.exception("Failed to remove suspect cache file %s", f)
 
 
+def _purge_orphan_module_caches(module_ids: set[int], label_prefix: str) -> None:
+    """删除同分析标识下编号已不属于本次模块集的旧模块缓存(上次模块数更多时留下的孤儿文件)。
+    缓存命中本就有基因集 md5 键校验,孤儿文件不会被误用,删除只为目录整洁;只匹配
+    gProfiler_/Enrichr_ 前缀下 `<标识>_module<纯数字>.csv` 命名,不碰其他文件。"""
+    import config
+
+    cache_dir = config.ENRICHMENT_CACHE_DIR
+    if not os.path.isdir(cache_dir):
+        return
+    stem = f"{label_prefix}_module" if label_prefix else "module"
+    for source in ("gProfiler", "Enrichr"):
+        head = f"{source}_{stem}"
+        for name in os.listdir(cache_dir):
+            if not name.startswith(head) or not name.endswith(".csv"):
+                continue
+            num = name[len(head):-len(".csv")]
+            if not num.isdigit() or int(num) in module_ids:
+                continue
+            try:
+                os.remove(os.path.join(cache_dir, name))
+                logging.info("Orphan module cache removed: %s", name)
+            except OSError:
+                logging.exception("Failed to remove orphan module cache %s", name)
+
+
 def _enrich_single_module(genes: list[str], organism: str, sources: tuple,
                           pvalue: float, label: str) -> tuple[pd.DataFrame, bool, str]:
     """单模块富集：先 g:Profiler，不行再降级用 Enrichr。返回 (结果表, 是否失败, 失败/状态说明)。
@@ -133,6 +158,8 @@ def enrich_modules(
 
     sources = sources or config.ENRICHMENT_SOURCES
     candidates = [m for m in modules if m["size"] >= min_module_size][:top_n_modules]
+    # 先清掉上次分析遗留的孤儿模块缓存(编号超出本次模块集),目录不随多次分析无限增长
+    _purge_orphan_module_caches({m["module_id"] for m in candidates}, label_prefix)
 
     def _enrich_one(m: dict) -> tuple[str, dict]:
         """单个模块的富集 + 失败处理,返回 (类别, 数据):ok/failed/no_sig。

@@ -120,3 +120,33 @@ def read_cache_key(cache_file: str) -> str | None:
     except OSError:
         return None
     return None
+
+
+def clean_expired_cache_files(directory: str, *, exts: tuple[str, ...] = (".csv", ".json"),
+                              ttl_seconds: int | None = None) -> int:
+    """删除目录里超过缓存有效期(CACHE_TTL_SECONDS)的缓存文件,返回删除数;目录不存在为 0。
+    TTL 在各命中判定里只挡复用、不删文件,长期使用目录只增不减;这些结果都已永久保存在
+    分析结果目录(<prefix>_data)中,过期文件直接删除即可,下次分析会重算并覆盖。"""
+    import time
+
+    import config
+
+    if not os.path.isdir(directory):
+        return 0
+    if ttl_seconds is None:
+        ttl_seconds = config.CACHE_TTL_SECONDS
+    cutoff = time.time() - ttl_seconds
+    removed = 0
+    for name in os.listdir(directory):
+        if not name.endswith(tuple(exts)):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            logging.exception("Failed to remove expired cache %s", path)
+    if removed:
+        logging.info("Expired caches removed in %s: %d file(s)", directory, removed)
+    return removed

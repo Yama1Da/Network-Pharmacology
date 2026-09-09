@@ -24,7 +24,9 @@ from core.ppi import (
     compute_mcc_scores,
     pick_top_mcc_genes,
     render_core_target_plot,
+    render_cytoscape_style_plot,
     render_pyvis_html,
+    render_string_style_plot,
     save_gsea_results,
     save_module_results,
     save_proximity_results,
@@ -277,14 +279,25 @@ def _modules_task(graph, organism: str, prefix: str):
         return None
 
 
-def _render_main_figures(graph, metrics_df, hub_method: str, mcc_map: dict):
-    """主线程渲染 pyvis 交互图、静态图与核心靶点图(pyplot 全局状态非线程安全,须留在主线程)。
+def _render_main_figures(graph, metrics_df, edges_df, hub_method: str, mcc_map: dict):
+    """主线程渲染 pyvis 交互图、静态图、STRING/Cytoscape 风格图与核心靶点图
+    (pyplot 全局状态非线程安全,须留在主线程)。
 
-    MCC 得分缺失时在此补算,并入 metrics_df(随节点 CSV 落盘);核心靶点图失败只跳过自身。
-    返回 (html_content, static_fig, mcc_map, hub_df, core_fig, core_genes)。
+    MCC 得分缺失时在此补算,并入 metrics_df(随节点 CSV 落盘);核心靶点图与两张风格图
+    失败只跳过自身。返回 (html_content, static_fig, mcc_map, hub_df, core_fig,
+    core_genes, string_fig, cyto_fig)。
     """
     html_content = Utils.render_pyvis_html(graph, metrics_df)
     static_fig = Utils.render_static_plot(graph, metrics_df)
+    string_fig = cyto_fig = None
+    try:
+        string_fig = render_string_style_plot(graph, metrics_df, edges_df)
+    except Exception:
+        logging.exception("STRING-style figure failed — skipped")
+    try:
+        cyto_fig = render_cytoscape_style_plot(graph, metrics_df)
+    except Exception:
+        logging.exception("Cytoscape-style figure failed — skipped")
     if not mcc_map:
         try:
             mcc_map = compute_mcc_scores(graph)
@@ -302,12 +315,14 @@ def _render_main_figures(graph, metrics_df, hub_method: str, mcc_map: dict):
                 core_fig = render_core_target_plot(graph, core_genes, mcc_map)
             except Exception:
                 logging.exception("Core target figure failed — skipped")
-    return html_content, static_fig, mcc_map, hub_df, core_fig, core_genes
+    return (html_content, static_fig, mcc_map, hub_df, core_fig, core_genes,
+            string_fig, cyto_fig)
 
 
 def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_content, prefix,
                            enrichment_df, enrichment_bar_fig, enrichment_dot_fig,
                            core_fig, dtp_fig, gsea_drug_df, gsea_disease_df,
+                           string_fig, cyto_fig,
                            expansion_df, rwr_results, proximity_result, modules_data,
                            progress=None) -> tuple[dict, dict | None]:
     """Step 5/5.5:全部结果保存到下载目录(同名分析旧目录会被替换,不会堆积)。
@@ -330,6 +345,8 @@ def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_cont
         enrichment_dot_fig=enrichment_dot_fig,
         core_fig=core_fig,
         target_pathway_fig=dtp_fig,
+        string_fig=string_fig,
+        cyto_fig=cyto_fig,
     )
     # GSEA 结果 CSV 保存进分析目录（空结果不保存），打包下载时自动包含
     gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
@@ -476,11 +493,12 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
             _prog(k, "running")
         _prog(fraction=0.40)
 
-        # 主线程在等待期间做 pyvis 交互图、静态图与核心靶点图渲染(纯本地计算);
+        # 主线程在等待期间做 pyvis 交互图、静态图、STRING/Cytoscape 风格图与核心靶点图渲染(纯本地计算);
         # MCC(CytoHubba 默认算法)与核心靶点图失败只跳过自身,不影响主报告。
         # hub_method="mcc" 时已在 Hub 筛选阶段算过 MCC,此处直接复用。
-        html_content, static_fig, mcc_map, hub_df, core_fig, core_genes = \
-            _render_main_figures(graph, metrics_df, hub_method, mcc_map)
+        (html_content, static_fig, mcc_map, hub_df, core_fig, core_genes,
+         string_fig, cyto_fig) = _render_main_figures(
+            graph, metrics_df, edges_df, hub_method, mcc_map)
         _prog(fraction=0.48)
 
         # 轮询任务完成情况并刷新进度面板(Streamlit 组件只能在脚本主线程更新)
@@ -526,6 +544,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         enrichment_df=enrichment_df, enrichment_bar_fig=enrichment_bar_fig,
         enrichment_dot_fig=enrichment_dot_fig, core_fig=core_fig, dtp_fig=dtp_fig,
         gsea_drug_df=gsea_drug_df, gsea_disease_df=gsea_disease_df,
+        string_fig=string_fig, cyto_fig=cyto_fig,
         expansion_df=expansion_df, rwr_results=rwr_results,
         proximity_result=proximity_result, modules_data=modules_data,
         progress=progress)
@@ -541,6 +560,8 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         "expansion_df": expansion_df,
         "html_content": html_content,
         "static_fig": static_fig,
+        "string_fig": string_fig,
+        "cyto_fig": cyto_fig,
         "mcc_map": mcc_map,
         "core_fig": core_fig,
         "core_genes": core_genes,
@@ -611,6 +632,8 @@ if run_btn:
                 {**mods_auto, "ppi_params": ppi_result["params"]}
                 if mods_auto is not None else None
             )
+            # 新报告生成后,网络图视图选择回到默认交互式(清掉组件记忆,选择框按 index=0 初始化)
+            st.session_state.pop("ppi_view", None)
             st.rerun()
 
 # ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
@@ -998,6 +1021,18 @@ def _render_downloads(metrics_df, edges_df, html_content: str, saved: dict, pref
         if "dtp_png" in saved:
             items.append(("net.dl_dtp_png", saved["dtp_png"],
                           f"{prefix}_enrichment_network.png", "image/png"))
+        if "string_png" in saved:
+            items.append(("net.dl_string_png", saved["string_png"],
+                          f"{prefix}_network_string.png", "image/png"))
+        if "string_svg" in saved:
+            items.append(("net.dl_string_svg", saved["string_svg"],
+                          f"{prefix}_network_string.svg", "image/svg+xml"))
+        if "cyto_png" in saved:
+            items.append(("net.dl_cyto_png", saved["cyto_png"],
+                          f"{prefix}_network_cytoscape.png", "image/png"))
+        if "cyto_svg" in saved:
+            items.append(("net.dl_cyto_svg", saved["cyto_svg"],
+                          f"{prefix}_network_cytoscape.svg", "image/svg+xml"))
         items.append(("net.dl_zip", Utils.make_ppi_zip(saved),
                       f"{prefix}_results.zip", "application/zip"))
 
@@ -1064,11 +1099,38 @@ if ppi is not None:
         else:
             st.dataframe(hub_df, width="stretch", hide_index=True)
 
-        st.subheader(t("net.interactive"))
-        st.iframe(html_content, height=640)
-
-        st.subheader(t("net.static"))
-        st.pyplot(static_fig)
+        # ---------- 网络图展示:下拉切换,默认交互式 ----------
+        # 四种图(交互/静态/STRING/Cytoscape)无论当前选中哪个都已在 save_ppi_results 阶段落盘,
+        # 这里只控制"看哪张";渲染失败的风格图不出现在选项里,不阻塞其余选项。
+        views: dict[str, tuple[str, str | None]] = {
+            "interactive": (t("net.view_interactive"), None),
+            "static": (t("net.view_static"), None),
+            "string": (t("net.view_string"), t("net.string_style_caption")),
+            "cytoscape": (t("net.view_cyto"), t("net.cyto_style_caption")),
+        }
+        available = ["interactive", "static"]
+        if ppi.get("string_fig") is not None:
+            available.append("string")
+        if ppi.get("cyto_fig") is not None:
+            available.append("cytoscape")
+        # 上次选中的图这次不存在(旧结果/渲染失败)时清掉,让选择框回到默认交互式
+        if st.session_state.get("ppi_view") not in available:
+            st.session_state.pop("ppi_view", None)
+        st.subheader(t("net.view_subheader"))
+        view = st.selectbox(t("net.view_label"), available, index=0,
+                            format_func=lambda v: views[v][0], key="ppi_view")
+        view_caption = views[view][1]
+        if view_caption:
+            st.caption(view_caption)
+        if view == "interactive":
+            st.iframe(html_content, height=640)
+        elif view == "static":
+            st.pyplot(static_fig)
+        elif view == "string":
+            st.pyplot(ppi["string_fig"])
+        else:
+            st.pyplot(ppi["cyto_fig"])
+        st.caption(t("net.view_saved_note"))
 
         # ---------- 核心靶点子网络（CytoHubba 式 MCC Top N） ----------
         core_fig = ppi.get("core_fig")

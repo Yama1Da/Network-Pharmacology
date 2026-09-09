@@ -1,5 +1,6 @@
 """PPI 网络分析:从 STRING 获取蛋白互作边表,构建网络并计算拓扑指标,绘图并保存结果。"""
 
+import functools
 import hashlib
 import logging
 import os
@@ -7,7 +8,8 @@ import os
 import pandas as pd
 import requests
 
-from .caching import open_csv_cache, save_csv_cache
+from .caching import (_is_cache_fresh, clean_expired_cache_files, open_csv_cache,
+                      read_cache_key, save_csv_cache)
 from .http_client import request_with_retry
 from .text_utils import safe_name
 
@@ -39,7 +41,7 @@ def fetch_string_ppi(
 ) -> pd.DataFrame:
     """从 STRING 数据库获取基因列表的蛋白互作边表:先把基因符号映射为 STRING 蛋白 ID(不认识的基因被剔除),再按置信度阈值 score(0~1)筛选互作边。
     network_type 默认 "full" 为功能关联,"physical" 仅保留有物理结合证据的互作;species 为物种编号,人类是 "9606";基因列表自动去重排序,最多取 1000 个;min_degree 为建网后按连接数隐藏节点的阈值,默认 1 即只隐藏孤立节点(对齐文献惯例,不做更高连接度剪枝)。
-    相同参数的结果存为本地缓存,有效期内直接复用;请求失败、基因全部不被识别或没有达到阈值的边时,返回空表。"""
+    相同参数的结果存为本地缓存,有效期内且基因列表指纹与文件头记录一致时直接复用,否则重新请求覆盖;请求失败、基因全部不被识别或没有达到阈值的边时,返回空表。"""
     import config
 
     genes = sorted({g.strip() for g in genes if g and g.strip()})
@@ -47,6 +49,11 @@ def fetch_string_ppi(
         return pd.DataFrame()
     if len(genes) > config.STRING_QUERY_LIMIT:
         genes = genes[:config.STRING_QUERY_LIMIT]
+
+    # 基因列表短指纹写入缓存文件头,命中时校验:缓存文件名只有参数不含基因列表,
+    # 上游变化(设置调整后交集/RWR 扩展更新等)会在 TTL 内让同名缓存命中旧查询集的边表,
+    # 校验指纹不符立即视为未命中重算覆盖(旧格式无指纹行的文件按不匹配处理)。
+    gene_md5 = hashlib.md5("\r".join(genes).encode("utf-8")).hexdigest()
 
     # 缓存文件名由来源标识、置信度阈值、度数阈值拼成。
     # 相同参数组合固定同名,重新生成时直接覆盖旧文件。
@@ -56,13 +63,19 @@ def fetch_string_ppi(
         if label_part == "manual":
             # 手动基因模式的基因列表无法从名字区分,附加基因列表短指纹作缓存标识,
             # 避免不同基因列表混用同一份缓存
-            gene_fp = hashlib.md5("\r".join(genes).encode("utf-8")).hexdigest()[:8]
-            name = f"StringPPI_manual_{score:g}_{int(min_degree)}_{gene_fp}.csv"
+            name = f"StringPPI_manual_{score:g}_{int(min_degree)}_{gene_md5[:8]}.csv"
     else:
         name = f"StringPPI_{score:g}_{int(min_degree)}.csv"
     cache_file = os.path.join(config.PPI_CACHE_DIR, name)
 
-    cached = open_csv_cache(cache_file, fresh=True, label=f"STRING PPI for {len(genes)} genes")
+    # TTL 过期文件在命中判定里只会被跳过、不会被删除,这里顺手清理避免缓存目录只增不减
+    clean_expired_cache_files(config.PPI_CACHE_DIR)
+
+    # 命中需同时满足 TTL 未过期与文件头指纹一致(与富集缓存同一判定顺序):
+    # 先验键再读文件,指纹不符或旧格式无键行按未命中处理,避免白读文件与误导性命中日志
+    cached = None
+    if _is_cache_fresh(cache_file) and read_cache_key(cache_file) == gene_md5[:12]:
+        cached = open_csv_cache(cache_file, fresh=True, label=f"STRING PPI for {len(genes)} genes")
     if cached is not None:
         return cached
 
@@ -114,7 +127,7 @@ def fetch_string_ppi(
             "ascore", "escore", "dscore", "tscore"]
     df = df[[c for c in keep if c in df.columns]]
 
-    save_csv_cache(df, cache_file)
+    save_csv_cache(df, cache_file, header_lines=[gene_md5[:12]])
     logging.info("STRING PPI for %d genes: %d edges cached", len(genes), len(df))
     return df
 
@@ -386,6 +399,270 @@ def render_static_plot(graph: "nx.Graph", metrics_df: pd.DataFrame) -> "matplotl
     return fig
 
 
+# STRING 官方证据通道配色:列名 → (颜色, 图例名);连线颜色取七个通道中得分最高者
+_EVIDENCE_CHANNELS = (
+    ("escore", "#F963C1", "Experimentally determined"),
+    ("dscore", "#41CFC0", "Curated databases"),
+    ("tscore", "#E8E33B", "Textmining"),
+    ("ascore", "#111111", "Coexpression"),
+    ("pscore", "#3E5BD9", "Co-occurrence"),
+    ("nscore", "#2FBF3F", "Gene neighborhood"),
+    ("fscore", "#E63B3B", "Gene fusion"),
+)
+
+
+def _edge_evidence_map(edges_df: pd.DataFrame) -> dict:
+    """给每条互作边标注主导证据通道:取七个 STRING 通道得分里最高的那个。
+    返回 {(u, v): (颜色, 图例名, 得分)}(键为蛋白对排序后的元组);通道列缺失或得分全零时返回空表,
+    调用方据此把所有边画成灰色。"""
+    import numpy as np
+
+    channel_cols = [c for c, _, _ in _EVIDENCE_CHANNELS if c in edges_df.columns]
+    if not channel_cols or edges_df.empty:
+        return {}
+    vals = edges_df[channel_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    for c in channel_cols:  # 兼容个别通道以 0-999 计数返回的情况
+        if float(vals[c].max()) > 1.5:
+            vals[c] = vals[c] / 1000.0
+
+    mapping: dict[tuple[str, str], tuple[str, str, float]] = {}
+    order = edges_df.sort_values("score", ascending=False).index
+    seen: set[tuple[str, str]] = set()
+    for idx in order:
+        row = vals.loc[idx]
+        u = str(edges_df.at[idx, "protein_A"])
+        v = str(edges_df.at[idx, "protein_B"])
+        key = tuple(sorted((u, v)))
+        if key in seen:
+            continue
+        seen.add(key)
+        arr = row.to_numpy(dtype=float)
+        best = int(arr.argmax())
+        color, legend = _EVIDENCE_CHANNELS[best][1], _EVIDENCE_CHANNELS[best][2]
+        mapping[key] = (color, legend, float(arr[best]))
+    return mapping
+
+
+@functools.lru_cache(maxsize=8)
+def _ball_sprite(color: str, px: int = 72) -> tuple:
+    """预渲染一张径向渐变"蛋白球"贴图(基色 + 左上高光 + 边缘压暗),模拟 STRING 的 3D 球节点。
+    返回 (rgb 数组, alpha 数组),均为 px×px;按颜色缓存,同色节点复用同一张贴图。"""
+    import numpy as np
+    from matplotlib import colors as mcolors
+
+    yy, xx = np.mgrid[0:px, 0:px]
+    u = xx / (px - 1) * 2.0 - 1.0
+    v = yy / (px - 1) * 2.0 - 1.0
+    r = np.hypot(u, v)
+    base = np.array(mcolors.to_rgb(color))
+    shade = 0.38 + 0.62 * np.clip(1.0 - r, 0.0, 1.0) ** 0.85
+    spec = np.exp(-(((u + 0.42) ** 2 + (v + 0.42) ** 2) / 0.14))
+    rgb = np.clip(base * shade[..., None] + spec[..., None] * 0.85, 0.0, 1.0)
+    alpha = np.clip((1.0 - r) * px * 0.5, 0.0, 1.0)
+    return rgb, alpha
+
+
+def render_string_style_plot(
+    graph: "nx.Graph",
+    metrics_df: pd.DataFrame,
+    edges_df: pd.DataFrame,
+) -> "matplotlib.figure.Figure":
+    """绘制 STRING 风格的静态 PPI 网络图(论文用):节点为带高光的渐变"蛋白球",大小 ∝ 连接数,
+    Hub 基因金色、其余淡蓝,标签置于节点外侧;连线颜色 = 该互作最强的证据通道(STRING 官方配色,
+    左下角附图例),粗细 ∝ 置信度。布局沿用固定 seed 的 spring 布局保证可复现。
+    edges_df 为 STRING 原始边表,用于提取各证据通道得分;通道列缺失或全零时连线退为灰色。"""
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    import networkx as nx
+    import numpy as np
+
+    n_nodes = len(graph.nodes())
+
+    fig, ax = plt.subplots(figsize=(13, 11))
+    if n_nodes == 0:
+        ax.text(0.5, 0.5, "No interactions above threshold", ha="center",
+                va="center", fontsize=12, color="#777777")
+        ax.axis("off")
+        return fig
+
+    hub_set = (set(metrics_df.loc[metrics_df["is_hub"], "gene"])
+               if "is_hub" in metrics_df.columns else set())
+    degree_map = dict(zip(metrics_df["gene"], metrics_df["degree"]))
+    max_deg = max(int(metrics_df["degree"].max()), 1) if len(metrics_df) else 1
+
+    pos = nx.spring_layout(graph, k=2.2 / (n_nodes ** 0.5), iterations=200, seed=42)
+    radius = {n: 0.014 + 0.030 * (float(degree_map.get(n, 0) / max_deg) ** 0.5)
+              for n in graph.nodes()}
+
+    # 边:先画灰底衬托,再按主导证据通道着色(通道缺失/全零时保持灰色)
+    evidence = _edge_evidence_map(edges_df)
+    edge_colors: list[str] = []
+    edge_widths: list[float] = []
+    for u, v, data in graph.edges(data=True):
+        color, _, best = evidence.get(tuple(sorted((str(u), str(v)))),
+                                      ("#9a9a9a", "", float(data.get("score", 0)) / 1000))
+        edge_colors.append(color)
+        edge_widths.append(0.4 + 1.8 * min(max(best, 0.0), 1.0))
+    nx.draw_networkx_edges(graph, pos, ax=ax, edge_color=edge_colors,
+                           width=edge_widths, alpha=0.8)
+
+    # 节点:渐变球贴图按圆形裁剪逐个贴上
+    for node, (x, y) in pos.items():
+        r = radius[node]
+        color = "#F5C518" if node in hub_set else "#64B5F6"
+        rgb, alpha = _ball_sprite(color)
+        im = ax.imshow(rgb, extent=(x - r, x + r, y - r, y + r), zorder=3,
+                       interpolation="bilinear", origin="upper")
+        im.set_alpha(alpha)
+        im.set_clip_path(mpatches.Circle((x, y), r, transform=ax.transData))
+
+    # 标签:沿"布局重心 → 节点"的离心方向外推到节点外,字号随网络规模收缩
+    cx = float(np.mean([p[0] for p in pos.values()]))
+    cy = float(np.mean([p[1] for p in pos.values()]))
+    font_by_scale = 7 if n_nodes <= 60 else (6 if n_nodes <= 120 else
+                                             (5 if n_nodes <= 200 else 4))
+    for node, (x, y) in pos.items():
+        dx, dy = x - cx, y - cy
+        dist = float(np.hypot(dx, dy)) or 1.0
+        lx = x + dx / dist * (radius[node] + 0.02)
+        ly = y + dy / dist * (radius[node] + 0.02)
+        ax.text(lx, ly, node, fontsize=font_by_scale,
+                fontweight="bold" if node in hub_set else "normal",
+                ha="center", va="center", color="#1a1a1a", zorder=4)
+
+    # 显式锁定坐标范围:imshow 会触发自动缩放,把窗口塌缩到最后一张贴图的范围内,
+    # 其余元素被甩出画布(tight bbox 随之爆炸),必须在此收口
+    xs = [p[0] for p in pos.values()]
+    ys = [p[1] for p in pos.values()]
+    ax.set_xlim(min(xs) - 0.15, max(xs) + 0.15)
+    ax.set_ylim(min(ys) - 0.15, max(ys) + 0.15)
+    ax.set_aspect("equal", adjustable="box")
+
+    # 图例:只列本次网络里实际出现的证据通道
+    present = {legend for _, legend, _ in evidence.values()}
+    if present:
+        handles = [Line2D([0], [0], color=color, lw=2.8)
+                   for _, color, legend in _EVIDENCE_CHANNELS if legend in present]
+        labels = [legend for _, _, legend in _EVIDENCE_CHANNELS if legend in present]
+        ax.legend(handles, labels, loc="lower left", fontsize=7,
+                  title="Interaction evidence", title_fontsize=8,
+                  framealpha=0.9, borderpad=0.6)
+
+    ax.set_title("STRING-style PPI network (edge color = interaction evidence)",
+                 fontsize=14)
+    ax.axis("off")
+    return fig
+
+
+def render_cytoscape_style_plot(graph: "nx.Graph", metrics_df: pd.DataFrame) -> "matplotlib.figure.Figure":
+    """绘制 Cytoscape 风格(论文常用)的静态 PPI 网络图:节点按连接数从高到低依次排入同心圆环,
+    高连接数的 Hub 居中、低连接数靶点在外圈;节点大小 ∝ 连接数,颜色按 viridis 反向渐变
+    (高 = 深紫,低 = 黄),标签置于节点内部并随节点尺寸自适应;连线为细灰边。布局完全由度数
+    决定(确定性,无随机力导向),同环节点按周长约束外推环半径避免重叠。"""
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+    from matplotlib.colors import Normalize
+    import networkx as nx
+    import numpy as np
+
+    deg_map = dict(zip(metrics_df["gene"], metrics_df["degree"].astype(int)))
+    nodes = sorted(graph.nodes(), key=lambda v: (-int(deg_map.get(v, 0)), str(v)))
+    n = len(nodes)
+
+    fig, ax = plt.subplots(figsize=(13, 12))
+    if n == 0:
+        ax.text(0.5, 0.5, "No nodes to display", ha="center", va="center",
+                fontsize=12, color="#777777")
+        ax.axis("off")
+        return fig
+
+    dmax = max(int(deg_map.get(nodes[0], 0)), 1)
+    radius = {v: 0.10 + 0.24 * float(int(deg_map.get(v, 0)) / dmax) ** 0.5
+              for v in nodes}
+
+    # 环容量按周长比例分配(内圈小、外圈大),舍入误差全部并入最外圈
+    n_rings = max(2, min(8, int(np.ceil((n ** 0.5) / 2.2))))
+    weights = np.arange(1, n_rings + 1, dtype=float)
+    caps = np.maximum(1, np.round(n * weights / weights.sum()).astype(int))
+    diff = int(caps.sum()) - n
+    i = n_rings - 1
+    while diff > 0:  # 舍入超出:从外圈往内逐环回收名额
+        if caps[i] > 1:
+            caps[i] -= 1
+            diff -= 1
+        i = n_rings - 1 if i == 0 else i - 1
+    if diff < 0:
+        caps[n_rings - 1] += -diff
+
+    rings: list[list[str]] = []
+    start = 0
+    for cap in caps:
+        rings.append(nodes[start:start + int(cap)])
+        start += int(cap)
+    rings = [r for r in rings if r]
+
+    # 环半径:相邻环留出"双方最大节点半径 + 间隙",且周长须容纳本环全部节点
+    ring_R: list[float] = []
+    prev_R = prev_r = 0.0
+    for i, ring in enumerate(rings):
+        r_i = max(radius[v] for v in ring)
+        if i == 0 and len(ring) == 1:
+            R = 0.0  # 唯一的第 1 名放在圆心(与参考图一致)
+        else:
+            R = prev_R + prev_r + r_i + 0.30
+            R = max(R, (2 * r_i + 0.30) * len(ring) / (2 * np.pi))
+        ring_R.append(R)
+        prev_R, prev_r = R, r_i
+
+    pos: dict[str, tuple[float, float]] = {}
+    for i, ring in enumerate(rings):
+        R, k = ring_R[i], len(ring)
+        if R == 0.0:
+            pos[ring[0]] = (0.0, 0.0)
+            continue
+        for j, node in enumerate(ring):
+            ang = np.pi / 2 + (j + (0.5 if i % 2 else 0.0)) * 2 * np.pi / k
+            pos[node] = (R * float(np.cos(ang)), R * float(np.sin(ang)))
+
+    nx.draw_networkx_edges(graph, pos, ax=ax, edge_color="#9a9a9a",
+                           width=0.7, alpha=0.45)
+
+    cmap_r = plt.get_cmap("viridis_r")
+    norm = Normalize(vmin=0, vmax=dmax)
+    for node, (x, y) in pos.items():
+        ax.add_patch(mpatches.Circle(
+            (x, y), radius[node],
+            facecolor=cmap_r(norm(int(deg_map.get(node, 0)))),
+            edgecolor="#3A3A3A", linewidth=0.5, zorder=3))
+
+    # 标签置于节点内部:字号按节点半径与基因名长度自适应(数据单位→pt 换算后钳制)
+    outer_R = ring_R[-1] + max(radius[v] for v in rings[-1])
+    ax.set_xlim(-outer_R - 1.0, outer_R + 1.0)
+    ax.set_ylim(-outer_R - 1.0, outer_R + 1.0)
+    ax.set_aspect("equal")
+    pt_per_unit = 72.0 * 13.0 / (2 * (outer_R + 1.0))
+    for node, (x, y) in pos.items():
+        fs = float(np.clip(2 * radius[node] * pt_per_unit * 0.80
+                           / (0.60 * max(len(node), 3)), 3.2, 9.5))
+        # 深色节点(高连接数,近紫色)配白字,浅色节点配黑字,保证标签可读
+        fc = cmap_r(norm(int(deg_map.get(node, 0))))[:3]
+        lum = 0.299 * fc[0] + 0.587 * fc[1] + 0.114 * fc[2]
+        ax.text(x, y, node, fontsize=fs, ha="center", va="center",
+                color="#ffffff" if lum < 0.45 else "#111111", zorder=4)
+
+    cb = fig.colorbar(cm.ScalarMappable(norm=norm, cmap=cmap_r),
+                      ax=ax, shrink=0.55, pad=0.02)
+    cb.set_label("Degree", fontsize=9)
+    cb.ax.tick_params(labelsize=8)
+
+    ax.set_title("PPI network (Cytoscape-style, degree-sorted concentric rings)",
+                 fontsize=14)
+    ax.axis("off")
+    return fig
+
+
 def save_ppi_results(
     graph: "nx.Graph",
     static_fig: "matplotlib.figure.Figure",
@@ -398,9 +675,11 @@ def save_ppi_results(
     enrichment_dot_fig: "matplotlib.figure.Figure | None" = None,
     core_fig: "matplotlib.figure.Figure | None" = None,
     target_pathway_fig: "matplotlib.figure.Figure | None" = None,
+    string_fig: "matplotlib.figure.Figure | None" = None,
+    cyto_fig: "matplotlib.figure.Figure | None" = None,
 ) -> dict:
     """把一次 PPI 分析的全部结果保存到结果目录下的 <prefix>_data 文件夹(prefix 为文件名前缀,如 aspirin_cancer),返回各文件的保存路径(含目录路径)。
-    保存前会删除同 prefix 的旧文件夹(含历史结果),同一药物+疾病组合只保留最新一次分析,不会越积越多;节点表含 is_hub 列(算出 MCC 时含 mcc 列),其余为边表、交互式网络、GraphML、静态图矢量版及各富集/核心靶点/通路网络图表。
+    保存前会删除同 prefix 的旧文件夹(含历史结果),同一药物+疾病组合只保留最新一次分析,不会越积越多;节点表含 is_hub 列(算出 MCC 时含 mcc 列),其余为边表、交互式网络、GraphML、静态图矢量版、STRING/Cytoscape 风格网络图及各富集/核心靶点/通路网络图表。
     传入富集结果表/图时才保存对应的富集文件,不传则跳过。"""
     import glob
     import shutil
@@ -444,6 +723,12 @@ def save_ppi_results(
     if target_pathway_fig is not None:
         paths["dtp_png"], paths["dtp_svg"] = _save_fig_pair(
             target_pathway_fig, subdir, prefix, "enrichment_network")
+    if string_fig is not None:
+        paths["string_png"], paths["string_svg"] = _save_fig_pair(
+            string_fig, subdir, prefix, "network_string")
+    if cyto_fig is not None:
+        paths["cyto_png"], paths["cyto_svg"] = _save_fig_pair(
+            cyto_fig, subdir, prefix, "network_cytoscape")
 
     paths["directory"] = subdir
     return paths

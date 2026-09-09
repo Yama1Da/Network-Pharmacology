@@ -309,11 +309,19 @@ def humanize_analysis_label(label: str) -> str:
 
 def enrichment_display_name(file_name: str) -> str:
     """富集缓存文件名 → 用户友好名称,如 gProfiler_aspirin_cancer_<哈希>.csv
-    → "aspirin → cancer · gProfiler"。无法识别的文件名原样返回。"""
+    → "aspirin → cancer · gProfiler";模块缓存的 `_moduleN` 后缀单独译成"模块 N",
+    避免被埋进疾病名文本里难以辨认。无法识别的文件名原样返回。"""
     info = parse_enrichment_filename(file_name)
     if info is None:
         return file_name
-    desc = humanize_analysis_label(info["label"])
+    label = info["label"]
+    module_desc = ""
+    if "_module" in label:
+        head, _, num = label.rpartition("_module")
+        if num.isdigit():
+            module_desc = t("enrich_file.module_n", n=int(num))
+            label = head
+    desc = humanize_analysis_label(label)
     if info["kind"] == "gsea":
         side = ""
         if info["side"] == "drug":
@@ -321,7 +329,7 @@ def enrichment_display_name(file_name: str) -> str:
         elif info["side"] == "disease":
             side = t("enrich_file.side_disease")
         return " · ".join(x for x in (desc, "GSEA", side) if x)
-    return " · ".join(x for x in (desc, info["source"]) if x)
+    return " · ".join(x for x in (desc, info["source"], module_desc) if x)
 
 
 # ---------- 数据管理页公共逻辑(药物/疾病两个管理页共用) ----------

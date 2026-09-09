@@ -7,7 +7,8 @@ import re
 
 import pandas as pd
 
-from .caching import _is_cache_fresh, read_cache_key, save_csv_cache
+from .caching import (_is_cache_fresh, clean_expired_cache_files, read_cache_key,
+                      save_csv_cache)
 
 # 两个数据源的基因集库名对应关系（GO 生物过程/分子功能/细胞组分、KEGG 通路）。
 ENRICHR_LIB_MAP = {
@@ -53,6 +54,26 @@ def enrichment_cache_filename(source_name: str, label: str | None, md5: str) -> 
     if label:
         return f"{source_name}_{label}.csv"
     return f"{source_name}_{md5[:_HASH_LEN]}.csv"
+
+
+# 富集缓存目录过期清理的上次执行时刻(monotonic):一次分析会多次进入取数路径,
+# 限频避免反复全目录扫描;间隔取缓存有效期的 1/4(不少于 5 分钟)。
+_cache_cleaned_at = -float("inf")
+
+
+def _clean_cache_dir_limited() -> None:
+    """清理富集缓存目录里超过 TTL 的文件。TTL 在命中判定里只挡复用、不删文件,
+    不清理则目录长期只增不减;结果已永久保存在分析结果目录,删除无损失。"""
+    global _cache_cleaned_at
+    import time
+
+    import config
+
+    now = time.monotonic()
+    if now - _cache_cleaned_at < max(config.CACHE_TTL_SECONDS / 4, 300):
+        return
+    _cache_cleaned_at = now
+    clean_expired_cache_files(config.ENRICHMENT_CACHE_DIR)
 
 
 # ---------- 缓存文件名解析(页面友好展示与分子对接选择共用) ----------
@@ -299,6 +320,7 @@ def _fetch_enrichment_cached(
         _set_status(status, False, "empty_input")
         return pd.DataFrame()
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
+    _clean_cache_dir_limited()
     md5 = _enrichment_cache_key(genes, organism, cache_key_extra, pvalue)
     cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR,
                               enrichment_cache_filename(source_name, label, md5))
@@ -860,6 +882,7 @@ def fetch_enrichment_gsea_prerank(
         return pd.DataFrame()
 
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
+    _clean_cache_dir_limited()
     gsea_md5 = _gsea_cache_md5(rnk, libs)
     cache_file = _gsea_cache_file(rnk, libs, label, md5=gsea_md5)
     cached = _hit_csv_cache(cache_file, gsea_md5, f"GSEA prerank result for {len(rnk)} genes")
