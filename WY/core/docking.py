@@ -1108,23 +1108,33 @@ __LIB__
   var interactions = __INTERACTIONS__;
   var viewer = $3Dmol.createViewer("viewer", { backgroundColor: "white" });
   viewer.addModel(receptor, "pdb");
-  viewer.setStyle({ model: 0 }, { cartoon: { color: "spectrum" } });
   viewer.addModel(ligand, "pdb");
   viewer.setStyle({ model: 1 }, { stick: { colorscheme: "greenCarbon" } });
   if (het) {
     viewer.addModel(het, "pdb");
     viewer.setStyle({ model: 2 }, { stick: { colorscheme: "greyCarbon", opacity: 0.5, radius: 0.15 } });
   }
-  if (pocket && pocket.length) {
-    var byChain = {};
-    pocket.forEach(function (r) {
-      (byChain[r.chain] = byChain[r.chain] || []).push(r.resi);
-    });
+  // 口袋残基按链分组选择(无链号时不限定 chain)
+  var byChain = {};
+  (pocket || []).forEach(function (r) {
+    (byChain[r.chain] = byChain[r.chain] || []).push(r.resi);
+  });
+  // 受体卡通样式统一由此函数设置:faded=true 时卡通整体半透明(虚化周围蛋白),
+  // 突出口袋棍状、相互作用虚线与距离标注;虚化只是显示开关,信息不删减,双击复位即可还原。
+  // 口袋残基的卡通与棍状在一条语句里显式声明完整样式,不依赖多次 setStyle 的合并行为
+  function applyProteinStyles(faded) {
+    var cartoon = faded ? { color: "spectrum", opacity: 0.3 } : { color: "spectrum" };
+    viewer.setStyle({ model: 0 }, { cartoon: cartoon });
     Object.keys(byChain).forEach(function (ch) {
       var sel = { model: 0, resi: byChain[ch] };
       if (ch) { sel.chain = ch; }
-      viewer.setStyle(sel, { stick: { colorscheme: "orangeCarbon", radius: 0.2 } });
+      viewer.setStyle(sel, { cartoon: cartoon,
+                             stick: { colorscheme: "orangeCarbon", radius: 0.2 } });
     });
+    viewer.render();
+  }
+  applyProteinStyles(false);
+  if (pocket && pocket.length) {
     pocket.forEach(function (r) {
       viewer.addLabel(r.resn + "-" + r.resi, {
         position: { x: r.pos[0], y: r.pos[1], z: r.pos[2] },
@@ -1157,13 +1167,16 @@ __LIB__
   });
   viewer.zoomTo();
   viewer.render();
-  // 聚焦口袋:以配体为中心、拉远到能框住口袋残基;双击复位为整体视图
+  // 聚焦口袋:以配体为中心、拉远到能框住口袋残基,并把周围蛋白卡通虚化;
+  // 双击复位为整体视图并取消虚化
   document.getElementById("focus").onclick = function () {
+    applyProteinStyles(true);
     viewer.zoomTo({ model: 1 });
     viewer.zoom(0.55, 400);
     viewer.render();
   };
   document.getElementById("viewer").ondblclick = function () {
+    applyProteinStyles(false);
     viewer.zoomTo();
     viewer.render();
   };

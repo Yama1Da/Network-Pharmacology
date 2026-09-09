@@ -288,6 +288,8 @@ def t_interactive_3d_html():
     assert "var pocket = []" in html and "var het = null" in html
     assert "var interactions = []" in html, "default interactions must be empty"
     assert "Focus pocket" in html, "focus button must exist"
+    # 聚焦口袋须把周围蛋白卡通虚化(半透明),双击复位还原
+    assert "applyProteinStyles" in html and "opacity: 0.3" in html, "focus must fade protein cartoon"
     # 传入口袋残基、相互作用与共晶配体:三类数据须以合法 JSON 嵌入(浏览器端据此还原样式与标注)
     pocket = [{"chain": "A", "resi": "1", "resn": "ALA", "pos": (0.0, 0.0, 0.0)}]
     inter = [{"kind": "salt", "chain": "A", "resi": "1", "resn": "ALA",

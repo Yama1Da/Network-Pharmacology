@@ -205,7 +205,8 @@ def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None,
     """在页面内 3D 展示受体(卡通)、所选对接构象(绿棍)与结合位点残基
     (橙棍并标注"残基名-编号"),相互作用以虚线画出(绿=氢键 紫=盐桥 灰=疏水,
     氢键与盐桥在中点标注距离),并叠加共晶配体(灰色半透明)作天然口袋参照;
-    focus_pocket 为真时以配体为中心聚焦口袋,否则展示整体视图;缺少组件时仅给出提示。
+    focus_pocket 为真时以配体为中心聚焦口袋并把周围蛋白卡通虚化(半透明),
+    否则展示整体视图;缺少组件时仅给出提示。
     pose_pdb 传入已转换好的构象 PDB、receptor_text 传入已读取的受体 PDB 全文时直接复用,
     与「保存交互式 3D 视图」共用一次转换、一次读盘,不传时保持原有的自足行为。"""
     try:
@@ -231,13 +232,19 @@ def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None,
     view = py3Dmol.view(width=900, height=520)
     view.addModel(receptor_text, "pdb")
     view.addModel(ligand_pdb, "pdb")
-    view.setStyle({"model": 0}, {"cartoon": {"color": "spectrum"}})
+    # 聚焦口袋时卡通整体半透明(虚化周围蛋白),突出口袋棍状、相互作用虚线与距离标注;
+    # 虚化只是显示开关,信息不删减,切回开关即还原
+    cartoon: dict = {"color": "spectrum"}
+    if focus_pocket:
+        cartoon["opacity"] = 0.3
+    view.setStyle({"model": 0}, {"cartoon": cartoon})
     view.setStyle({"model": 1}, {"stick": {"colorscheme": "greenCarbon"}})
     if het_pdb:
         view.addModel(het_pdb + "\n", "pdb")  # model 2:共晶配体参照
         view.setStyle({"model": 2}, {"stick": {"colorscheme": "greyCarbon",
                                                "opacity": 0.5, "radius": 0.15}})
-    # 结合位点残基:橙色棍状高亮,按链分组选择;无链号时不限定 chain
+    # 结合位点残基:橙色棍状高亮,按链分组选择;无链号时不限定 chain。
+    # 卡通与棍状在一条语句里显式声明完整样式,不依赖多次 setStyle 的合并行为
     by_chain: dict[str, list] = {}
     for r in pocket or []:
         by_chain.setdefault(r["chain"], []).append(r["resi"])
@@ -245,7 +252,8 @@ def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None,
         sel: dict = {"model": 0, "resi": resis}
         if chain:
             sel["chain"] = chain
-        view.setStyle(sel, {"stick": {"colorscheme": "orangeCarbon", "radius": 0.2}})
+        view.setStyle(sel, {"cartoon": cartoon,
+                            "stick": {"colorscheme": "orangeCarbon", "radius": 0.2}})
     # 残基名标签,位置取该残基 CA 原子(缺 CA 时用第一个原子)
     for r in pocket or []:
         x, y, z = r["pos"]
