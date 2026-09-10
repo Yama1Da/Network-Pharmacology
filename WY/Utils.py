@@ -95,19 +95,21 @@ def hide_sidebar(extra_css: str = "") -> None:
 
 
 def back_button(label_key: str = "common.back_main", *, key: str = "back_btn",
-                target: str = "App.py") -> None:
-    """"返回"按钮:点击后切到 target 页面;页面自行把它放进列布局。"""
-    if st.button(t(label_key), key=key):
+                target: str = "App.py", disabled: bool = False) -> None:
+    """"返回"按钮:点击后切到 target 页面;页面自行把它放进列布局。
+    disabled 供批量任务运行时禁用,避免点击排队到任务结束后触发跳转、丢掉结果展示。"""
+    if st.button(t(label_key), key=key, disabled=disabled):
         st.switch_page(target)
 
 
-def csv_download_button(file_path: str, file_name: str, *, key: str) -> None:
+def csv_download_button(file_path: str, file_name: str, *, key: str,
+                        disabled: bool = False) -> None:
     """行内 CSV 下载按钮:文件存在时读取字节并渲染按钮,不存在时静默跳过。"""
     if not os.path.exists(file_path):
         return
     with open(file_path, "rb") as f:
         st.download_button(t("common.download"), data=f.read(), file_name=file_name,
-                           mime="text/csv", key=key)
+                           mime="text/csv", key=key, disabled=disabled)
 
 
 def download_button(label_key: str, data, file_name: str, mime: str) -> None:
@@ -130,7 +132,8 @@ def download_file_button(label_key: str, path: str, file_name: str, mime: str) -
 
 def render_select_all_checkbox(ns: str, names: list[str]) -> bool:
     """表头"全选"复选框;切换时批量改写各行复选框状态(须在行复选框渲染前调用)。"""
-    select_all = st.checkbox("", key=f"{ns}_all", help=t("common.select_all"))
+    select_all = st.checkbox(t("common.select_all"), key=f"{ns}_all",
+                             label_visibility="collapsed")
     if st.session_state.get(f"{ns}_all_prev") != select_all:
         st.session_state[f"{ns}_all_prev"] = select_all
         for n in names:
@@ -138,9 +141,14 @@ def render_select_all_checkbox(ns: str, names: list[str]) -> bool:
     return select_all
 
 
-def render_row_checkbox(ns: str, name: str, select_all: bool) -> None:
-    """行首复选框;value 仅在新键首次创建时生效,新出现的条目跟随当前全选状态。"""
-    st.checkbox("", key=f"{ns}_sel::{name}", value=select_all)
+def render_row_checkbox(ns: str, name: str, select_all: bool,
+                        label: str | None = None) -> None:
+    """行首复选框;value 仅在新键首次创建时生效,新出现的条目跟随当前全选状态。
+
+    label 折叠隐藏、仅供读屏(建议传展示名),缺省用真实名。
+    """
+    st.checkbox(label or name, key=f"{ns}_sel::{name}", value=select_all,
+                label_visibility="collapsed")
 
 
 def collect_selected(ns: str, names: list[str]) -> list[str]:
@@ -153,7 +161,8 @@ def collect_selected(ns: str, names: list[str]) -> list[str]:
 def render_file_table(files_df, cache_dir: str, *, search_key: str,
                       display_map: dict[str, str] | None = None,
                       ns: str | None = None,
-                      path_of: Callable[[str], str] | None = None) -> list[str] | None:
+                      path_of: Callable[[str], str] | None = None,
+                      disabled: bool = False) -> list[str] | None:
     """"文件名 | 创建时间 | 下载"三列文件列表:顶部搜索框过滤文件名,表头 + 每行一个下载按钮。
 
     display_map 提供 {真实文件名: 展示名}:列表展示展示名(友好名称),搜索同时匹配
@@ -165,6 +174,8 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
     path_of 提供时(ns 多选模式下)每行多一个 Update 按钮(管理页用),行下载/更新路径
     都按它解析(来源文件与 merged 整合文件分属不同目录);单文件更新点击记录在
     st.session_state[f"{ns}_update_clicked"],由页面取出处理。
+
+    disabled 供批量任务运行时禁用行内按钮,避免点击排队到任务结束后再次触发。
     """
     display_map = display_map or {}
     resolve = path_of or (lambda n: os.path.join(cache_dir, n))
@@ -207,18 +218,20 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
             elif with_update:
                 col_sel, col_name, col_time, col_upd, col_dl = st.columns([0.5, 3, 2, 1, 1])
                 with col_sel:
-                    render_row_checkbox(ns, name, select_all)
+                    render_row_checkbox(ns, name, select_all, label=_disp(name))
                 with col_upd:
-                    if st.button(t("common.update"), key=f"update_{name}"):
+                    if st.button(t("common.update"), key=f"update_{name}",
+                                 disabled=disabled):
                         st.session_state[f"{ns}_update_clicked"] = name
             else:
                 col_sel, col_name, col_time, col_dl = st.columns([0.5, 3.5, 2, 1])
                 with col_sel:
-                    render_row_checkbox(ns, name, select_all)
+                    render_row_checkbox(ns, name, select_all, label=_disp(name))
             col_name.write(_disp(name))
             col_time.write(row["Created time"])
             with col_dl:
-                csv_download_button(resolve(name), name, key=f"download_{name}")
+                csv_download_button(resolve(name), name, key=f"download_{name}",
+                                    disabled=disabled)
 
     if ns is None:
         return None
@@ -288,7 +301,8 @@ def render_file_action_bar(ns: str, base_dir: str | None, *, zip_name: str,
                            dirs: bool = False,
                            confirm_key: str = "common.delete_dialog_confirm",
                            path_of: Callable[[str], str] | None = None,
-                           update_label: str | None = None) -> list[str] | None:
+                           update_label: str | None = None,
+                           disabled: bool = False) -> list[str] | None:
     """选中条目的批量操作栏:下载 ZIP / 删除(确认弹窗);update_label 提供时多一列
     "更新选中"按钮(管理页用),被点击时返回选中的文件名列表交由页面执行,否则恒返回 None。
 
@@ -297,6 +311,9 @@ def render_file_action_bar(ns: str, base_dir: str | None, *, zip_name: str,
     dirs=False 条目为 base_dir 下的文件;True 为子目录(删除整目录、zip 内保留目录结构)。
     path_of 提供时按它把条目名解析成完整路径(条目分属多目录的页面用,如管理页的
     来源文件与 merged 整合文件);缺省用 base_dir 拼接。
+    disabled 供批量任务运行时禁用整栏按钮。注意"更新选中"按钮自身在点击当轮不得
+    变为 disabled:disabled 是 widget 身份的一部分,参数变化会让点击值丢失,
+    页面须走"置位 busy → st.rerun → 禁用轮执行"的两段式(见 render_source_management_page)。
     """
     resolve = path_of or (lambda n: os.path.join(base_dir, n))
     selected = [n for n in st.session_state.get(f"{ns}_selected", [])
@@ -310,7 +327,7 @@ def render_file_action_bar(ns: str, base_dir: str | None, *, zip_name: str,
     if update_label:
         with col_upd:
             if st.button(update_label, key=f"{ns}_batch_update_btn",
-                         disabled=not selected, width="stretch"):
+                         disabled=disabled or not selected, width="stretch"):
                 update_clicked = selected
     with col_dl:
         if dirs:
@@ -319,10 +336,11 @@ def render_file_action_bar(ns: str, base_dir: str | None, *, zip_name: str,
             data = make_ppi_zip({n: resolve(n) for n in selected}) if selected else b""
         st.download_button(t("common.download_selected"), data=data,
                            file_name=zip_name, mime="application/zip",
-                           key=f"{ns}_dl_btn", disabled=not selected, width="stretch")
+                           key=f"{ns}_dl_btn",
+                           disabled=disabled or not selected, width="stretch")
     with col_del:
         if st.button(t("common.delete_selected"), key=f"{ns}_del_btn",
-                     disabled=not selected, width="stretch"):
+                     disabled=disabled or not selected, width="stretch"):
             st.session_state[f"{ns}_pending_delete"] = selected
             _confirm_batch_delete(ns, base_dir, dirs=dirs, confirm_key=confirm_key,
                                   path_of=path_of)
@@ -599,6 +617,9 @@ def render_source_management_page(
     """
     st.set_page_config(page_title=t(f"{ns}_mgmt.page_title"), layout="wide")
 
+    # 批量任务运行期间 busy=True:所有按钮禁用,防止点击排队到任务结束后再次触发
+    busy = bool(st.session_state.get(f"{ns}_busy"))
+
     # 隐藏侧边栏,全屏显示页面;行内 Update 按钮紫底、Download 按钮绿底、批量删除按钮红底
     hide_sidebar(CSS_BTN_UPDATE + "\n" + CSS_BTN_DOWNLOAD + f"""
     .st-key-{ns}_files_del_btn button {{
@@ -626,18 +647,18 @@ def render_source_management_page(
 
     col_back, col_update = st.columns([1, 1])
     with col_back:
-        back_button()
+        back_button(disabled=busy)
     with col_update:
-        all_update_clicked = st.button(t("common.all_updates"), key=f"{ns}_update_btn")
+        all_update_clicked = st.button(t("common.all_updates"), key=f"{ns}_update_btn",
+                                       disabled=busy)
 
     if all_update_clicked:
-        with st.spinner(t(f"{ns}_mgmt.updating_all")):
-            results = update_all_cache_files(spec, cache_hours=cache_hours_all)
-        if results.empty:
-            st.info(t(f"{ns}_mgmt.no_files_to_update"))
-        else:
-            st.dataframe(results, width="stretch", hide_index=True)
-            show_update_summary(results)
+        # 两段式:点击轮只置位并立刻重渲染(本轮按钮的 disabled 与上一轮相同,widget
+        # 身份不变,点击值不会丢);下一轮 busy=True,全部按钮以禁用态绘制后再执行任务。
+        # 不能在按钮自身当轮变 disabled——参数变化会改变 widget 身份,点击值会丢失。
+        st.session_state[f"{ns}_busy"] = True
+        st.session_state[f"{ns}_pending_update"] = "all"
+        st.rerun()
 
     st.divider()
 
@@ -680,7 +701,8 @@ def render_source_management_page(
     else:
         # 多选模式:行首复选框 + 表头全选,path_of 让来源文件与 merged 整合文件各按其目录解析
         render_file_table(files, spec["cache_dir"], search_key=f"search_{ns}",
-                          ns=f"{ns}_files", path_of=lambda n: _mgmt_file_path(n, spec))
+                          ns=f"{ns}_files", path_of=lambda n: _mgmt_file_path(n, spec),
+                          disabled=busy)
     clicked_file = st.session_state.pop(f"{ns}_files_update_clicked", None)
 
     # 选中条目的批量操作:更新选中 / 下载选中(ZIP) / 删除选中(确认弹窗);
@@ -688,12 +710,36 @@ def render_source_management_page(
     batch_update = render_file_action_bar(
         f"{ns}_files", None, zip_name=f"{ns}_files_selected.zip",
         path_of=lambda n: _mgmt_file_path(n, spec),
-        update_label=t("common.update_selected"))
+        update_label=t("common.update_selected"), disabled=busy)
     if batch_update:
-        results = update_all_cache_files(spec, cache_hours=cache_hours_single,
-                                         filenames=batch_update)
-        st.dataframe(results, width="stretch", hide_index=True)
-        show_update_summary(results)
+        # 两段式点击轮:置位 busy 与待办清单后立刻重渲染,禁用轮再执行(见上方说明)
+        st.session_state[f"{ns}_busy"] = True
+        st.session_state[f"{ns}_pending_update"] = batch_update
+        st.rerun()
+
+    # 批量执行轮(busy=True):本轮所有按钮已按禁用态渲染,跑完复位并重渲染展示结果。
+    # pending_update 为 "all"(全部更新)或选中文件名清单(更新选中);
+    # 选中更新复用 update_all_cache_files 的并发抓取(filenames 限定选中清单)。
+    pending_update = st.session_state.get(f"{ns}_pending_update")
+    if busy and pending_update is not None:
+        is_all = pending_update == "all"
+        try:
+            results = update_all_cache_files(
+                spec,
+                cache_hours=cache_hours_all if is_all else cache_hours_single,
+                filenames=None if is_all else pending_update)
+        finally:
+            st.session_state[f"{ns}_busy"] = False
+            st.session_state.pop(f"{ns}_pending_update", None)
+        st.session_state[f"{ns}_batch_results"] = results
+        st.rerun()  # 复位 busy 后重渲染:按钮恢复可用,结果由下方 pop 展示
+    batch_results = st.session_state.pop(f"{ns}_batch_results", None)
+    if batch_results is not None:
+        if batch_results.empty:
+            st.info(t(f"{ns}_mgmt.no_files_to_update"))
+        else:
+            st.dataframe(batch_results, width="stretch", hide_index=True)
+            show_update_summary(batch_results)
 
     # 单文件更新在页面渲染完成后执行,完成或出错都会记录结果并刷新页面
     if clicked_file:
@@ -710,10 +756,10 @@ def render_source_management_page(
 # ---------- 设置面板(主页面板齿轮)公共逻辑 ----------
 
 def save_ui_settings(overrides: dict) -> None:
-    """把齿轮面板/对接页修改的分析参数持久化到 ui_settings.json。
+    """把齿轮面板/对接页/日志页修改的分析参数持久化到 ui_settings.json。
 
     config.py 启动时会读取该文件套用覆盖值,因此设置重启后仍生效;
-    只写白名单内的键(数值参数与 ChEMBL 黑名单),其余忽略。
+    只写白名单内的键(数值/布尔参数、ChEMBL 黑名单与日志级别),其余忽略。
     与文件中已有内容按键合并(不同入口各自改各自的参数,互不覆盖)。
     """
     import json
@@ -732,6 +778,8 @@ def save_ui_settings(overrides: dict) -> None:
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, (int, float)) \
                 and not isinstance(v, bool):
             clean[k] = float(v)
+        elif k in config.UI_SETTINGS_KEYS and isinstance(v, str):
+            clean[k] = v.strip().upper()  # 日志级别等枚举字符串,统一大写
     if not clean:
         return
     merged: dict = {}

@@ -369,7 +369,10 @@ UI_SETTINGS_KEYS = (
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION", "POCKET_CUTOFF",
     "CHEMBL_CORROBORATION_REQUIRED", "OT_TOP_N", "DISGENET_PAGES",
+    "LOG_LEVEL",  # Logs 页的 DEBUG 开关:持久化后重启按此级别初始化日志
 )
+# LOG_LEVEL 允许的取值:加载设置文件时校验,坏值按内置默认运行
+_LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 if os.path.exists(UI_SETTINGS_FILE):
     try:
         import json
@@ -385,6 +388,9 @@ if os.path.exists(UI_SETTINGS_FILE):
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, (int, float)) \
                     and not isinstance(_v, bool):
                 globals()[_k] = _v
+            elif _k == "LOG_LEVEL" and isinstance(_v, str) \
+                    and _v.strip().upper() in _LOG_LEVEL_NAMES:
+                globals()[_k] = _v.strip().upper()
     except Exception:
         # 设置文件损坏时不阻断启动,按 config.py 内置值运行
         pass
