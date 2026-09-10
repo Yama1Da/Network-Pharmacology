@@ -10,6 +10,7 @@ import json
 import logging
 import os
 
+import numpy as np
 import pandas as pd
 
 
@@ -83,10 +84,8 @@ def is_built(species: str = "Human",
 def _download_gz(url_path: str, dest: str,
                  progress_cb=None, progress_range: tuple[float, float] = (0.0, 1.0),
                  progress_label: str = "download") -> str:
-    """从 STRING 下载压缩文件到本地,返回文件路径。
-
-    本地已有同名文件时直接跳过下载;多个下载源依次尝试,全部失败时报错。
-    """
+    """从 STRING 下载压缩文件到本地,返回文件路径;本地已有同名文件时直接跳过下载,
+    多个下载源依次尝试,全部失败时报错。"""
     import time
 
     import requests
@@ -150,11 +149,8 @@ def _info_column_names(info_df: pd.DataFrame) -> tuple[str, str]:
 
 
 def _links_to_edges(links_df: pd.DataFrame, id2sym: dict, confidence: int) -> pd.DataFrame:
-    """把 STRING 原始互作表整理成基因符号层面的边表。
-
-    按置信度阈值过滤后映射为基因符号;去掉自身互作,同一对基因
-    只保留最高分的一条边,避免基因连接数被高估。结果按分数降序。
-    """
+    """把 STRING 原始互作表整理成基因符号层面的边表:按置信度阈值过滤后映射为基因符号,去掉自身互作,
+    同一对基因只保留最高分的一条边,避免基因连接数被高估;结果按分数降序。"""
     needed = {"protein1", "protein2", "combined_score"}
     if not needed.issubset(links_df.columns):
         raise ValueError(f"unexpected links columns: {list(links_df.columns)}")
@@ -165,11 +161,12 @@ def _links_to_edges(links_df: pd.DataFrame, id2sym: dict, confidence: int) -> pd
     edges = edges.dropna(subset=["protein_a", "protein_b"])
     edges = edges[edges["protein_a"] != edges["protein_b"]]
 
-    lo = pd.Series([min(a, b) for a, b in zip(edges["protein_a"], edges["protein_b"])],
-                   index=edges.index)
-    hi = pd.Series([max(a, b) for a, b in zip(edges["protein_a"], edges["protein_b"])],
-                   index=edges.index)
-    edges["_lo"], edges["_hi"] = lo, hi
+    # 向量化配对规范化:lo/hi 使 (A,B) 与 (B,A) 归为同一条边;
+    # 列此时已是 dropna 后的纯字符串,逐元素字符串比较与逐行 min/max 结果一致
+    a = edges["protein_a"].to_numpy()
+    b = edges["protein_b"].to_numpy()
+    edges["_lo"] = pd.Series(np.where(a <= b, a, b), index=edges.index)
+    edges["_hi"] = pd.Series(np.where(a <= b, b, a), index=edges.index)
     edges = (edges.sort_values("combined_score", ascending=False)
                   .drop_duplicates(subset=["_lo", "_hi"]))
     out = (edges[["_lo", "_hi", "combined_score"]]
@@ -204,11 +201,8 @@ def build_interactome(species: str = "Human",
                       string_version: str | None = None,
                       keep_raw: bool = False,
                       progress_cb=None) -> dict:
-    """下载 STRING 全互作数据并构建本地背景网络缓存。
-
-    同参数重跑会直接覆盖原文件;默认构建成功后删除原始下载文件。
-    progress_cb 为进度回调,供界面显示进度条;回调出错只记日志,不影响构建。
-    """
+    """下载 STRING 全互作数据并构建本地背景网络缓存;同参数重跑会直接覆盖原文件,默认构建成功后删除原始下载文件。
+    progress_cb 为进度回调,供界面显示进度条;回调出错只记日志,不影响构建。"""
     import shutil
     from datetime import datetime
 
@@ -244,14 +238,12 @@ def build_interactome(species: str = "Human",
                            progress_label="download_info")
 
     report("processing", None)
-    # ---- 蛋白编号 -> 基因符号 映射表 ----
     info_df = pd.read_csv(info_gz, sep="\t", compression="gzip")
     id_col, sym_col = _info_column_names(info_df)
     id2sym = dict(zip(info_df[id_col].astype(str),
                       info_df[sym_col].astype(str).str.strip().str.upper()))
     logging.info("protein.info: %d proteins mapped to symbols", len(id2sym))
 
-    # ---- 互作数据:过滤 -> 映射 -> 去自环 -> 去重 ----
     links_df = pd.read_csv(links_gz, sep=" ", compression="gzip",
                            usecols=["protein1", "protein2", "combined_score"])
     edges = _links_to_edges(links_df, id2sym, confidence)
@@ -356,10 +348,8 @@ def interactome_age_days(species: str = "Human") -> int | None:
 
 
 def is_stale(species: str = "Human", days: int | None = None) -> bool:
-    """背景网络是否过于陈旧(超过 config 设定的天数阈值,默认365天)。
-
-    陈旧只是提示该检查 STRING 是否已发布新版本;未构建时返回 False。
-    """
+    """背景网络是否过于陈旧(超过 config 设定的天数阈值,默认365天);陈旧只是提示该检查 STRING 是否已发布新版本。
+    未构建时返回 False。"""
     import config
 
     days = days if days is not None else config.INTERACTOME_STALE_DAYS
@@ -373,10 +363,7 @@ def _known_genes(species: str) -> frozenset:
 
 
 def get_network_coverage(genes: list[str], species: str = "Human") -> tuple[list[str], list[str]]:
-    """把基因列表分成"在背景网络中"和"不在"两组。
-
-    基因名自动去空格并统一大写;结果去重且保持原顺序。
-    """
+    """把基因列表分成"在背景网络中"和"不在"两组;基因名自动去空格并统一大写,结果去重且保持原顺序。"""
     known = _known_genes(species)
     seen: set[str] = set()
     inside: list[str] = []

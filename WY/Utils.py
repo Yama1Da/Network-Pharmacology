@@ -68,6 +68,19 @@ from core.text_utils import resolve_original_name, safe_name
 
 # ---------- 界面公共组件 ----------
 
+# 常用按钮配色(与各页 hide_sidebar 的 extra_css 拼接;红/删除按钮因键名各页不同,留在页内)
+CSS_BTN_DOWNLOAD = """    .st-key-file_rows [class*="st-key-download_"] button {
+        background-color: #207D62;
+        color: #C8F0DF;
+        border: 1px solid #207D62;
+    }"""
+CSS_BTN_UPDATE = """    [class*="update_btn"] button,
+    .st-key-file_rows [class*="st-key-update_"] button {
+        background-color: #6347A1;
+        color: #E0D8F2;
+        border: 1px solid #6347A1;
+    }"""
+
 
 def hide_sidebar(extra_css: str = "") -> None:
     """隐藏 Streamlit 侧边栏,全屏显示页面;extra_css 为该页面额外的样式规则。"""
@@ -107,12 +120,6 @@ def download_file_button(label_key: str, path: str, file_name: str, mime: str) -
         return
     with open(path, "rb") as f:
         download_button(label_key, f.read(), file_name, mime)
-
-
-def df_download_button(df, file_name: str, *, key: str) -> None:
-    """行内 CSV 下载按钮:直接下载内存中的 DataFrame(utf-8-sig 编码,Excel 可直接打开)。"""
-    st.download_button(t("common.download"), data=df.to_csv(index=False).encode("utf-8-sig"),
-                       file_name=file_name, mime="text/csv", key=key)
 
 
 # ---------- 多选小件(文件表与目录表共用) ----------
@@ -302,11 +309,19 @@ def humanize_analysis_label(label: str) -> str:
 
 def enrichment_display_name(file_name: str) -> str:
     """富集缓存文件名 → 用户友好名称,如 gProfiler_aspirin_cancer_<哈希>.csv
-    → "aspirin → cancer · gProfiler"。无法识别的文件名原样返回。"""
+    → "aspirin → cancer · gProfiler";模块缓存的 `_moduleN` 后缀单独译成"模块 N",
+    避免被埋进疾病名文本里难以辨认。无法识别的文件名原样返回。"""
     info = parse_enrichment_filename(file_name)
     if info is None:
         return file_name
-    desc = humanize_analysis_label(info["label"])
+    label = info["label"]
+    module_desc = ""
+    if "_module" in label:
+        head, _, num = label.rpartition("_module")
+        if num.isdigit():
+            module_desc = t("enrich_file.module_n", n=int(num))
+            label = head
+    desc = humanize_analysis_label(label)
     if info["kind"] == "gsea":
         side = ""
         if info["side"] == "drug":
@@ -314,7 +329,7 @@ def enrichment_display_name(file_name: str) -> str:
         elif info["side"] == "disease":
             side = t("enrich_file.side_disease")
         return " · ".join(x for x in (desc, "GSEA", side) if x)
-    return " · ".join(x for x in (desc, info["source"]) if x)
+    return " · ".join(x for x in (desc, info["source"], module_desc) if x)
 
 
 # ---------- 数据管理页公共逻辑(药物/疾病两个管理页共用) ----------
@@ -335,18 +350,21 @@ def _mgmt_file_path(filename: str, spec: dict) -> str:
     return os.path.join(spec["cache_dir"], filename)
 
 
-def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None) -> dict:
+def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None,
+                       clear_http: bool = True) -> dict:
     """按文件名重新抓取或整合数据,更新指定文件(药物/疾病管理页共用)。
 
     来源文件先备份旧文件,抓取成功才替换,失败则恢复旧文件,避免数据丢失;
     merged 整合文件先更新两个来源文件再重建,任一来源失败则保留旧的整合结果。
+    fetch_source 返回 (表, 状态),状态为 "ok"(有数据)/"empty"(抓取成功但 0 靶点)/
+    "failed"(请求失败);empty 不算失败,返回 Status=EMPTY,由页面以警告提示检查查询物。
     cache_hours 透传给 fetch_source(ChEMBL 更新需区分单文件/全部更新的 TTL)。
+    clear_http=False 供并发批处理使用:由 update_all_cache_files 在入口统一清一次,
+    避免批量中途清缓存干扰其他线程的在途请求。
 
     文件名里的名字是 safe_name 有损转换的结果(如 Alzheimer_s_Disease),
     先按映射还原成原始查询名(Alzheimer's Disease)再抓取,否则查不到数据。
     """
-    import logging
-
     # merged 整合文件:先更新两个来源文件,再重建
     if filename.startswith(spec["merged_prefix"]):
         stem = filename[len(spec["merged_prefix"]):-len(".csv")]
@@ -355,16 +373,16 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
             # 来源文件名用 safe 名(name 已还原为原始名,含空格/撇号等)
             source = f"{prefix}{safe_name(name)}.csv"
             result = refresh_cache_file(source, spec, cache_hours)
-            if result["Status"] != "OK":
+            if result["Status"] == "FAILED":  # 来源 0 靶点(EMPTY)不算失败,继续重建
                 return {"Status": "FAILED",
                         "Message": f"source '{source}' update failed: {result['Message']}"}
         merged_path = _mgmt_file_path(filename, spec)
         if os.path.exists(merged_path):
             os.remove(merged_path)  # 可能已在上一步删除,这里兜底再删一次
         df = spec["fetch_merged"](name)
-        if not df.empty:
-            return {"Status": "OK", "Message": f"{len(df)} targets"}
-        return {"Status": "FAILED", "Message": "fetch failed"}
+        # 两来源都为 0 靶点时整合结果也为空:不算失败,由页面以警告提示检查查询物
+        return {"Status": "OK" if not df.empty else "EMPTY",
+                "Message": f"{len(df)} targets"}
 
     # 来源文件:先备份,抓取成功才替换,失败则恢复旧文件
     path = _mgmt_file_path(filename, spec)
@@ -372,41 +390,64 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
     if os.path.exists(path):
         os.replace(path, backup)
 
-    # 清空 HTTP 响应缓存,避免强制更新时命中旧响应导致更新无效
-    clear_http_cache()
+    # 清空 HTTP 响应缓存,避免强制更新时命中旧响应导致更新无效;
+    # 并发批处理改为入口统一清一次,见 clear_http 参数说明
+    if clear_http:
+        clear_http_cache()
 
-    ok = False
+    status = "failed"
     df = pd.DataFrame()
     try:
         for prefix in spec["source_prefixes"]:
             if filename.startswith(prefix):
                 stem = filename[len(prefix):-len(".csv")]
                 name = resolve_original_name(stem) or stem
-                df, ok = spec["fetch_source"][prefix](name, cache_hours)
+                df, status = spec["fetch_source"][prefix](name, cache_hours)
                 break
         else:
             raise ValueError(f"unknown file prefix: {filename}")
     except Exception:
         logging.exception("refresh_file failed for '%s'", filename)
-        ok = False
+        status = "failed"
 
-    if ok:
-        if os.path.exists(backup):
-            os.remove(backup)
+    if status in ("ok", "empty"):
+        # 抓取方已写出新文件(ok 必有;empty 时仅部分来源写空缓存)则丢弃备份;
+        # 没写(如 ChEMBL 查无此药不落盘)则恢复旧文件占位,避免条目从列表里消失
+        if os.path.exists(path):
+            if os.path.exists(backup):
+                os.remove(backup)
+        elif os.path.exists(backup):
+            os.replace(backup, path)
         spec["invalidate_merged"](name)
-        return {"Status": "OK", "Message": f"{len(df)} targets"}
+        return {"Status": "OK" if status == "ok" else "EMPTY",
+                "Message": f"{len(df)} targets"}
     # 失败:恢复旧文件
     if os.path.exists(backup):
         os.replace(backup, path)
     return {"Status": "FAILED", "Message": "fetch failed"}
 
 
-def update_all_cache_files(spec: dict, cache_hours: int | None = None):
-    """更新某类别全部来源文件并重建全部整合文件,返回结果表(File/Status/Message)。"""
-    import logging
+def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
+                           progress: bool = True, max_workers: int = 4):
+    """更新某类别全部来源文件并重建全部整合文件,返回结果表(File/Status/Message)。
 
-    rows: list[dict] = []
-    # 第一步:先更新所有来源文件
+    来源文件互相独立,线程池并发抓取提速;抓取链路自带按源限流(throttle 与
+    DisGeNET 配额均有锁保护),并发安全。HTTP 响应缓存在入口只清一次:
+    每文件中途清理会干扰其他线程的在途请求,且批量开始后本批抓取是唯一的
+    缓存写入方,清一次即可保证全部抓到新数据。
+    merged 整合依赖全部来源的最新结果,保持串行收尾。
+    progress=True 时渲染进度条(仅限在 Streamlit 页面线程调用);max_workers 为并发上限。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    bar = st.progress(0.0) if progress else None
+
+    def _tick(frac: float, key: str, **fmt) -> None:
+        if bar is not None:
+            bar.progress(frac, text=t(key, **fmt))
+
+    # 第一步:先并发更新所有来源文件
+    jobs: list[str] = []
     names = set()
     for filename in sorted(os.listdir(spec["cache_dir"])):
         if not filename.endswith(".csv"):
@@ -415,14 +456,41 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None):
             if filename.startswith(prefix):
                 stem = filename[len(prefix):-len(".csv")]
                 names.add(resolve_original_name(stem) or stem)
-                try:
-                    rows.append({"File": filename,
-                                 **refresh_cache_file(filename, spec, cache_hours)})
-                except Exception:
-                    rows.append({"File": filename, "Status": "FAILED", "Message": "update error"})
+                jobs.append(filename)
                 break
+
+    rows: list[dict] = []
+    if jobs:
+        clear_http_cache()
+
+        def _run_one(filename: str) -> dict:
+            return refresh_cache_file(filename, spec, cache_hours, clear_http=False)
+
+        results: dict[str, dict] = {}
+        workers = max(1, min(max_workers, len(jobs)))
+        if workers == 1:
+            for filename in jobs:
+                try:
+                    results[filename] = _run_one(filename)
+                except Exception:
+                    results[filename] = {"Status": "FAILED", "Message": "update error"}
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_run_one, f): f for f in jobs}
+                for done, fut in enumerate(as_completed(futures), 1):
+                    filename = futures[fut]
+                    try:
+                        results[filename] = fut.result()
+                    except Exception:
+                        results[filename] = {"Status": "FAILED", "Message": "update error"}
+                    _tick(0.8 * done / len(jobs), "mgmt.prog.sources",
+                          done=done, total=len(jobs))
+        # 按文件名排序输出,与并发完成顺序无关
+        rows = [{"File": f, **results[f]} for f in sorted(results)]
+
     # 第二步:再重建所有 merged 整合文件(name 已还原为原始名,文件名需再走 safe_name)
-    for name in sorted(names):
+    merged_names = sorted(names)
+    for idx, name in enumerate(merged_names, 1):
         merged_file = f"{spec['merged_prefix']}{safe_name(name)}.csv"
         merged_path = os.path.join(spec["merged_dir"], merged_file)
         if os.path.exists(merged_path):
@@ -432,9 +500,14 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None):
             if not df.empty:
                 rows.append({"File": merged_file, "Status": "OK", "Message": f"{len(df)} targets"})
             else:
-                rows.append({"File": merged_file, "Status": "FAILED", "Message": "fetch failed"})
+                # 两来源都 0 靶点:不算失败,由汇总警告提示检查查询物
+                rows.append({"File": merged_file, "Status": "EMPTY", "Message": "0 targets"})
         except Exception:
             rows.append({"File": merged_file, "Status": "FAILED", "Message": "update error"})
+        _tick(0.8 + 0.2 * idx / len(merged_names), "mgmt.prog.merged",
+              done=idx, total=len(merged_names))
+    if bar is not None:
+        bar.progress(1.0, text=t("mgmt.prog.done"))
     return pd.DataFrame(rows, columns=["File", "Status", "Message"])
 
 
@@ -468,13 +541,126 @@ def render_updateable_file_table(files_df, spec: dict, *, search_key: str) -> st
     return clicked
 
 
+def render_source_management_page(
+    ns: str,
+    spec: dict,
+    *,
+    source_filters: list[tuple[str, str]],
+    cache_hours_all: int | None = None,
+    cache_hours_single: int | None = None,
+) -> None:
+    """药物/疾病靶点信息管理页的完整渲染流程(两个页面文件只保留各自的
+    _fetch/_invalidate/_SPEC 差异,页面调用本函数前不得执行任何 Streamlit 命令)。
+
+    ns     会话键与文案键前缀("drug"/"disease"):会话键写成 "{ns}_update_btn" 等,
+           避免两页共用同名键导致更新提示跨页面串台;文案键拼成 "{ns}_mgmt.title" 等。
+    source_filters  来源筛选勾选框 [(显示名, widget key)],与 merged 筛选开关同排一行;
+           顺序必须与 spec["source_prefixes"] 一一对应。
+    cache_hours_all/cache_hours_single  "全部更新"与"单文件更新"的 TTL:
+           药物页固定 12/1(ChEMBL 批量分页较慢,短时重复更新只刷时间戳),疾病页维持默认。
+    """
+    st.set_page_config(page_title=t(f"{ns}_mgmt.page_title"), layout="wide")
+
+    # 隐藏侧边栏,全屏显示页面;行内 Update 按钮紫底、Download 按钮绿底
+    hide_sidebar(CSS_BTN_UPDATE + "\n" + CSS_BTN_DOWNLOAD)
+
+    st.title(t(f"{ns}_mgmt.title"))
+    st.caption(t(f"{ns}_mgmt.caption"))
+
+    # 展示上一次单文件更新的结果
+    last_update = st.session_state.pop(f"{ns}_last_update", None)
+    if last_update:
+        if last_update["Status"] == "OK":
+            st.success(t("common.file_updated", file=last_update["File"], msg=last_update["Message"]))
+        elif last_update["Status"] == "EMPTY":
+            # 抓取成功但 0 靶点:警告而非错误,提示检查查询物
+            st.warning(t("common.file_update_empty", file=last_update["File"]))
+        else:
+            st.error(t("common.file_update_failed", file=last_update["File"], msg=last_update["Message"]))
+
+    col_back, col_update = st.columns([1, 1])
+    with col_back:
+        back_button()
+    with col_update:
+        all_update_clicked = st.button(t("common.all_updates"), key=f"{ns}_update_btn")
+
+    if all_update_clicked:
+        with st.spinner(t(f"{ns}_mgmt.updating_all")):
+            results = update_all_cache_files(spec, cache_hours=cache_hours_all)
+        if results.empty:
+            st.info(t(f"{ns}_mgmt.no_files_to_update"))
+        else:
+            st.dataframe(results, width="stretch", hide_index=True)
+            if results["Status"].eq("OK").all():
+                st.success(t("common.all_complete"))
+            elif results["Status"].eq("FAILED").any():
+                st.warning(t("common.some_failed"))
+            else:
+                # 只有 0 靶点条目(无真失败):同样以警告提示检查查询物
+                st.warning(t("common.some_empty"))
+
+    st.divider()
+
+    source_files = list_cache_files(ns)
+    merged_files = list_cache_files("merged")
+    # 按类别前缀(不带版本号)过滤,旧版本号的整合文件也一并列出
+    merged_files = merged_files[merged_files["File name"].str.startswith(f"merged_{ns}_")]
+
+    # 数据来源筛选(默认全开):来源筛选作用于来源文件;merged 为两来源的整合缓存,单独可筛
+    st.caption(t("common.source_filter"))
+    cols = st.columns(len(source_filters) + 1)
+    flags: list[bool] = []
+    for col, (label, key) in zip(cols, source_filters):
+        with col:
+            flags.append(st.checkbox(label, value=True, key=key))
+    with cols[-1]:
+        show_merged = st.checkbox(t("common.filter_merged"), value=True,
+                                  key=f"{ns}_flt_merged")
+
+    # 来源前缀与勾选框按传入顺序一一对应
+    show_by_prefix = dict(zip(spec["source_prefixes"], flags))
+
+    def _match_source(n: str) -> bool:
+        for prefix, show in show_by_prefix.items():
+            if n.startswith(prefix):
+                return show
+        return True
+
+    n_source = len(source_files)
+    n_merged = len(merged_files)
+    if n_source:
+        source_files = source_files[source_files["File name"].map(_match_source)]
+    if not show_merged:
+        merged_files = merged_files.iloc[0:0]
+    files = pd.concat([source_files, merged_files], ignore_index=True)
+    clicked_file = None
+
+    if files.empty:
+        # 有文件但全被筛掉时,按"筛选无结果"提示,与"目录本来就空"区分开
+        st.info(t("common.filter_no_match") if (n_source or n_merged) else t(f"{ns}_mgmt.no_files"))
+    else:
+        clicked_file = render_updateable_file_table(files, spec, search_key=f"search_{ns}")
+
+    # 单文件更新在页面渲染完成后执行,完成或出错都会记录结果并刷新页面
+    if clicked_file:
+        with st.spinner(t("common.updating_file", file=clicked_file)):
+            try:
+                result = refresh_cache_file(clicked_file, spec, cache_hours=cache_hours_single)
+            except Exception:
+                logging.exception("update failed for '%s'", clicked_file)
+                result = {"Status": "FAILED", "Message": "update error"}
+        st.session_state[f"{ns}_last_update"] = {"File": clicked_file, **result}
+        st.rerun()
+
+
 # ---------- 设置面板(主页面板齿轮)公共逻辑 ----------
 
 def save_ui_settings(overrides: dict) -> None:
-    """把齿轮面板修改的分析参数持久化到 ui_settings.json。
+    """把齿轮面板/对接页修改的分析参数持久化到 ui_settings.json。
 
     config.py 启动时会读取该文件套用覆盖值,因此设置重启后仍生效;
     只写白名单内的键(数值参数与 ChEMBL 黑名单),其余忽略。
+    与文件中已有内容按键合并(不同入口各自改各自的参数,互不覆盖)。
     """
     import json
 
@@ -485,14 +671,26 @@ def save_ui_settings(overrides: dict) -> None:
         if k == "CHEMBL_TARGET_BLACKLIST":
             if isinstance(v, (list, tuple)):
                 clean[k] = sorted({str(x).strip().upper() for x in v if str(x).strip()})
+        elif k in config.UI_SETTINGS_KEYS and isinstance(v, bool):
+            clean[k] = v
+        elif k in config.UI_SETTINGS_KEYS and isinstance(v, int):
+            clean[k] = v  # 步进器参数按整数保存,避免 +- 调节后出现小数
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, (int, float)) \
                 and not isinstance(v, bool):
             clean[k] = float(v)
     if not clean:
         return
+    merged: dict = {}
+    if os.path.exists(config.UI_SETTINGS_FILE):
+        try:
+            with open(config.UI_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                merged = json.load(f) or {}
+        except Exception:
+            merged = {}  # 旧文件损坏时按空文件处理,以本次写入为准
+    merged.update(clean)
     os.makedirs(os.path.dirname(config.UI_SETTINGS_FILE), exist_ok=True)
     with open(config.UI_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(clean, f, ensure_ascii=False, indent=2)
+        json.dump(merged, f, ensure_ascii=False, indent=2)
 
 
 def purge_merged_cache() -> int:
@@ -502,7 +700,6 @@ def purge_merged_cache() -> int:
     下次分析按新参数从原始缓存重建(原始缓存不受影响,无需重新联网)。
     """
     import glob
-    import logging
 
     import config
 

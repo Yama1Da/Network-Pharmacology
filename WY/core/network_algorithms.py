@@ -11,9 +11,9 @@ import os
 import pandas as pd
 
 from .enrichment import (
-    ENRICHR_LIB_MAP,
     _ENRICHR_ORGANISM_MAP,
     _enrichment_cache_key,
+    _enrichr_libs,
     enrichment_cache_filename,
     fetch_enrichment_enrichr,
     fetch_enrichment_gprofiler,
@@ -25,11 +25,8 @@ _OK_REASONS = ("success", "no_significant", "cache")
 
 
 def detect_louvain_modules(graph: "nx.Graph", resolution: float = 1.0, seed: int = 0) -> list[dict]:
-    """
-    用 Louvain 算法按 PPI 连接紧密程度把网络自动分成若干群，每群作为一个功能模块。
-
-    resolution 越大模块越细碎；固定 seed 保证同一网络两次检测结果完全一致。
-    孤立节点各自成单点模块；module_id 按基因数从多到少编号为 1..n。
+    """用 Louvain 算法按 PPI 连接紧密程度把网络自动分成若干群，每群作为一个功能模块。
+    resolution 越大模块越细碎;固定 seed 保证同一网络两次结果完全一致;孤立节点各自成单点模块,module_id 按基因数从多到少编号 1..n。
     """
     from networkx.algorithms.community import louvain_communities
 
@@ -66,7 +63,7 @@ def _module_cache_files(genes: list[str], organism: str, sources: tuple,
                               enrichment_cache_filename("gProfiler", label, md5_gp)))
     enrichr_org = _ENRICHR_ORGANISM_MAP.get(organism)
     if enrichr_org:
-        libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
+        libs = _enrichr_libs(sources)
         if libs:
             md5_enr = _enrichment_cache_key(genes_clean, enrichr_org, libs, pvalue)
             files.append(os.path.join(config.ENRICHMENT_CACHE_DIR,
@@ -86,27 +83,50 @@ def _purge_module_cache(files: list[str], module_id: int, reason: str) -> None:
             logging.exception("Failed to remove suspect cache file %s", f)
 
 
+def _purge_orphan_module_caches(module_ids: set[int], label_prefix: str) -> None:
+    """删除同分析标识下编号已不属于本次模块集的旧模块缓存(上次模块数更多时留下的孤儿文件)。
+    缓存命中本就有基因集 md5 键校验,孤儿文件不会被误用,删除只为目录整洁;只匹配
+    gProfiler_/Enrichr_ 前缀下 `<标识>_module<纯数字>.csv` 命名,不碰其他文件。"""
+    import config
+
+    cache_dir = config.ENRICHMENT_CACHE_DIR
+    if not os.path.isdir(cache_dir):
+        return
+    stem = f"{label_prefix}_module" if label_prefix else "module"
+    for source in ("gProfiler", "Enrichr"):
+        head = f"{source}_{stem}"
+        for name in os.listdir(cache_dir):
+            if not name.startswith(head) or not name.endswith(".csv"):
+                continue
+            num = name[len(head):-len(".csv")]
+            if not num.isdigit() or int(num) in module_ids:
+                continue
+            try:
+                os.remove(os.path.join(cache_dir, name))
+                logging.info("Orphan module cache removed: %s", name)
+            except OSError:
+                logging.exception("Failed to remove orphan module cache %s", name)
+
+
 def _enrich_single_module(genes: list[str], organism: str, sources: tuple,
-                          pvalue: float, label: str) -> tuple[pd.DataFrame, str | None, bool, str]:
-    """
-    单模块富集：先 g:Profiler，不行再降级用 Enrichr。
-    返回 (结果表, 实际数据源, 是否失败, 失败/状态说明)。
-    failed=True 时结果表必为空表；failed=False 的空表表示两条链路都成功但确实无显著条目。
+                          pvalue: float, label: str) -> tuple[pd.DataFrame, bool, str]:
+    """单模块富集：先 g:Profiler，不行再降级用 Enrichr。返回 (结果表, 是否失败, 失败/状态说明)。
+    failed=True 时结果表必为空表;failed=False 的空表表示两条链路都成功但确实无显著条目。
     """
     st_gp: dict = {}
     df = fetch_enrichment_gprofiler(genes, organism=organism, sources=sources,
                                     pvalue=pvalue, label=label, status=st_gp)
     if not df.empty:
-        return df, "gProfiler", False, ""
+        return df, False, ""
 
     enrichr_org = _ENRICHR_ORGANISM_MAP.get(organism)
-    libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP] if enrichr_org else []
+    libs = _enrichr_libs(sources) if enrichr_org else []
     st_enr: dict = {}
     if enrichr_org and libs:
         df = fetch_enrichment_enrichr(genes, libs=libs, organism=enrichr_org,
                                       pvalue=pvalue, label=label, status=st_enr)
         if not df.empty:
-            return df, "Enrichr", False, ""
+            return df, False, ""
 
     # 两条链路都拿到空表时：只有每条已启用链路都真实成功（无显著项/正常缓存）才算真无显著项；
     # 被熔断跳过或请求失败一律按失败处理（大鼠无 Enrichr 库时视为可信缺省）。
@@ -116,10 +136,10 @@ def _enrich_single_module(genes: list[str], organism: str, sources: tuple,
         bool(st_enr.get("ok")) and st_enr.get("reason") in _OK_REASONS
     )
     if gp_ok and enrichr_ok:
-        return pd.DataFrame(), None, False, "no_significant"
+        return pd.DataFrame(), False, "no_significant"
     detail = f"gProfiler:{st_gp.get('reason', 'unknown')}; Enrichr:{st_enr.get('reason', 'not_applicable')}"
     logging.warning("Module enrichment failed (%s) for %d genes", detail, len(genes))
-    return pd.DataFrame(), None, True, detail
+    return pd.DataFrame(), True, detail
 
 
 def enrich_modules(
@@ -131,30 +151,24 @@ def enrich_modules(
     pvalue: float = 0.05,
     label_prefix: str = "",
 ) -> tuple[pd.DataFrame, list[dict], list[int]]:
-    """
-    批量模块富集：对满足规模条件的模块（取规模最大的前 top_n_modules 个）逐个做 GO/KEGG 富集并汇总为长表。
-
-    label_prefix 为所属分析的"药物_疾病"标识,拼进缓存文件名
-    （如 gProfiler_aspirin_cancer_module1_<哈希>.csv）,让模块结果在文件列表里能认出归属。
-
-    某模块富集失败时计入 failures（页面报错），并清除该模块可能产生的缓存文件，
-    保证空表不会是失败残留；两链路成功但无显著条目的模块计入 no_sig（页面一般性提示）。
-    返回 (富集长表: 统一列 + module_id + module_size, 失败列表, 无显著项模块ID列表)。
-    """
+    """批量模块富集：对满足规模条件的模块（取规模最大的前 top_n_modules 个）逐个做 GO/KEGG 富集并汇总为长表。
+    label_prefix 为所属分析的"药物_疾病"标识,拼进缓存文件名让模块结果能认出归属;某模块失败时计入 failures 并清除
+    该模块可能产生的缓存文件（保证空表不是失败残留）,两链路成功但无显著条目的模块计入 no_sig。"""
     import config
 
     sources = sources or config.ENRICHMENT_SOURCES
     candidates = [m for m in modules if m["size"] >= min_module_size][:top_n_modules]
+    # 先清掉上次分析遗留的孤儿模块缓存(编号超出本次模块集),目录不随多次分析无限增长
+    _purge_orphan_module_caches({m["module_id"] for m in candidates}, label_prefix)
 
     def _enrich_one(m: dict) -> tuple[str, dict]:
         """单个模块的富集 + 失败处理,返回 (类别, 数据):ok/failed/no_sig。
-
         线程安全:各模块的缓存文件名互不相同,状态都记在局部变量里。
         """
         label = f"{label_prefix}_module{m['module_id']}" if label_prefix else f"module{m['module_id']}"
         cache_files = _module_cache_files(m["genes"], organism, sources, pvalue, label)
         try:
-            df, used_source, failed, err = _enrich_single_module(
+            df, failed, err = _enrich_single_module(
                 m["genes"], organism, sources, pvalue, label)
         except Exception:
             logging.exception("Module %d enrichment crashed", m["module_id"])
@@ -275,15 +289,9 @@ def _build_degree_bins(degree_map: dict, bin_size: int) -> dict:
 
 def degree_matched_sample(degree_map: dict, seeds: list, bin_size: int, rng,
                           bins: dict | None = None) -> list[str]:
-    """
-    度匹配随机抽样（置换检验的零分布）：为每个种子从其度数所在箱内随机取一个替换节点，
-    使随机基因集与真实基因集的度数分布相当；排除种子自身，箱内无候选时向最近的非空箱扩散。
-    同一随机序列下结果确定。
-
-    bins 可传入预构建的分箱（置换检验循环内复用，避免每轮重复构建）。
-    性能说明：低度箱可达上万成员，这里按箱建一次"基因→位置"映射后用索引跳过种子，
-    等价于"过滤掉种子再抽样"，但避免每个种子都复制整箱（随机数消耗序列与过滤写法一致）。
-    """
+    """度匹配随机抽样（置换检验的零分布）：为每个种子从其度数箱内随机取一个替换节点,使随机集与真实集
+    度数分布相当;排除种子自身,箱内无候选时向最近非空箱扩散,同一随机序列下结果确定。bins 可传预构建分箱（循环内复用）。
+    性能:低度箱可达上万成员,按箱建一次"基因→位置"映射后用索引跳过种子,等价于过滤再抽样但避免每种子复制整箱（随机数消耗一致）。"""
     if bins is None:
         bins = _build_degree_bins(degree_map, bin_size)
     max_k = max(bins) if bins else 0
@@ -315,33 +323,6 @@ def degree_matched_sample(degree_map: dict, seeds: list, bin_size: int, rng,
         if chosen is not None:
             picked.append(chosen)
     return picked
-
-
-def network_proximity(graph: "nx.Graph", set_a: list, set_b: list) -> float:
-    """
-    参考实现：两组蛋白的网络平均距离 d_c(A,B) = mean_{b∈B} min_{a∈A} d(a,b)。
-    仅供小图与自检交叉验证；图中不存在的基因被忽略，B 中有从 A 不可达的节点时抛错。
-    """
-    a = {str(g) for g in set_a if g in graph}
-    b = {str(g) for g in set_b if g in graph}
-    if not a or not b:
-        raise ValueError("network_proximity: empty set after filtering to graph")
-    dist: dict[str, int] = {g: 0 for g in a}
-    frontier = set(a)
-    depth = 0
-    while frontier:
-        depth += 1
-        nxt: set[str] = set()
-        for u in frontier:
-            for v in graph[u]:
-                if v not in dist:
-                    dist[v] = depth
-                    nxt.add(v)
-        frontier = nxt
-    unreachable = b - dist.keys()
-    if unreachable:
-        raise ValueError(f"network_proximity: {len(unreachable)} nodes in B unreachable from A")
-    return sum(dist[g] for g in b) / len(b)
 
 
 def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: list,
@@ -428,13 +409,9 @@ def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: 
 
 def proximity_zscore(drug_genes: list, disease_genes: list, species: str = "Human",
                      n_perm: int | None = None, seed: int | None = None) -> dict:
-    """
-    网络邻近度 Z-score 主入口（背景互作组 LCC 内计算，度匹配随机化置换检验）。
-
-    任一基因集入网率低于 config.PROXIMITY_MIN_COVERAGE 或过滤后为空时，
-    返回 ok=False，绝不输出不可靠结果。
-    背景互作组未构建时抛 InteractomeNotBuiltError，由调用方转为用户提示。
-    """
+    """网络邻近度 Z-score 主入口（背景互作组 LCC 内计算，度匹配随机化置换检验）。
+    任一基因集入网率低于 config.PROXIMITY_MIN_COVERAGE 或过滤后为空时返回 ok=False,绝不输出不可靠结果;
+    背景互作组未构建时抛 InteractomeNotBuiltError,由调用方转为用户提示。"""
     import config
     from . import interactome as itx
 
@@ -484,10 +461,8 @@ def _save_json_cache(cache_path: str, result: dict) -> None:
 
 
 def _clean_expired_caches(directory: str) -> None:
-    """删除目录里超过缓存有效期(CACHE_TTL_SECONDS)的 JSON 缓存。
-
-    这些结果已永久保存在分析结果目录(<prefix>_data)中,过期的计算缓存删除即可,
-    下次分析会重算并重新覆盖;调用方进入缓存读写前调用一次即可。
+    """删除目录里超过缓存有效期(CACHE_TTL_SECONDS)的 JSON 缓存;调用方进入缓存读写前调用一次即可。
+    这些结果已永久保存在分析结果目录(<prefix>_data)中,过期计算缓存删除即可,下次分析会重算并覆盖。
     """
     import time
 
@@ -510,12 +485,9 @@ def _clean_expired_caches(directory: str) -> None:
 
 def run_proximity_cached(drug_genes: list, disease_genes: list,
                          species: str = "Human", label: str | None = None) -> dict:
-    """
-    邻近度分析入口（带文件缓存）：成功才写缓存，失败/背景网络未构建即时返回不缓存。
-    同名覆盖式缓存:文件名只由标识(label)决定,同一标识只保留最新一份;
-    是否命中由文件内记录的缓存键校验,基因集/参数变了会重算并覆盖。
-    过期的缓存文件(含其它分析的)自动删除,结果已在分析结果目录永久保存。
-    """
+    """邻近度分析入口（带文件缓存）：成功才写缓存,失败/背景网络未构建即时返回不缓存。
+    同名覆盖式缓存:文件名只由标识(label)决定,命中由文件内缓存键校验,基因集/参数变了重算覆盖;
+    过期缓存文件(含其它分析的)自动删除,结果已在分析结果目录永久保存。"""
     import hashlib
 
     import config
@@ -562,25 +534,6 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
 # 继续游走、以 (1-α) 概率回到种子；稳态得分高的非种子基因即种子网络邻域内的候选靶点。
 
 
-def build_sparse_adj(graph: "nx.Graph") -> tuple:
-    """
-    0-1 邻接 → 列随机转移矩阵 W（W[j,i] = P(i→j)，每列和为 1）。
-    度为 0 的节点会永久截留游走概率，故图必须连通（如限制在 LCC 内）。
-    """
-    import networkx as nx
-    import numpy as np
-    import scipy.sparse as sp
-
-    nodes = sorted(graph.nodes())
-    adj = nx.to_scipy_sparse_array(graph, nodelist=nodes, weight=None, format="csr")
-    col_deg = np.asarray(adj.sum(axis=0)).ravel()
-    if (col_deg == 0).any():
-        raise ValueError("zero-degree nodes in graph; restrict to a connected component")
-    # 右乘对角阵 = 按列缩放：W[:, i] = adj[:, i] / deg(i)
-    W = adj @ sp.diags(1.0 / col_deg)
-    return W, nodes
-
-
 def _rwr_power_iteration(W, seed_idx: list, alpha: float, tol: float, max_iter: int) -> tuple:
     """幂迭代求解 r = α·W·r + (1-α)·p。返回 (得分向量, 迭代轮数, 是否收敛)。"""
     import numpy as np
@@ -601,40 +554,13 @@ def _rwr_power_iteration(W, seed_idx: list, alpha: float, tol: float, max_iter: 
     return r, iters, converged
 
 
-def rwr_prioritize(graph: "nx.Graph", seed_genes: list, alpha: float = 0.7,
-                   tol: float = 1e-8, max_iter: int = 200) -> pd.DataFrame:
-    """
-    参考入口（直接吃 networkx 图）：返回全节点 RWR 打分表。
-    图需连通（建议 LCC）；不在图内的种子被忽略。列：gene / score / is_seed，按 score 降序。
-    """
-    W, nodes = build_sparse_adj(graph)
-    idx = {g: i for i, g in enumerate(nodes)}
-    seeds = sorted({str(g) for g in seed_genes if g in idx})
-    if not seeds:
-        raise ValueError("rwr_prioritize: no seed gene present in graph")
-    scores, iters, converged = _rwr_power_iteration(
-        W, [idx[g] for g in seeds], alpha, tol, max_iter)
-    seed_set = set(seeds)
-    out = pd.DataFrame({
-        "gene": nodes,
-        "score": scores,
-        "is_seed": [g in seed_set for g in nodes],
-    })
-    logging.info("RWR done: %d seeds, %d iters, converged=%s", len(seeds), iters, converged)
-    return out.sort_values("score", ascending=False).reset_index(drop=True)
-
-
 def _rwr_from_context(ctx: tuple, seed_genes: list, alpha: float,
                       tol: float, max_iter: int, top_nonseed: int | None = None,
                       annotate: set | None = None, null_perms: int | None = None,
                       null_seed: int = 0, bin_size: int = 100) -> dict:
-    """
-    给定 LCC 上下文的 RWR 快路径（复用背景网络的邻接与度数表）。
-
-    annotate 非空时附加：非种子行的 "annotated" 标注，以及度匹配校正的富集检验——
-    比较标注集与度匹配随机基因集的平均 RWR 得分，输出 z 与单侧经验 p；
-    z 显著 > 0 说明标注集的高分超越其度数所能解释的水平，不是枢纽度数假象。
-    """
+    """给定 LCC 上下文的 RWR 快路径（复用背景网络的邻接与度数表）。
+    annotate 非空时附加非种子行的 "annotated" 标注与度匹配校正的富集检验——比较标注集与度匹配随机基因集的
+    平均 RWR 得分,输出 z 与单侧经验 p;z 显著 > 0 说明标注集高分超越其度数所能解释的水平,不是枢纽度数假象。"""
     import numpy as np
     import scipy.sparse as sp
 
@@ -716,14 +642,9 @@ def _rwr_from_context(ctx: tuple, seed_genes: list, alpha: float,
 
 def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None = None,
                    annotate: set | None = None) -> dict:
-    """
-    RWR 入口（带文件缓存）：成功才写缓存，失败/背景网络未构建即时返回不缓存。
-    标注集必须参与缓存键：度匹配校正依赖全量得分向量，只能在计算期完成，
-    不能命中旧缓存后补算。非种子行截断为 config.RWR_CACHE_TOP_N。
-    同名覆盖式缓存:文件名只由标识(label,含药物/疾病侧)决定,同一标识只保留最新一份;
-    是否命中由文件内记录的缓存键校验,种子/参数变了会重算并覆盖。
-    过期的缓存文件(含其它分析的)自动删除;排序结果已在分析结果目录永久保存。
-    """
+    """RWR 入口（带文件缓存）：成功才写缓存,失败/背景网络未构建即时返回不缓存,非种子行截断为 config.RWR_CACHE_TOP_N。
+    标注集必须参与缓存键:度匹配校正依赖全量得分向量,只能在计算期完成,不能命中旧缓存后补算。
+    同名覆盖式缓存:文件名只由标识(label,含药物/疾病侧)决定,命中由文件内缓存键校验,种子/参数变了重算覆盖;过期缓存自动删除,结果已永久保存。"""
     import hashlib
 
     import config

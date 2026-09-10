@@ -1,27 +1,27 @@
 """DGIdb 数据源：查询药物的相互作用基因（drug-gene interaction）。"""
 
 import logging
-import os
 
 import pandas as pd
 
-from .caching import open_csv_cache, save_csv_cache
+from .caching import open_named_csv_cache, save_csv_cache
 from .http_client import request_with_retry
-from .text_utils import remember_name_mapping, safe_name
+from .text_utils import remember_name_mapping
 
 
 def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
-    """从 DGIdb 获取药物已知的相互作用基因，含交互分数与证据来源（文献、数据库）。
+    """从 DGIdb 获取药物的相互作用基因，含交互分数与证据来源（文献、数据库）。
 
     失败或无数据时返回空表；结果存为本地 CSV，已有缓存则直接复用。
     """
     import config
 
-    csv_path = os.path.join(config.DRUG_CACHE_DIR, f"DGIdb_{safe_name(drug_name)}.csv")
-    remember_name_mapping(drug_name)  # 记录安全文件名→原始名,供管理页还原
-
     # 已有缓存则直接读取本地文件
-    cached = open_csv_cache(csv_path, label=f"DGIdb targets for '{drug_name}'")
+    csv_path, cached = open_named_csv_cache(
+        config.DRUG_CACHE_DIR, "DGIdb_", drug_name,
+        label=f"DGIdb targets for '{drug_name}'",
+        remember=remember_name_mapping,  # 记录安全文件名→原始名,供管理页还原
+    )
     if cached is not None:
         return cached
 

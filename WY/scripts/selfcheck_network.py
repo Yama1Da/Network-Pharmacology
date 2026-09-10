@@ -9,6 +9,8 @@
 每项检查打印 PASS 或 FAIL；全部通过时退出码为 0，有失败则为 1。
 """
 
+import glob
+import logging
 import os
 import sys
 import tempfile
@@ -22,6 +24,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+import config
 import core.network_algorithms as na
 from core import interactome as itx
 from core.enrichment import (
@@ -34,15 +37,14 @@ from core.enrichment import (
 from core.network_algorithms import (
     _multi_source_bfs,
     _proximity_zscore_from_context,
-    build_sparse_adj,
+    _rwr_power_iteration,
     degree_matched_sample,
-    network_proximity,
-    rwr_prioritize,
     run_proximity_cached,
     run_rwr_cached,
 )
 from core.ppi import (
     compute_mcc_scores,
+    mark_hub_genes,
     pick_top_mcc_genes,
     render_core_target_plot,
 )
@@ -58,6 +60,75 @@ def _agg_backend():
 def _karate() -> nx.Graph:
     G = nx.karate_club_graph()
     return nx.relabel_nodes(G, {i: f"G{i:02d}" for i in G.nodes()})
+
+
+# ---------- 参考实现（原 core.network_algorithms 中的纯本地实现，仅供自检交叉验证） ----------
+
+
+def network_proximity(graph: "nx.Graph", set_a: list, set_b: list) -> float:
+    """参考实现：两组蛋白的网络平均距离 d_c(A,B) = mean_{b∈B} min_{a∈A} d(a,b)。
+    仅供小图与自检交叉验证;图中不存在的基因被忽略,B 中有从 A 不可达的节点时抛错。
+    """
+    a = {str(g) for g in set_a if g in graph}
+    b = {str(g) for g in set_b if g in graph}
+    if not a or not b:
+        raise ValueError("network_proximity: empty set after filtering to graph")
+    dist: dict[str, int] = {g: 0 for g in a}
+    frontier = set(a)
+    depth = 0
+    while frontier:
+        depth += 1
+        nxt: set[str] = set()
+        for u in frontier:
+            for v in graph[u]:
+                if v not in dist:
+                    dist[v] = depth
+                    nxt.add(v)
+        frontier = nxt
+    unreachable = b - dist.keys()
+    if unreachable:
+        raise ValueError(f"network_proximity: {len(unreachable)} nodes in B unreachable from A")
+    return sum(dist[g] for g in b) / len(b)
+
+
+def build_sparse_adj(graph: "nx.Graph") -> tuple:
+    """0-1 邻接 → 列随机转移矩阵 W（W[j,i] = P(i→j)，每列和为 1）。
+    度为 0 的节点会永久截留游走概率,故图必须连通（如限制在 LCC 内）。
+    """
+    import networkx as nx
+    import numpy as np
+    import scipy.sparse as sp
+
+    nodes = sorted(graph.nodes())
+    adj = nx.to_scipy_sparse_array(graph, nodelist=nodes, weight=None, format="csr")
+    col_deg = np.asarray(adj.sum(axis=0)).ravel()
+    if (col_deg == 0).any():
+        raise ValueError("zero-degree nodes in graph; restrict to a connected component")
+    # 右乘对角阵 = 按列缩放：W[:, i] = adj[:, i] / deg(i)
+    W = adj @ sp.diags(1.0 / col_deg)
+    return W, nodes
+
+
+def rwr_prioritize(graph: "nx.Graph", seed_genes: list, alpha: float = 0.7,
+                   tol: float = 1e-8, max_iter: int = 200) -> pd.DataFrame:
+    """参考入口（直接吃 networkx 图）：返回全节点 RWR 打分表,列 gene/score/is_seed 按 score 降序。
+    图需连通（建议 LCC）;不在图内的种子被忽略。
+    """
+    W, nodes = build_sparse_adj(graph)
+    idx = {g: i for i, g in enumerate(nodes)}
+    seeds = sorted({str(g) for g in seed_genes if g in idx})
+    if not seeds:
+        raise ValueError("rwr_prioritize: no seed gene present in graph")
+    scores, iters, converged = _rwr_power_iteration(
+        W, [idx[g] for g in seeds], alpha, tol, max_iter)
+    seed_set = set(seeds)
+    out = pd.DataFrame({
+        "gene": nodes,
+        "score": scores,
+        "is_seed": [g in seed_set for g in nodes],
+    })
+    logging.info("RWR done: %d seeds, %d iters, converged=%s", len(seeds), iters, converged)
+    return out.sort_values("score", ascending=False).reset_index(drop=True)
 
 
 def t_detect_basic():
@@ -101,20 +172,9 @@ def t_avg_degree():
 _OK_REASONS = ("success", "no_significant", "cache")
 
 
-def _fake_gp(reason, df):
-    """假的富集函数：reason=None 表示成功，否则按给定 reason 记录状态。"""
-    def f(genes, organism="hsapiens", sources=("GO:BP",), pvalue=0.05, label=None, status=None):
-        if status is not None:
-            if reason is None:
-                status.update(ok=True, reason="success")
-            else:
-                status.update(ok=reason in _OK_REASONS, reason=reason)
-        return df.copy()
-    return f
-
-
-def _fake_enr(reason, df):
-    def f(genes, libs, organism="human", pvalue=0.05, label=None, status=None):
+def _fake_fetch(reason, df):
+    """假的富集服务函数工厂（g:Profiler/Enrichr 共用,调用方均按关键字传参）：reason=None 表示成功，否则按给定 reason 记录状态。"""
+    def f(genes, libs=None, organism="hsapiens", sources=("GO:BP",), pvalue=0.05, label=None, status=None):
         if status is not None:
             if reason is None:
                 status.update(ok=True, reason="success")
@@ -125,12 +185,13 @@ def _fake_enr(reason, df):
 
 
 def _patch(gp_spec, enr_spec):
-    """临时把两个富集服务函数换成假函数，参数各为 (reason, df)。"""
-    gp_reason, gp_df = gp_spec
-    enr_reason, enr_df = enr_spec
+    """临时把两个富集服务函数换成假函数。参数各为 (reason, df) 元组,或直接给一个现成的假函数。"""
+    def _make(spec):
+        return spec if callable(spec) else _fake_fetch(*spec)
+
     orig = (na.fetch_enrichment_gprofiler, na.fetch_enrichment_enrichr)
-    na.fetch_enrichment_gprofiler = _fake_gp(gp_reason, gp_df)
-    na.fetch_enrichment_enrichr = _fake_enr(enr_reason, enr_df)
+    na.fetch_enrichment_gprofiler = _make(gp_spec)
+    na.fetch_enrichment_enrichr = _make(enr_spec)
     return orig
 
 
@@ -138,10 +199,24 @@ def _restore(orig):
     na.fetch_enrichment_gprofiler, na.fetch_enrichment_enrichr = orig
 
 
+def _module5(genes=("A", "B", "C", "D", "E"), module_id=1):
+    """测试用的 5 基因模块 dict（多个富集测试共用同一形状的数据）。"""
+    return {"module_id": module_id, "genes": list(genes), "size": len(genes), "avg_degree": 2.0}
+
+
+def _purge(pattern):
+    """按 glob 模式删除旧缓存文件,文件不存在时为无害空操作。"""
+    for old in glob.glob(pattern):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+
+
 def t_enrich_fail_both():
     orig = _patch(("request_failed", pd.DataFrame()), ("request_failed", pd.DataFrame()))
     try:
-        modules = [{"module_id": 1, "genes": ["A", "B", "C", "D", "E"], "size": 5, "avg_degree": 2.0}]
+        modules = [_module5()]
         long_df, failures, no_sig = na.enrich_modules(modules, organism="hsapiens")
         assert long_df.empty, "failed module must produce empty table"
         assert len(failures) == 1 and failures[0]["module_id"] == 1, "failure must be recorded"
@@ -154,7 +229,7 @@ def t_enrich_fail_gp_ok_enr():
     # 一个服务被熔断跳过、另一个确实无显著项 → 结果不可信，按失败处理
     orig = _patch(("circuit_open", pd.DataFrame()), ("no_significant", pd.DataFrame()))
     try:
-        modules = [{"module_id": 1, "genes": ["A", "B", "C", "D", "E"], "size": 5, "avg_degree": 2.0}]
+        modules = [_module5()]
         long_df, failures, no_sig = na.enrich_modules(modules, organism="hsapiens")
         assert len(failures) == 1, "circuit_open + empty enrichr must be a failure"
         assert not no_sig
@@ -166,7 +241,7 @@ def t_enrich_genuine_no_sig():
     # 两条链路都成功但确实无显著项 → 不算失败
     orig = _patch(("no_significant", pd.DataFrame()), ("no_significant", pd.DataFrame()))
     try:
-        modules = [{"module_id": 1, "genes": ["A", "B", "C", "D", "E"], "size": 5, "avg_degree": 2.0}]
+        modules = [_module5()]
         long_df, failures, no_sig = na.enrich_modules(modules, organism="hsapiens")
         assert long_df.empty and not failures and no_sig == [1]
     finally:
@@ -195,12 +270,11 @@ def t_enrich_success():
             status.update(ok=False, reason="request_failed")
         return pd.DataFrame()
 
-    orig = (na.fetch_enrichment_gprofiler, na.fetch_enrichment_enrichr)
-    na.fetch_enrichment_gprofiler, na.fetch_enrichment_enrichr = gp, enr
+    orig = _patch(gp, enr)
     try:
         modules = [
-            {"module_id": 1, "genes": ["A", "B", "C", "D", "E"], "size": 5, "avg_degree": 2.0},
-            {"module_id": 2, "genes": ["X", "Y", "Z", "W", "V"], "size": 5, "avg_degree": 2.0},
+            _module5(),
+            _module5(genes=("X", "Y", "Z", "W", "V"), module_id=2),
         ]
         long_df, failures, no_sig = na.enrich_modules(modules, organism="hsapiens")
         assert not no_sig
@@ -219,9 +293,7 @@ def t_min_size_filter():
         calls["n"] += 1
         return pd.DataFrame()
 
-    orig = (na.fetch_enrichment_gprofiler, na.fetch_enrichment_enrichr)
-    na.fetch_enrichment_gprofiler = counting_gp
-    na.fetch_enrichment_enrichr = lambda genes, **kw: pd.DataFrame()
+    orig = _patch(counting_gp, lambda genes, **kw: pd.DataFrame())
     try:
         modules = [{"module_id": 1, "genes": ["A", "B"], "size": 2, "avg_degree": 1.0}]
         long_df, failures, no_sig = na.enrich_modules(modules, organism="hsapiens",
@@ -284,17 +356,10 @@ def _rnk40() -> pd.DataFrame:
 
 def t_gsea_prerank_local():
     """用真实 gseapy 离线跑 GSEA：排位靠前的基因集方向应正确；第二次调用应命中缓存。"""
-    import glob
-    import config
-
     libs = {"SELFTEST_LIB": _tiny_gmt()}
     label = "selfcheck_gsea"
     # 先删除旧测试缓存，避免直接命中
-    for old in glob.glob(os.path.join(config.ENRICHMENT_CACHE_DIR, f"GSEA_{label}_*.csv")):
-        try:
-            os.remove(old)
-        except OSError:
-            pass
+    _purge(os.path.join(config.ENRICHMENT_CACHE_DIR, f"GSEA_{label}_*.csv"))
 
     st1: dict = {}
     df1 = fetch_enrichment_gsea_prerank(_rnk40(), libs=libs, label=label, status=st1)
@@ -323,9 +388,6 @@ def t_gsea_prerank_local():
 
 
 def t_gsea_insufficient_no_cache():
-    import glob
-    import config
-
     st1: dict = {}
     df = fetch_enrichment_gsea_prerank(_rnk40().head(10), libs={"L": _tiny_gmt()},
                                        label="selfcheck_gsea_short", status=st1)
@@ -375,7 +437,6 @@ def t_interactome_links_to_edges():
     assert records.get(("BRAF", "BRCA1")) == 900
     assert len(edges) == 3, f"expect 3 edges, got {len(edges)}"
     # 5) 置信度换算一致：0.7 * 1000 == 700
-    import config
     assert config.INTERACTOME_CONFIDENCE == int(config.PPI_CONFIDENCE * 1000)
 
 
@@ -411,7 +472,6 @@ def t_interactome_staleness():
     assert itx.is_stale("Human", days=age) is False, "boundary: age > days must be strict"
     assert itx.is_stale("Human", days=10_000) is False, "huge threshold must not be stale"
     # 默认阈值来自 config，且为正数
-    import config
     assert config.INTERACTOME_STALE_DAYS > 0
 
 
@@ -552,8 +612,6 @@ def t_prox_real_and_cached():
 
 def t_rwr_direction_and_mass():
     """验证游走方向：从星形图中心出发，扩散一步后每个叶子各得 0.25，总和为 1。"""
-    import scipy.sparse as sp
-
     G = nx.star_graph(4)  # 节点0为中心，度4；叶1..4度1
     G = nx.relabel_nodes(G, {i: f"N{i}" for i in G.nodes()})
     W, nodes = build_sparse_adj(G)
@@ -650,15 +708,8 @@ def t_rwr_real_and_cached():
     """真实互作组完整流程（未构建则跳过）：检查种子/非种子分列表、收敛与缓存。"""
     if not itx.is_built("Human"):
         return  # SKIP
-    import glob
-    import config
-
     # 先删除旧测试缓存，保证第一次是全新计算
-    for old in glob.glob(os.path.join(config.RWR_CACHE_DIR, "rwr_selfcheck_rwr_*.json")):
-        try:
-            os.remove(old)
-        except OSError:
-            pass
+    _purge(os.path.join(config.RWR_CACHE_DIR, "rwr_selfcheck_rwr_*.json"))
 
     seeds = ["TP53", "EGFR", "AKT1", "MYC", "STAT3"]
     res1 = run_rwr_cached(seeds, label="selfcheck_rwr")
@@ -758,6 +809,54 @@ def t_mcc_pick_and_core_plot():
     plt.close(fig)
 
 
+def t_hub_rank_topn_and_fallback():
+    """mark_hub_genes 排名制/小网络回退/MCC 兜底:
+    大网络(>=2N 节点)按 method 取前 N;小网络回退阈值法;MCC 缺失/全零退 degree;
+    并列按(分数降序,基因名升序)稳定排序;空表不崩溃。"""
+    G = _karate()  # 34 节点 >= 2*10 → 排名制生效
+    df = pd.DataFrame({"gene": list(G.nodes()),
+                       "degree": [d for _, d in G.degree()],
+                       "betweenness": 0.0, "closeness": 0.0})
+    out = mark_hub_genes(df, top_n=10, method="degree")
+    assert (out["hub_rule"] == "top10").all(), out["hub_rule"].unique()
+    assert int(out["is_hub"].sum()) == 10
+    assert list(out["hub_rank"]) == list(range(1, 35)), "rows must be rank-ordered"
+    degs = list(out["degree"])
+    assert degs == sorted(degs, reverse=True), "rows must be degree-descending"
+    for i in range(len(out) - 1):  # 并列度数按基因名升序,保证可复现
+        r1, r2 = out.iloc[i], out.iloc[i + 1]
+        if r1["degree"] == r2["degree"]:
+            assert str(r1["gene"]) <= str(r2["gene"]), "degree ties must sort by gene name"
+    assert set(out[out["is_hub"]]["gene"]) == set(out.head(10)["gene"])
+
+    # 小网络(<2N):回退阈值法——星形中心(度>中位数)入选,叶子(度=中位数)不入选
+    star = nx.relabel_nodes(nx.star_graph(9),
+                            {0: "CENTER", **{i: f"L{i}" for i in range(1, 10)}})
+    sdf = pd.DataFrame({"gene": list(star.nodes()),
+                        "degree": [d for _, d in star.degree()],
+                        "betweenness": 0.0, "closeness": 0.0})
+    s = mark_hub_genes(sdf, top_n=10, method="degree")
+    assert (s["hub_rule"] == "threshold").all()
+    assert list(s[s["is_hub"]]["gene"]) == ["CENTER"], s[s["is_hub"]]["gene"].tolist()
+
+    # MCC 不可用(空 map)时回退 degree 排名,且不新增 mcc 列
+    m0 = mark_hub_genes(df, top_n=10, method="mcc", mcc_map={})
+    assert (m0["hub_rule"] == "top10").all()
+    assert "mcc" not in m0.columns, "fallback to degree must not add mcc column"
+    assert list(m0["gene"]) == list(out["gene"]), "fallback order must equal degree order"
+
+    # MCC 可用时按 mcc 排名:把度数最低节点的 mcc 抬到最高,它必须升到第一
+    mcc_map = {g: 0.0 for g in G.nodes()}
+    mcc_map[out.iloc[-1]["gene"]] = 99.0
+    m1 = mark_hub_genes(df, top_n=10, method="mcc", mcc_map=mcc_map)
+    assert m1.iloc[0]["gene"] == out.iloc[-1]["gene"], "highest MCC must rank first"
+    assert "mcc" in m1.columns and int(m1["is_hub"].sum()) == 10
+
+    # 空表安全返回
+    empty = mark_hub_genes(df.iloc[0:0])
+    assert len(empty) == 0 and {"is_hub", "hub_rank", "hub_rule"} <= set(empty.columns)
+
+
 def t_drug_target_pathway_plot():
     """药物-靶点-通路网络图:KEGG 行参与构图、GO 行忽略;无 KEGG/无命中返回 None;
     g:Profiler 列表样式 / 分号 / 逗号三种基因格式都兼容;
@@ -830,6 +929,7 @@ def main():
         ("rwr truncation guarantee (large seed set)", t_rwr_truncation_guarantee),
         ("mcc known values", t_mcc_known_values),
         ("mcc pick + core target plot", t_mcc_pick_and_core_plot),
+        ("hub rank top-N + small-net fallback", t_hub_rank_topn_and_fallback),
         ("drug-target-pathway plot", t_drug_target_pathway_plot),
     ]
     run(tests, "network_algorithms selfcheck")
