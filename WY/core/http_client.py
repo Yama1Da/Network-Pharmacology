@@ -18,9 +18,7 @@ _session: requests.Session | None = None
 
 def _get_session() -> requests.Session:
     """返回共享 HTTP 会话;requests_cache 可用时为带 TTL 的落盘缓存会话。
-
-    只缓存 GET/POST 的 200 响应(失败/限流不缓存,重试逻辑不受影响);
-    POST 按完整请求体作为缓存键,同一查询命中、不同查询互不干扰。
+    只缓存 GET/POST 的 200 响应(失败/限流不缓存,重试逻辑不受影响);POST 按完整请求体作缓存键,同一查询命中、不同查询互不干扰。
     """
     global _session
     if _session is None:
@@ -51,10 +49,7 @@ def clear_http_cache() -> None:
 
 
 def throttle(host_key: str) -> None:
-    """控制对同一数据源的请求间隔,避免访问过快被对方限流。
-
-    没有设置间隔要求的数据源不限速,直接通过。
-    """
+    """控制对同一数据源的请求间隔,避免访问过快被对方限流;没有设置间隔要求的数据源不限速,直接通过。"""
     import time
 
     import config
@@ -89,15 +84,9 @@ def request_with_retry(
     use_cache: bool = False,
     cache_ttl_hours: float | None = None,
 ) -> requests.Response | None:
-    """带重试的 HTTP 请求,项目内所有数据源请求的统一入口。
-
-    每次失败都记录日志并等待后重试;全部失败时默认返回 None,
-    raise_on_exhausted=True 则抛出最后一次异常(调用方需要错误详情时使用)。
-    no_retry_status 中的状态码不视为失败,直接原样返回(如 STRING 的 404 表示
-    基因全部未识别,属正常业务情况)。throttle_key 传入时每次尝试前先过限速。
-    use_cache=True 时走共享缓存会话,命中有效缓存则不发起网络请求;
-    cache_ttl_hours 覆盖该请求的缓存有效期(仅缓存会话生效)。
-    """
+    """带重试的 HTTP 请求,项目内所有数据源请求的统一入口;每次失败记录日志并等待后重试,全部失败默认返回 None
+    (raise_on_exhausted=True 则抛出最后一次异常)。no_retry_status 中的状态码不视为失败直接原样返回
+    (如 STRING 的 404 表示基因全部未识别,属正常业务情况);use_cache=True 走共享缓存会话,cache_ttl_hours 覆盖该请求有效期。"""
     import time
 
     import config
@@ -139,7 +128,6 @@ def request_with_retry(
 def _opentargets_post(query: str, variables: dict, timeout: int = 30,
                       use_cache: bool = False) -> dict | None:
     """向 Open Targets 数据库发送查询;网络失败时自动重试几次,仍失败则返回 None。
-
     查询本身报错(返回结果带 errors)不算网络失败,由调用方自行处理。
     """
     import config

@@ -1,16 +1,15 @@
 """靶点汇总：整合药物靶点（ChEMBL+DGIdb）与疾病靶点（Open Targets+DisGeNET），并取交集。"""
 
 import logging
-import os
 
 import pandas as pd
 
-from .caching import open_csv_cache, save_csv_cache
+from .caching import open_named_csv_cache, save_csv_cache
 from .chembl import fetch_drug_targets_chembl
 from .disgenet import fetch_disease_targets_disgenet
 from .dgidb import fetch_drug_targets_dgidb
 from .opentargets import get_disease_targets
-from .text_utils import remember_name_mapping, safe_name
+from .text_utils import remember_name_mapping
 
 
 def _max_score_map(df: pd.DataFrame, score_col: str) -> dict[str, float]:
@@ -30,10 +29,8 @@ _OT_KEEP_BIOTYPES = {"protein_coding"}
 
 
 def _filter_dgidb_targets(df: pd.DataFrame) -> pd.DataFrame:
-    """DGIdb 降噪：保留交互分数达到下限、且有至少 1 条 PMID 文献支撑的记录。
-
-    单独卡分数或单独要求 PMID 都挡不住低质量预测,两条件需同时满足。
-    """
+    """DGIdb 降噪：保留交互分数达到下限、且有至少 1 条 PMID 文献支撑的记录;
+    单独卡分数或单独要求 PMID 都挡不住低质量预测,两条件需同时满足。"""
     import config
 
     if df.empty:
@@ -65,13 +62,10 @@ def _filter_ot_targets(df: pd.DataFrame) -> pd.DataFrame:
 
 def _filter_chembl_targets(df: pd.DataFrame, corroborated_genes: set[str],
                            *, blacklist_only: bool = False) -> pd.DataFrame:
-    """ChEMBL 降噪：先剔黑名单,再按 pChEMBL 分层保留。
-
-    保留：基因的最大 pChEMBL 达到阈值；或全部活性记录都没有 pChEMBL
-    定量值、但被 DGIdb 佐证（corroborated_genes 为通过 DGIdb 过滤的
-    大写基因集合）。剔除：仅有弱定量活性（0 < pChEMBL < 阈值）的基因。
-    blacklist_only=True 时只做黑名单过滤,供整侧过滤后为空时的兜底。
-    """
+    """ChEMBL 降噪：先剔黑名单,再按 pChEMBL 分层保留——保留：基因的最大 pChEMBL 达到阈值;或全部活性记录都
+    没有 pChEMBL 定量值的基因,CHEMBL_CORROBORATION_REQUIRED 开启时须被 DGIdb 佐证(corroborated_genes 为
+    通过 DGIdb 过滤的大写基因集合),关闭时无条件保留;剔除：仅有弱定量活性(0 < pChEMBL < 阈值)的基因。
+    blacklist_only=True 时只做黑名单过滤,供整侧过滤后为空时的兜底。"""
     import config
 
     if df.empty:
@@ -86,19 +80,19 @@ def _filter_chembl_targets(df: pd.DataFrame, corroborated_genes: set[str],
     pchem = pd.to_numeric(out["pchembl_value"], errors="coerce")
     max_by_gene = pchem.groupby(symbols).max()
     keep = set(max_by_gene[max_by_gene >= config.CHEMBL_PCHEMBL_THRESHOLD].index)
-    keep |= {g for g in max_by_gene[max_by_gene.isna()].index if g in corroborated_genes}
+    no_quant = set(max_by_gene[max_by_gene.isna()].index)
+    if config.CHEMBL_CORROBORATION_REQUIRED:
+        keep |= {g for g in no_quant if g in corroborated_genes}
+    else:
+        keep |= no_quant
     return out[symbols.isin(keep)]
 
 
 def _prepare_drug_sources(drug_name: str, chmbl_df: pd.DataFrame,
                           dgidb_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """对药物两个数据源做降噪过滤,返回过滤后的 (ChEMBL, DGIdb) 两表。
-
-    DGIdb 先过滤（分数+PMID）,通过的基因集再用于佐证 ChEMBL 的
-    无定量活性基因;两源过滤后都为空但原始数据非空时（DGIdb 失败、
-    全部活性只有弱定量值等）,回退为 ChEMBL 仅黑名单过滤,避免整侧
-    结果为空导致交集无意义。
-    """
+    """对药物两个数据源做降噪过滤,返回过滤后的 (ChEMBL, DGIdb) 两表。DGIdb 先过滤(分数+PMID),通过的基因集
+    再用于佐证 ChEMBL 的无定量活性基因;两源过滤后都为空但原始数据非空时(DGIdb 失败、全部活性只有弱定量值等),
+    回退为 ChEMBL 仅黑名单过滤,避免整侧结果为空导致交集无意义。"""
     dgidb_f = _filter_dgidb_targets(dgidb_df)
     corroborated = (
         set(dgidb_f["approvedSymbol"].dropna().str.upper()) if not dgidb_f.empty else set()
@@ -117,10 +111,16 @@ def _prepare_drug_sources(drug_name: str, chmbl_df: pd.DataFrame,
 
 def _prepare_disease_sources(disease_name: str, ot_df: pd.DataFrame,
                              disgenet_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """对疾病两个数据源做降噪过滤,返回过滤后的 (OpenTargets, DisGeNET) 两表。
+    """对疾病两个数据源做规模控制与降噪过滤,返回过滤后的 (OpenTargets, DisGeNET) 两表。
+    规模控制(设置面板可调):Open Targets 截取关联分数前 OT_TOP_N 个、DisGeNET 截取前 DISGENET_PAGES 页
+    (两张原始表均按分数降序存放);随后 Open Targets 再做降噪过滤(分数下限+只留蛋白编码)。"""
+    import config
 
-    DisGeNET 结果本身按分数降序且只取第一页(相当于 top100),不再额外过滤。
-    """
+    if not ot_df.empty:
+        ot_df = ot_df.head(int(config.OT_TOP_N))
+    if not disgenet_df.empty:
+        disgenet_df = disgenet_df.head(
+            int(config.DISGENET_PAGES) * int(config.DISGENET_PAGE_SIZE))
     ot_f = _filter_ot_targets(ot_df)
     logging.info(
         "Disease noise filter '%s': OpenTargets %d->%d rows",
@@ -128,15 +128,19 @@ def _prepare_disease_sources(disease_name: str, ot_df: pd.DataFrame,
     return ot_f, disgenet_df
 
 
-def _merged_cache_path(kind: str, name: str) -> str:
-    """merged 整合缓存文件路径。
-
-    文件名带降噪过滤规则版本号（config.TARGET_FILTER_VERSION），
-    规则或阈值变更（版本号+1）后旧缓存自动失效,下次分析按新阈值重建。
-    """
-    import config
-    prefix = config.MERGED_DRUG_PREFIX if kind == "drug" else config.MERGED_DISEASE_PREFIX
-    return os.path.join(config.MERGED_CACHE_DIR, f"{prefix}{safe_name(name)}.csv")
+# 两个类别的合并参数(来源标记列/分数列/日志描述),串行与并发共四处调用点共用
+_DRUG_MERGE = dict(
+    kind="drug", src_a="source_chmbl", src_b="source_dgidb",
+    score_a=("score_pchembl", "pchembl_value"),
+    score_b=("score_dgidb", "interaction_score"),
+    sources_desc=("ChEMBL", "DGIdb"),
+)
+_DISEASE_MERGE = dict(
+    kind="disease", src_a="source_ot", src_b="source_disgenet",
+    score_a=("score_ot", "association_score"),
+    score_b=("score_disgenet", "disgenet_score"),
+    sources_desc=("OpenTargets", "DisGeNET"),
+)
 
 
 def _merge_source_pair(
@@ -153,12 +157,9 @@ def _merge_source_pair(
     sources_desc: tuple[str, str],
     save: bool = True,
 ) -> pd.DataFrame:
-    """两个数据源的靶点按基因符号取并集去重，并保留各源分数最大值。
-
-    kind 为 "drug"/"disease"，用于日志；src_a/src_b 为来源标记列名；
-    score_a/score_b 为 (输出列名, 源分数列名)；两源都没有数据时返回空表。
-    save=False 时不写缓存(某路数据源失败时,避免把残缺结果永久缓存)。
-    """
+    """两个数据源的靶点按基因符号取并集去重，并保留各源分数最大值。kind 为 "drug"/"disease"，用于日志;
+    src_a/src_b 为来源标记列名；score_a/score_b 为 (输出列名, 源分数列名)；两源都没有数据时返回空表。
+    save=False 时不写缓存(某路数据源失败时,避免把残缺结果永久缓存)。"""
     genes_a = set(df_a["approvedSymbol"].dropna().str.upper()) if not df_a.empty else set()
     genes_b = set(df_b["approvedSymbol"].dropna().str.upper()) if not df_b.empty else set()
     all_genes = sorted(genes_a | genes_b)
@@ -198,73 +199,55 @@ def _merge_source_pair(
 
 
 def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
-    """整合 ChEMBL 与 DGIdb 两个数据库的药物靶点，按基因符号取并集去重。
+    """整合 ChEMBL 与 DGIdb 两个数据库的药物靶点，按基因符号取并集去重;整合前先做降噪过滤(ChEMBL 黑名单+
+    pChEMBL 阈值与 DGIdb 佐证、DGIdb 分数+PMID 双门槛,见 _prepare_drug_sources)。为每个基因标记来自哪些数据库
+    (source_chmbl / source_dgidb)并保留各库的活性/交互分数;两个库都没有数据时返回空表;结果存为本地 CSV,已有缓存则直接复用。"""
+    import config
 
-    整合前先做降噪过滤（ChEMBL 黑名单+pChEMBL 阈值与 DGIdb 佐证、
-    DGIdb 分数+PMID 双门槛,见 _prepare_drug_sources）。
-    为每个基因标记来自哪些数据库（source_chmbl / source_dgidb），
-    并保留各库的活性/交互分数。两个库都没有数据时返回空表；
-    结果存为本地 CSV，已有缓存则直接复用。
-    """
-    cache_path = _merged_cache_path("drug", drug_name)
-    remember_name_mapping(drug_name)  # 记录安全文件名→原始名,供管理页还原
-    cached = open_csv_cache(cache_path, label=f"merged drug targets for '{drug_name}'")
+    # merged 缓存文件名带降噪过滤规则版本号(config.MERGED_DRUG_PREFIX),规则或阈值变更后旧缓存自动失效
+    cache_path, cached = open_named_csv_cache(
+        config.MERGED_CACHE_DIR, config.MERGED_DRUG_PREFIX, drug_name,
+        label=f"merged drug targets for '{drug_name}'",
+        remember=remember_name_mapping,  # 记录安全文件名→原始名,供管理页还原
+    )
     if cached is not None:
         return cached
 
     chmbl_df, _ = fetch_drug_targets_chembl(drug_name)
     dgidb_df = fetch_drug_targets_dgidb(drug_name)
     chmbl_df, dgidb_df = _prepare_drug_sources(drug_name, chmbl_df, dgidb_df)
-    return _merge_source_pair(
-        drug_name, chmbl_df, dgidb_df,
-        cache_path=cache_path, kind="drug",
-        src_a="source_chmbl", src_b="source_dgidb",
-        score_a=("score_pchembl", "pchembl_value"),
-        score_b=("score_dgidb", "interaction_score"),
-        sources_desc=("ChEMBL", "DGIdb"),
-    )
+    return _merge_source_pair(drug_name, chmbl_df, dgidb_df,
+                              cache_path=cache_path, **_DRUG_MERGE)
 
 
 def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
-    """整合 Open Targets 与 DisGeNET 两个数据库的疾病靶点，按基因符号取并集去重。
+    """整合 Open Targets 与 DisGeNET 两个数据库的疾病靶点，按基因符号取并集去重;整合前先对 Open Targets 做
+    降噪过滤(分数下限+只留蛋白编码;DisGeNET 本身按分数取第一页,不过滤,见 _prepare_disease_sources)。
+    为每个基因标记来自哪些数据库(source_ot / source_disgenet)并保留各库的关联分数;两个库都没有数据时返回空表;结果存为本地 CSV,已有缓存则直接复用。"""
+    import config
 
-    整合前先对 Open Targets 做降噪过滤（分数下限+只留蛋白编码,
-    DisGeNET 本身按分数取第一页,不过滤,见 _prepare_disease_sources）。
-    为每个基因标记来自哪些数据库（source_ot / source_disgenet），
-    并保留各库的关联分数。两个库都没有数据时返回空表；
-    结果存为本地 CSV，已有缓存则直接复用。
-    """
-    cache_path = _merged_cache_path("disease", disease_name)
-    remember_name_mapping(disease_name)  # 记录安全文件名→原始名,供管理页还原
-    cached = open_csv_cache(cache_path, label=f"merged disease targets for '{disease_name}'")
+    cache_path, cached = open_named_csv_cache(
+        config.MERGED_CACHE_DIR, config.MERGED_DISEASE_PREFIX, disease_name,
+        label=f"merged disease targets for '{disease_name}'",
+        remember=remember_name_mapping,  # 记录安全文件名→原始名,供管理页还原
+    )
     if cached is not None:
         return cached
 
-    ot_df = get_disease_targets(disease_name)
-    disgenet_df = fetch_disease_targets_disgenet(disease_name)
+    ot_df = get_disease_targets(disease_name, need_rows=int(config.OT_TOP_N))
+    disgenet_df = fetch_disease_targets_disgenet(
+        disease_name, need_rows=int(config.DISGENET_PAGES) * int(config.DISGENET_PAGE_SIZE))
     ot_df, disgenet_df = _prepare_disease_sources(disease_name, ot_df, disgenet_df)
-    return _merge_source_pair(
-        disease_name, ot_df, disgenet_df,
-        cache_path=cache_path, kind="disease",
-        src_a="source_ot", src_b="source_disgenet",
-        score_a=("score_ot", "association_score"),
-        score_b=("score_disgenet", "disgenet_score"),
-        sources_desc=("OpenTargets", "DisGeNET"),
-    )
+    return _merge_source_pair(disease_name, ot_df, disgenet_df,
+                              cache_path=cache_path, **_DISEASE_MERGE)
 
 
 def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> list[str]:
-    """
-    取药物靶点与疾病靶点的交集基因，作为后续 PPI 网络分析的输入。
-
-    按字母序排序，最多返回 top_n 个（默认 1000，对齐 STRING 查询上限）；
-    任一侧无数据时返回空列表。
-    """
+    """取药物靶点与疾病靶点的交集基因，作为后续 PPI 网络分析的输入;按字母序排序,最多返回 top_n 个
+    (默认 1000,对齐 STRING 查询上限);任一侧无数据时返回空列表。"""
     drug_df, disease_df, _failed = get_targets_concurrent(drug_name, disease_name)
-    # 提取药物和疾病两侧的基因符号
     drug_set = set(drug_df["approvedSymbol"].dropna()) if not drug_df.empty else set()
     disease_set = set(disease_df["approvedSymbol"].dropna()) if not disease_df.empty else set()
-    # 取交集，按字母序排序并截断到 top_n
     return sorted(drug_set & disease_set)[:top_n]
 
 
@@ -284,33 +267,22 @@ _SOURCE_DEADLINE_SECONDS = {
 def get_targets_concurrent(
     drug_name: str, disease_name: str, progress_cb=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    """并发获取药物与疾病两侧靶点(四路数据源同时请求),供分析页一次拿全。
-
-    语义与分别串行调用 get_drug_targets_merged + get_disease_targets_merged 一致:
-    两侧 merged 缓存都命中时直接返回;否则只对缺失的一侧并发联网。
-
-    progress_cb: 可选进度回调,每 0.5 秒或某路完成时被调用一次(始终在主线程,
-    可安全更新 Streamlit 组件),签名 progress_cb(done: list[str], total: int),
-    done 为已完成的数据源 key(chembl/dgidb/opentargets/disgenet)。
-
-    返回 (药物靶点表, 疾病靶点表, 失败数据源 key 列表)。
-    失败的数据源按空表参与展示,且该侧不写 merged 缓存——避免把残缺结果
-    永久缓存;失败源下次分析自动重试,成功的源已缓存、秒回。
-
-    并发写安全性:四路数据源的来源 CSV 文件名互不相同,各自单线程写自己的文件;
-    merged 整合表只在主线程写一次;DisGeNET 限流记录文件内部有锁保护;
-    共享 HTTP 缓存 sqlite 由 requests-cache 的线程本地连接保证安全。
-    """
+    """并发获取药物与疾病两侧靶点(四路数据源同时请求),供分析页一次拿全;语义与分别串行调用 get_drug_targets_merged + get_disease_targets_merged 一致:两侧 merged 缓存都命中时直接返回,否则只对缺失的一侧并发联网。progress_cb: 可选进度回调,每 0.5 秒或某路完成时被调用一次(始终在主线程,可安全更新 Streamlit 组件),签名 progress_cb(done: list[str], total: int),done 为已完成的数据源 key(chembl/dgidb/opentargets/disgenet)。
+    返回 (药物靶点表, 疾病靶点表, 失败数据源 key 列表);失败的数据源按空表参与展示,且该侧不写 merged 缓存——避免把残缺结果永久缓存;失败源下次分析自动重试,成功的源已缓存、秒回。
+    并发写安全性:四路数据源的来源 CSV 文件名互不相同,各自单线程写自己的文件;merged 整合表只在主线程写一次;DisGeNET 限流记录文件内部有锁保护;共享 HTTP 缓存 sqlite 由 requests-cache 的线程本地连接保证安全。"""
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
     from concurrent.futures import wait as wait_futures
 
     import time
 
-    drug_cache = _merged_cache_path("drug", drug_name)
-    disease_cache = _merged_cache_path("disease", disease_name)
+    import config
 
-    drug_df = open_csv_cache(drug_cache, label=f"merged drug targets for '{drug_name}'")
-    disease_df = open_csv_cache(disease_cache, label=f"merged disease targets for '{disease_name}'")
+    drug_cache, drug_df = open_named_csv_cache(
+        config.MERGED_CACHE_DIR, config.MERGED_DRUG_PREFIX, drug_name,
+        label=f"merged drug targets for '{drug_name}'")
+    disease_cache, disease_df = open_named_csv_cache(
+        config.MERGED_CACHE_DIR, config.MERGED_DISEASE_PREFIX, disease_name,
+        label=f"merged disease targets for '{disease_name}'")
     if drug_df is not None and disease_df is not None:
         return drug_df, disease_df, []
 
@@ -320,8 +292,11 @@ def get_targets_concurrent(
         futures["chembl"] = pool.submit(fetch_drug_targets_chembl, drug_name)
         futures["dgidb"] = pool.submit(fetch_drug_targets_dgidb, drug_name)
     if disease_df is None:
-        futures["opentargets"] = pool.submit(get_disease_targets, disease_name)
-        futures["disgenet"] = pool.submit(fetch_disease_targets_disgenet, disease_name)
+        futures["opentargets"] = pool.submit(
+            get_disease_targets, disease_name, int(config.OT_TOP_N))
+        futures["disgenet"] = pool.submit(
+            fetch_disease_targets_disgenet, disease_name,
+            int(config.DISGENET_PAGES) * int(config.DISGENET_PAGE_SIZE))
 
     total = len(futures)
     results: dict = {}
@@ -371,12 +346,8 @@ def get_targets_concurrent(
         chmbl_df, dgidb_df = _prepare_drug_sources(drug_name, chmbl_df, dgidb_df)
         drug_df = _merge_source_pair(
             drug_name, chmbl_df, dgidb_df,
-            cache_path=drug_cache, kind="drug",
-            src_a="source_chmbl", src_b="source_dgidb",
-            score_a=("score_pchembl", "pchembl_value"),
-            score_b=("score_dgidb", "interaction_score"),
-            sources_desc=("ChEMBL", "DGIdb"),
-            save="chembl" not in failed and "dgidb" not in failed,
+            cache_path=drug_cache, save="chembl" not in failed and "dgidb" not in failed,
+            **_DRUG_MERGE,
         )
 
     if disease_df is None:
@@ -387,12 +358,9 @@ def get_targets_concurrent(
         ot_df, disgenet_df = _prepare_disease_sources(disease_name, ot_df, disgenet_df)
         disease_df = _merge_source_pair(
             disease_name, ot_df, disgenet_df,
-            cache_path=disease_cache, kind="disease",
-            src_a="source_ot", src_b="source_disgenet",
-            score_a=("score_ot", "association_score"),
-            score_b=("score_disgenet", "disgenet_score"),
-            sources_desc=("OpenTargets", "DisGeNET"),
+            cache_path=disease_cache,
             save="opentargets" not in failed and "disgenet" not in failed,
+            **_DISEASE_MERGE,
         )
 
     return (drug_df if drug_df is not None else pd.DataFrame(),

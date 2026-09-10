@@ -7,7 +7,8 @@ import re
 
 import pandas as pd
 
-from .caching import _is_cache_fresh, read_cache_key, save_csv_cache
+from .caching import (_is_cache_fresh, clean_expired_cache_files, read_cache_key,
+                      save_csv_cache)
 
 # 两个数据源的基因集库名对应关系（GO 生物过程/分子功能/细胞组分、KEGG 通路）。
 ENRICHR_LIB_MAP = {
@@ -23,6 +24,11 @@ _ENRICHR_ORGANISM_MAP = {
     "hsapiens": "human",
     "mmusculus": "mouse",
 }
+
+
+def _enrichr_libs(sources) -> list[str]:
+    """把 g:Profiler 数据源名映射为对应的 Enrichr 库名，过滤掉 Enrichr 没有的数据源。"""
+    return [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
 
 
 def _enrichment_cache_key(genes: list[str], organism: str, sources, pvalue: float) -> str:
@@ -42,17 +48,32 @@ _HASH_RE = r"[0-9a-f]{8,32}"
 
 
 def enrichment_cache_filename(source_name: str, label: str | None, md5: str) -> str:
-    """构造富集缓存文件名:数据源_标识.csv,如 gProfiler_aspirin_cancer.csv。
-
-    同名覆盖式缓存:同一"药物_疾病"标识只保留一份结果,新结果直接覆盖旧文件;
-    是否命中由文件头部的缓存键(save_csv_cache 的 header_lines 写入)校验,
-    标识相同但基因集/参数变了会当作未命中重算后覆盖,不会返回过期结果。
-    label 为空(无标识的裸查询)退回短哈希命名,避免不同输入互相覆盖。
-    network_algorithms 推算模块缓存文件时也用它,保证命名规则只有一份。
-    """
+    """构造富集缓存文件名:数据源_标识.csv。同名覆盖式缓存:同一标识只保留一份,是否命中由文件头部
+    缓存键(save_csv_cache 的 header_lines 写入)校验,标识同但基因集/参数变了会重算后覆盖,不返回过期结果;
+    label 为空(裸查询)退回短哈希命名避免互相覆盖。network_algorithms 推算模块缓存也用它,命名规则只有一份。"""
     if label:
         return f"{source_name}_{label}.csv"
     return f"{source_name}_{md5[:_HASH_LEN]}.csv"
+
+
+# 富集缓存目录过期清理的上次执行时刻(monotonic):一次分析会多次进入取数路径,
+# 限频避免反复全目录扫描;间隔取缓存有效期的 1/4(不少于 5 分钟)。
+_cache_cleaned_at = -float("inf")
+
+
+def _clean_cache_dir_limited() -> None:
+    """清理富集缓存目录里超过 TTL 的文件。TTL 在命中判定里只挡复用、不删文件,
+    不清理则目录长期只增不减;结果已永久保存在分析结果目录,删除无损失。"""
+    global _cache_cleaned_at
+    import time
+
+    import config
+
+    now = time.monotonic()
+    if now - _cache_cleaned_at < max(config.CACHE_TTL_SECONDS / 4, 300):
+        return
+    _cache_cleaned_at = now
+    clean_expired_cache_files(config.ENRICHMENT_CACHE_DIR)
 
 
 # ---------- 缓存文件名解析(页面友好展示与分子对接选择共用) ----------
@@ -67,13 +88,7 @@ _GSEA_NAME_NO_LABEL_RE = re.compile(r"^GSEA_(?P<hash>[0-9a-f]{8,32})\.csv$")
 
 
 def parse_enrichment_filename(file_name: str) -> dict | None:
-    """解析富集缓存文件名;不是富集缓存命名规则时返回 None。
-
-    返回 {"kind", "source", "label", "side"}:
-      kind   "ora"（g:Profiler/Enrichr 普通富集）或 "gsea"（排序富集）;
-      source 数据源名;
-      label  "药物_疾病"等分析标识;
-      side   仅 GSEA 有:药物侧 "drug" / 疾病侧 "disease"。
+    """解析富集缓存文件名;不是富集缓存命名规则时返回 None,命中时含 kind/source/label/side 字段。
     新命名为 GSEA_侧_标识(无哈希);旧命名 GSEA_侧_标识_哈希 与 GSEA_标识_侧_哈希 也兼容解析。
     """
     if not isinstance(file_name, str):
@@ -104,10 +119,7 @@ def parse_enrichment_filename(file_name: str) -> dict | None:
 
 def migrate_legacy_cache_names() -> int:
     """把旧版带哈希命名的富集缓存改为"数据源_标识"同名覆盖式命名,返回处理(改名/去重)的文件数。
-
-    同一标识存在多个变体(旧缓存键不同)时保留最新一份、删除其余——与"同名覆盖只留最新"
-    的语义一致;同目标的新格式文件同样参与"最新者胜"。已是新命名的文件原样保留。
-    幂等:页面进入时重复调用无副作用。
+    同一标识多变体时保留最新一份、删除其余,同目标的新格式文件同样参与"最新者胜";幂等,重复调用无副作用。
     """
     import config
 
@@ -138,7 +150,7 @@ def migrate_legacy_cache_names() -> int:
     for target, cands in groups.items():
         if len(cands) == 1 and cands[0][1] == target:
             continue
-        cands.sort(reverse=True)  # 最新在前
+        cands.sort(reverse=True)
         newest = cands[0]
         for _, name in cands[1:]:
             try:
@@ -209,9 +221,7 @@ def _gprofiler_circuit_close() -> None:
 
 
 def _call_with_request_guard(fn, label: str, on_fail=None):
-    """给第三方富集查询库统一补上请求保护：请求间隔、全局超时、失败重试。
-
-    fn 为零参调用（内部完成实际的库调用并取回结果表）；全部重试失败返回 None。
+    """给第三方富集查询库统一补上请求保护：请求间隔、全局超时、失败重试;全部重试失败返回 None。
     on_fail 在每次失败后被调用（g:Profiler 用它累计熔断）。
     """
     import time
@@ -225,7 +235,7 @@ def _call_with_request_guard(fn, label: str, on_fail=None):
         socket.setdefaulttimeout(config.API_TIMEOUT)
         try:
             res = fn()
-            break  # 成功
+            break
         except Exception:
             logging.exception(
                 "%s enrichment failed (attempt %d/%d)",
@@ -234,7 +244,7 @@ def _call_with_request_guard(fn, label: str, on_fail=None):
             if on_fail is not None:
                 on_fail()
             if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
-                time.sleep(config.API_RETRY_DELAY)  # 失败后稍等再重试
+                time.sleep(config.API_RETRY_DELAY)
         finally:
             socket.setdefaulttimeout(None)
     return res
@@ -274,9 +284,7 @@ def _query_enrichr(genes: list[str], libs, organism: str, pvalue: float):
 
 def _hit_csv_cache(cache_file: str, md5: str, label: str) -> pd.DataFrame | None:
     """同名覆盖式缓存的命中判定:文件存在、有效期内、且头部键与当前查询一致。
-
-    键不一致(同一标识但基因集/参数变了)按未命中处理,重算后覆盖同名文件,
-    避免把旧输入的结果误当成新分析的结果;旧格式无键文件同样视为未命中。
+    键不一致(同一标识但基因集/参数变了)或旧格式无键文件按未命中处理,重算后覆盖,避免旧输入结果被误当新分析结果。
     """
     if not _is_cache_fresh(cache_file):
         return None
@@ -303,19 +311,16 @@ def _fetch_enrichment_cached(
     on_fail=None,
     on_result_ok=None,
 ) -> pd.DataFrame:
-    """g:Profiler / Enrichr 两个富集数据源共用的"清洗输入→查缓存→带保护请求→整理→缓存"流程。
-
-    request 为零参调用,返回原始结果表;网络失败时由请求保护返回 None。
-    normalize 把原始结果整理为统一列。input_ok=False 按空输入直接返回。
-    skip_if 返回非 None 时按该原因跳过请求(g:Profiler 的熔断);
-    on_fail 在每次请求失败后被调用(用于累计熔断);on_result_ok 在拿到非空结果后调用(用于关闭熔断)。
-    """
+    """g:Profiler / Enrichr 两个富集数据源共用的"清洗输入→查缓存→带保护请求→整理→缓存"流程;
+    网络失败时由请求保护返回 None。skip_if 返回非 None 时按该原因跳过请求(g:Profiler 的熔断),
+    on_fail 在每次失败后被调用(用于累计熔断),on_result_ok 在拿到非空结果后调用(用于关闭熔断)。"""
     import config
 
     if not input_ok:
         _set_status(status, False, "empty_input")
         return pd.DataFrame()
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
+    _clean_cache_dir_limited()
     md5 = _enrichment_cache_key(genes, organism, cache_key_extra, pvalue)
     cache_file = os.path.join(config.ENRICHMENT_CACHE_DIR,
                               enrichment_cache_filename(source_name, label, md5))
@@ -365,12 +370,8 @@ def fetch_enrichment_gprofiler(
     label: str | None = None,
     status: dict | None = None,
 ) -> pd.DataFrame:
-    """
-    用 g:Profiler 查询基因列表的功能富集（GO/KEGG）。结果整理为统一列后缓存到本地，
-    相同基因列表与参数再次查询时直接读缓存。
-
-    请求失败或没有显著条目时返回空表；status（若提供）标明本次属于哪种情况，
-    便于区分"真无显著项"与"服务失败"。近期失败过会触发熔断,直接跳过并走 Enrichr 兜底。
+    """用 g:Profiler 查询基因列表的功能富集（GO/KEGG）,结果整理为统一列后缓存,相同输入直接读缓存。
+    失败或无显著条目返回空表,status（若提供）区分"真无显著项"与"服务失败";近期失败过触发熔断,跳过并走 Enrichr 兜底。
     """
     genes = sorted({g.strip() for g in genes if g and g.strip()})
     return _fetch_enrichment_cached(
@@ -381,15 +382,13 @@ def fetch_enrichment_gprofiler(
         skip_if=lambda: "circuit_open" if _gprofiler_circuit_open() else None,
         request=lambda: _profile_gprofiler(genes, organism, sources, pvalue),
         normalize=_normalize_enrichment_gprofiler,
-        on_fail=_gprofiler_circuit_open_trip,   # 记录失败时间，开启熔断
-        on_result_ok=_gprofiler_circuit_close,  # 拿到非空结果，关闭熔断
+        on_fail=_gprofiler_circuit_open_trip,
+        on_result_ok=_gprofiler_circuit_close,
     )
 
 
 def _normalize_enrichment_gprofiler(df: pd.DataFrame) -> pd.DataFrame:
-    """把 g:Profiler 返回的结果整理为统一列。
-
-    g:Profiler 返回的 p 值已做多重检验校正，因此校正前后 p 值相同；
+    """把 g:Profiler 返回的结果整理为统一列;其返回的 p 值已做多重检验校正,因此校正前后 p 值相同。
     同时兼容不同版本返回的列名差异。
     """
     df = df.reset_index()  # 通路 ID 有时在行索引里，先还原成列
@@ -425,10 +424,8 @@ def fetch_enrichment_enrichr(
     label: str | None = None,
     status: dict | None = None,
 ) -> pd.DataFrame:
-    """
-    用 Enrichr 查询功能富集，作为 g:Profiler 连不上时的备选方案。
-    结果同样缓存到本地，相同基因列表与参数直接读缓存；
-    请求失败或没有显著条目时返回空表，status 含义与 g:Profiler 版本一致。
+    """用 Enrichr 查询功能富集,作为 g:Profiler 连不上时的备选方案;结果同样缓存,相同输入直接读缓存。
+    请求失败或没有显著条目时返回空表,status 含义与 g:Profiler 版本一致。
     """
     genes = sorted({g.strip() for g in genes if g and g.strip()})
     return _fetch_enrichment_cached(
@@ -483,17 +480,11 @@ def run_enrichment(
     sources: tuple | None = None,
     label: str | None = None,
 ) -> tuple[pd.DataFrame, str | None]:
-    """
-    富集分析主入口：输入基因列表（通常是药物与疾病的交集靶点），
-    先请求 g:Profiler，失败自动改用 Enrichr。
-
-    返回 (富集结果表, 实际使用的数据源)；两个数据源都失败时返回 (空表, None)。
-    """
+    """富集分析主入口：输入基因列表（通常是药物与疾病的交集靶点），先请求 g:Profiler，失败自动改用 Enrichr。"""
     import config
 
     sources = sources or config.ENRICHMENT_SOURCES
 
-    # 主：g:Profiler
     df = fetch_enrichment_gprofiler(genes, organism=organism, sources=sources, pvalue=pvalue, label=label)
     if not df.empty:
         return df, "gProfiler"
@@ -501,7 +492,7 @@ def run_enrichment(
     # 备：Enrichr（不支持大鼠，跳过）
     enrichr_organism = _ENRICHR_ORGANISM_MAP.get(organism)
     if enrichr_organism:
-        libs = [ENRICHR_LIB_MAP[s] for s in sources if s in ENRICHR_LIB_MAP]
+        libs = _enrichr_libs(sources)
         df = fetch_enrichment_enrichr(genes, libs=libs, organism=enrichr_organism, pvalue=pvalue, label=label)
         if not df.empty:
             return df, "Enrichr"
@@ -509,10 +500,8 @@ def run_enrichment(
 
 
 def render_enrichment_plots(df: pd.DataFrame) -> tuple:
-    """
-    绘制富集结果图：柱状图（每类数据源各取前 N 条通路，横轴为 -log10 校正 p 值）
-    和气泡图（全局前 N 条，点越大表示命中的基因越多）。
-    没有有效结果时返回 (None, None)。
+    """绘制富集结果图：柱状图（每类数据源各取前 N 条,横轴为 -log10 校正 p 值）和气泡图（全局前 N 条,
+    点越大命中基因越多）;没有有效结果时返回 (None, None)。
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -528,7 +517,6 @@ def render_enrichment_plots(df: pd.DataFrame) -> tuple:
         "GO:CC": "#55A868", "KEGG": "#C44E52",
     }
 
-    # ---- 柱状图：每个 source 取校正 p 最小的前 N 条 ----
     top = (
         df.sort_values("adjusted_p_value")
         .groupby("source", as_index=False)
@@ -543,7 +531,6 @@ def render_enrichment_plots(df: pd.DataFrame) -> tuple:
     ax_bar.tick_params(axis="y", labelsize=7)
     fig_bar.tight_layout()
 
-    # ---- 气泡图：全局校正 p 最小的前 N 条 ----
     bubble = df.sort_values("adjusted_p_value").head(config.PATHWAY_DISPLAY_NUM)
     sizes = 40 + 120 * (bubble["intersection_size"] / max(bubble["intersection_size"].max(), 1))
     fig_dot, ax_dot = plt.subplots(figsize=(10, max(6, 0.3 * len(bubble))))
@@ -563,11 +550,7 @@ def render_enrichment_plots(df: pd.DataFrame) -> tuple:
 
 
 def _parse_hit_genes(raw) -> set[str]:
-    """把富集结果里的命中基因列解析成大写基因集合。
-
-    三种来源格式都兼容:g:Profiler 的列表样式字符串 "['A', 'B']"、
-    Enrichr 的分号分隔 "A;B"、以及逗号分隔 "A,B"。
-    """
+    """把富集结果里的命中基因列解析成大写基因集合;兼容 g:Profiler 列表样式字符串、Enrichr 分号/逗号分隔三种格式。"""
     import ast
 
     s = str(raw).strip()
@@ -590,13 +573,9 @@ def render_drug_target_pathway_plot(
     enrichment_df: pd.DataFrame | None,
     top_n_pathways: int | None = None,
 ) -> "matplotlib.figure.Figure | None":
-    """
-    绘制"药物-靶点-通路"网络图（论文用）：红色三角为药物、黄色方块为靶点、
-    蓝色 V 为 KEGG 通路。通路取富集结果中 KEGG 来源、校正 p 值最小的前 N 条
-    （top_n_pathways，默认 config.PATHWAY_DISPLAY_NUM）；靶点排成居中网格，
-    只画命中至少一条所示通路的，药物节点连向全部所示靶点（手动基因模式无
-    药物名，省略药物节点）。无 KEGG 通路或无命中靶点时返回 None。
-    """
+    """绘制"药物-靶点-通路"网络图（论文用）：红色三角为药物、黄色方块为靶点、蓝色 V 为 KEGG 通路。
+    通路取 KEGG 来源、校正 p 值最小的前 N 条;只画命中至少一条所示通路的靶点,手动基因模式无药物名时省略药物节点。
+    无 KEGG 通路或无命中靶点时返回 None。"""
     import textwrap
 
     import numpy as np
@@ -623,7 +602,6 @@ def render_drug_target_pathway_plot(
     if not pathway_hits or not hit_targets:
         return None
 
-    # ---- 布局：靶点居中网格，通路沿外圈椭圆分布，药物置于网格下方 ----
     shown = sorted(hit_targets)
     n_t = len(shown)
     n_cols = max(6, min(12, int(np.ceil(np.sqrt(n_t * 1.5)))))
@@ -663,7 +641,6 @@ def render_drug_target_pathway_plot(
             x, y = grid_pos[gene]
             ax.plot([px, x], [py, y], color="#9a9a9a", lw=0.6, alpha=0.25, zorder=1)
 
-    # ---- 节点：靶点（黄方块，基因名在块内）、通路（蓝 V，名字在外侧）、药物（红三角） ----
     ax.scatter(*zip(*grid_pos.values()), marker="s", s=560, c="#F3C63F",
                edgecolors="#8a7508", linewidths=0.6, zorder=3)
     gene_font = 6.0 if n_t > 100 else (6.5 if n_t > 60 else 7.0)
@@ -766,11 +743,8 @@ def gsea_gene_sets() -> dict[str, str]:
 
 
 def build_ranked_list(targets_df: pd.DataFrame, gene_col: str, score_col: str) -> tuple[pd.DataFrame, dict]:
-    """
-    把带打分的靶点表转为排序富集的输入（基因 | 分数，按分数降序）。
-
-    处理规则：基因名统一大写；同一基因取最高分；没有分数的行直接剔除
-    （不补零，补零会制造假信号），剔除比例记入 stats 供页面提示。
+    """把带打分的靶点表转为排序富集的输入（基因 | 分数，按分数降序）。
+    基因名统一大写、同一基因取最高分;没有分数的行直接剔除不补零（补零会制造假信号）,剔除比例记入 stats。
     """
     if targets_df is None or targets_df.empty:
         return pd.DataFrame(columns=["gene", "score"]), {
@@ -790,7 +764,7 @@ def build_ranked_list(targets_df: pd.DataFrame, gene_col: str, score_col: str) -
     df = df[df["gene"] != ""]
     df["score"] = pd.to_numeric(df["score"], errors="coerce")
     df = df.dropna(subset=["score"])
-    df = df.groupby("gene", as_index=False)["score"].max()  # 同基因取最高分
+    df = df.groupby("gene", as_index=False)["score"].max()
     df = df.sort_values("score", ascending=False).reset_index(drop=True)
     n_kept = len(df)
     stats = {
@@ -871,9 +845,7 @@ def _gsea_cache_md5(rnk: pd.DataFrame, libs: dict[str, str]) -> str:
 def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None,
                      md5: str | None = None) -> str:
     """GSEA 结果缓存路径:同名覆盖式命名 GSEA_侧_标识.csv(键记录在文件头部,见 _hit_csv_cache)。
-
-    label 约定"侧别_分析标识"(如 disease_metformin_cancer),侧别放在最前,
-    避免与疾病名里的"disease"字样混淆。
+    label 约定"侧别_分析标识",侧别放在最前,避免与疾病名里可能含的"disease"字样混淆。
     """
     import config
 
@@ -889,11 +861,8 @@ def fetch_enrichment_gsea_prerank(
     label: str | None = None,
     status: dict | None = None,
 ) -> pd.DataFrame:
-    """
-    排序富集（GSEA prerank）主入口：在本地计算，逐个基因集库运行后合并结果。
-
-    输入为"基因|分数"表（build_ranked_list 的输出）；结果按 |NES| 降序，
-    失败或无显著结果时返回空表（失败不写缓存），status 含义与 g:Profiler 版本一致。
+    """排序富集（GSEA prerank）主入口：在本地计算,逐个基因集库运行后合并,结果按 |NES| 降序。
+    输入为 build_ranked_list 输出的"基因|分数"表;失败或无显著结果返回空表（失败不写缓存）,status 含义与 g:Profiler 版本一致。
     """
     import config
 
@@ -913,6 +882,7 @@ def fetch_enrichment_gsea_prerank(
         return pd.DataFrame()
 
     os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
+    _clean_cache_dir_limited()
     gsea_md5 = _gsea_cache_md5(rnk, libs)
     cache_file = _gsea_cache_file(rnk, libs, label, md5=gsea_md5)
     cached = _hit_csv_cache(cache_file, gsea_md5, f"GSEA prerank result for {len(rnk)} genes")
@@ -968,9 +938,7 @@ def fetch_enrichment_gsea_prerank(
 
 
 def render_gsea_plot(df: pd.DataFrame) -> "matplotlib.figure.Figure | None":
-    """
-    绘制 GSEA 结果条形图：按 |NES| 取前 N 条通路，
-    NES > 0 红色（在高分靶点中富集/激活），NES < 0 蓝色（抑制）；
+    """绘制 GSEA 结果条形图：按 |NES| 取前 N 条通路,NES > 0 红色（在高分靶点中富集/激活）、NES < 0 蓝色（抑制）。
     没有有效结果时返回 None。
     """
     import matplotlib.pyplot as plt

@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 
 import pandas as pd
@@ -25,10 +24,13 @@ from core.ppi import (
     compute_mcc_scores,
     pick_top_mcc_genes,
     render_core_target_plot,
+    render_cytoscape_style_plot,
     render_pyvis_html,
+    render_string_style_plot,
     save_gsea_results,
     save_module_results,
     save_proximity_results,
+    save_query_genes,
     save_rwr_results,
 )
 
@@ -86,10 +88,20 @@ with col_input:
         )
 
 with col_params:
-    # 物种选择：目前仅开放“人类”，因为疾病靶点数据源（Open Targets）只有人类数据。
-    species_label = st.selectbox(t("net.species"), ["Human"])
+    # 物种固定为人类:疾病靶点数据源(Open Targets/DisGeNET)只有人类数据,
+    # 药物靶点与富集库亦以人类为准;多物种支持待接入相应疾病数据源后再议。
     score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
-    min_degree = st.number_input(t("net.min_degree"), 1, 20, config.MIN_DEGREE_FILTER, 1)
+    rwr_expand = st.number_input(
+        t("net.rwr_expand"), 0, 100, config.RWR_EXPAND_TOP_N, 1,
+        help=t("net.rwr_expand_help"))
+    hub_top_n = st.number_input(
+        t("net.hub_top_n"), 5, 20, config.HUB_TOP_N, 1,
+        help=t("net.hub_top_n_help", factor=config.HUB_SMALL_NET_FACTOR))
+    hub_method = st.selectbox(
+        t("net.hub_method"), ("degree", "mcc"),
+        index=0 if config.HUB_METHOD == "degree" else 1,
+        format_func=lambda v: t("net.hub_method_degree") if v == "degree" else t("net.hub_method_mcc"),
+        help=t("net.hub_method_help"))
 
 run_btn = st.button(t("net.build_report"), key="run_btn", type="primary", width="stretch")
 
@@ -129,10 +141,8 @@ class _ReportProgress:
 
 
 def _compute_modules_data(graph, organism, label_prefix: str = "") -> dict:
-    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）。
-
-    label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。
-    """
+    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）；
+    label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。"""
     modules = detect_louvain_modules(
         graph,
         resolution=config.LOUVAIN_RESOLUTION,
@@ -171,10 +181,8 @@ def _compute_modules_data(graph, organism, label_prefix: str = "") -> dict:
 
 
 def _save_modules_data(directory, prefix, computed: dict) -> dict:
-    """模块计算结果落盘并附上保存路径(自动流程与交互区手动重跑共用)。
-
-    空结果不保存。保存到分析目录后,打包下载（ZIP）会自动包含模块文件。
-    """
+    """模块计算结果落盘并附上保存路径(自动流程与交互区手动重跑共用)；
+    空结果不保存。保存到分析目录后,打包下载（ZIP）会自动包含模块文件。"""
     mod_saved = save_module_results(directory, prefix,
                                     computed["summary_df"], computed["long_df"])
     return {**computed, "saved_paths": mod_saved}
@@ -187,10 +195,8 @@ def _compute_ppi_modules(graph, organism, directory, prefix) -> dict:
 
 
 def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
-    """对药物/疾病一侧构建排秩表并运行 GSEA prerank（Build Report 自动流程与手动重跑共用）。
-
-    返回 (结果表, 排秩统计, 状态原因)。
-    """
+    """对药物/疾病一侧构建排秩表并运行 GSEA prerank（Build Report 自动流程与手动重跑共用）；
+    返回 (结果表, 排秩统计, 状态原因)。"""
     if side == "drug":
         src_df = Utils.get_drug_targets_merged(drug_name.strip())
         score_col = "score_pchembl"
@@ -205,12 +211,197 @@ def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str
     return gdf, rstats, gsea_status.get("reason", "")
 
 
-def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree,
-                      progress: "_ReportProgress | None" = None) -> dict:
-    """执行完整分析（交集→STRING→建图→指标→富集→可视化→保存），返回结果字典。
+def _enrichment_task(genes: list[str], organism: str, prefix: str):
+    """功能富集(g:Profiler 主 + Enrichr 备,输入为交集靶点),返回 (结果表, 数据源)。"""
+    return Utils.run_enrichment(genes, organism=organism,
+                                pvalue=config.ENRICHMENT_PVALUE, label=prefix)
 
-    progress 传入 _ReportProgress 时,在各阶段边界刷新进度面板;不影响计算逻辑。
+
+def _gsea_task(drug_name: str, disease_name: str, prefix: str):
+    """GSEA 排序富集(仅 names 模式):药物侧按 pChEMBL 活性分排序、疾病侧按 Open Targets
+    关联分排序,检验通路基因是否整体偏向高排名。失败只返回空结果,不影响主报告。"""
+    gsea_results: dict = {}
+    gsea_drug_df = gsea_disease_df = None
+    try:
+        for side_label in ("drug", "disease"):
+            gdf, rstats, reason = _gsea_prerank_side(side_label, drug_name, disease_name, prefix)
+            gsea_results[side_label] = {"df": gdf, "stats": rstats, "reason": reason}
+            if side_label == "drug":
+                gsea_drug_df = gdf if not gdf.empty else None
+            else:
+                gsea_disease_df = gdf if not gdf.empty else None
+    except Exception:
+        logging.exception("GSEA step failed during report build — skipped gracefully")
+        gsea_results, gsea_drug_df, gsea_disease_df = {}, None, None
+    return gsea_results, gsea_drug_df, gsea_disease_df
+
+
+def _network_tests_task(drug_name: str, disease_name: str, prefix: str):
+    """网络邻近度 + RWR(仅 names 模式):检验药物靶点与疾病基因在互作网络上的距离,
+    并以 RWR 给非种子蛋白排序。两者共用背景网络上下文,放在同一任务里顺序执行。
+    各步失败只跳过自身(邻近度返回哨兵,RWR 置空),不影响主报告。"""
+    proximity_result: dict | None = None
+    rwr_results: dict = {}
+    drug_df_full = pd.DataFrame()
+    disease_df_full = pd.DataFrame()
+    try:
+        drug_df_full = Utils.get_drug_targets_merged(drug_name.strip())
+        disease_df_full = Utils.get_disease_targets_merged(disease_name.strip())
+        proximity_result = run_proximity_cached(
+            drug_df_full["approvedSymbol"].tolist(),
+            disease_df_full["approvedSymbol"].tolist(),
+            label=prefix,
+        )
+    except Exception:
+        logging.exception("Proximity step failed during report build — skipped gracefully")
+        proximity_result = {"ok": False, "error": "exception", "coverage": {}, "cached": False}
+    if not (drug_df_full.empty or disease_df_full.empty):
+        try:
+            drug_syms = {str(g).strip().upper() for g in drug_df_full["approvedSymbol"]}
+            disease_syms = {str(g).strip().upper() for g in disease_df_full["approvedSymbol"]}
+            rwr_results["disease_seeds"] = run_rwr_cached(
+                list(disease_syms), label=f"{prefix}_disease_seeds", annotate=drug_syms)
+            rwr_results["drug_seeds"] = run_rwr_cached(
+                list(drug_syms), label=f"{prefix}_drug_seeds", annotate=disease_syms)
+        except Exception:
+            logging.exception("RWR step failed during report build — skipped gracefully")
+            rwr_results = {}
+    return proximity_result, rwr_results
+
+
+def _modules_task(graph, organism: str, prefix: str):
+    """模块检测+富集的纯计算(不落盘):结果目录由 save_ppi_results 重建(会先删除旧目录),
+    模块文件必须在主线程保存完主结果后再写,否则会被清掉。失败返回 None,只跳过模块分析。"""
+    try:
+        return _compute_modules_data(graph, organism, label_prefix=prefix)
+    except Exception:
+        logging.exception("Module detection step failed during report build — skipped gracefully")
+        return None
+
+
+def _render_main_figures(graph, metrics_df, edges_df, hub_method: str, mcc_map: dict):
+    """主线程渲染 pyvis 交互图、静态图、STRING/Cytoscape 风格图与核心靶点图
+    (pyplot 全局状态非线程安全,须留在主线程)。
+
+    MCC 得分缺失时在此补算,并入 metrics_df(随节点 CSV 落盘);核心靶点图与两张风格图
+    失败只跳过自身。返回 (html_content, static_fig, mcc_map, hub_df, core_fig,
+    core_genes, string_fig, cyto_fig)。
     """
+    html_content = Utils.render_pyvis_html(graph, metrics_df)
+    static_fig = Utils.render_static_plot(graph, metrics_df)
+    string_fig = cyto_fig = None
+    try:
+        string_fig = render_string_style_plot(graph, metrics_df, edges_df)
+    except Exception:
+        logging.exception("STRING-style figure failed — skipped")
+    try:
+        cyto_fig = render_cytoscape_style_plot(graph, metrics_df)
+    except Exception:
+        logging.exception("Cytoscape-style figure failed — skipped")
+    if not mcc_map:
+        try:
+            mcc_map = compute_mcc_scores(graph)
+        except Exception:
+            logging.exception("MCC computation failed — core target figure skipped")
+    hub_df = metrics_df[metrics_df["is_hub"]]  # 默认值:MCC 失败时 hub 表不带 mcc 列
+    if mcc_map:
+        metrics_df["mcc"] = metrics_df["gene"].map(mcc_map)
+        hub_df = metrics_df[metrics_df["is_hub"]]  # 重取让 Hub 表带上 mcc 列
+    core_fig = None
+    core_genes: list[str] = []
+    if mcc_map:
+        core_genes = pick_top_mcc_genes(metrics_df, mcc_map, config.MCC_TOP_N)
+        if core_genes:
+            try:
+                core_fig = render_core_target_plot(graph, core_genes, mcc_map)
+            except Exception:
+                logging.exception("Core target figure failed — skipped")
+    return (html_content, static_fig, mcc_map, hub_df, core_fig, core_genes,
+            string_fig, cyto_fig)
+
+
+def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_content, prefix,
+                           enrichment_df, enrichment_bar_fig, enrichment_dot_fig,
+                           core_fig, dtp_fig, gsea_drug_df, gsea_disease_df,
+                           string_fig, cyto_fig,
+                           expansion_df, rwr_results, proximity_result, modules_data,
+                           progress=None) -> tuple[dict, dict | None]:
+    """Step 5/5.5:全部结果保存到下载目录(同名分析旧目录会被替换,不会堆积)。
+
+    模块文件必须在主目录重建后落盘,否则会被 save_ppi_results 的旧目录清理删掉。
+    返回 (saved 路径字典, modules_result)。"""
+    def _prog(step: str | None = None, state: str | None = None,
+              fraction: float | None = None) -> None:
+        if progress is not None:
+            if step and state:
+                progress.set(step, state)
+            if fraction is not None:
+                progress.advance(fraction)
+
+    _prog("save", "running", 0.80)
+    saved = Utils.save_ppi_results(
+        graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix,
+        enrichment_df=enrichment_df if not enrichment_df.empty else None,
+        enrichment_bar_fig=enrichment_bar_fig,
+        enrichment_dot_fig=enrichment_dot_fig,
+        core_fig=core_fig,
+        target_pathway_fig=dtp_fig,
+        string_fig=string_fig,
+        cyto_fig=cyto_fig,
+    )
+    # GSEA 结果 CSV 保存进分析目录（空结果不保存），打包下载时自动包含
+    gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
+    saved.update(gsea_saved)
+    # 查询集清单：RWR 扩展启用时记录种子/扩展来源与得分,未启用不落盘
+    saved.update(save_query_genes(saved["directory"], prefix, expansion_df))
+    # RWR 结果保存：种子基因（全量）与非种子候选蛋白（前若干名）合并为一张表，is_seed 列区分；
+    # 空结果或失败时不保存。
+    if rwr_results:
+
+        def _rwr_df(r: dict):
+            if not r.get("ok"):
+                return None
+            frames = []
+            if r.get("seeds"):
+                frames.append(pd.DataFrame(r["seeds"]).assign(is_seed=True))
+            if r.get("top_nonseed"):
+                frames.append(pd.DataFrame(r["top_nonseed"]).assign(is_seed=False))
+            if not frames:
+                return None
+            return pd.concat(frames, ignore_index=True)
+
+        rwr_saved = save_rwr_results(
+            saved["directory"], prefix,
+            disease_df=_rwr_df(rwr_results.get("disease_seeds", {})),
+            drug_df=_rwr_df(rwr_results.get("drug_seeds", {})),
+        )
+        saved.update(rwr_saved)
+
+    # 邻近度结果保存:报告页只作展示,这份 CSV 是它的唯一持久记录;失败/未计算不保存
+    if proximity_result and proximity_result.get("ok"):
+        saved.update(save_proximity_results(saved["directory"], prefix, proximity_result))
+
+    # Step 5.5: 模块检测结果落盘（主目录已重建完毕,此时写入不会被清掉）
+    modules_result: dict | None = None
+    if modules_data is not None:
+        try:
+            modules_result = _save_modules_data(saved["directory"], prefix, modules_data)
+            saved.update(modules_result["saved_paths"])
+        except Exception:
+            logging.exception("Module detection step failed during report build — skipped gracefully")
+            modules_result = None
+    _prog("save", "done", 1.0)
+    return saved, modules_result
+
+
+def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
+                      rwr_expand: int = 0, hub_top_n: int = 10, hub_method: str = "degree",
+                      progress: "_ReportProgress | None" = None) -> dict:
+    """执行完整分析（交集→[RWR扩展]→STRING→建图→指标→富集→可视化→保存），返回结果字典。
+    物种固定为人类（疾病靶点数据源仅有人类数据）；PPI 建网只隐藏孤立节点、不做最低连接度剪枝
+    （会抵消 RWR 扩展拉入的外周靶点）；RWR 扩展只作用于建网/拓扑/hub/模块/富集,邻近度与 GSEA 仍基于原始靶点集。"""
+    species_id = config.SPECIES_MAP["Human"]["ncbi_taxon"]
+    organism = config.SPECIES_MAP["Human"]["gprofiler"]
     def _prog(step: str | None = None, state: str | None = None,
               fraction: float | None = None) -> None:
         if progress is not None:
@@ -231,97 +422,71 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         tokens = re.split(r"[\s,;]+", gene_text)
         genes = sorted({t.strip().upper() for t in tokens if t.strip()})
         prefix = "manual"
+
+    # Step 0.5: RWR 扩展(可选)。游走结果只依赖种子与 α,与 N 无关,因此缓存 label
+    # 不带 _rwr{N}(改 N 复用同一份游走);只有下游(STRING/富集)的 prefix 带 _rwr{N}。
+    expansion_df: pd.DataFrame | None = None
+    if int(rwr_expand) > 0 and genes:
+        rwr_res = run_rwr_cached(genes, label=f"expand_{prefix}")
+        if rwr_res.get("ok"):
+            # 平局按基因名稳定排序,保证扩展清单可复现
+            top = sorted(rwr_res.get("top_nonseed", []),
+                         key=lambda r: (-float(r["score"]), str(r["gene"])))[:int(rwr_expand)]
+            expansion_df = pd.DataFrame(
+                [{"gene": g, "source": "seed", "rwr_score": ""} for g in genes]
+                + [{"gene": str(r["gene"]), "source": "expanded", "rwr_score": float(r["score"])}
+                   for r in top])
+            genes = sorted(set(genes) | {str(r["gene"]) for r in top})
+        else:
+            # 背景网络未构建等原因导致扩展失败:按原始交集继续,不让整个分析挂掉
+            logging.warning("RWR expansion skipped: %s", rwr_res.get("error"))
+            expansion_df = pd.DataFrame(
+                [{"gene": g, "source": "seed", "rwr_score": ""} for g in genes])
+    if int(rwr_expand) > 0:
+        prefix = f"{prefix}_rwr{int(rwr_expand)}"
     _prog("targets", "done", 0.08)
 
-    # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数和最低连接数过滤）
+    # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,并隐藏孤立节点）
     _prog("string", "running", 0.08)
     edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score,
-                                      label=prefix, min_degree=int(min_degree))
+                                      label=prefix, min_degree=config.MIN_DEGREE_FILTER)
     _prog("string", "done", 0.30)
 
-    # Step 2-4: 建图 + 拓扑指标 + Hub 筛选
+    # Step 2-4: 建图 + 拓扑指标 + Hub 筛选(排名制 top-N + 小网络保护)。
+    # hub_method="mcc" 时 MCC 须在标记前算好,后面核心靶点图复用同一份结果。
     _prog("graph", "running", 0.30)
     graph = Utils.build_ppi_graph(edges_df, genes)
     metrics_df = Utils.compute_ppi_metrics(graph)
-    metrics_df = Utils.mark_hub_genes(metrics_df, min_degree=min_degree)
+    mcc_map: dict[str, float] = {}
+    if hub_method == "mcc":
+        try:
+            mcc_map = compute_mcc_scores(graph)
+        except Exception:
+            logging.exception("MCC computation failed — hub ranking falls back to degree")
+    metrics_df = Utils.mark_hub_genes(metrics_df,
+                                      top_n=hub_top_n, method=hub_method,
+                                      mcc_map=mcc_map,
+                                      small_net_factor=config.HUB_SMALL_NET_FACTOR)
     hub_df = metrics_df[metrics_df["is_hub"]]
+    hub_rule = str(metrics_df["hub_rule"].iloc[0]) if len(metrics_df) else ""
+    # MCC 排名被 mark_hub_genes 回退为 degree 时,metrics_df 不会出现 mcc 列
+    hub_method_eff = ("degree"
+                      if hub_rule.startswith("top") and hub_method == "mcc"
+                      and "mcc" not in metrics_df.columns else hub_method)
     _prog("graph", "done", 0.36)
 
     # ---- Step 4.5-5.5(数据部分):富集/GSEA/邻近度+RWR/模块检测四个互相独立的任务并发执行 ----
     # 只把 API 请求与本地计算放进线程池,墙钟时间从"各步之和"变成"最慢一步"。
     # matplotlib 的 pyplot 是全局状态、非线程安全,所有绘图统一留在主线程做。
-    # 每步失败只跳过自身,不影响主报告(与原串行版逐项一致)。
     from concurrent.futures import ThreadPoolExecutor, wait
 
-    def _task_enrichment():
-        df, src = Utils.run_enrichment(
-            genes, organism=organism, pvalue=config.ENRICHMENT_PVALUE, label=prefix)
-        return df, src
-
-    def _task_gsea():
-        # GSEA 排序富集（仅 names 模式）：药物侧按 pChEMBL 活性分排序、
-        # 疾病侧按 Open Targets 关联分排序，检验通路基因是否整体偏向高排名。
-        gsea_results: dict = {}
-        gsea_drug_df = gsea_disease_df = None
-        try:
-            for side_label in ("drug", "disease"):
-                gdf, rstats, reason = _gsea_prerank_side(side_label, drug_name, disease_name, prefix)
-                gsea_results[side_label] = {"df": gdf, "stats": rstats, "reason": reason}
-                if side_label == "drug":
-                    gsea_drug_df = gdf if not gdf.empty else None
-                else:
-                    gsea_disease_df = gdf if not gdf.empty else None
-        except Exception:
-            logging.exception("GSEA step failed during report build — skipped gracefully")
-            gsea_results, gsea_drug_df, gsea_disease_df = {}, None, None
-        return gsea_results, gsea_drug_df, gsea_disease_df
-
-    def _task_network_tests():
-        # 网络邻近度 + RWR（仅 names 模式）：检验药物靶点与疾病基因在互作网络上的距离，
-        # 并以 RWR 给非种子蛋白排序。两者共用背景网络上下文,放在同一任务里顺序执行。
-        proximity_result: dict | None = None
-        rwr_results: dict = {}
-        drug_df_full = pd.DataFrame()
-        disease_df_full = pd.DataFrame()
-        try:
-            drug_df_full = Utils.get_drug_targets_merged(drug_name.strip())
-            disease_df_full = Utils.get_disease_targets_merged(disease_name.strip())
-            proximity_result = run_proximity_cached(
-                drug_df_full["approvedSymbol"].tolist(),
-                disease_df_full["approvedSymbol"].tolist(),
-                label=prefix,
-            )
-        except Exception:
-            logging.exception("Proximity step failed during report build — skipped gracefully")
-            proximity_result = {"ok": False, "error": "exception", "coverage": {}, "cached": False}
-        if not (drug_df_full.empty or disease_df_full.empty):
-            try:
-                drug_syms = {str(g).strip().upper() for g in drug_df_full["approvedSymbol"]}
-                disease_syms = {str(g).strip().upper() for g in disease_df_full["approvedSymbol"]}
-                rwr_results["disease_seeds"] = run_rwr_cached(
-                    list(disease_syms), label=f"{prefix}_disease_seeds", annotate=drug_syms)
-                rwr_results["drug_seeds"] = run_rwr_cached(
-                    list(drug_syms), label=f"{prefix}_drug_seeds", annotate=disease_syms)
-            except Exception:
-                logging.exception("RWR step failed during report build — skipped gracefully")
-                rwr_results = {}
-        return proximity_result, rwr_results
-
-    def _task_modules():
-        # 只做计算不落盘:结果目录由 save_ppi_results 重建(会先删除旧目录),
-        # 模块文件必须在主线程保存完主结果后再写,否则会被清掉。
-        # 计算失败只跳过模块分析,不影响主报告(fut_mod.result() 拿到 None)。
-        try:
-            return _compute_modules_data(graph, organism, label_prefix=prefix)
-        except Exception:
-            logging.exception("Module detection step failed during report build — skipped gracefully")
-            return None
-
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="report") as pool:
-        fut_enr = pool.submit(_task_enrichment)
-        fut_gsea = pool.submit(_task_gsea) if mode == "names" else None
-        fut_net = pool.submit(_task_network_tests) if mode == "names" else None
-        fut_mod = pool.submit(_task_modules)
+        fut_enr = pool.submit(_enrichment_task, genes, organism, prefix)
+        fut_gsea = (pool.submit(_gsea_task, drug_name, disease_name, prefix)
+                    if mode == "names" else None)
+        fut_net = (pool.submit(_network_tests_task, drug_name, disease_name, prefix)
+                   if mode == "names" else None)
+        fut_mod = pool.submit(_modules_task, graph, organism, prefix)
 
         fut_key = {f: k for f, k in ((fut_enr, "enrichment"), (fut_gsea, "gsea"),
                                      (fut_net, "network"), (fut_mod, "modules")) if f is not None}
@@ -329,28 +494,12 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
             _prog(k, "running")
         _prog(fraction=0.40)
 
-        # 主线程在等待期间做 pyvis 交互图、静态图与核心靶点图渲染(纯本地计算)
-        html_content = Utils.render_pyvis_html(graph, metrics_df)
-        static_fig = Utils.render_static_plot(graph, metrics_df)
-        # MCC(CytoHubba 默认算法)与核心靶点图:失败只跳过自身,不影响主报告;
-        # MCC 得分并入 metrics_df,随节点 CSV 一起落盘
-        mcc_map: dict[str, float] = {}
-        try:
-            mcc_map = compute_mcc_scores(graph)
-        except Exception:
-            logging.exception("MCC computation failed — core target figure skipped")
-        if mcc_map:
-            metrics_df["mcc"] = metrics_df["gene"].map(mcc_map)
-            hub_df = metrics_df[metrics_df["is_hub"]]  # 重取让 Hub 表带上 mcc 列
-        core_fig = None
-        core_genes: list[str] = []
-        if mcc_map:
-            core_genes = pick_top_mcc_genes(metrics_df, mcc_map, config.MCC_TOP_N)
-            if core_genes:
-                try:
-                    core_fig = render_core_target_plot(graph, core_genes, mcc_map)
-                except Exception:
-                    logging.exception("Core target figure failed — skipped")
+        # 主线程在等待期间做 pyvis 交互图、静态图、STRING/Cytoscape 风格图与核心靶点图渲染(纯本地计算);
+        # MCC(CytoHubba 默认算法)与核心靶点图失败只跳过自身,不影响主报告。
+        # hub_method="mcc" 时已在 Hub 筛选阶段算过 MCC,此处直接复用。
+        (html_content, static_fig, mcc_map, hub_df, core_fig, core_genes,
+         string_fig, cyto_fig) = _render_main_figures(
+            graph, metrics_df, edges_df, hub_method, mcc_map)
         _prog(fraction=0.48)
 
         # 轮询任务完成情况并刷新进度面板(Streamlit 组件只能在脚本主线程更新)
@@ -389,56 +538,17 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
 
         modules_data = fut_mod.result()
 
-    # Step 5: 全部结果保存到下载目录（同名分析的旧结果目录会被替换，不会堆积）
-    _prog("save", "running", 0.80)
-    saved = Utils.save_ppi_results(
-        graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix,
-        enrichment_df=enrichment_df if not enrichment_df.empty else None,
-        enrichment_bar_fig=enrichment_bar_fig,
-        enrichment_dot_fig=enrichment_dot_fig,
-        core_fig=core_fig,
-        target_pathway_fig=dtp_fig,
-    )
-    # GSEA 结果 CSV 保存进分析目录（空结果不保存），打包下载时自动包含
-    gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
-    saved.update(gsea_saved)
-    # RWR 结果保存：种子基因（全量）与非种子候选蛋白（前若干名）合并为一张表，is_seed 列区分；
-    # 空结果或失败时不保存。
-    if rwr_results:
-
-        def _rwr_df(r: dict):
-            if not r.get("ok"):
-                return None
-            frames = []
-            if r.get("seeds"):
-                frames.append(pd.DataFrame(r["seeds"]).assign(is_seed=True))
-            if r.get("top_nonseed"):
-                frames.append(pd.DataFrame(r["top_nonseed"]).assign(is_seed=False))
-            if not frames:
-                return None
-            return pd.concat(frames, ignore_index=True)
-
-        rwr_saved = save_rwr_results(
-            saved["directory"], prefix,
-            disease_df=_rwr_df(rwr_results.get("disease_seeds", {})),
-            drug_df=_rwr_df(rwr_results.get("drug_seeds", {})),
-        )
-        saved.update(rwr_saved)
-
-    # 邻近度结果保存:报告页只作展示,这份 CSV 是它的唯一持久记录;失败/未计算不保存
-    if proximity_result and proximity_result.get("ok"):
-        saved.update(save_proximity_results(saved["directory"], prefix, proximity_result))
-
-    # Step 5.5: 模块检测结果落盘（主目录已重建完毕,此时写入不会被清掉）
-    modules_result: dict | None = None
-    if modules_data is not None:
-        try:
-            modules_result = _save_modules_data(saved["directory"], prefix, modules_data)
-            saved.update(modules_result["saved_paths"])
-        except Exception:
-            logging.exception("Module detection step failed during report build — skipped gracefully")
-            modules_result = None
-    _prog("save", "done", 1.0)
+    # Step 5/5.5: 全部结果保存到下载目录
+    saved, modules_result = _save_analysis_outputs(
+        graph=graph, static_fig=static_fig, metrics_df=metrics_df, edges_df=edges_df,
+        html_content=html_content, prefix=prefix,
+        enrichment_df=enrichment_df, enrichment_bar_fig=enrichment_bar_fig,
+        enrichment_dot_fig=enrichment_dot_fig, core_fig=core_fig, dtp_fig=dtp_fig,
+        gsea_drug_df=gsea_drug_df, gsea_disease_df=gsea_disease_df,
+        string_fig=string_fig, cyto_fig=cyto_fig,
+        expansion_df=expansion_df, rwr_results=rwr_results,
+        proximity_result=proximity_result, modules_data=modules_data,
+        progress=progress)
 
     return {
         "genes": genes,
@@ -446,8 +556,13 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         "graph": graph,
         "metrics_df": metrics_df,
         "hub_df": hub_df,
+        "hub_rule": hub_rule,
+        "hub_method_eff": hub_method_eff,
+        "expansion_df": expansion_df,
         "html_content": html_content,
         "static_fig": static_fig,
+        "string_fig": string_fig,
+        "cyto_fig": cyto_fig,
         "mcc_map": mcc_map,
         "core_fig": core_fig,
         "core_genes": core_genes,
@@ -462,23 +577,23 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, species_id, orga
         "modules": modules_result,
         "saved": saved,
         "prefix": prefix,
-        "params": (mode, drug_name, disease_name, gene_text, species_id, organism, score, min_degree),
+        "params": (mode, drug_name, disease_name, gene_text, score,
+                   int(rwr_expand), int(hub_top_n), hub_method),
     }
 
 
 # ---------- 结果暂存：页面上点下载等操作引起刷新时，不会重复跑分析 ----------
-if "ppi" not in st.session_state:
-    st.session_state.ppi = None
+st.session_state.setdefault("ppi", None)
 
 current_params = (
     input_mode,
     drug_name.strip(),
     disease_name.strip(),
     gene_text.strip(),
-    config.SPECIES_MAP[species_label]["ncbi_taxon"],
-    config.SPECIES_MAP[species_label]["gprofiler"],
     score,
-    int(min_degree),
+    int(rwr_expand),
+    int(hub_top_n),
+    hub_method,
 )
 
 if run_btn:
@@ -495,10 +610,10 @@ if run_btn:
                 drug_name.strip(),
                 disease_name.strip(),
                 gene_text.strip(),
-                config.SPECIES_MAP[species_label]["ncbi_taxon"],
-                config.SPECIES_MAP[species_label]["gprofiler"],
                 score,
-                int(min_degree),
+                rwr_expand=int(rwr_expand),
+                hub_top_n=int(hub_top_n),
+                hub_method=hub_method,
                 progress=_ReportProgress(steps),
             )
         except Exception:
@@ -518,12 +633,427 @@ if run_btn:
                 {**mods_auto, "ppi_params": ppi_result["params"]}
                 if mods_auto is not None else None
             )
+            # 新报告生成后,网络图视图选择回到默认交互式:视图选择框的 key 绑定报告实例
+            # (见下方显示段),这里清掉旧报告的键,避免会话内键随分析次数无限累积
+            for _k in [k for k in st.session_state if str(k).startswith("ppi_view::")]:
+                st.session_state.pop(_k, None)
             st.rerun()
 
 # ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
 ppi = st.session_state.ppi
+
+
+def _params_stale() -> bool:
+    """当前页面参数与暂存分析结果的参数是否不一致（结果已过期）。
+
+    结果展示区各小节与 GSEA/模块手动重跑处共用此防呆判断。
+    """
+    return current_params != ppi["params"]
+
+
+def _render_proximity(ppi: dict, input_mode: str) -> None:
+    """网络邻近度检验展示(仅 names 模式;手动输入基因模式无药物/疾病之分,不展示)。"""
+    proximity_result = ppi.get("proximity")
+    if proximity_result is not None and input_mode == "names":
+        st.divider()
+        st.subheader(t("net.prox_subheader"))
+        st.caption(t("net.prox_caption", n_perm=config.PROXIMITY_N_PERM,
+                     seed=config.PROXIMITY_SEED,
+                     bin_size=config.PROXIMITY_DEGREE_BIN_SIZE))
+        prox_err = proximity_result.get("error")
+        if prox_err == "not_built":
+            st.warning(t("net.prox_not_built"))
+        elif prox_err in ("low_coverage_drug", "low_coverage_disease", "empty_after_filter"):
+            cov = proximity_result.get("coverage", {})
+            st.warning(t("net.prox_low_coverage",
+                         d_in=cov.get("drug_in_lcc", 0), d_tot=cov.get("drug_total", 0),
+                         s_in=cov.get("disease_in_lcc", 0), s_tot=cov.get("disease_total", 0),
+                         thr=config.PROXIMITY_MIN_COVERAGE))
+        elif prox_err:
+            st.error(t("net.prox_fail", reason=prox_err))
+        elif proximity_result.get("ok"):
+            col_p1, col_p2, col_p3 = st.columns(3)
+            col_p1.metric(t("net.prox_dc"), f"{proximity_result['d_c']:.3f}")
+            col_p2.metric(t("net.prox_z"), f"{proximity_result['z']:.3f}")
+            col_p3.metric(t("net.prox_p"), f"{proximity_result['p_empirical']:.4f}")
+            if proximity_result["z"] < 0:
+                st.success(t("net.prox_support"))
+            else:
+                st.info(t("net.prox_nosupport"))
+            cov = proximity_result.get("coverage", {})
+            st.caption(t("net.prox_coverage",
+                         ver=config.STRING_VERSION, conf=config.INTERACTOME_CONFIDENCE,
+                         lcc=proximity_result.get("lcc_nodes"),
+                         d_in=cov.get("drug_in_lcc", 0), d_tot=cov.get("drug_total", 0),
+                         s_in=cov.get("disease_in_lcc", 0), s_tot=cov.get("disease_total", 0),
+                         n_perm=proximity_result.get("n_perm"),
+                         cached=t("net.prox_cached") if proximity_result.get("cached") else ""))
+            # 去交集版本：剔除共同靶点后仍显著，才能排除"纯属直接作用"的解释
+            if proximity_result.get("d_c_excl") is not None:
+                st.caption(t("net.prox_excl_caption", n=proximity_result.get("n_excl") or 0))
+                col_q1, col_q2, col_q3 = st.columns(3)
+                col_q1.metric(t("net.prox_dc_excl"), f"{proximity_result['d_c_excl']:.3f}")
+                col_q2.metric(t("net.prox_z_excl"),
+                              f"{proximity_result['z_excl']:.3f}"
+                              if proximity_result.get("z_excl") is not None else "—")
+                col_q3.metric(t("net.prox_p_excl"),
+                              f"{proximity_result['p_excl']:.4f}"
+                              if proximity_result.get("p_excl") is not None else "—")
+            elif proximity_result.get("ok"):
+                # 外层分支已保证 ok=True,走到这里说明 d_c_excl 缺失
+                st.caption(t("net.prox_excl_unavailable"))
+
+
+def _render_rwr(ppi: dict, input_mode: str, prefix: str, saved: dict) -> None:
+    """靶点优先级排序展示(仅 names 模式):两个方向随主分析自动算完,单选只切换查看,不重算。"""
+    rwr_results = ppi.get("rwr") or {}
+    if rwr_results and input_mode == "names":
+        st.divider()
+        with st.expander(t("net.rwr_subheader")):
+            st.caption(t("net.rwr_caption", alpha=config.RWR_ALPHA))
+            rwr_side = st.radio(
+                t("net.rwr_side"), ["disease_seeds", "drug_seeds"],
+                format_func=lambda v: (t("net.rwr_side_disease") if v == "disease_seeds"
+                                       else t("net.rwr_side_drug")),
+                horizontal=True, key="rwr_side",
+            )
+            rwr_res = rwr_results.get(rwr_side) or {}
+            rwr_err = rwr_res.get("error")
+            if rwr_err == "not_built":
+                st.warning(t("net.rwr_not_built"))
+            elif rwr_err:
+                st.error(t("net.rwr_fail", reason=rwr_err))
+            elif rwr_res.get("ok"):
+                cov = rwr_res.get("coverage", {})
+                conv_txt = t("net.rwr_conv_yes") if rwr_res.get("converged") else t("net.rwr_conv_no")
+                anno_label = (t("net.rwr_col_is_drug") if rwr_side == "disease_seeds"
+                              else t("net.rwr_col_is_disease"))
+                st.caption(t("net.rwr_stats",
+                             alpha=rwr_res.get("alpha"), iters=rwr_res.get("n_iter"),
+                             conv=conv_txt,
+                             n_seed=cov.get("seed_in_lcc", 0), n_tot=cov.get("seed_total", 0),
+                             lcc=rwr_res.get("lcc_nodes"), mass=rwr_res.get("seed_mass", 0.0),
+                             cached=t("net.rwr_cached") if rwr_res.get("cached") else ""))
+                # 度匹配校正：标注集平均得分 vs 度匹配随机集（排除枢纽度数假象）
+                enr = rwr_res.get("enrichment")
+                if enr and enr.get("z") is not None:
+                    if enr.get("p") is not None and enr["p"] < 0.05:
+                        st.success(t("net.rwr_enrich_sig",
+                                     n=enr.get("n_annotated", 0), z=enr["z"], p=enr["p"]))
+                    else:
+                        st.info(t("net.rwr_enrich_nosig",
+                                  n=enr.get("n_annotated", 0), z=enr["z"], p=enr["p"]))
+                top_df = pd.concat([
+                    pd.DataFrame(rwr_res.get("seeds", [])).assign(is_seed=True),
+                    pd.DataFrame(rwr_res.get("top_nonseed", [])).assign(is_seed=False),
+                ], ignore_index=True) if (rwr_res.get("seeds") or rwr_res.get("top_nonseed")) else pd.DataFrame()
+                if top_df.empty:
+                    st.info(t("net.rwr_none"))
+                else:
+                    top_df = top_df.sort_values("score", ascending=False).reset_index(drop=True)
+                    seeds_df = top_df[top_df["is_seed"]]
+                    nonseed_df = top_df[~top_df["is_seed"]].head(config.RWR_TOP_N)
+                    st.markdown(t("net.rwr_top_header", n=len(nonseed_df)))
+                    show_df = nonseed_df[["gene", "score"]].copy()
+                    if "annotated" in nonseed_df.columns:
+                        show_df[anno_label] = nonseed_df["annotated"]
+                    st.dataframe(show_df, width="stretch", hide_index=True)
+                    with st.expander(t("net.rwr_seeds_header", n=len(seeds_df))):
+                        st.dataframe(seeds_df[["gene", "score"]],
+                                     width="stretch", hide_index=True)
+                    Utils.download_button(
+                        "net.dl_rwr_csv",
+                        top_df.to_csv(index=False).encode("utf-8-sig"),
+                        f"{prefix}_rwr_{rwr_side}.csv", "text/csv",
+                    )
+                    if "rwr_disease_csv" in saved or "rwr_drug_csv" in saved:
+                        st.caption(t("net.rwr_in_report", dir=saved["directory"]))
+
+
+def _render_enrichment(ppi: dict, genes: list[str]) -> None:
+    """富集分析展示:结果表 + 柱状/气泡图 + 药物-靶点-通路网络图。"""
+    st.divider()
+    st.subheader(t("net.enrich_subheader"))
+    enrichment_df = ppi["enrichment_df"]
+    enrichment_source = ppi["enrichment_source"]
+    enrichment_bar_fig = ppi["enrichment_bar_fig"]
+    enrichment_dot_fig = ppi["enrichment_dot_fig"]
+    if enrichment_df is None or enrichment_df.empty:
+        st.info(t("net.no_enrich"))
+    else:
+        st.caption(
+            t("net.enrich_caption", src=enrichment_source, n=len(enrichment_df), m=len(genes))
+        )
+        display_cols = ["source", "term_id", "term_name", "adjusted_p_value",
+                        "intersection_size", "query_size"]
+        st.dataframe(enrichment_df[display_cols], width="stretch", hide_index=True)
+        if enrichment_bar_fig is not None:
+            st.caption(t("net.bar_caption"))
+            st.pyplot(enrichment_bar_fig)
+        if enrichment_dot_fig is not None:
+            st.caption(t("net.bubble_caption"))
+            st.pyplot(enrichment_dot_fig)
+        # 药物-靶点-通路网络图（基于 KEGG 富集结果构建）
+        dtp_fig = ppi.get("dtp_fig")
+        if dtp_fig is not None:
+            st.caption(t("net.dtp_caption"))
+            st.pyplot(dtp_fig)
+
+
+def _render_gsea(ppi: dict, input_mode: str, drug_name: str, disease_name: str,
+                 prefix: str, saved: dict, params_stale: bool) -> None:
+    """排序富集(GSEA prerank)展示与手动重跑:换侧只切换已存结果,不触发重新计算。"""
+    st.divider()
+    with st.expander(t("net.gsea_subheader")):
+        st.caption(t("net.gsea_caption", libs="、".join(config.GSEA_ENRICHR_LIBS)))
+        if ("ppi_gsea" not in st.session_state
+                or not isinstance(st.session_state.ppi_gsea, dict)
+                or "side" in st.session_state.ppi_gsea):
+            st.session_state.ppi_gsea = {}
+        if "gsea_drug_csv" in saved or "gsea_disease_csv" in saved:
+            st.caption(t("net.gsea_in_report", dir=saved["directory"]))
+
+        if input_mode == "genes":
+            st.info(t("net.gsea_manual_unsupported"))
+        else:
+            gsea_side = st.radio(
+                t("net.gsea_side"), ["drug", "disease"],
+                format_func=lambda v: (t("net.gsea_side_drug") if v == "drug"
+                                       else t("net.gsea_side_disease")),
+                horizontal=True, key="gsea_side",
+            )
+            # 该侧已有有效结果(参数一致且非请求失败)时禁用重跑按钮,避免误点重复
+            # 计算;自动步骤失败时按钮保持可用,作为手动兜底入口。
+            gsea_res = st.session_state.ppi_gsea.get(gsea_side)
+            gsea_reason = (gsea_res or {}).get("reason", "")
+            gsea_done = (gsea_res is not None and not params_stale
+                         and gsea_reason not in ("request_failed", "circuit_open",
+                                                 "normalize_empty"))
+            run_clicked = st.button(
+                t("net.gsea_run"), key="gsea_run_btn", width="stretch",
+                disabled=gsea_done or params_stale,
+                help=(t("net.params_changed") if params_stale
+                      else t("net.gsea_done_hint") if gsea_done else None),
+            )
+            if run_clicked:
+                if params_stale:
+                    # 防呆：主分析参数已变，先重跑主分析再 GSEA
+                    st.warning(t("net.params_changed"))
+                else:
+                    with st.spinner(t("net.gsea_spinner")):
+                        gsea_df, rstats, reason = _gsea_prerank_side(
+                            gsea_side, drug_name, disease_name, prefix)
+                        st.session_state.ppi_gsea[gsea_side] = {
+                            "df": gsea_df,
+                            "stats": rstats,
+                            "reason": reason,
+                            "ppi_params": ppi["params"],
+                        }
+                    st.rerun()
+
+            if gsea_res is not None:
+                if gsea_res["ppi_params"] != ppi["params"]:
+                    st.info(t("net.params_changed"))
+                else:
+                    stats = gsea_res["stats"]
+                    gsea_df = gsea_res["df"]
+                    reason = gsea_res.get("reason", "")
+                    side_txt = (t("net.gsea_side_drug") if gsea_side == "drug"
+                                else t("net.gsea_side_disease"))
+                    # 打分缺失去除是多源合并的预期行为（如仅 DGIdb 收录的靶点无
+                    # pChEMBL），作中性说明而非预警
+                    if stats.get("n_dropped", 0) > 0:
+                        st.caption(t("net.gsea_drop_note",
+                                     n=stats.get("n_dropped", 0),
+                                     m=stats.get("n_input", 0)))
+                    if reason == "insufficient_input":
+                        st.info(t("net.gsea_insufficient",
+                                  n=stats.get("n_kept", 0), min_n=config.GSEA_MIN_RANKED_GENES))
+                    elif reason == "request_failed":
+                        st.error(t("net.gsea_fail", reason=reason))
+                    elif gsea_df is None or gsea_df.empty:
+                        st.info(t("net.gsea_none", thr=config.GSEA_FDR_SCREEN))
+                    else:
+                        st.caption(t("net.gsea_result_side", side=side_txt,
+                                     n_in=stats.get("n_input", 0), n_kept=stats.get("n_kept", 0)))
+                        screened = gsea_df[gsea_df["fdr_q_value"] < config.GSEA_FDR_SCREEN]
+                        if screened.empty:
+                            st.info(t("net.gsea_none", thr=config.GSEA_FDR_SCREEN))
+                            # 展示阈值只作用于页面表格；导出始终为完整计算结果，
+                            # 在此说明以免"提示无显著却仍能下载"造成误解
+                            st.caption(t("net.gsea_full_export_note", thr=config.GSEA_FDR_SCREEN))
+                        else:
+                            st.caption(t("net.gsea_table_caption", n=len(gsea_df),
+                                         m=len(screened), thr=config.GSEA_FDR_SCREEN))
+                            show_cols = ["source", "term_name", "nes", "fdr_q_value",
+                                         "nominal_p_value", "tag_pct", "gene_pct"]
+                            st.dataframe(screened[show_cols], width="stretch", hide_index=True)
+                            gsea_fig = render_gsea_plot(screened)
+                            if gsea_fig is not None:
+                                st.caption(t("net.gsea_bar_caption"))
+                                st.pyplot(gsea_fig)
+                        Utils.download_button(
+                            "net.dl_gsea_csv",
+                            gsea_df.to_csv(index=False).encode("utf-8-sig"),
+                            f"{prefix}_gsea_{gsea_side}.csv", "text/csv",
+                        )
+
+
+def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
+                    params_stale: bool) -> None:
+    """蛋白模块检测展示与手动重跑(Louvain + 模块富集):重跑仅作自动步骤失败时的兜底。"""
+    st.divider()
+    with st.expander(t("net.modules_subheader")):
+        st.caption(t("net.modules_caption",
+                     min_size=config.LOUVAIN_MIN_MODULE_SIZE,
+                     top_n=config.LOUVAIN_MAX_ENRICH_MODULES))
+        st.session_state.setdefault("ppi_modules", None)
+
+        if st.button(t("net.modules_run"), key="modules_run_btn", width="stretch"):
+            if params_stale:
+                # 防呆：主分析参数已变，图与旧结果不对应，先重跑主分析
+                st.warning(t("net.params_changed"))
+            else:
+                with st.spinner(t("net.modules_spinner_detect")):
+                    # 物种固定人类;organism 取 Human 的 gProfiler 代码
+                    try:
+                        mods = _compute_ppi_modules(
+                            graph, config.SPECIES_MAP["Human"]["gprofiler"],
+                            saved["directory"], prefix)
+                    except Exception:
+                        logging.exception("Module analysis failed")
+                        st.error(t("net.analysis_fail"))
+                    else:
+                        saved.update(mods["saved_paths"])
+                        st.session_state.ppi_modules = {
+                            **mods,
+                            "ppi_params": ppi["params"],
+                        }
+                st.rerun()
+
+        mods_res = st.session_state.ppi_modules
+        if mods_res is not None:
+            if mods_res["ppi_params"] != ppi["params"]:
+                st.info(t("net.params_changed"))
+            else:
+                summary_df = mods_res["summary_df"]
+                if summary_df.empty:
+                    st.info(t("net.modules_none"))
+                else:
+                    # 退化防护：最大模块吞掉大多数节点时提示调参
+                    total_nodes = len(metrics_df)
+                    if total_nodes and mods_res["modules"]:
+                        ratio = mods_res["modules"][0]["size"] / total_nodes
+                        if ratio > config.LOUVAIN_MAX_MODULE_RATIO:
+                            st.warning(t("net.modules_degenerate", ratio=ratio))
+                    n_singles = sum(1 for m in mods_res["modules"] if m["size"] < 2)
+                    st.markdown(t("net.modules_summary", n_singles=n_singles))
+                    st.dataframe(summary_df, width="stretch", hide_index=True)
+
+                    # 按模块着色的网络视图（默认关，避免重复渲染大图）
+                    if st.toggle(t("net.modules_color_toggle"), key="modules_color_toggle"):
+                        colored_html = render_pyvis_html(
+                            graph, metrics_df, module_map=mods_res["module_map"])
+                        st.iframe(colored_html, height=620)
+
+                # ---- 模块富集结果（失败→错误提示；无显著→一般提示） ----
+                long_df = mods_res["long_df"]
+                failures = mods_res["failures"]
+                no_sig = mods_res["no_sig"]
+                if failures:
+                    ids = ", ".join(f"#{f['module_id']}" for f in failures)
+                    st.error(t("net.modules_fail", ids=ids))
+                if no_sig:
+                    ids = ", ".join(f"#{mid}" for mid in no_sig)
+                    st.info(t("net.modules_nosig", ids=ids))
+                if long_df is not None and not long_df.empty:
+                    k = config.LOUVAIN_TOP_TERMS_PER_MODULE
+                    show_df = long_df.groupby("module_id", group_keys=False).head(k)
+                    st.markdown(t("net.modules_enrich_subheader"))
+                    st.caption(t("net.modules_enrich_caption",
+                                 n=len(long_df), m=long_df["module_id"].nunique(), k=k))
+                    cols = ["module_id", "source", "term_id", "term_name",
+                            "adjusted_p_value", "intersection_size", "query_size"]
+                    st.dataframe(show_df[cols], width="stretch", hide_index=True)
+                    col_ms, col_me = st.columns(2)
+                    with col_ms:
+                        Utils.download_button(
+                            "net.dl_module_summary_csv",
+                            summary_df.to_csv(index=False).encode("utf-8-sig"),
+                            f"{prefix}_modules.csv", "text/csv",
+                        )
+                    with col_me:
+                        Utils.download_button(
+                            "net.dl_module_enrich_csv",
+                            long_df.to_csv(index=False).encode("utf-8-sig"),
+                            f"{prefix}_module_enrichment.csv", "text/csv",
+                        )
+                    if mods_res.get("saved_paths"):
+                        st.caption(t("net.modules_saved", dir=saved["directory"]))
+                elif not failures and not no_sig and not summary_df.empty:
+                    st.info(t("net.modules_enrich_empty"))
+
+
+def _render_downloads(metrics_df, edges_df, html_content: str, saved: dict, prefix: str) -> None:
+    """下载区:先收集全部可用下载项,再按 3 列网格逐行铺满——
+    条件产物(富集/核心靶点/靶点-通路图)缺失时不会留下空洞。"""
+    with st.expander(t("net.download_expander")):
+        items: list[tuple[str, object, str, str]] = [
+            ("net.dl_nodes", metrics_df.to_csv(index=False).encode("utf-8-sig"),
+             f"{prefix}_nodes.csv", "text/csv"),
+            ("net.dl_edges", edges_df.to_csv(index=False).encode("utf-8-sig"),
+             f"{prefix}_edges.csv", "text/csv"),
+            ("net.dl_html", html_content.encode("utf-8"),
+             f"{prefix}_network.html", "text/html"),
+            ("net.dl_graphml", saved["graphml"], f"{prefix}_graph.graphml",
+             "application/xml"),
+            ("net.dl_svg", saved["svg"], f"{prefix}_network.svg", "image/svg+xml"),
+        ]
+        if "enrichment_csv" in saved:
+            items.append(("net.dl_enrich_csv", saved["enrichment_csv"],
+                          f"{prefix}_enrichment.csv", "text/csv"))
+        if "enrichment_bar_png" in saved:
+            items.append(("net.dl_enrich_bar", saved["enrichment_bar_png"],
+                          f"{prefix}_enrichment_bar.png", "image/png"))
+        if "enrichment_dot_png" in saved:
+            items.append(("net.dl_bubble", saved["enrichment_dot_png"],
+                          f"{prefix}_enrichment_dot.png", "image/png"))
+        if "core_png" in saved:
+            items.append(("net.dl_core_png", saved["core_png"],
+                          f"{prefix}_core_targets.png", "image/png"))
+        if "dtp_png" in saved:
+            items.append(("net.dl_dtp_png", saved["dtp_png"],
+                          f"{prefix}_enrichment_network.png", "image/png"))
+        if "string_png" in saved:
+            items.append(("net.dl_string_png", saved["string_png"],
+                          f"{prefix}_network_string.png", "image/png"))
+        if "string_svg" in saved:
+            items.append(("net.dl_string_svg", saved["string_svg"],
+                          f"{prefix}_network_string.svg", "image/svg+xml"))
+        if "cyto_png" in saved:
+            items.append(("net.dl_cyto_png", saved["cyto_png"],
+                          f"{prefix}_network_cytoscape.png", "image/png"))
+        if "cyto_svg" in saved:
+            items.append(("net.dl_cyto_svg", saved["cyto_svg"],
+                          f"{prefix}_network_cytoscape.svg", "image/svg+xml"))
+        items.append(("net.dl_zip", Utils.make_ppi_zip(saved),
+                      f"{prefix}_results.zip", "application/zip"))
+
+        for start in range(0, len(items), 3):
+            cols = st.columns(3)
+            for col, (label_key, data, file_name, mime) in zip(cols, items[start:start + 3]):
+                with col:
+                    if isinstance(data, (bytes, bytearray)):
+                        Utils.download_button(label_key, data, file_name, mime)
+                    else:
+                        Utils.download_file_button(label_key, data, file_name, mime)
+        st.caption(
+            t("net.files_grouped", dir=saved["directory"])
+        )
+
+
 if ppi is not None:
-    if current_params != ppi["params"]:
+    if _params_stale():
         st.info(t("net.params_changed"))
 
     genes = ppi["genes"]
@@ -551,19 +1081,63 @@ if ppi is not None:
         col_m3.metric(t("net.metric_edges"), len(edges_df))
         col_m4.metric(t("net.metric_hubs"), len(hub_df))
 
+        expansion_df = ppi.get("expansion_df")
+        if expansion_df is not None:
+            n_seed = int((expansion_df["source"] == "seed").sum())
+            n_exp = int((expansion_df["source"] == "expanded").sum())
+            st.caption(t("net.expansion_caption", s=n_seed, e=n_exp, k=n_seed + n_exp,
+                         alpha=config.RWR_ALPHA, f=ppi.get("prefix", "")))
+
         st.divider()
 
-        st.subheader(t("net.hub_subheader", d=int(min_degree)))
+        hub_rule = ppi.get("hub_rule", "")
+        if hub_rule.startswith("top"):
+            st.subheader(t("net.hub_top_subheader", n=int(hub_top_n),
+                           method=ppi.get("hub_method_eff", "degree"),
+                           t=config.HUB_SMALL_NET_FACTOR * int(hub_top_n)))
+        else:
+            st.subheader(t("net.hub_subheader"))
         if hub_df.empty:
             st.info(t("net.no_hubs"))
         else:
             st.dataframe(hub_df, width="stretch", hide_index=True)
 
-        st.subheader(t("net.interactive"))
-        st.iframe(html_content, height=640)
-
-        st.subheader(t("net.static"))
-        st.pyplot(static_fig)
+        # ---------- 网络图展示:下拉切换,默认交互式 ----------
+        # 四种图(交互/静态/STRING/Cytoscape)无论当前选中哪个都已在 save_ppi_results 阶段落盘,
+        # 这里只控制"看哪张";渲染失败的风格图不出现在选项里,不阻塞其余选项。
+        views: dict[str, tuple[str, str | None]] = {
+            "interactive": (t("net.view_interactive"), None),
+            "static": (t("net.view_static"), None),
+            "string": (t("net.view_string"), t("net.string_style_caption")),
+            "cytoscape": (t("net.view_cyto"), t("net.cyto_style_caption")),
+        }
+        available = ["interactive", "static"]
+        if ppi.get("string_fig") is not None:
+            available.append("string")
+        if ppi.get("cyto_fig") is not None:
+            available.append("cytoscape")
+        # 上次选中的图这次不存在(旧结果/渲染失败)时清掉,让选择框回到默认交互式
+        # key 绑定报告实例(id 每次新分析都不同;旧 ppi 被替换前一直存活,id 不会复用):
+        # 直接复用固定 key 时,streamlit 前端控件不会跟随服务端 pop 重置,仍显示用户
+        # 上次选的旧选项,与服务端实际渲染的默认交互式图脱节;换 key 即换新控件,彻底同步。
+        view_key = f"ppi_view::{id(ppi)}"
+        if st.session_state.get(view_key) not in available:
+            st.session_state.pop(view_key, None)
+        st.subheader(t("net.view_subheader"))
+        view = st.selectbox(t("net.view_label"), available, index=0,
+                            format_func=lambda v: views[v][0], key=view_key)
+        view_caption = views[view][1]
+        if view_caption:
+            st.caption(view_caption)
+        if view == "interactive":
+            st.iframe(html_content, height=640)
+        elif view == "static":
+            st.pyplot(static_fig)
+        elif view == "string":
+            st.pyplot(ppi["string_fig"])
+        else:
+            st.pyplot(ppi["cyto_fig"])
+        st.caption(t("net.view_saved_note"))
 
         # ---------- 核心靶点子网络（CytoHubba 式 MCC Top N） ----------
         core_fig = ppi.get("core_fig")
@@ -572,414 +1146,17 @@ if ppi is not None:
             st.caption(t("net.core_caption", n=config.MCC_TOP_N))
             st.pyplot(core_fig)
 
-        # ---------- 网络邻近度检验（仅 names 模式） ----------
-        # 随主分析自动计算；手动输入基因模式无药物/疾病之分，不展示。
-        proximity_result = ppi.get("proximity")
-        if proximity_result is not None and input_mode == "names":
-            st.divider()
-            st.subheader(t("net.prox_subheader"))
-            st.caption(t("net.prox_caption", n_perm=config.PROXIMITY_N_PERM,
-                         seed=config.PROXIMITY_SEED,
-                         bin_size=config.PROXIMITY_DEGREE_BIN_SIZE))
-            prox_err = proximity_result.get("error")
-            if prox_err == "not_built":
-                st.warning(t("net.prox_not_built"))
-            elif prox_err in ("low_coverage_drug", "low_coverage_disease", "empty_after_filter"):
-                cov = proximity_result.get("coverage", {})
-                st.warning(t("net.prox_low_coverage",
-                             d_in=cov.get("drug_in_lcc", 0), d_tot=cov.get("drug_total", 0),
-                             s_in=cov.get("disease_in_lcc", 0), s_tot=cov.get("disease_total", 0),
-                             thr=config.PROXIMITY_MIN_COVERAGE))
-            elif prox_err:
-                st.error(t("net.prox_fail", reason=prox_err))
-            elif proximity_result.get("ok"):
-                col_p1, col_p2, col_p3 = st.columns(3)
-                col_p1.metric(t("net.prox_dc"), f"{proximity_result['d_c']:.3f}")
-                col_p2.metric(t("net.prox_z"), f"{proximity_result['z']:.3f}")
-                col_p3.metric(t("net.prox_p"), f"{proximity_result['p_empirical']:.4f}")
-                if proximity_result["z"] < 0:
-                    st.success(t("net.prox_support"))
-                else:
-                    st.info(t("net.prox_nosupport"))
-                cov = proximity_result.get("coverage", {})
-                st.caption(t("net.prox_coverage",
-                             ver=config.STRING_VERSION, conf=config.INTERACTOME_CONFIDENCE,
-                             lcc=proximity_result.get("lcc_nodes"),
-                             d_in=cov.get("drug_in_lcc", 0), d_tot=cov.get("drug_total", 0),
-                             s_in=cov.get("disease_in_lcc", 0), s_tot=cov.get("disease_total", 0),
-                             n_perm=proximity_result.get("n_perm"),
-                             cached=t("net.prox_cached") if proximity_result.get("cached") else ""))
-                # 去交集版本：剔除共同靶点后仍显著，才能排除"纯属直接作用"的解释
-                if proximity_result.get("d_c_excl") is not None:
-                    st.caption(t("net.prox_excl_caption", n=proximity_result.get("n_excl") or 0))
-                    col_q1, col_q2, col_q3 = st.columns(3)
-                    col_q1.metric(t("net.prox_dc_excl"), f"{proximity_result['d_c_excl']:.3f}")
-                    col_q2.metric(t("net.prox_z_excl"),
-                                  f"{proximity_result['z_excl']:.3f}"
-                                  if proximity_result.get("z_excl") is not None else "—")
-                    col_q3.metric(t("net.prox_p_excl"),
-                                  f"{proximity_result['p_excl']:.4f}"
-                                  if proximity_result.get("p_excl") is not None else "—")
-                elif proximity_result.get("ok"):
-                    st.caption(t("net.prox_excl_unavailable"))
+        # ---------- 网络邻近度 / RWR / 富集 / GSEA / 模块 / 下载区 ----------
+        params_stale = _params_stale()
+        _render_proximity(ppi, input_mode)
 
-        # ---------- 靶点优先级排序（RWR，仅 names 模式） ----------
-        # 随主分析自动算完两个方向（种子=疾病基因 / 种子=药物靶点）；单选只切换查看，不重算。
-        rwr_results = ppi.get("rwr") or {}
-        if rwr_results and input_mode == "names":
-            st.divider()
-            with st.expander(t("net.rwr_subheader")):
-                st.caption(t("net.rwr_caption", alpha=config.RWR_ALPHA))
-                rwr_side = st.radio(
-                    t("net.rwr_side"), ["disease_seeds", "drug_seeds"],
-                    format_func=lambda v: (t("net.rwr_side_disease") if v == "disease_seeds"
-                                           else t("net.rwr_side_drug")),
-                    horizontal=True, key="rwr_side",
-                )
-                rwr_res = rwr_results.get(rwr_side) or {}
-                rwr_err = rwr_res.get("error")
-                if rwr_err == "not_built":
-                    st.warning(t("net.rwr_not_built"))
-                elif rwr_err:
-                    st.error(t("net.rwr_fail", reason=rwr_err))
-                elif rwr_res.get("ok"):
-                    cov = rwr_res.get("coverage", {})
-                    conv_txt = t("net.rwr_conv_yes") if rwr_res.get("converged") else t("net.rwr_conv_no")
-                    anno_label = (t("net.rwr_col_is_drug") if rwr_side == "disease_seeds"
-                                  else t("net.rwr_col_is_disease"))
-                    st.caption(t("net.rwr_stats",
-                                 alpha=rwr_res.get("alpha"), iters=rwr_res.get("n_iter"),
-                                 conv=conv_txt,
-                                 n_seed=cov.get("seed_in_lcc", 0), n_tot=cov.get("seed_total", 0),
-                                 lcc=rwr_res.get("lcc_nodes"), mass=rwr_res.get("seed_mass", 0.0),
-                                 cached=t("net.rwr_cached") if rwr_res.get("cached") else ""))
-                    # 度匹配校正：标注集平均得分 vs 度匹配随机集（排除枢纽度数假象）
-                    enr = rwr_res.get("enrichment")
-                    if enr and enr.get("z") is not None:
-                        if enr.get("p") is not None and enr["p"] < 0.05:
-                            st.success(t("net.rwr_enrich_sig",
-                                         n=enr.get("n_annotated", 0), z=enr["z"], p=enr["p"]))
-                        else:
-                            st.info(t("net.rwr_enrich_nosig",
-                                      n=enr.get("n_annotated", 0), z=enr["z"], p=enr["p"]))
-                    top_df = pd.concat([
-                        pd.DataFrame(rwr_res.get("seeds", [])).assign(is_seed=True),
-                        pd.DataFrame(rwr_res.get("top_nonseed", [])).assign(is_seed=False),
-                    ], ignore_index=True) if (rwr_res.get("seeds") or rwr_res.get("top_nonseed")) else pd.DataFrame()
-                    if top_df.empty:
-                        st.info(t("net.rwr_none"))
-                    else:
-                        top_df = top_df.sort_values("score", ascending=False).reset_index(drop=True)
-                        seeds_df = top_df[top_df["is_seed"]]
-                        nonseed_df = top_df[~top_df["is_seed"]].head(config.RWR_TOP_N)
-                        st.markdown(t("net.rwr_top_header", n=len(nonseed_df)))
-                        show_df = nonseed_df[["gene", "score"]].copy()
-                        if "annotated" in nonseed_df.columns:
-                            show_df[anno_label] = nonseed_df["annotated"]
-                        st.dataframe(show_df, width="stretch", hide_index=True)
-                        with st.expander(t("net.rwr_seeds_header", n=len(seeds_df))):
-                            st.dataframe(seeds_df[["gene", "score"]],
-                                         width="stretch", hide_index=True)
-                        Utils.download_button(
-                            "net.dl_rwr_csv",
-                            top_df.to_csv(index=False).encode("utf-8-sig"),
-                            f"{prefix}_rwr_{rwr_side}.csv", "text/csv",
-                        )
-                        if "rwr_disease_csv" in saved or "rwr_drug_csv" in saved:
-                            st.caption(t("net.rwr_in_report", dir=saved["directory"]))
+        _render_rwr(ppi, input_mode, prefix, saved)
+        _render_enrichment(ppi, genes)
 
-        # ---------- 富集分析展示 ----------
-        st.divider()
-        st.subheader(t("net.enrich_subheader"))
-        enrichment_df = ppi["enrichment_df"]
-        enrichment_source = ppi["enrichment_source"]
-        enrichment_bar_fig = ppi["enrichment_bar_fig"]
-        enrichment_dot_fig = ppi["enrichment_dot_fig"]
-        if enrichment_df is None or enrichment_df.empty:
-            st.info(t("net.no_enrich"))
-        else:
-            st.caption(
-                t("net.enrich_caption", src=enrichment_source, n=len(enrichment_df), m=len(genes))
-            )
-            display_cols = ["source", "term_id", "term_name", "adjusted_p_value",
-                            "intersection_size", "query_size"]
-            st.dataframe(enrichment_df[display_cols], width="stretch", hide_index=True)
-            if enrichment_bar_fig is not None:
-                st.caption(t("net.bar_caption"))
-                st.pyplot(enrichment_bar_fig)
-            if enrichment_dot_fig is not None:
-                st.caption(t("net.bubble_caption"))
-                st.pyplot(enrichment_dot_fig)
-            # 药物-靶点-通路网络图（基于 KEGG 富集结果构建）
-            dtp_fig = ppi.get("dtp_fig")
-            if dtp_fig is not None:
-                st.caption(t("net.dtp_caption"))
-                st.pyplot(dtp_fig)
+        _render_gsea(ppi, input_mode, drug_name, disease_name, prefix, saved, params_stale)
 
-        # ---------- 排序富集（GSEA prerank，仅人类） ----------
-        # Build Report 已自动跑完两侧并保存，此处可换侧重跑；
-        # 药物/疾病两侧结果分开存放，切换单选不会误显示另一侧的旧结果。
-        st.divider()
-        with st.expander(t("net.gsea_subheader")):
-            st.caption(t("net.gsea_caption", libs="、".join(config.GSEA_ENRICHR_LIBS)))
-            if ("ppi_gsea" not in st.session_state
-                    or not isinstance(st.session_state.ppi_gsea, dict)
-                    or "side" in st.session_state.ppi_gsea):
-                st.session_state.ppi_gsea = {}
-            if "gsea_drug_csv" in saved or "gsea_disease_csv" in saved:
-                st.caption(t("net.gsea_in_report", dir=saved["directory"]))
+        _render_modules(ppi, graph, metrics_df, prefix, saved, params_stale)
 
-            if input_mode == "genes":
-                st.info(t("net.gsea_manual_unsupported"))
-            else:
-                gsea_side = st.radio(
-                    t("net.gsea_side"), ["drug", "disease"],
-                    format_func=lambda v: (t("net.gsea_side_drug") if v == "drug"
-                                           else t("net.gsea_side_disease")),
-                    horizontal=True, key="gsea_side",
-                )
-                # 换侧只切换已存结果,不触发重新计算。该侧已有有效结果(参数一致且
-                # 非请求失败)时禁用重跑按钮,避免误点重复计算;自动步骤失败时按钮
-                # 保持可用,作为手动兜底入口。
-                gsea_res = st.session_state.ppi_gsea.get(gsea_side)
-                params_stale = current_params != ppi["params"]
-                gsea_reason = (gsea_res or {}).get("reason", "")
-                gsea_done = (gsea_res is not None and not params_stale
-                             and gsea_reason not in ("request_failed", "circuit_open",
-                                                     "normalize_empty"))
-                run_clicked = st.button(
-                    t("net.gsea_run"), key="gsea_run_btn", width="stretch",
-                    disabled=gsea_done or params_stale,
-                    help=(t("net.params_changed") if params_stale
-                          else t("net.gsea_done_hint") if gsea_done else None),
-                )
-                if run_clicked:
-                    if current_params != ppi["params"]:
-                        # 防呆：主分析参数已变，先重跑主分析再 GSEA
-                        st.warning(t("net.params_changed"))
-                    else:
-                        with st.spinner(t("net.gsea_spinner")):
-                            gsea_df, rstats, reason = _gsea_prerank_side(
-                                gsea_side, drug_name, disease_name, prefix)
-                            st.session_state.ppi_gsea[gsea_side] = {
-                                "df": gsea_df,
-                                "stats": rstats,
-                                "reason": reason,
-                                "ppi_params": ppi["params"],
-                            }
-                        st.rerun()
-
-                if gsea_res is not None:
-                    if gsea_res["ppi_params"] != ppi["params"]:
-                        st.info(t("net.params_changed"))
-                    else:
-                        stats = gsea_res["stats"]
-                        gsea_df = gsea_res["df"]
-                        reason = gsea_res.get("reason", "")
-                        side_txt = (t("net.gsea_side_drug") if gsea_side == "drug"
-                                    else t("net.gsea_side_disease"))
-                        # 打分缺失去除是多源合并的预期行为（如仅 DGIdb 收录的靶点无
-                        # pChEMBL），作中性说明而非预警
-                        if stats.get("n_dropped", 0) > 0:
-                            st.caption(t("net.gsea_drop_note",
-                                         n=stats.get("n_dropped", 0),
-                                         m=stats.get("n_input", 0)))
-                        if reason == "insufficient_input":
-                            st.info(t("net.gsea_insufficient",
-                                      n=stats.get("n_kept", 0), min_n=config.GSEA_MIN_RANKED_GENES))
-                        elif reason == "request_failed":
-                            st.error(t("net.gsea_fail", reason=reason))
-                        elif gsea_df is None or gsea_df.empty:
-                            st.info(t("net.gsea_none", thr=config.GSEA_FDR_SCREEN))
-                        else:
-                            st.caption(t("net.gsea_result_side", side=side_txt,
-                                         n_in=stats.get("n_input", 0), n_kept=stats.get("n_kept", 0)))
-                            screened = gsea_df[gsea_df["fdr_q_value"] < config.GSEA_FDR_SCREEN]
-                            if screened.empty:
-                                st.info(t("net.gsea_none", thr=config.GSEA_FDR_SCREEN))
-                                # 展示阈值只作用于页面表格；导出始终为完整计算结果，
-                                # 在此说明以免"提示无显著却仍能下载"造成误解
-                                st.caption(t("net.gsea_full_export_note", thr=config.GSEA_FDR_SCREEN))
-                            else:
-                                st.caption(t("net.gsea_table_caption", n=len(gsea_df),
-                                             m=len(screened), thr=config.GSEA_FDR_SCREEN))
-                                show_cols = ["source", "term_name", "nes", "fdr_q_value",
-                                             "nominal_p_value", "tag_pct", "gene_pct"]
-                                st.dataframe(screened[show_cols], width="stretch", hide_index=True)
-                                gsea_fig = render_gsea_plot(screened)
-                                if gsea_fig is not None:
-                                    st.caption(t("net.gsea_bar_caption"))
-                                    st.pyplot(gsea_fig)
-                            Utils.download_button(
-                                "net.dl_gsea_csv",
-                                gsea_df.to_csv(index=False).encode("utf-8-sig"),
-                                f"{prefix}_gsea_{gsea_side}.csv", "text/csv",
-                            )
-
-        # ---------- 蛋白模块检测（Louvain + 模块富集） ----------
-        # Build Report 已随主分析自动跑完；主分析参数变更后，旧模块结果会提示过期。
-        # 此按钮用于手动重跑（如自动步骤失败时兜底）。
-        st.divider()
-        with st.expander(t("net.modules_subheader")):
-            st.caption(t("net.modules_caption",
-                         min_size=config.LOUVAIN_MIN_MODULE_SIZE,
-                         top_n=config.LOUVAIN_MAX_ENRICH_MODULES))
-            if "ppi_modules" not in st.session_state:
-                st.session_state.ppi_modules = None
-
-            if st.button(t("net.modules_run"), key="modules_run_btn", width="stretch"):
-                if current_params != ppi["params"]:
-                    # 防呆：主分析参数已变，图与旧结果不对应，先重跑主分析
-                    st.warning(t("net.params_changed"))
-                else:
-                    with st.spinner(t("net.modules_spinner_detect")):
-                        # params[5] = 物种参数（organism）
-                        try:
-                            mods = _compute_ppi_modules(graph, current_params[5],
-                                                        saved["directory"], prefix)
-                        except Exception:
-                            logging.exception("Module analysis failed")
-                            st.error(t("net.analysis_fail"))
-                        else:
-                            saved.update(mods["saved_paths"])
-                            st.session_state.ppi_modules = {
-                                **mods,
-                                "ppi_params": ppi["params"],
-                            }
-                    st.rerun()
-
-            mods_res = st.session_state.ppi_modules
-            if mods_res is not None:
-                if mods_res["ppi_params"] != ppi["params"]:
-                    st.info(t("net.params_changed"))
-                else:
-                    summary_df = mods_res["summary_df"]
-                    if summary_df.empty:
-                        st.info(t("net.modules_none"))
-                    else:
-                        # 退化防护：最大模块吞掉大多数节点时提示调参
-                        total_nodes = len(metrics_df)
-                        if total_nodes and mods_res["modules"]:
-                            ratio = mods_res["modules"][0]["size"] / total_nodes
-                            if ratio > config.LOUVAIN_MAX_MODULE_RATIO:
-                                st.warning(t("net.modules_degenerate", ratio=ratio))
-                        n_singles = sum(1 for m in mods_res["modules"] if m["size"] < 2)
-                        st.markdown(t("net.modules_summary", n_singles=n_singles))
-                        st.dataframe(summary_df, width="stretch", hide_index=True)
-
-                        # 按模块着色的网络视图（默认关，避免重复渲染大图）
-                        if st.toggle(t("net.modules_color_toggle"), key="modules_color_toggle"):
-                            colored_html = render_pyvis_html(
-                                graph, metrics_df, module_map=mods_res["module_map"])
-                            st.iframe(colored_html, height=620)
-
-                    # ---- 模块富集结果（失败→错误提示；无显著→一般提示） ----
-                    long_df = mods_res["long_df"]
-                    failures = mods_res["failures"]
-                    no_sig = mods_res["no_sig"]
-                    if failures:
-                        ids = ", ".join(f"#{f['module_id']}" for f in failures)
-                        st.error(t("net.modules_fail", ids=ids))
-                    if no_sig:
-                        ids = ", ".join(f"#{mid}" for mid in no_sig)
-                        st.info(t("net.modules_nosig", ids=ids))
-                    if long_df is not None and not long_df.empty:
-                        k = config.LOUVAIN_TOP_TERMS_PER_MODULE
-                        show_df = long_df.groupby("module_id", group_keys=False).head(k)
-                        st.markdown(t("net.modules_enrich_subheader"))
-                        st.caption(t("net.modules_enrich_caption",
-                                     n=len(long_df), m=long_df["module_id"].nunique(), k=k))
-                        cols = ["module_id", "source", "term_id", "term_name",
-                                "adjusted_p_value", "intersection_size", "query_size"]
-                        st.dataframe(show_df[cols], width="stretch", hide_index=True)
-                        col_ms, col_me = st.columns(2)
-                        with col_ms:
-                            Utils.download_button(
-                                "net.dl_module_summary_csv",
-                                summary_df.to_csv(index=False).encode("utf-8-sig"),
-                                f"{prefix}_modules.csv", "text/csv",
-                            )
-                        with col_me:
-                            Utils.download_button(
-                                "net.dl_module_enrich_csv",
-                                long_df.to_csv(index=False).encode("utf-8-sig"),
-                                f"{prefix}_module_enrichment.csv", "text/csv",
-                            )
-                        if mods_res.get("saved_paths"):
-                            st.caption(t("net.modules_saved", dir=saved["directory"]))
-                    elif not failures and not no_sig and not summary_df.empty:
-                        st.info(t("net.modules_enrich_empty"))
-
-        # ---------- 下载区 ----------
-        with st.expander(t("net.download_expander")):
-            col_d1, col_d2, col_d3 = st.columns(3)
-            with col_d1:
-                Utils.download_button(
-                    "net.dl_nodes",
-                    metrics_df.to_csv(index=False).encode("utf-8-sig"),
-                    f"{prefix}_nodes.csv", "text/csv",
-                )
-            with col_d2:
-                Utils.download_button(
-                    "net.dl_edges",
-                    edges_df.to_csv(index=False).encode("utf-8-sig"),
-                    f"{prefix}_edges.csv", "text/csv",
-                )
-            with col_d3:
-                Utils.download_button(
-                    "net.dl_html", html_content, f"{prefix}_network.html", "text/html",
-                )
-            col_d4, col_d5, col_d6 = st.columns(3)
-            with col_d4:
-                Utils.download_file_button(
-                    "net.dl_graphml", saved["graphml"], f"{prefix}_graph.graphml",
-                    "application/xml",
-                )
-            with col_d5:
-                Utils.download_file_button(
-                    "net.dl_svg", saved["svg"], f"{prefix}_network.svg", "image/svg+xml",
-                )
-            with col_d6:
-                # 富集气泡图（有富集结果时显示）
-                if "enrichment_csv" in saved:
-                    Utils.download_file_button(
-                        "net.dl_bubble", saved["enrichment_dot_png"],
-                        f"{prefix}_enrichment_dot.png", "image/png",
-                    )
-            # 下一行：富集 CSV / 条形图下载（有富集结果时）
-            col_e1, col_e2, _ = st.columns(3)
-            if "enrichment_csv" in saved:
-                with col_e1:
-                    Utils.download_file_button(
-                        "net.dl_enrich_csv", saved["enrichment_csv"],
-                        f"{prefix}_enrichment.csv", "text/csv",
-                    )
-                with col_e2:
-                    Utils.download_file_button(
-                        "net.dl_enrich_bar", saved["enrichment_bar_png"],
-                        f"{prefix}_enrichment_bar.png", "image/png",
-                    )
-            # 最后一行：核心靶点图 / 靶点-通路网络图下载（有对应结果时）+ ZIP 打包下载
-            col_f1, col_f2, col_f3 = st.columns(3)
-            if "core_png" in saved:
-                with col_f1:
-                    Utils.download_file_button(
-                        "net.dl_core_png", saved["core_png"],
-                        f"{prefix}_core_targets.png", "image/png",
-                    )
-            if "dtp_png" in saved:
-                with col_f2:
-                    Utils.download_file_button(
-                        "net.dl_dtp_png", saved["dtp_png"],
-                        f"{prefix}_enrichment_network.png", "image/png",
-                    )
-            with col_f3:
-                Utils.download_button(
-                    "net.dl_zip", Utils.make_ppi_zip(saved),
-                    f"{prefix}_results.zip", "application/zip",
-                )
-            st.caption(
-                t("net.files_grouped", dir=saved["directory"])
-            )
+        _render_downloads(metrics_df, edges_df, html_content, saved, prefix)
 
         st.success(t("net.success"))
