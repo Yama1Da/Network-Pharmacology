@@ -377,7 +377,7 @@ with st.container(key="top_right_logs"):
         if st.session_state.get("_lang_switch_synced") != get_lang():
             st.session_state["_lang_switch"] = is_en
             st.session_state["_lang_switch_synced"] = get_lang()
-        lang_is_en = st.toggle("Language", value=is_en, key="_lang_switch",
+        lang_is_en = st.toggle("Language", key="_lang_switch",
                                label_visibility="collapsed")
         if lang_is_en != is_en:
             set_lang("en" if lang_is_en else "zh")
