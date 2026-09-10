@@ -415,11 +415,13 @@ def _edge_evidence_map(edges_df: pd.DataFrame) -> dict:
     """给每条互作边标注主导证据通道:取七个 STRING 通道得分里最高的那个。
     返回 {(u, v): (颜色, 图例名, 得分)}(键为蛋白对排序后的元组);通道列缺失或得分全零时返回空表,
     调用方据此把所有边画成灰色。"""
-    import numpy as np
-
-    channel_cols = [c for c, _, _ in _EVIDENCE_CHANNELS if c in edges_df.columns]
-    if not channel_cols or edges_df.empty:
+    # 实际存在的通道列单独建档:边表可能缺个别通道列(旧缓存/API 字段调整),
+    # 主导通道必须按"过滤后"的列表回查,直接下标 _EVIDENCE_CHANNELS 会整体错位
+    channel_meta = [(c, color, legend) for c, color, legend in _EVIDENCE_CHANNELS
+                    if c in edges_df.columns]
+    if not channel_meta or edges_df.empty:
         return {}
+    channel_cols = [c for c, _, _ in channel_meta]
     vals = edges_df[channel_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
     for c in channel_cols:  # 兼容个别通道以 0-999 计数返回的情况
         if float(vals[c].max()) > 1.5:
@@ -438,7 +440,9 @@ def _edge_evidence_map(edges_df: pd.DataFrame) -> dict:
         seen.add(key)
         arr = row.to_numpy(dtype=float)
         best = int(arr.argmax())
-        color, legend = _EVIDENCE_CHANNELS[best][1], _EVIDENCE_CHANNELS[best][2]
+        if arr[best] <= 0:
+            continue  # 七个通道全零:没有主导证据,不进映射,调用方按灰色画
+        _, color, legend = channel_meta[best]
         mapping[key] = (color, legend, float(arr[best]))
     return mapping
 

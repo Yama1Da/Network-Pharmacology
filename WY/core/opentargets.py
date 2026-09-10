@@ -153,7 +153,7 @@ def get_disease_targets(disease_name: str, need_rows: int | None = None) -> pd.D
 
         df = pd.DataFrame(records)
         # 保存到本地缓存（空结果也缓存，避免反复查询同一无效疾病名）
-        save_csv_cache(df, csv_path)
+        save_csv_cache(df, csv_path, skip_empty=False)
         # 抓取行数不足单次上限 => 已拿全该疾病的关联靶点(总数不足),记入哨兵避免日后反复重抓
         save_json_file(meta_path, {"complete": len(df) < config.OT_FETCH_SIZE})
         logging.info("Disease '%s' (%s): %d targets fetched", disease_name, disease_id, len(df))

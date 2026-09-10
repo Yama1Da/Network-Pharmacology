@@ -216,7 +216,7 @@ def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None,
                interactions: list[dict] | None = None, focus_pocket: bool = False,
                pose_pdb: str | None = None, receptor_text: str | None = None) -> None:
     """在页面内 3D 展示受体(卡通)、所选对接构象(绿棍)与结合位点残基
-    (橙棍并标注"残基名-编号"),相互作用以虚线画出(绿=氢键 紫=盐桥 灰=疏水,
+    (橙棍并标注"残基名-编号"),相互作用以虚线画出(蓝=氢键 紫=盐桥 灰=疏水,
     氢键与盐桥在中点标注距离),并叠加共晶配体(灰色半透明)作天然口袋参照;
     focus_pocket 为真时以配体为中心聚焦口袋并把周围蛋白卡通虚化(半透明),
     否则展示整体视图;缺少组件时仅给出提示。

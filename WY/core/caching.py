@@ -45,8 +45,12 @@ def save_json_file(path: str, value, *, indent: int | None = None,
 
 
 def _read_cache_csv(cache_file: str) -> pd.DataFrame:
-    # 读取本地缓存的结果表(跳过以 # 开头的旧格式说明行)
-    return pd.read_csv(cache_file, encoding="utf-8-sig", comment="#")
+    # 读取本地缓存的结果表(跳过以 # 开头的旧格式说明行)。
+    # 空结果缓存(查无数据的药物/疾病也落盘)只有 BOM 没有表头,按空表读回而不是报错
+    try:
+        return pd.read_csv(cache_file, encoding="utf-8-sig", comment="#")
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
 
 
 def _is_cache_fresh(cache_file: str, ttl_seconds: int | None = None) -> bool:

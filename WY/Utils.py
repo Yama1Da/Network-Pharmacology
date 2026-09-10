@@ -356,6 +356,8 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
 
     来源文件先备份旧文件,抓取成功才替换,失败则恢复旧文件,避免数据丢失;
     merged 整合文件先更新两个来源文件再重建,任一来源失败则保留旧的整合结果。
+    fetch_source 返回 (表, 状态),状态为 "ok"(有数据)/"empty"(抓取成功但 0 靶点)/
+    "failed"(请求失败);empty 不算失败,返回 Status=EMPTY,由页面以警告提示检查查询物。
     cache_hours 透传给 fetch_source(ChEMBL 更新需区分单文件/全部更新的 TTL)。
     clear_http=False 供并发批处理使用:由 update_all_cache_files 在入口统一清一次,
     避免批量中途清缓存干扰其他线程的在途请求。
@@ -371,16 +373,16 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
             # 来源文件名用 safe 名(name 已还原为原始名,含空格/撇号等)
             source = f"{prefix}{safe_name(name)}.csv"
             result = refresh_cache_file(source, spec, cache_hours)
-            if result["Status"] != "OK":
+            if result["Status"] == "FAILED":  # 来源 0 靶点(EMPTY)不算失败,继续重建
                 return {"Status": "FAILED",
                         "Message": f"source '{source}' update failed: {result['Message']}"}
         merged_path = _mgmt_file_path(filename, spec)
         if os.path.exists(merged_path):
             os.remove(merged_path)  # 可能已在上一步删除,这里兜底再删一次
         df = spec["fetch_merged"](name)
-        if not df.empty:
-            return {"Status": "OK", "Message": f"{len(df)} targets"}
-        return {"Status": "FAILED", "Message": "fetch failed"}
+        # 两来源都为 0 靶点时整合结果也为空:不算失败,由页面以警告提示检查查询物
+        return {"Status": "OK" if not df.empty else "EMPTY",
+                "Message": f"{len(df)} targets"}
 
     # 来源文件:先备份,抓取成功才替换,失败则恢复旧文件
     path = _mgmt_file_path(filename, spec)
@@ -393,26 +395,32 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
     if clear_http:
         clear_http_cache()
 
-    ok = False
+    status = "failed"
     df = pd.DataFrame()
     try:
         for prefix in spec["source_prefixes"]:
             if filename.startswith(prefix):
                 stem = filename[len(prefix):-len(".csv")]
                 name = resolve_original_name(stem) or stem
-                df, ok = spec["fetch_source"][prefix](name, cache_hours)
+                df, status = spec["fetch_source"][prefix](name, cache_hours)
                 break
         else:
             raise ValueError(f"unknown file prefix: {filename}")
     except Exception:
         logging.exception("refresh_file failed for '%s'", filename)
-        ok = False
+        status = "failed"
 
-    if ok:
-        if os.path.exists(backup):
-            os.remove(backup)
+    if status in ("ok", "empty"):
+        # 抓取方已写出新文件(ok 必有;empty 时仅部分来源写空缓存)则丢弃备份;
+        # 没写(如 ChEMBL 查无此药不落盘)则恢复旧文件占位,避免条目从列表里消失
+        if os.path.exists(path):
+            if os.path.exists(backup):
+                os.remove(backup)
+        elif os.path.exists(backup):
+            os.replace(backup, path)
         spec["invalidate_merged"](name)
-        return {"Status": "OK", "Message": f"{len(df)} targets"}
+        return {"Status": "OK" if status == "ok" else "EMPTY",
+                "Message": f"{len(df)} targets"}
     # 失败:恢复旧文件
     if os.path.exists(backup):
         os.replace(backup, path)
@@ -492,7 +500,8 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
             if not df.empty:
                 rows.append({"File": merged_file, "Status": "OK", "Message": f"{len(df)} targets"})
             else:
-                rows.append({"File": merged_file, "Status": "FAILED", "Message": "fetch failed"})
+                # 两来源都 0 靶点:不算失败,由汇总警告提示检查查询物
+                rows.append({"File": merged_file, "Status": "EMPTY", "Message": "0 targets"})
         except Exception:
             rows.append({"File": merged_file, "Status": "FAILED", "Message": "update error"})
         _tick(0.8 + 0.2 * idx / len(merged_names), "mgmt.prog.merged",
@@ -563,6 +572,9 @@ def render_source_management_page(
     if last_update:
         if last_update["Status"] == "OK":
             st.success(t("common.file_updated", file=last_update["File"], msg=last_update["Message"]))
+        elif last_update["Status"] == "EMPTY":
+            # 抓取成功但 0 靶点:警告而非错误,提示检查查询物
+            st.warning(t("common.file_update_empty", file=last_update["File"]))
         else:
             st.error(t("common.file_update_failed", file=last_update["File"], msg=last_update["Message"]))
 
@@ -581,8 +593,11 @@ def render_source_management_page(
             st.dataframe(results, width="stretch", hide_index=True)
             if results["Status"].eq("OK").all():
                 st.success(t("common.all_complete"))
-            else:
+            elif results["Status"].eq("FAILED").any():
                 st.warning(t("common.some_failed"))
+            else:
+                # 只有 0 靶点条目(无真失败):同样以警告提示检查查询物
+                st.warning(t("common.some_empty"))
 
     st.divider()
 

@@ -131,9 +131,11 @@ TEXT: dict[str, dict[str, str]] = {
         "common.all_updates": "All Updates",
         "common.file_updated": "✅ {file} updated ({msg})",
         "common.file_update_failed": "❌ {file} update failed: {msg}",
+        "common.file_update_empty": "⚠️ {file} fetched 0 targets — this is not an error. Please check the query term (drug/disease name) is spelled correctly.",
         "common.updating_file": "Updating {file}…",
         "common.all_complete": "✅ All updates complete",
         "common.some_failed": "Some files failed to update",
+        "common.some_empty": "All files updated; some entries fetched 0 targets — please double-check those query terms (drug/disease names).",
         "common.search_placeholder": "🔍 Search files…",
         "common.search_no_match": "No files matching \"{query}\"",
         # ---- 文件/目录表多选与批量操作(删除/打包下载) ----
@@ -595,9 +597,11 @@ TEXT: dict[str, dict[str, str]] = {
         "common.all_updates": "全部更新",
         "common.file_updated": "✅ {file} 已更新（{msg}）",
         "common.file_update_failed": "❌ {file} 更新失败：{msg}",
+        "common.file_update_empty": "⚠️ {file} 抓取到 0 个靶点 —— 这不是错误。请检查查询物（药物名/疾病名）是否正确。",
         "common.updating_file": "正在更新 {file}…",
         "common.all_complete": "✅ 全部更新完成",
         "common.some_failed": "部分文件更新失败",
+        "common.some_empty": "全部文件已更新；部分条目抓取到 0 个靶点，请核对对应查询物（药物名/疾病名）是否正确。",
         "common.search_placeholder": "🔍 搜索文件名…",
         "common.search_no_match": "没有匹配“{query}”的文件",
         # ---- 文件/目录表多选与批量操作(删除/打包下载) ----

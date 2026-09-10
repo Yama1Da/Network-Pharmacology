@@ -1,24 +1,26 @@
 import os
 
+import pandas as pd
+
 import config
 import Utils
 
-# 各来源文件的抓取逻辑:返回 (表, 是否成功),供 Utils.refresh_cache_file 调用
+# 各来源文件的抓取逻辑:返回 (表, 状态 "ok"/"empty"/"failed"),供 Utils.refresh_cache_file 调用。
+# "empty" 表示抓取成功但靶点数为 0——不算错误,由页面以警告提示检查查询物;请求失败等异常用 "failed"。
 def _fetch_opentargets(name: str, cache_hours):
     # 不使用缓存,强制重新请求 API
     Utils.get_disease_targets.clear()
     df = Utils.get_disease_targets(name)
-    # 文件名经过规范化处理,按同样规则检查新文件是否生成
-    ok = not df.empty and os.path.exists(
-        os.path.join(config.DISEASE_CACHE_DIR, f"OpenTargets_{Utils.safe_name(name)}.csv"))
-    return df, ok
+    # 该源"查无此病"与"请求失败"都返回空表,无法区分,按 0 靶点处理
+    return df, ("empty" if df.empty else "ok")
 
 
 def _fetch_disgenet(name: str, cache_hours):
+    if not config.DisGeNET_API_KEY:
+        return pd.DataFrame(), "failed"  # 密钥缺失是配置错误,不属于"0 靶点"
     df = Utils.fetch_disease_targets_disgenet(name)
-    ok = not df.empty and os.path.exists(
-        os.path.join(config.DISEASE_CACHE_DIR, f"DisGeNET_{Utils.safe_name(name)}.csv"))
-    return df, ok
+    # 该源"查无关联"与"请求失败"都返回空表,无法区分,按 0 靶点处理
+    return df, ("empty" if df.empty else "ok")
 
 
 def _invalidate_merged_disease(disease_name: str) -> None:

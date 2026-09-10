@@ -3,20 +3,20 @@ import os
 import config
 import Utils
 
-# 各来源文件的抓取逻辑:返回 (表, 是否成功),供 Utils.refresh_cache_file 调用
+# 各来源文件的抓取逻辑:返回 (表, 状态 "ok"/"empty"/"failed"),供 Utils.refresh_cache_file 调用。
+# "empty" 表示抓取成功但靶点数为 0——不算错误,由页面以警告提示检查查询物;请求失败等异常用 "failed"。
 def _fetch_chembl(name: str, cache_hours):
     Utils.set_chembl_cache_ttl(cache_hours)
     df, csv_path = Utils.fetch_drug_targets_chembl(name)
-    ok = not df.empty and bool(csv_path) and os.path.exists(csv_path)
-    return df, ok
+    if csv_path is None:
+        return df, "failed"  # 请求中止/异常(文件未写出),可可靠区分,保留为错误
+    return df, ("empty" if df.empty else "ok")  # 查无此药 → empty
 
 
 def _fetch_dgidb(name: str, cache_hours):
     df = Utils.fetch_drug_targets_dgidb(name)
-    # 文件名经过规范化处理,按同样规则检查新文件是否生成
-    ok = not df.empty and os.path.exists(
-        os.path.join(config.DRUG_CACHE_DIR, f"DGIdb_{Utils.safe_name(name)}.csv"))
-    return df, ok
+    # 该源"查无相互作用"与"请求失败"都返回空表,无法区分,按 0 靶点处理
+    return df, ("empty" if df.empty else "ok")
 
 
 def _invalidate_merged_drug(drug_name: str) -> None:
