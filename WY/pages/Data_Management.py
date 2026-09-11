@@ -97,9 +97,9 @@ dirs_df_all = dirs_df_all[~dirs_df_all["Directory"].isin(excluded)]
 # 批量删除结果提示(删除在确认弹窗内完成,结果跨 rerun 传递)
 Utils.show_file_op_result("data_dirs")
 
-query = st.text_input(t("common.search_placeholder"), key="search_dirs").strip().lower()
-dirs_df = (dirs_df_all[dirs_df_all["Directory"].str.lower().str.contains(query, regex=False)]
-           if query else dirs_df_all)
+query = Utils.search_input("search_dirs")
+dirs_df = (dirs_df_all[dirs_df_all["Directory"].map(
+    lambda d: Utils.search_hit(d, query))] if query else dirs_df_all)
 if dirs_df.empty:
     st.info(t("common.search_no_match", query=query) if query else t("data_mgmt.empty"))
 else:

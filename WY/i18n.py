@@ -137,6 +137,7 @@ TEXT: dict[str, dict[str, str]] = {
         "common.some_failed": "Some files failed to update",
         "common.some_empty": "All files updated; some entries fetched 0 targets — please double-check those query terms (drug/disease names).",
         "common.search_placeholder": "🔍 Search files…",
+        "common.search_history": "Recent searches",
         "common.search_no_match": "No files matching \"{query}\"",
         # ---- 文件/目录表多选与批量操作(删除/打包下载) ----
         "common.select_all": "Select all",
@@ -604,6 +605,7 @@ TEXT: dict[str, dict[str, str]] = {
         "common.some_failed": "部分文件更新失败",
         "common.some_empty": "全部文件已更新；部分条目抓取到 0 个靶点，请核对对应查询物（药物名/疾病名）是否正确。",
         "common.search_placeholder": "🔍 搜索文件名…",
+        "common.search_history": "最近搜索",
         "common.search_no_match": "没有匹配“{query}”的文件",
         # ---- 文件/目录表多选与批量操作(删除/打包下载) ----
         "common.select_all": "全选",

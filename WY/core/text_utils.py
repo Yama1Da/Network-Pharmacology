@@ -45,11 +45,14 @@ def remember_name_mapping(original: str) -> None:
         save_json_file(path, mapping, indent=1)
 
 
+def load_name_map() -> dict[str, str]:
+    """读取完整的 safe 名 → 原始名 映射;文件缺失或损坏时返回空映射。"""
+    return load_json_file(_name_map_file(), {}) or {}
+
+
 def resolve_original_name(stem: str) -> str | None:
     """按 safe 名还原记录的原始名;没有映射记录(旧文件/无损名字)时返回 None。"""
-    path = _name_map_file()
-    mapping = load_json_file(path, {}) or {}
-    original = mapping.get(stem)
+    original = load_name_map().get(stem)
     return str(original) if original else None
 
 

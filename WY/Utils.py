@@ -64,7 +64,7 @@ from core.targets import (
     get_drug_targets_merged,
     get_targets_concurrent,
 )
-from core.text_utils import resolve_original_name, safe_name
+from core.text_utils import load_name_map, resolve_original_name, safe_name
 
 
 # ---------- 界面公共组件 ----------
@@ -158,6 +158,117 @@ def collect_selected(ns: str, names: list[str]) -> list[str]:
     return selected
 
 
+# ---------- 搜索框 + 搜索历史 ----------
+
+def load_search_history(search_key: str) -> list[str]:
+    """读取指定搜索框的历史记录(最新的在前,最多 SEARCH_HISTORY_MAX 条)。
+
+    全部历史按搜索框 key 分组存于 Static/data/cache/search_history.json,
+    重启 Streamlit 后仍在;文件缺失或损坏时按空历史处理。
+    """
+    import json
+
+    import config
+
+    if not os.path.exists(config.SEARCH_HISTORY_FILE):
+        return []
+    try:
+        with open(config.SEARCH_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return []  # 文件损坏时按空历史处理,下次写入会重建
+    hist = data.get(search_key, [])
+    return [h for h in hist if isinstance(h, str) and h][:config.SEARCH_HISTORY_MAX]
+
+
+def add_search_history(search_key: str, query: str) -> None:
+    """记录一次搜索:去重后提到最前,超出 SEARCH_HISTORY_MAX 的旧记录淘汰。
+
+    与最近一次记录相同时不重写文件,避免页面内其他操作触发的 rerun 反复落盘。
+    """
+    import json
+
+    import config
+
+    query = (query or "").strip().lower()
+    if not query:
+        return
+    hist = load_search_history(search_key)
+    if hist and hist[0] == query:
+        return
+    data: dict = {}
+    if os.path.exists(config.SEARCH_HISTORY_FILE):
+        try:
+            with open(config.SEARCH_HISTORY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+        except Exception:
+            data = {}  # 旧文件损坏时按空文件处理,以本次写入为准
+    data[search_key] = [query] + [h for h in hist if h != query]
+    os.makedirs(os.path.dirname(config.SEARCH_HISTORY_FILE), exist_ok=True)
+    with open(config.SEARCH_HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def search_input(search_key: str) -> str:
+    """带历史记录的搜索框:每个搜索框按自己的 key 维护独立历史。
+
+    输入框下方以 pills 展示历史(最多 6 条),点击历史项回填搜索框并重渲染;
+    每次提交的非空搜索写入 JSON 历史,重启 Streamlit 后仍有效。返回小写查询串。
+    """
+    hist = load_search_history(search_key)
+    # 点击历史项后先回填搜索框的会话值,必须在 widget 创建前设置才会生效
+    picked = st.session_state.pop(f"{search_key}_hist_pick", None)
+    if picked:
+        st.session_state[search_key] = picked
+    query = st.text_input(t("common.search_placeholder"), key=search_key).strip().lower()
+    if query:
+        # 先记录本次搜索再渲染历史,保证提交的这一轮就能看到自己的历史项
+        add_search_history(search_key, query)
+        hist = load_search_history(search_key)
+    if hist:
+        choice = st.pills(t("common.search_history"), hist,
+                          key=f"{search_key}_hist_pills", label_visibility="collapsed")
+        if choice and choice != (st.session_state.get(search_key) or ""):
+            st.session_state[f"{search_key}_hist_pick"] = choice
+            st.rerun()
+    return query
+
+
+def loose_name(text: str) -> str:
+    """搜索用归一化:转小写并去掉空白、下划线与其他标点。
+
+    让 "Type 2 diabetes mellitus" 能匹配 Type_2_diabetes_mellitus、
+    "Alzheimer's" 能匹配 Alzheimer_s 这类安全文件名与原始输入的差异。
+    """
+    import re
+
+    return re.sub(r"[\W_]+", "", str(text), flags=re.UNICODE).lower()
+
+
+def search_hit(name: str, query: str, name_map: dict[str, str] | None = None) -> bool:
+    """判断文件/目录名是否命中搜索词(归一化子串匹配,分隔符与标点差异不敏感)。
+
+    除直接匹配外,还借 name_map.json 把文件名内嵌的安全名(如 Type_2_diabetes_mellitus)
+    还原成原始名(Type 2 diabetes mellitus)后再匹配一次,覆盖原始名含被
+    safe_name 替换掉的字符(如 "My+Drug@2024" ↔ My_Drug_2024)的场景。
+    name_map 传入时直接使用(避免文件列表逐个重读),缺省现读一次。
+    """
+    q = loose_name(query)
+    if not q:
+        return True
+    if q in loose_name(name):
+        return True
+    if name_map is None:
+        from core.text_utils import load_name_map
+
+        name_map = load_name_map()
+    expanded = str(name)
+    for key, original in name_map.items():
+        if key and key in expanded:
+            expanded = expanded.replace(key, str(original))
+    return q in loose_name(expanded)
+
+
 def render_file_table(files_df, cache_dir: str, *, search_key: str,
                       display_map: dict[str, str] | None = None,
                       ns: str | None = None,
@@ -184,11 +295,12 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
         return display_map.get(name, name)
 
     all_names = files_df["File name"].tolist()
-    query = st.text_input(t("common.search_placeholder"), key=search_key).strip().lower()
+    query = search_input(search_key)
     if query:
-        # 展示名/真实文件名任一命中即保留;子串大小写不敏感匹配
+        # 展示名/真实文件名/还原后的原始名任一命中即保留;分隔符与标点差异不敏感
+        name_map = load_name_map()
         files_df = files_df[files_df["File name"].map(
-            lambda n: query in n.lower() or query in _disp(n).lower())]
+            lambda n: search_hit(n, query, name_map) or search_hit(_disp(n), query, name_map))]
     if files_df.empty:
         st.info(t("common.search_no_match", query=query))
         return None

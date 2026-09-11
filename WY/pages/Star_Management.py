@@ -62,8 +62,8 @@ if os.path.isdir(star_dir):
 # 批量删除结果提示(多选删除在确认弹窗内完成,结果跨 rerun 传递)
 Utils.show_file_op_result("star_dirs")
 
-query = st.text_input(t("common.search_placeholder"), key="search_star").strip().lower()
-names = [n for n in all_names if query in n.lower()] if query else all_names
+query = Utils.search_input("search_star")
+names = [n for n in all_names if Utils.search_hit(n, query)] if query else all_names
 if not names:
     st.info(t("common.search_no_match", query=query) if query else t("star.empty"))
 else:

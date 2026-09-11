@@ -365,6 +365,10 @@ HOST_MIN_REQUEST_INTERVAL = {
 # 齿轮面板修改的分析参数会写入 Static/data/cache/ui_settings.json,
 # 启动时在此套用,保证重启后设置仍生效。只允许覆盖白名单内的键。
 UI_SETTINGS_FILE = os.path.join(CACHE_DIR, "ui_settings.json")
+# 搜索历史持久化文件:各页面搜索框的历史按搜索框 key 分组存放,重启仍生效
+SEARCH_HISTORY_FILE = os.path.join(CACHE_DIR, "search_history.json")
+# 每个搜索框最多保留的历史条数(最新的在前)
+SEARCH_HISTORY_MAX = 6
 UI_SETTINGS_KEYS = (
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION", "POCKET_CUTOFF",
