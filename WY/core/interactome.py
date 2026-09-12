@@ -386,3 +386,8 @@ def clear_runtime_caches() -> None:
     _load_graph_cached.cache_clear()
     _load_degrees_cached.cache_clear()
     _known_genes.cache_clear()
+    # 邻近度/RWR 的 LCC 上下文缓存也依赖背景网络:不清的话同进程重建后
+    # 仍会用旧图算零分布(函数内导入,避免与 network_algorithms 循环依赖)
+    from . import network_algorithms
+
+    network_algorithms._lcc_context_cached.cache_clear()

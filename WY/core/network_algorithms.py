@@ -259,7 +259,17 @@ def _multi_source_bfs(Mt, source_idx) -> "np.ndarray":
 
 @functools.lru_cache(maxsize=2)
 def _lcc_context(species: str):
-    """背景互作组 LCC 的计算上下文（进程内缓存）：节点表、基因→行号、邻接矩阵、度数表。"""
+    """背景互作组 LCC 的计算上下文（进程内缓存）：节点表、基因→行号、邻接矩阵、度数表。
+    缓存键含磁盘构建记录的置信度与 STRING 版本:重建为不同参数后不会命中旧图;
+    同参数重建则由 interactome.clear_runtime_caches() 一并清除本缓存。"""
+    from . import interactome as itx
+
+    meta = itx.require_meta(species)  # 未构建时由此抛 InteractomeNotBuiltError
+    return _lcc_context_cached(species, int(meta["confidence"]), str(meta["string_version"]))
+
+
+@functools.lru_cache(maxsize=2)
+def _lcc_context_cached(species: str, confidence: int, string_version: str):
     import networkx as nx
 
     from . import interactome as itx
@@ -418,15 +428,26 @@ def proximity_zscore(drug_genes: list, disease_genes: list, species: str = "Huma
     任一基因集入网率低于 config.PROXIMITY_MIN_COVERAGE 或过滤后为空时返回 ok=False,绝不输出不可靠结果;
     背景互作组未构建时抛 InteractomeNotBuiltError,由调用方转为用户提示。"""
     import config
-    from . import interactome as itx
 
     n_perm = int(n_perm if n_perm is not None else config.PROXIMITY_N_PERM)
     seed = int(seed if seed is not None else config.PROXIMITY_SEED)
     ctx = _lcc_context(species)
-    d_in, _ = itx.get_network_coverage(drug_genes, species)
-    s_in, _ = itx.get_network_coverage(disease_genes, species)
+
+    def _norm(genes: list) -> list[str]:
+        """规范化去重(大写、去空白),不做网络过滤:入网率保护与 coverage 统计
+        必须以原始输入数为分母。旧实现先用 get_network_coverage 过滤成在网基因
+        再传入,导致低入网率保护失效、coverage 分母虚高(只统计 LCC 占比)。"""
+        seen: set[str] = set()
+        out: list[str] = []
+        for raw in genes:
+            g = str(raw).strip().upper()
+            if g and g not in seen:
+                seen.add(g)
+                out.append(g)
+        return out
+
     return _proximity_zscore_from_context(
-        ctx, d_in, s_in, n_perm=n_perm, seed=seed,
+        ctx, _norm(drug_genes), _norm(disease_genes), n_perm=n_perm, seed=seed,
         bin_size=config.PROXIMITY_DEGREE_BIN_SIZE,
         drug_ratio=config.PROXIMITY_MIN_COVERAGE,
         disease_ratio=config.PROXIMITY_MIN_COVERAGE,

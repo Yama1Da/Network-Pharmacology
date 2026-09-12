@@ -7,14 +7,16 @@ from collections.abc import Callable
 
 import pandas as pd
 
-# JSON 状态文件按路径的写锁:同一文件的并发写串行化,不同文件互不阻塞
-_json_path_locks: dict[str, threading.Lock] = {}
-_json_locks_guard = threading.Lock()
+# 状态/缓存文件按路径的写锁:同一文件的并发写串行化,不同文件互不阻塞。
+# JSON/文本/CSV 写入共用:没有锁的话,两个写者会互写同一个 .tmp 文件,
+# Windows 上 os.replace 撞打开句柄直接 PermissionError,POSIX 上会交错写坏内容。
+_path_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
 
 
-def _json_lock(path: str) -> threading.Lock:
-    with _json_locks_guard:
-        return _json_path_locks.setdefault(os.path.abspath(path), threading.Lock())
+def _path_lock(path: str) -> threading.Lock:
+    with _locks_guard:
+        return _path_locks.setdefault(os.path.abspath(path), threading.Lock())
 
 
 def _atomic_write(tmp_file: str, write_fn: Callable, encoding: str = "utf-8") -> None:
@@ -37,7 +39,7 @@ def load_json_file(path: str, default=None):
     import json
 
     try:
-        with _json_lock(path), open(path, "r", encoding="utf-8") as f:
+        with _path_lock(path), open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
         return default
@@ -52,7 +54,7 @@ def save_json_file(path: str, value, *, indent: int | None = None,
     import json
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with _json_lock(path):
+    with _path_lock(path):
         _atomic_write(path + ".tmp",
                       lambda f: json.dump(value, f, ensure_ascii=False,
                                           indent=indent, sort_keys=sort_keys))
@@ -60,9 +62,11 @@ def save_json_file(path: str, value, *, indent: int | None = None,
 
 def save_text_atomic(path: str, text: str) -> None:
     """文本文件(如下载的 PDB/SDF)原子写:先写 .tmp 再原子替换,中断不会留下半截文件
-    被后续"文件存在即复用"的判定永久信任;目录不存在时自动创建。"""
+    被后续"文件存在即复用"的判定永久信任;目录不存在时自动创建。按路径加锁,
+    并发写同一文件时不会互写 .tmp(见 _path_locks 注释)。"""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    _atomic_write(path + ".tmp", lambda f: f.write(text))
+    with _path_lock(path):
+        _atomic_write(path + ".tmp", lambda f: f.write(text))
 
 
 def _read_cache_csv(cache_file: str) -> pd.DataFrame | None:
@@ -132,13 +136,15 @@ def save_csv_cache(df: pd.DataFrame, cache_file: str, *, skip_empty: bool = True
     if skip_empty and (df is None or df.empty):
         return False
     os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
-    # 先写 .tmp 再原子替换:并发读者不会读到半截 CSV(半截文件曾直接抛 ParserError)
+    # 先写 .tmp 再原子替换:并发读者不会读到半截 CSV(半截文件曾直接抛 ParserError);
+    # 按路径加锁,并发写同一文件时不会互写 .tmp
     def _write(f) -> None:
         for line in header_lines or []:
             f.write(f"# {line}\n")
         df.to_csv(f, index=False)
 
-    _atomic_write(cache_file + ".tmp", _write, encoding="utf-8-sig")
+    with _path_lock(cache_file):
+        _atomic_write(cache_file + ".tmp", _write, encoding="utf-8-sig")
     return True
 
 

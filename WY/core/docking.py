@@ -768,11 +768,18 @@ def split_vina(out_pdbqt: str, out_dir: str | None = None) -> list[str]:
                 timeout=config.DOCKING_TIMEOUT, encoding="utf-8", errors="replace",
             )
             if proc.returncode == 0:
-                files = sorted(glob.glob(os.path.join(out_dir, f"{stem}*")))
+                # 排除原始多模型输出自身:glob 的 f"{stem}*" 会把它一并收进来,
+                # 且字典序还排在各 pose 文件之前,混进 pose 列表会误导调用方
+                out_name = os.path.basename(out_pdbqt)
+                files = sorted(
+                    f for f in glob.glob(os.path.join(out_dir, f"{stem}*"))
+                    if os.path.basename(f) != out_name)
                 if files:
                     return files
-        except OSError:
-            logging.warning("vina_split unavailable (%s), fallback to python split", split_exe)
+        except (OSError, subprocess.SubprocessError):
+            # OSError:可执行文件缺失/无法执行;SubprocessError:含 TimeoutExpired
+            # (vina_split 卡死超时)。两者都回落到内置拆分,不让超时直接炸到页面
+            logging.warning("vina_split failed (%s), fallback to python split", split_exe)
 
     files = _split_models_python(out_pdbqt, out_dir)
     if not files:
