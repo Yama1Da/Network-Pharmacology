@@ -53,7 +53,8 @@ def _strip_receptor_pdb(pdb_path: str, out_path: str) -> None:
             if rec == "ATOM":
                 if line[16] not in (" ", "A"):
                     continue  # 跳过 altloc 冗余构象
-                key = (line[21], line[22:26].strip(), line[17:20], line[12:16].strip())
+                key = (line[21], line[22:26].strip(), line[26], line[17:20],
+                       line[12:16].strip())  # 键含插入码(line[26]):82 与 82A 是不同残基
                 if key in seen:
                     continue
                 seen.add(key)
@@ -801,10 +802,14 @@ def parse_vina_scores(out_pdbqt: str) -> pd.DataFrame:
         for line in block:
             if line.startswith("REMARK VINA RESULT"):
                 parts = line.split()
-                if len(parts) >= 5:
+                try:
                     info["affinity"] = float(parts[3])
                     info["rmsd_lb"] = float(parts[4])
                     info["rmsd_ub"] = float(parts[5]) if len(parts) > 5 else None
+                except (IndexError, ValueError):
+                    # 个别构象的打分行数值残缺时跳过该行,不让整个解析中止
+                    logging.warning("Malformed VINA RESULT line skipped: %r", line.strip())
+                    info.clear()
         if info:  # 与原逻辑一致:没有打分行的构象不计入
             modes.append(info)
     df = pd.DataFrame(modes)
@@ -1216,8 +1221,8 @@ def _load_3dmol_js() -> str | None:
             if "$3Dmol" not in resp.text or "</script" in resp.text:
                 raise RuntimeError(f"unexpected content from {url}")
             os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
-            with open(cache_path, "w", encoding="utf-8") as f:
-                f.write(resp.text)
+            # 原子写:下载中途被打断不会留下半截 JS 被上面"大小达标即信任"的判定永久复用
+            save_text_atomic(cache_path, resp.text)
             logging.info("Cached 3Dmol.js (%d KB) from %s", len(resp.text) // 1024, url)
             return resp.text
         except Exception:

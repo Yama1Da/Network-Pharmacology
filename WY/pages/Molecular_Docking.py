@@ -113,7 +113,7 @@ def _reset_docking_downstream() -> None:
                "gene_structures", "candidate_pre", "batch_results"):
         dock.pop(_k, None)
     for _k in ("gene_sel", "pdb_sel", "pose_sel", "conclusion",
-               "drug_name", "disease_name",
+               "drug_name", "disease_name", "lig_query",
                "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
         st.session_state.pop(_k, None)
 
@@ -750,6 +750,11 @@ st.subheader(t("dock.step4"))
 
 if dock.get("pdb_path"):
     if st.button(t("dock.infer_box_btn"), key="infer_box"):
+        # 先清掉旧盒的微调控件会话值再写新推断盒:数字输入按 key 复用会话值,
+        # 不清的话下面的 number_input 会忽略 value= 用旧值覆写 dock["box"],
+        # 同一受体上第二次"Infer box"等于无效(换基因/换受体的路径在上方已清)。
+        for _k in ("cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
+            st.session_state.pop(_k, None)
         try:
             dock["box"] = Utils.infer_box_from_cofactor(dock["pdb_path"])
             # 预测结构没有共晶配体可参考,按整蛋白范围估盒子;过大时收缩到可计算大小
@@ -918,8 +923,11 @@ if dock.get("result"):
         st.markdown(t("dock.preview3d"))
         if dock.get("pdb_path"):
             try:
+                # 文件名带本次对接输出的时间戳维度:vina_out 文件名含秒级时间戳,
+                # 两个并发会话各自对接时不会互相覆盖对方的构象/预览中间文件
+                out_stem = os.path.splitext(os.path.basename(dock["result"]["out"]))[0]
                 pose_path = os.path.join(config.DOCKING_RAW_CACHE_DIR,
-                                         f"pose_{int(pose_sel)}.pdbqt")
+                                         f"{out_stem}_pose_{int(pose_sel)}.pdbqt")
                 extract_model(dock["result"]["out"], int(pose_sel), pose_path)
                 # 半径以主页齿轮的全局参数(config.POCKET_CUTOFF)为主导:齿轮改动后
                 # 本页滑条自动跟随;页内 −/+/滑条仅本次会话生效,不回写配置
@@ -948,7 +956,8 @@ if dock.get("result"):
                 interactions = interactions_near_ligand(dock["pdb_path"], pose_path)
                 # 构象 pdbqt→pdb 只转换一次、受体 PDB 全文只读一次,
                 # 3D 预览与保存 HTML 复用同一份结果(每次刷新少一次转换、少两次读盘)
-                pose_pdb = os.path.join(os.path.dirname(pose_path), "pose_view.pdb")
+                pose_pdb = os.path.join(os.path.dirname(pose_path),
+                                        f"{out_stem}_pose_view.pdb")
                 try:
                     pose_pdbqt_to_pdb(pose_path, pose_pdb)
                 except Exception:

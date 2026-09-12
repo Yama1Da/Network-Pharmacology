@@ -49,7 +49,7 @@ from core.files import (
     make_ppi_zip,
 )
 from core.logging_setup import set_logging_level, setup_logging
-from core.opentargets import get_disease_targets
+from core.opentargets import get_disease_targets, invalidate_disease_targets_cache
 from core.ppi import (
     build_ppi_graph,
     compute_ppi_metrics,
@@ -231,6 +231,11 @@ def search_input(search_key: str) -> str:
     picked = st.session_state.pop(f"{search_key}_hist_pick", None)
     if picked:
         st.session_state[search_key] = picked
+    # pills 的选中态会跨 rerun 保留:点击历史项后残留的选中值与新查询不一致,
+    # 会被下面误判成又一次点击,把输入框弹回历史词、丢掉用户刚输入的查询。
+    # 故在 pills 实例化前清掉选中(创建后改控件键会抛异常);本次点击的浏览器
+    # 事件在控件创建时写入,不受影响。
+    st.session_state.pop(f"{search_key}_hist_pills", None)
     query = st.text_input(t("common.search_placeholder"), key=search_key).strip().lower()
     if query:
         # 先记录本次搜索再渲染历史,保证提交的这一轮就能看到自己的历史项
@@ -365,7 +370,6 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
 # 删除交互与收藏管理页一致:点删除先弹确认框,点"是"才真正删除。
 
 
-@st.dialog(t("common.delete_dialog_title"))
 def _confirm_batch_delete(ns: str, base_dir: str | None, *, dirs: bool = False,
                           confirm_key: str = "common.delete_dialog_confirm",
                           path_of=None) -> None:
@@ -375,37 +379,43 @@ def _confirm_batch_delete(ns: str, base_dir: str | None, *, dirs: bool = False,
     confirm_key 指定确认文案的 i18n 键,目录类页面可用更贴切的提示。
     path_of 提供时按它把条目名解析成完整路径(条目分属多个目录的页面用,如管理页的
     来源文件与 merged 整合文件);缺省用 base_dir 拼接。
+    st.dialog 装饰器放在函数内而不是模块级:@st.dialog 的参数只在装饰时求值,
+    Utils 是进程级单次导入,放外面会把弹窗标题冻结成首个会话的语言。
     """
-    names = st.session_state.get(f"{ns}_pending_delete", [])
-    st.write(t(confirm_key, n=len(names)))
-    if names:
-        st.caption(", ".join(names[:10]) + (" …" if len(names) > 10 else ""))
-    col_yes, col_no = st.columns(2)
-    with col_yes:
-        if st.button(t("common.yes"), key=f"{ns}_dlg_yes", width="stretch"):
-            failed: list[str] = []
-            resolve = path_of or (lambda n: os.path.join(base_dir, n))
-            for n in names:
-                path = resolve(n)
-                try:
-                    if dirs:
-                        shutil.rmtree(path, ignore_errors=True)
-                        if os.path.isdir(path):  # rmtree 静默失败时目录仍在,按失败处理
-                            raise OSError(path)
+    @st.dialog(t("common.delete_dialog_title"))
+    def _dialog() -> None:
+        names = st.session_state.get(f"{ns}_pending_delete", [])
+        st.write(t(confirm_key, n=len(names)))
+        if names:
+            st.caption(", ".join(names[:10]) + (" …" if len(names) > 10 else ""))
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button(t("common.yes"), key=f"{ns}_dlg_yes", width="stretch"):
+                failed: list[str] = []
+                resolve = path_of or (lambda n: os.path.join(base_dir, n))
+                for n in names:
+                    path = resolve(n)
+                    try:
+                        if dirs:
+                            shutil.rmtree(path, ignore_errors=True)
+                            if os.path.isdir(path):  # rmtree 静默失败时目录仍在,按失败处理
+                                raise OSError(path)
+                        else:
+                            os.remove(path)
+                    except OSError:
+                        logging.exception("Failed to delete %s", path)
+                        failed.append(n)
                     else:
-                        os.remove(path)
-                except OSError:
-                    logging.exception("Failed to delete %s", path)
-                    failed.append(n)
-                else:
-                    st.session_state.pop(f"{ns}_sel::{n}", None)
-            st.session_state.pop(f"{ns}_pending_delete", None)
-            st.session_state[f"{ns}_deleted"] = (len(names) - len(failed), failed)
-            st.rerun()  # 关闭弹窗并刷新列表
-    with col_no:
-        if st.button(t("common.no"), key=f"{ns}_dlg_no", width="stretch"):
-            st.session_state.pop(f"{ns}_pending_delete", None)
-            st.rerun()  # 仅关闭弹窗
+                        st.session_state.pop(f"{ns}_sel::{n}", None)
+                st.session_state.pop(f"{ns}_pending_delete", None)
+                st.session_state[f"{ns}_deleted"] = (len(names) - len(failed), failed)
+                st.rerun()  # 关闭弹窗并刷新列表
+        with col_no:
+            if st.button(t("common.no"), key=f"{ns}_dlg_no", width="stretch"):
+                st.session_state.pop(f"{ns}_pending_delete", None)
+                st.rerun()  # 仅关闭弹窗
+
+    _dialog()
 
 
 def show_file_op_result(ns: str) -> None:

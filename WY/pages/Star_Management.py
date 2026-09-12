@@ -44,7 +44,11 @@ def confirm_delete() -> None:
     with col_yes:
         if st.button(t("common.yes"), key="dlg_yes", width="stretch"):
             shutil.rmtree(path, ignore_errors=True)
-            st.session_state["_star_deleted"] = name
+            if os.path.isdir(path):
+                # rmtree 静默失败(如 Windows 目录被占用):按失败提示,不虚报成功
+                st.session_state["_star_delete_failed"] = name
+            else:
+                st.session_state["_star_deleted"] = name
             st.rerun()  # 关闭弹窗并刷新列表
     with col_no:
         if st.button(t("common.no"), key="dlg_no", width="stretch"):
@@ -53,6 +57,9 @@ def confirm_delete() -> None:
 
 if st.session_state.pop("_star_deleted", None):
     st.success(t("star.deleted"))
+failed_name = st.session_state.pop("_star_delete_failed", None)
+if failed_name:
+    st.error(t("common.delete_failed", names=failed_name))
 
 star_dir = config.MD_STAR_DIR
 all_names = []
@@ -80,7 +87,9 @@ else:
 
     for name in names:
         path = os.path.join(star_dir, name)
-        created = datetime.fromtimestamp(os.path.getctime(path)).strftime("%Y-%m-%d %H:%M:%S")
+        # 用 mtime 而非 getctime:后者在 Linux 上是 inode 变更时间,跨平台语义不一致;
+        # 收藏目录创建后内容不再变化,mtime 即收藏时间
+        created = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
         col_sel, col_a, col_b, col_c, col_d = st.columns([0.5, 3.5, 2, 1, 1])
         with col_sel:
             Utils.render_row_checkbox("star_dirs", name, select_all)
