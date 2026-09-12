@@ -129,14 +129,30 @@ def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
             dock["lig_auto_done"] = True
         st.error(t(not_found_key, drug=query, q=query))
         return
-    sdf_path = Utils.fetch_ligand_sdf_3d(cid)
+    try:
+        sdf_path = Utils.fetch_ligand_sdf_3d(cid)
+    except Exception as exc:
+        # PubChem 网络故障/HTTP 错误:给友好提示而不是整页异常栈;
+        # 自动获取失败置 lig_auto_done,否则页面上任意点击都会重试并再次抛异常
+        if auto_mode:
+            dock["lig_auto_done"] = True
+        st.error(t("dock.ligand_failed", exc=exc))
+        return
     if not sdf_path:
         if auto_mode:
             dock["lig_auto_done"] = True
         st.error(t(no_3d_key, cid=cid))
         return
     dock["cid"] = cid
-    dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+    try:
+        dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+    except Exception as exc:
+        # SDF 下载成功但 RDKit/meeko 处理不了(如特殊金属配合物):同页 SMILES
+        # 分支已有的兜底,此处保持一致;重试也不会成功,同样置 lig_auto_done
+        if auto_mode:
+            dock["lig_auto_done"] = True
+        st.error(t("dock.ligand_failed", exc=exc))
+        return
 
 
 def _read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
@@ -168,6 +184,26 @@ def _read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
     return hub, enr
 
 
+def _split_result_prefix(prefix: str) -> tuple[str, str]:
+    """把结果目录名/富集缓存名前缀拆回 (药物名, 疾病名)。
+
+    前缀是 f"{safe(drug)}_{safe(disease)}" 拼接,而药物名自身可能含空格
+    (如 "Salicylic acid" → "Salicylic_acid"),简单 split("_", 1) 会把药物名截断,
+    导致 Step2 用半截名字去 PubChem 取错配体、归档前缀张冠李戴。
+    这里借 name_map(safe 名 → 原始名,各数据源抓取时都有记录)贪心匹配:
+    从最长的药物名前缀试起,药物与疾病两段都能还原才采用;识别不出时退回旧拆法。
+    """
+    name_map = Utils.load_name_map()
+    parts = prefix.split("_")
+    for i in range(len(parts) - 1, 0, -1):
+        drug = name_map.get("_".join(parts[:i]))
+        disease = name_map.get("_".join(parts[i:]))
+        if drug and disease:
+            return str(drug), str(disease)
+    parts = prefix.split("_", 1)
+    return (parts[0], parts[1] if len(parts) > 1 else "")
+
+
 def _docking_result_prefix(drug: str, disease: str, gene: str) -> str:
     """归档结果目录名前缀:三段各自过 safe_name 消毒,防止用户输入中的路径分隔符等
     特殊字符进入文件路径;空段必须先剔除再消毒(safe_name 对空串返回 "unnamed",
@@ -183,8 +219,10 @@ def _docking_result_prefix(drug: str, disease: str, gene: str) -> str:
 
 def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, box: dict,
                          out_pdbqt: str, scores: pd.DataFrame, conclusion: str,
-                         receptor_source: str = "experiment") -> str:
-    """归档本次对接成果:打分表、最佳构象和参数信息存入结果文件夹,并清理旧版本。"""
+                         receptor_source: str = "experiment",
+                         pose_mode: int | None = None) -> str:
+    """归档本次对接成果:打分表、所选构象和参数信息存入结果文件夹,并清理旧版本。
+    pose_mode 提供时归档用户在 Step6 选定的 pose,未提供(默认)归档打分最佳的构象。"""
     gene = Utils.safe_name(gene)  # 清理基因名中的非法字符,再用于文件命名
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = os.path.join(config.MD_RESULT_DIR, f"{prefix}_{ts}")
@@ -196,10 +234,14 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
     summary_path = os.path.join(result_dir, f"summary_{ts}.csv")
     summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
 
-    # 最佳构象:按序号从 Vina 原始输出中提取
+    # 归档构象:页面下拉选了 pose 就按选择归档(与"选择要保存的 pose"文案一致),
+    # 否则按亲和力排序取最佳;选择值不在打分表里时回退最佳,保证归档必有构象
     best_mode = int(summary.iloc[0]["mode"])
+    save_mode = best_mode
+    if pose_mode is not None and int(pose_mode) in set(summary["mode"].tolist()):
+        save_mode = int(pose_mode)
     best_path = os.path.join(result_dir, f"best_{gene}_{ts}.pdbqt")
-    extract_model(out_pdbqt, best_mode, best_path)
+    extract_model(out_pdbqt, save_mode, best_path)
 
     # 参数信息(药物、靶点、对接盒、打分等),便于日后复查
     Utils.write_docking_metadata(os.path.join(result_dir, f"meta_{ts}.txt"), {
@@ -214,8 +256,9 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
         "exhaustiveness": config.EXHAUSTIVENESS,
         "num_modes": config.NUM_MODES,
         "seed": config.DOCKING_SEED,
-        "best_mode": best_mode,
-        "best_affinity": float(summary.iloc[0]["affinity"]),
+        "best_mode": save_mode,
+        "best_affinity": float(
+            summary.loc[summary["mode"] == save_mode, "affinity"].iloc[0]),
         "conclusion": conclusion,
     })
 
@@ -442,9 +485,7 @@ def _step1_select_source(dock: dict) -> None:
                 # 从目录名拆出药物名和疾病名,供 Step 2 自动获取配体
                 prefix = sel_dir[:-5] if sel_dir.endswith("_data") else sel_dir
                 dock["label"] = prefix
-                parts = prefix.split("_", 1)
-                dock["drug"] = parts[0] if parts[0] else ""
-                dock["disease"] = parts[1] if len(parts) > 1 else ""
+                dock["drug"], dock["disease"] = _split_result_prefix(prefix)
                 _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
     else:
         enr_files = Utils.list_cache_files("enrichment", exts=(".csv",))
@@ -474,9 +515,7 @@ def _step1_select_source(dock: dict) -> None:
                 dock["hub_genes"] = []  # 没有 HUB 信息,只按富集基因筛选
                 label = _extract_label(sel_file)
                 dock["label"] = label
-                parts = label.split("_", 1)
-                dock["drug"] = parts[0] if parts[0] else ""
-                dock["disease"] = parts[1] if len(parts) > 1 else ""
+                dock["drug"], dock["disease"] = _split_result_prefix(label)
                 _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
 
 
@@ -882,7 +921,8 @@ if dock.get("result"):
                     result_dir = _save_docking_result(
                         prefix, gene, dock.get("pdb_id", ""), dock.get("cid"),
                         dock["box"], dock["result"]["out"], scores, conclusion,
-                        receptor_source=dock.get("receptor_source", "experiment"))
+                        receptor_source=dock.get("receptor_source", "experiment"),
+                        pose_mode=int(pose_sel))
                     dock["result_dir"] = result_dir
                     dock.pop("starred", None)  # 新保存的结果视为未收藏
                     st.success(t("dock.saved"))

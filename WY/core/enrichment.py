@@ -443,13 +443,23 @@ def fetch_enrichment_enrichr(
     请求失败或没有显著条目时返回空表,status 含义与 g:Profiler 版本一致。
     """
     genes = sorted({g.strip() for g in genes if g and g.strip()})
+    n_query = len(genes)
+
+    def _normalize_with_query_size(df: pd.DataFrame) -> pd.DataFrame:
+        out = _normalize_enrichment_enrichr(df)
+        # Enrichr 的 Overlap "a/b" 中 b 是通路基因集大小,不是查询集大小;
+        # 统一列的 query_size 语义(g:Profiler=输入查询基因数)用真实查询数覆盖,
+        # 否则兜底路径下页面表格的 query_size 会显示成几百的库大小,误导命中比例
+        out["query_size"] = n_query
+        return out
+
     return _fetch_enrichment_cached(
         genes, organism, pvalue, label, status,
         source_name="Enrichr",
         cache_key_extra=libs,
         input_ok=bool(genes and libs),
         request=lambda: _query_enrichr(genes, libs, organism, pvalue),
-        normalize=_normalize_enrichment_enrichr,
+        normalize=_normalize_with_query_size,
     )
 
 
