@@ -347,6 +347,10 @@ def _open_settings_dialog() -> None:
         "POCKET_CUTOFF": st.number_input(
             t("app.settings.pocket"), min_value=3.0, max_value=6.0, step=0.5,
             value=float(config.POCKET_CUTOFF), key="set_pocket"),
+        "PPI_CONFIDENCE": st.slider(
+            t("app.settings.ppi_conf"), min_value=0.1, max_value=0.9, step=0.05,
+            value=float(config.PPI_CONFIDENCE), key="set_ppi_conf",
+            help=t("app.settings.ppi_conf_help")),
     }
     # 有变化才动手:改 config 运行时值 + 持久化 + 清 merged 整合缓存
     changed = {k: v for k, v in new_vals.items() if v != getattr(config, k)}
@@ -355,6 +359,8 @@ def _open_settings_dialog() -> None:
     if changed:
         for _k, _v in changed.items():
             setattr(config, _k, _v)
+        # PPI 置信度变更时同步派生阈值:背景互作组(RWR/邻近度)的筛选与缓存文件名都依赖它
+        config.INTERACTOME_CONFIDENCE = int(config.PPI_CONFIDENCE * 1000)
         Utils.save_ui_settings(changed)
         Utils.purge_merged_cache()
         st.toast(t("app.settings.toast"))

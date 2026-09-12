@@ -4,6 +4,7 @@ import hashlib
 import logging
 import os
 import re
+import socket
 
 import pandas as pd
 
@@ -220,19 +221,35 @@ def _gprofiler_circuit_close() -> None:
         logging.exception("Failed to remove g:Profiler circuit breaker file")
 
 
+_socket_timeout_set = False
+
+
+def _ensure_default_socket_timeout() -> None:
+    """给不接收超时参数的第三方富集库(g:Profiler/gseapy)兜底进程级默认 socket 超时。
+    只设置一次、之后不再复位:socket.setdefaulttimeout 是进程级全局状态,多线程里
+    逐请求 set/reset 会互相覆盖(线程 A 刚设好超时进入请求,线程 B 的 finally 复位
+    None,A 之后建立的连接将无超时);一次性设为 API_TIMEOUT 对显式传超时的
+    requests 链路无影响,只是让不带超时的库调用不再可能无限挂起。"""
+    global _socket_timeout_set
+    if not _socket_timeout_set:
+        import config
+
+        socket.setdefaulttimeout(config.API_TIMEOUT)
+        _socket_timeout_set = True
+
+
 def _call_with_request_guard(fn, label: str, on_fail=None):
-    """给第三方富集查询库统一补上请求保护：请求间隔、全局超时、失败重试;全部重试失败返回 None。
+    """给第三方富集查询库统一补上请求保护：请求间隔、默认超时、失败重试;全部重试失败返回 None。
     on_fail 在每次失败后被调用（g:Profiler 用它累计熔断）。
     """
     import time
-    import socket
 
     import config
 
+    _ensure_default_socket_timeout()
     res = None
     for attempt in range(config.ENRICHMENT_MAX_RETRIES):
         time.sleep(config.API_REQUEST_DELAY)  # 每次请求前稍等，避免请求过快被服务器拒绝
-        socket.setdefaulttimeout(config.API_TIMEOUT)
         try:
             res = fn()
             break
@@ -245,8 +262,6 @@ def _call_with_request_guard(fn, label: str, on_fail=None):
                 on_fail()
             if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
                 time.sleep(config.API_RETRY_DELAY)
-        finally:
-            socket.setdefaulttimeout(None)
     return res
 
 

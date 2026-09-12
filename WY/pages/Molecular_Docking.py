@@ -103,13 +103,18 @@ def _genes_from_df(df: pd.DataFrame) -> set[str]:
 
 
 def _reset_docking_downstream() -> None:
-    """切换候选基因数据源后,清空配体、受体、对接盒和对接结果,
-    避免上一份数据的旧结果混入新分析。"""
+    """切换候选基因数据源后,清空配体、受体、对接盒和对接结果,以及由这些数据派生的
+    会话控件键(基因/结构/构象下拉、盒子微调数字输入、药物/疾病名输入与结论):
+    残留的控件会话值不在新选项里会让 selectbox 抛异常,旧盒会静默覆盖新推断盒。"""
     for _k in ("lig_pdbqt", "cid", "lig_auto_done",
                "gene", "rec_pdbqt", "pdb_id", "pdb_path",
                "box", "result", "result_dir", "starred",
                "gene_structures", "candidate_pre", "batch_results"):
         dock.pop(_k, None)
+    for _k in ("gene_sel", "pdb_sel", "pose_sel", "conclusion",
+               "drug_name", "disease_name",
+               "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
+        st.session_state.pop(_k, None)
 
 
 def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
@@ -611,16 +616,20 @@ st.divider()
 st.subheader(t("dock.step3"))
 
 if dock.get("genes"):
+    # dock["genes"] 可能被重新筛选(重跑结构批量检查等),残留会话值不在新列表里
+    # 会让 selectbox 抛异常,先按新列表校验
+    if st.session_state.get("gene_sel") not in dock["genes"]:
+        st.session_state.pop("gene_sel", None)
     gene = st.selectbox(t("dock.gene_label"), dock["genes"], key="gene_sel")
-    # 换靶点基因后,清空旧受体和对接结果
+    # 换靶点基因后,清空旧受体和对接结果,以及派生的控件会话键
     if dock.get("gene") != gene:
         dock["gene"] = gene
-        dock.pop("rec_pdbqt", None)
-        dock.pop("pdb_path", None)
-        dock.pop("pdb_id", None)
-        dock.pop("box", None)
-        dock.pop("result", None)
-        dock.pop("receptor_source", None)
+        for _k in ("rec_pdbqt", "pdb_path", "pdb_id", "box", "result",
+                   "result_dir", "starred", "receptor_source"):
+            dock.pop(_k, None)
+        for _k in ("pose_sel", "conclusion",
+                   "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
+            st.session_state.pop(_k, None)
 
     # 自动查询该基因的候选结构:优先复用 Step 1 批量结果,查不到再单基因查
     allow_af = st.session_state.get("allow_af", False) and config.ALPHAFOLD_ENABLED
@@ -637,12 +646,19 @@ if dock.get("genes"):
         st.warning(t("dock.no_human_struct", gene=gene))
     else:
         st.dataframe(cand, hide_index=True, use_container_width=True)
+        # 换基因后新候选列表不含残留的旧 PDB id,先校验再渲染,避免 selectbox 抛异常
+        if st.session_state.get("pdb_sel") not in [str(x) for x in cand["pdb_id"].tolist()]:
+            st.session_state.pop("pdb_sel", None)
         pdb_id = st.selectbox(t("dock.sel_pdb"), cand["pdb_id"].tolist(), key="pdb_sel")
-        # 更换 PDB 结构后,作废旧受体和后续步骤的旧结果
+        # 更换 PDB 结构后,作废旧受体和后续步骤的旧结果,以及派生的控件会话键
         if dock.get("pdb_sel") != pdb_id:
             dock["pdb_sel"] = pdb_id
-            for _k in ("rec_pdbqt", "pdb_id", "pdb_path", "box", "result", "receptor_source"):
+            for _k in ("rec_pdbqt", "pdb_id", "pdb_path", "box", "result",
+                       "result_dir", "starred", "receptor_source"):
                 dock.pop(_k, None)
+            for _k in ("pose_sel", "conclusion",
+                       "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
+                st.session_state.pop(_k, None)
         if st.button(t("dock.dl_receptor_btn"), key="prep_rec"):
             with st.spinner(t("dock.dl_pdb_spinner")):
                 try:
@@ -801,6 +817,11 @@ if dock.get("rec_pdbqt") and dock.get("lig_pdbqt") and dock.get("box"):
                 poses = Utils.split_vina(out_pdbqt, out_dir=os.path.dirname(out_pdbqt))
                 scores = Utils.parse_vina_scores(out_pdbqt)
                 dock["result"] = {"proc": proc, "out": out_pdbqt, "poses": poses, "scores": scores}
+                # 新一轮对接:清掉上一轮残留的构象选择、结论与归档状态
+                st.session_state.pop("pose_sel", None)
+                st.session_state.pop("conclusion", None)
+                dock.pop("result_dir", None)
+                dock.pop("starred", None)
             except Exception as exc:
                 st.error(t("dock.dock_failed", exc=exc))
 
@@ -822,6 +843,9 @@ if dock.get("result"):
     if scores.empty:
         st.warning(t("dock.no_modes"))
     else:
+        # 新一轮对接的 mode 数可能少于旧会话残留的选中值,先按新打分表校验再渲染
+        if st.session_state.get("pose_sel") not in scores["mode"].tolist():
+            st.session_state.pop("pose_sel", None)
         pose_sel = st.selectbox(t("dock.sel_pose"),
                                 scores["mode"].tolist(), index=0, key="pose_sel")
         conclusion = st.text_area(t("dock.conclusion_label"),
@@ -885,11 +909,13 @@ if dock.get("result"):
                 pose_path = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                          f"pose_{int(pose_sel)}.pdbqt")
                 extract_model(dock["result"]["out"], int(pose_sel), pose_path)
-                # 半径默认取全局分析参数(config.POCKET_CUTOFF,齿轮面板可改、重启仍生效);
-                # −/+ 步进按钮 + 滑条。按钮必须写在滑条实例化之前
+                # 半径以主页齿轮的全局参数(config.POCKET_CUTOFF)为主导:齿轮改动后
+                # 本页滑条自动跟随;页内 −/+/滑条仅本次会话生效,不回写配置
+                # (回写会让对接页的旧值覆盖齿轮设置)。按钮必须写在滑条实例化之前
                 # (控件键在其控件创建后不可再写),点击当轮即生效;步进 0.5 Å,边界夹紧
-                if "pocket_cutoff" not in st.session_state:
-                    st.session_state.pocket_cutoff = float(config.POCKET_CUTOFF)
+                if st.session_state.get("_pocket_cutoff_sync") != float(config.POCKET_CUTOFF):
+                    st.session_state["_pocket_cutoff_sync"] = float(config.POCKET_CUTOFF)
+                    st.session_state["pocket_cutoff"] = float(config.POCKET_CUTOFF)
                 cbtn, cslider = st.columns([1.2, 6])
                 with cbtn:
                     bminus, bplus = st.columns(2)
@@ -906,10 +932,6 @@ if dock.get("result"):
                 with cslider:
                     cutoff = st.slider(t("dock.cutoff_label"), 3.0, 6.0,
                                        step=0.5, key="pocket_cutoff")
-                # 与全局参数不同步时更新运行时配置并持久化到 ui_settings.json
-                if cutoff != float(config.POCKET_CUTOFF):
-                    config.POCKET_CUTOFF = cutoff
-                    Utils.save_ui_settings({"POCKET_CUTOFF": cutoff})
                 pocket = residues_near_ligand(dock["pdb_path"], pose_path, cutoff=cutoff)
                 interactions = interactions_near_ligand(dock["pdb_path"], pose_path)
                 # 构象 pdbqt→pdb 只转换一次、受体 PDB 全文只读一次,

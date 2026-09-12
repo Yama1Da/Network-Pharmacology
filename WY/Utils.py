@@ -625,7 +625,12 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
     # 第一步:先并发更新所有来源文件(filenames 提供时只更新选中的)
     jobs: list[str] = []
     names = set()
-    for filename in sorted(os.listdir(spec["cache_dir"])):
+    # 全新安装、从未抓取过数据时缓存目录尚不存在:按无来源文件处理,直接跳到 merged 重建
+    try:
+        cache_entries = sorted(os.listdir(spec["cache_dir"]))
+    except OSError:
+        cache_entries = []
+    for filename in cache_entries:
         if not filename.endswith(".csv"):
             continue
         if filenames is not None and filename not in filenames:
@@ -698,8 +703,10 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
 
 
 def show_update_summary(results: pd.DataFrame) -> None:
-    """更新结果表的三态汇总:全 OK 成功;有 FAILED 警告"部分失败";仅 0 靶点警告检查查询物。"""
+    """更新结果表的三态汇总:全 OK 成功;有 FAILED 警告"部分失败";仅 0 靶点警告检查查询物;
+    结果为空(全新安装、缓存目录尚未生成)提示先去首页完成一次分析。"""
     if results.empty:
+        st.info(t("common.update_no_files"))
         return
     if results["Status"].eq("OK").all():
         st.success(t("common.all_complete"))

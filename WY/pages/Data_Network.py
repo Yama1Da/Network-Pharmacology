@@ -91,6 +91,11 @@ with col_params:
     # 物种固定为人类:疾病靶点数据源(Open Targets/DisGeNET)只有人类数据,
     # 药物靶点与富集库亦以人类为准;多物种支持待接入相应疾病数据源后再议。
     score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
+    network_type = st.selectbox(
+        t("net.network_type"), ("full", "physical"),
+        format_func=lambda v: (t("net.network_type_full") if v == "full"
+                               else t("net.network_type_physical")),
+        help=t("net.network_type_help"))
     rwr_expand = st.number_input(
         t("net.rwr_expand"), 0, 100, config.RWR_EXPAND_TOP_N, 1,
         help=t("net.rwr_expand_help"))
@@ -395,6 +400,7 @@ def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_cont
 
 
 def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
+                      network_type: str = "full",
                       rwr_expand: int = 0, hub_top_n: int = 10, hub_method: str = "degree",
                       progress: "_ReportProgress | None" = None) -> dict:
     """执行完整分析（交集→[RWR扩展]→STRING→建图→指标→富集→可视化→保存），返回结果字典。
@@ -446,10 +452,10 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         prefix = f"{prefix}_rwr{int(rwr_expand)}"
     _prog("targets", "done", 0.08)
 
-    # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,并隐藏孤立节点）
+    # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,孤立节点在下游展示时隐藏）
     _prog("string", "running", 0.08)
     edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score,
-                                      label=prefix, min_degree=config.MIN_DEGREE_FILTER)
+                                      network_type=network_type, label=prefix)
     _prog("string", "done", 0.30)
 
     # Step 2-4: 建图 + 拓扑指标 + Hub 筛选(排名制 top-N + 小网络保护)。
@@ -578,7 +584,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         "saved": saved,
         "prefix": prefix,
         "params": (mode, drug_name, disease_name, gene_text, score,
-                   int(rwr_expand), int(hub_top_n), hub_method),
+                   network_type, int(rwr_expand), int(hub_top_n), hub_method),
     }
 
 
@@ -591,6 +597,7 @@ current_params = (
     disease_name.strip(),
     gene_text.strip(),
     score,
+    network_type,
     int(rwr_expand),
     int(hub_top_n),
     hub_method,
@@ -611,6 +618,7 @@ if run_btn:
                 disease_name.strip(),
                 gene_text.strip(),
                 score,
+                network_type=network_type,
                 rwr_expand=int(rwr_expand),
                 hub_top_n=int(hub_top_n),
                 hub_method=hub_method,
@@ -1070,9 +1078,13 @@ if ppi is not None:
         st.warning(t("net.no_common"))
     else:
         # 交集过小(如降噪后)可能没有任何达到置信度的互作边:此时 PPI 网络为空,
-        # 但富集/GSEA/网络检验/下载等结果仍然有效,照常展示而非整页拦截
+        # 但富集/GSEA/网络检验/下载等结果仍然有效,照常展示而非整页拦截。
+        # physical 网络只保留物理结合证据,空网概率远高于 full,提示要更有针对性
         if edges_df.empty:
-            st.warning(t("net.no_interactions"))
+            # params 元组第 6 位是 network_type(旧版暂存结果可能更短,按 full 兜底)
+            net_type = ppi["params"][5] if len(ppi["params"]) > 5 else "full"
+            st.warning(t("net.no_interactions_physical" if net_type == "physical"
+                         else "net.no_interactions"))
         st.info(t("net.input_genes", n=len(genes)))
 
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)

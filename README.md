@@ -1,3 +1,5 @@
+简体中文 | [English](README_EN.md)
+
 # 网络药理学分析平台（Network Pharmacology Platform）
 
 基于 Streamlit 的一站式网络药理学分析工具：输入药物与疾病名称，自动完成
@@ -7,7 +9,7 @@
 ## 功能特性
 
 - **疾病/药物靶点获取**：接入 DisGeNET、DGIdb、Open Targets、ChEMBL 四个数据源，
-  自动整合去重，并过滤非特异性结合蛋白（白蛋白、CYP 代谢酶等）降噪（目前参数还未调整好）
+  自动整合去重，并过滤非特异性结合蛋白（白蛋白、CYP 代谢酶等）降噪
 - **PPI 网络**：基于 STRING v12.0 构建蛋白互作网络，支持多种可视化风格展示
 - **富集分析**：GO / KEGG 等通路富集，g:Profiler 失败时自动切换 Enrichr
 - **分子对接**：集成 AutoDock Vina，RDKit + Meeko 自动完成配体准备，内置 3D 结果查看 + 聚焦口袋（虚化周边）
@@ -73,7 +75,7 @@ streamlit run App.py  #终端输入
 - **富集分析没结果？** g:Profiler 服务不可达时会自动熔断 30 分钟并改用 Enrichr。
 - **改了过滤阈值后结果没变？** 靶点过滤阈值变更需同步递增 `TARGET_FILTER_VERSION`，
   旧整合缓存会自动失效重建。
-- **分子对接找不到 Vina？** 确认 `vina` 已加入 PATH，或在 `WY/API.env` 中将 `VINA_DIR`
+- **分子对接找不到 Vina？** 确认 `vina` 已加入 PATH 或环境变量存在 `VINA_DIR` ，或在 `WY/API.env` 中将 `VINA_DIR`
   指向 Vina 所在目录（也可填可执行文件全路径）。
 
 ## 免责声明

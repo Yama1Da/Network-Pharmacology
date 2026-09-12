@@ -53,11 +53,11 @@ HTTP_CACHE_TTL_HOURS = 24
 # 药物/疾病靶点在整合(merge)时做降噪过滤,阈值集中在此配置,过滤逻辑在 core/targets.py。
 # 过滤规则或阈值变更后需把 TARGET_FILTER_VERSION 加 1:merged 整合缓存的文件名
 # 带该版本号,加 1 后旧缓存自动失效,下次分析按新阈值重建(原始缓存不受影响)。
-TARGET_FILTER_VERSION = 2
+TARGET_FILTER_VERSION = 3
 # ChEMBL 黑名单:非特异性结合/药物代谢蛋白,不计入药物靶点
 # (白蛋白 ALB 与主要药物代谢 CYP 酶;CYP46A1 是脑特异胆固醇酶、可能是药效靶点,不列入)
 CHEMBL_TARGET_BLACKLIST = (
-    "ALB", "CYP1A2", "CYP2A6", "CYP2C9", "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4",
+    "ALB", "CYP1A1", "CYP1A2", "CYP2A6", "CYP2C9", "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4",
 )
 # 设置面板里黑名单的常用候选(白蛋白、主要代谢 CYP、常见结合蛋白);面板也支持手输任意基因符号
 CHEMBL_BLACKLIST_OPTIONS = (
@@ -70,18 +70,18 @@ CHEMBL_BLACKLIST_OPTIONS = (
 # 关闭 CHEMBL_CORROBORATION_REQUIRED 后无定量值的基因无条件保留
 # (配合阈值为 0、DGIDB_MIN_SCORE 为 0 即"无降噪")。
 # 注意:一刀切按阈值过滤会把靶点砍到个位数(多数活性记录无 pChEMBL 值),勿删 DGIdb 佐证通道
-CHEMBL_PCHEMBL_THRESHOLD = 4.8
+CHEMBL_PCHEMBL_THRESHOLD = 0.5
 # 无 pChEMBL 定量值的 ChEMBL 基因是否必须被 DGIdb 佐证才保留(分析参数,可在主页齿轮调整)
-CHEMBL_CORROBORATION_REQUIRED = True
+CHEMBL_CORROBORATION_REQUIRED = False
 # ======== 疾病靶点规模(分析参数,主页齿轮 +- 调节) ========
 # Open Targets 整合时取关联分数前 OT_TOP_N 个靶点。原始抓取固定拉满 OT_FETCH_SIZE 条(按分数降序
 # 全量落盘),因此调整 Top-N 不需要重新联网;仅当原始缓存行数不足 Top-N 时才自动补抓。
 OT_FETCH_SIZE = 1000
-OT_TOP_N = 200
+OT_TOP_N = 500
 # DisGeNET 抓取前 DISGENET_PAGES 页(page_number 分页,学术账号每页固定 100 条,API 硬性规定);
 # 整合时按页数×每页条数截断,原始缓存行数不足时自动补抓缺的页。
 DISGENET_PAGE_SIZE = 100
-DISGENET_PAGES = 1
+DISGENET_PAGES = 5
 # DGIdb 交互分数下限,且要求至少 1 条 PMID 文献支撑,两条件同时满足才算有效相互作用
 DGIDB_MIN_SCORE = 0.05
 # Open Targets 总关联分数下限(保险丝:防少见病的 top200 混入极弱关联靶点);
@@ -147,20 +147,16 @@ SPECIES_MAP = {
     }
 }
 # ======== 分析参数 =========
-# PPI 网络置信度阈值(STRING):0.7 为高置信度,0.4 为中置信度
-PPI_CONFIDENCE = 0.7
+# PPI 网络置信度阈值(STRING):0.4 为中等置信度(多数文献取值),0.7 为高置信度
+PPI_CONFIDENCE = 0.4
 # 富集分析显著性阈值
-ENRICHMENT_PVALUE = 0.05
+ENRICHMENT_PVALUE = 0.055
 # 富集分析的条目类型:GO 生物过程 / 分子功能 / 细胞组分,以及 KEGG 通路
 ENRICHMENT_SOURCES = ("GO:BP", "GO:MF", "GO:CC", "KEGG")
 # 每类富集展示条数上限
 ENRICHMENT_TOP_PER_SOURCE = 10
 # 通路展示数量上限
 PATHWAY_DISPLAY_NUM = 30
-# PPI 建网的孤立节点隐藏阈值:仅剔除完全无互作的节点(=1),对齐文献
-# "置信度过滤 + disconnected nodes were hidden" 的做法;更高的连接度剪枝
-# 非文献标准,且会抵消 RWR 扩展拉入的外周靶点
-MIN_DEGREE_FILTER = 1
 # CytoHubba 式核心靶点:按 MCC(Maximal Clique Centrality)排序取前 N 个画核心靶点子网络图
 MCC_TOP_N = 10
 
@@ -216,8 +212,8 @@ STRING_DOWNLOAD_BASE = "https://stringdb-downloads.org/download"
 STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"
 # 背景互作组缓存目录
 INTERACTOME_CACHE_DIR = os.path.join(CACHE_DIR, "interactome")
-# 置信度换算:上面 PPI_CONFIDENCE 是 0~1 小数,全网络打分是 0~1000 整数,由这里换算。
-INTERACTOME_CONFIDENCE = int(PPI_CONFIDENCE * 1000)  # 0.7 -> 700
+# 置信度换算:PPI_CONFIDENCE 是 0~1 小数,全网络打分是 0~1000 整数。
+# 派生值统一在本文件末尾(UI 设置覆盖之后)计算,保证与最终生效的 PPI_CONFIDENCE 一致。
 # 背景网络目前只构建人类;小鼠/大鼠需要时再放开(数据量约为 3 倍)
 INTERACTOME_ENABLED_SPECIES = ("Human",)
 # 背景网络"陈旧提醒"阈值(天):超过该天数只在页面提示检查新版本,不会自动重新下载
@@ -373,6 +369,7 @@ UI_SETTINGS_KEYS = (
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION", "POCKET_CUTOFF",
     "CHEMBL_CORROBORATION_REQUIRED", "OT_TOP_N", "DISGENET_PAGES",
+    "PPI_CONFIDENCE",  # STRING 置信度阈值:PPI 边筛选与背景互作组共用
     "LOG_LEVEL",  # Logs 页的 DEBUG 开关:持久化后重启按此级别初始化日志
 )
 # LOG_LEVEL 允许的取值:加载设置文件时校验,坏值按内置默认运行
@@ -398,3 +395,7 @@ if os.path.exists(UI_SETTINGS_FILE):
     except Exception:
         # 设置文件损坏时不阻断启动,按 config.py 内置值运行
         pass
+
+# PPI 置信度可能被上面的设置文件覆盖,而背景互作组的置信度阈值在上方按内置值派生:
+# 覆盖生效后必须重算,保证两处阈值始终一致(运行时齿轮面板修改亦需同样同步)
+INTERACTOME_CONFIDENCE = int(PPI_CONFIDENCE * 1000)
