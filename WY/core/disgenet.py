@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import threading
 
 import pandas as pd
@@ -21,66 +22,77 @@ def _acquire_disgenet_rate_limit_slot() -> None:
     import time
     import config
 
-    with _rate_limit_lock:  # 读-改-写整段互斥:配额统计和写入必须视为一个事务
-        now = time.time()
-        minute_window = 60.0
-        day_window = 24 * 3600.0
-        month_window = 30 * day_window
+    minute_window = 60.0
+    day_window = 24 * 3600.0
+    month_window = 30 * day_window
+    state_file = config.DISGENET_RATE_LIMIT_STATE_FILE
 
-        state_file = config.DISGENET_RATE_LIMIT_STATE_FILE
-        timestamps = load_json_file(state_file, [])
-        try:
-            timestamps = [float(t) for t in timestamps]
-        except (TypeError, ValueError):
-            logging.warning("Failed to load DisGeNET rate-limit state; resetting")
-
-        # 只保留一个月内的请求记录(同时供月/日/分钟三级配额统计)
-        timestamps = [t for t in timestamps if now - t <= month_window]
-
-        # 每月/每天配额用满：等待可能长达数小时~数周，直接拒绝
-        if len(timestamps) >= config.DISGENET_RATE_LIMIT_PER_MONTH:
-            raise RuntimeError(
-                "DisGeNET monthly rate limit (%d) reached"
-                % config.DISGENET_RATE_LIMIT_PER_MONTH
-            )
-        if len([t for t in timestamps if now - t <= day_window]) >= config.DISGENET_RATE_LIMIT_PER_DAY:
-            raise RuntimeError(
-                "DisGeNET daily rate limit (%d) reached" % config.DISGENET_RATE_LIMIT_PER_DAY
-            )
-
-        # 每分钟配额用满：等到最早一次请求移出窗口后再继续
-        recent = [t for t in timestamps if t > now - minute_window]
-        if len(recent) >= config.DISGENET_RATE_LIMIT_PER_MINUTE:
-            wait = recent[0] + minute_window - now + 0.05
-            if wait > config.DISGENET_RATE_LIMIT_MAX_WAIT:
-                raise RuntimeError(
-                    "DisGeNET per-minute rate limit (%d) reached"
-                    % config.DISGENET_RATE_LIMIT_PER_MINUTE
-                )
-            logging.warning("DisGeNET per-minute limit reached, waiting %.1fs", wait)
-            time.sleep(wait)
+    # 锁内只做配额记账(读-改-写视为一个事务),等待放在锁外:
+    # 持锁 sleep 会把配额远未满的其他 DisGeNET 请求也一起阻塞。
+    # 醒后重新检查(空出的配额可能已被其他线程占用),总等待超过上限则放弃。
+    waited_total = 0.0
+    while True:
+        with _rate_limit_lock:
             now = time.time()
+            timestamps = load_json_file(state_file, [])
+            try:
+                timestamps = [float(t) for t in timestamps]
+            except (TypeError, ValueError):
+                logging.warning("Failed to load DisGeNET rate-limit state; resetting")
+
+            # 只保留一个月内的请求记录(同时供月/日/分钟三级配额统计)
             timestamps = [t for t in timestamps if now - t <= month_window]
 
-        timestamps.append(now)
+            # 每月/每天配额用满：等待可能长达数小时~数周，直接拒绝
+            if len(timestamps) >= config.DISGENET_RATE_LIMIT_PER_MONTH:
+                raise RuntimeError(
+                    "DisGeNET monthly rate limit (%d) reached"
+                    % config.DISGENET_RATE_LIMIT_PER_MONTH
+                )
+            if len([t for t in timestamps if now - t <= day_window]) >= config.DISGENET_RATE_LIMIT_PER_DAY:
+                raise RuntimeError(
+                    "DisGeNET daily rate limit (%d) reached" % config.DISGENET_RATE_LIMIT_PER_DAY
+                )
 
-        # 原子写入(临时文件+替换),并发写不会弄坏记录文件
-        save_json_file(state_file, timestamps)
+            # 每分钟配额未满:占用一个名额(原子写入,并发写不会弄坏记录文件)并放行
+            recent = [t for t in timestamps if t > now - minute_window]
+            if len(recent) < config.DISGENET_RATE_LIMIT_PER_MINUTE:
+                timestamps.append(now)
+                save_json_file(state_file, timestamps)
+                return
+            wait = recent[0] + minute_window - now + 0.05
+
+        if waited_total + wait > config.DISGENET_RATE_LIMIT_MAX_WAIT:
+            raise RuntimeError(
+                "DisGeNET per-minute rate limit (%d) reached"
+                % config.DISGENET_RATE_LIMIT_PER_MINUTE
+            )
+        logging.warning("DisGeNET per-minute limit reached, waiting %.1fs", wait)
+        time.sleep(wait)
+        waited_total += wait
+
+
+# DisGeNET disease 参数认识的词表前缀:自由文本疾病名(哪怕带下划线,如
+# "Alzheimer_disease")一律走 Open Targets 解析,不能凭"看着像带前缀"就原样发出
+_DISGENET_VOCAB_PREFIXES = (
+    "UMLS", "CUI", "MONDO", "MESH", "MSH", "ICD10", "ICD9", "ICD9CM",
+    "EFO", "HPO", "HP", "OMIM", "ORPHANET", "NCI", "NCIT", "DO", "DOID",
+    "MEDDRA", "KEGG", "GWASCAT", "OLIDA", "UNIPROT",
+)
 
 
 def _resolve_disgenet_query(disease_name: str) -> str:
     """把疾病输入转成 DisGeNET 认的查询串。
     DisGeNET 的 disease 参数只认带词表前缀的编号(UMLS_/MONDO_ 等),自由文本疾病名恒返回 0 行;裸 CUI(如 C0002395)需补 UMLS_ 前缀。自由文本先借 Open Targets 的疾病搜索解析成编号(解析结果有 HTTP 缓存)。
     """
-    import re
-
     from .opentargets import find_disease_id
 
     query = disease_name.strip().replace("\u2019", "'")
     if re.fullmatch(r"C\d{6,8}", query):
         return f"UMLS_{query}"  # 裸 UMLS CUI
-    if re.match(r"^[A-Z][A-Za-z0-9]*_[A-Za-z0-9_]+$", query):
-        return query  # 已带词表前缀
+    if query.upper().startswith(
+            tuple(prefix + "_" for prefix in _DISGENET_VOCAB_PREFIXES)):
+        return query  # 已带词表前缀(未收录的词表前缀走下方解析,失败时原样返回,行为不变)
     resolved = find_disease_id(query)
     if resolved:
         logging.info("DisGeNET: '%s' resolved to '%s' via Open Targets search", query, resolved)
@@ -137,9 +149,13 @@ def fetch_disease_targets_disgenet(disease_name: str, need_rows: int | None = No
                 )
                 if resp.status_code != 429:
                     break
-                retry_after = int(
-                    resp.headers.get("x-rate-limit-retry-after-seconds", config.API_RETRY_DELAY)
-                )
+                try:
+                    retry_after = int(float(
+                        resp.headers.get("x-rate-limit-retry-after-seconds",
+                                         config.API_RETRY_DELAY)))
+                except (TypeError, ValueError):
+                    # 官方偶发返回非数字提示头:按本地默认间隔退避,不要让整页请求按失败处理
+                    retry_after = config.API_RETRY_DELAY
                 # 若需等待过久则直接放弃，避免界面一直卡住
                 if retry_after > config.API_RETRY_DELAY * config.ENRICHMENT_MAX_RETRIES * 10:
                     logging.error(

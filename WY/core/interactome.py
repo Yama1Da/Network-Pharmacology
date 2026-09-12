@@ -178,22 +178,26 @@ def _links_to_edges(links_df: pd.DataFrame, id2sym: dict, confidence: int) -> pd
 
 
 def _write_edges_auto(df: pd.DataFrame, stem: str) -> str:
-    """把边表保存到磁盘,返回实际文件路径。"""
+    """把边表保存到磁盘,返回实际文件路径。优先 parquet;失败时回退 CSV——
+    纯文本没有反序列化执行风险,不再像旧版那样回退 pickle(本地缓存一旦被篡改即任意代码执行)。"""
     try:
         path = stem + ".parquet"
         df.to_parquet(path, index=False)
         return path
     except Exception:
-        logging.exception("Parquet write failed — falling back to pickle")
-        path = stem + ".pkl"
-        df.to_pickle(path)
+        logging.exception("Parquet write failed — falling back to CSV")
+        path = stem + ".csv"
+        df.to_csv(path, index=False, encoding="utf-8-sig")
         return path
 
 
 def _read_edges_auto(path: str) -> pd.DataFrame:
     if path.endswith(".parquet"):
         return pd.read_parquet(path)
-    return pd.read_pickle(path)
+    if path.endswith(".pkl"):
+        # 仅兼容读取旧版产生的 .pkl 缓存;新构建不再写 pickle
+        return pd.read_pickle(path)
+    return pd.read_csv(path, encoding="utf-8-sig", comment="#")
 
 
 def build_interactome(species: str = "Human",

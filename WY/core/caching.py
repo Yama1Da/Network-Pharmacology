@@ -17,6 +17,21 @@ def _json_lock(path: str) -> threading.Lock:
         return _json_path_locks.setdefault(os.path.abspath(path), threading.Lock())
 
 
+def _atomic_write(tmp_file: str, write_fn: Callable, encoding: str = "utf-8") -> None:
+    """先写 .tmp 再原子替换的公共骨架:写过程中途失败(异常/中断)时清理 .tmp,
+    避免残留的半截文件后来被"文件存在"判定误当成有效缓存。"""
+    try:
+        with open(tmp_file, "w", encoding=encoding, newline="") as f:
+            write_fn(f)
+        os.replace(tmp_file, tmp_file[: -len(".tmp")])
+    except BaseException:
+        try:
+            os.remove(tmp_file)
+        except OSError:
+            pass
+        raise
+
+
 def load_json_file(path: str, default=None):
     """读取 JSON 状态文件;不存在或损坏时返回 default(损坏按不存在处理,由调用方决定是否重建)。"""
     import json
@@ -38,19 +53,33 @@ def save_json_file(path: str, value, *, indent: int | None = None,
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with _json_lock(path):
-        tmp_file = path + ".tmp"
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(value, f, ensure_ascii=False, indent=indent, sort_keys=sort_keys)
-        os.replace(tmp_file, path)
+        _atomic_write(path + ".tmp",
+                      lambda f: json.dump(value, f, ensure_ascii=False,
+                                          indent=indent, sort_keys=sort_keys))
 
 
-def _read_cache_csv(cache_file: str) -> pd.DataFrame:
+def save_text_atomic(path: str, text: str) -> None:
+    """文本文件(如下载的 PDB/SDF)原子写:先写 .tmp 再原子替换,中断不会留下半截文件
+    被后续"文件存在即复用"的判定永久信任;目录不存在时自动创建。"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    _atomic_write(path + ".tmp", lambda f: f.write(text))
+
+
+def _read_cache_csv(cache_file: str) -> pd.DataFrame | None:
     # 读取本地缓存的结果表(跳过以 # 开头的旧格式说明行)。
-    # 空结果缓存(查无数据的药物/疾病也落盘)只有 BOM 没有表头,按空表读回而不是报错
+    # 空结果缓存(查无数据的药物/疾病也落盘)只有 BOM 没有表头,按空表读回而不是报错;
+    # 内容残缺/损坏的缓存删除后按未命中(None)返回,由调用方重新抓取覆盖。
     try:
         return pd.read_csv(cache_file, encoding="utf-8-sig", comment="#")
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
+    except (pd.errors.ParserError, UnicodeDecodeError):
+        logging.exception("Cache file unreadable, removing: %s", cache_file)
+        try:
+            os.remove(cache_file)
+        except OSError:
+            pass
+        return None
 
 
 def _is_cache_fresh(cache_file: str, ttl_seconds: int | None = None) -> bool:
@@ -103,10 +132,13 @@ def save_csv_cache(df: pd.DataFrame, cache_file: str, *, skip_empty: bool = True
     if skip_empty and (df is None or df.empty):
         return False
     os.makedirs(os.path.dirname(cache_file) or ".", exist_ok=True)
-    with open(cache_file, "w", encoding="utf-8-sig", newline="") as f:
+    # 先写 .tmp 再原子替换:并发读者不会读到半截 CSV(半截文件曾直接抛 ParserError)
+    def _write(f) -> None:
         for line in header_lines or []:
             f.write(f"# {line}\n")
         df.to_csv(f, index=False)
+
+    _atomic_write(cache_file + ".tmp", _write, encoding="utf-8-sig")
     return True
 
 

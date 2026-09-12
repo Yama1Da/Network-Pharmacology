@@ -18,7 +18,7 @@ TEXT: dict[str, dict[str, str]] = {
         "common.download": "Download",
         "common.back_main": "← Back to Main",
         "common.col_directory": "**Directory**",
-        "common.col_created": "**Created time**",
+        "common.col_modified": "**Modified time**",
         "common.col_download": "**Download**",
         # ---- App.py（主页） ----
         "app.page_title": "Network Pharmacology Platform",
@@ -316,6 +316,7 @@ TEXT: dict[str, dict[str, str]] = {
         "net.prox_p": "p (empirical)",
         "net.prox_support": "✅ Z < 0 — drug targets lie significantly closer to disease proteins than degree-matched random expectation. Supports the drug–disease association.",
         "net.prox_nosupport": "Z ≥ 0 — no network-level proximity evidence for this drug–disease pair.",
+        "net.prox_degenerate": "Random distribution is degenerate (all permutations share the same distance) — Z-score is undefined, only the empirical p-value is shown.",
         "net.prox_coverage": "STRING {ver} ≥{conf} · LCC {lcc} genes · drug in LCC {d_in}/{d_tot} · disease {s_in}/{s_tot} · {n_perm} perms{cached}",
         "net.prox_cached": " · cached",
         "net.prox_not_built": "⚠️ Interactome cache not built — run `python scripts/build_interactome.py` first, then re-run this analysis.",
@@ -495,7 +496,7 @@ TEXT: dict[str, dict[str, str]] = {
         "common.download": "下载",
         "common.back_main": "← 返回主页",
         "common.col_directory": "**目录**",
-        "common.col_created": "**创建时间**",
+        "common.col_modified": "**修改时间**",
         "common.col_download": "**下载**",
         # ---- App.py（主页） ----
         "app.page_title": "网络药理学平台",
@@ -792,6 +793,7 @@ TEXT: dict[str, dict[str, str]] = {
         "net.prox_p": "经验 p 值",
         "net.prox_support": "✅ Z < 0——药物靶点与疾病蛋白的网络距离显著近于度匹配随机期望，支持该药物-疾病关联。",
         "net.prox_nosupport": "Z ≥ 0——网络层面未观察到该药物-疾病对的邻近性证据。",
+        "net.prox_degenerate": "随机分布退化（所有置换距离相同）——Z 分数无定义，仅展示经验 p 值。",
         "net.prox_coverage": "STRING {ver} ≥{conf} · LCC {lcc} 基因 · 药物靶点入网 {d_in}/{d_tot} · 疾病 {s_in}/{s_tot} · {n_perm} 次置换{cached}",
         "net.prox_cached": " · 缓存命中",
         "net.prox_not_built": "⚠️ 背景互作组尚未构建——请先运行 `python scripts/build_interactome.py`，再重新执行本分析。",

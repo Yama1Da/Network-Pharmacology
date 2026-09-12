@@ -6,15 +6,16 @@ from datetime import datetime
 import pandas as pd
 
 
-def _ctime_str(path: str) -> str:
-    return datetime.fromtimestamp(os.path.getctime(path)).strftime("%Y-%m-%d %H:%M:%S")
+def _mtime_str(path: str) -> str:
+    return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _list_to_table(directory: str, *, name_col: str, dirs: bool,
                    skip_suffixes: tuple = (), name_pred=None,
-                   with_mtime: bool = False, exts: tuple = ()) -> pd.DataFrame:
-    """列出 directory 下满足条件的条目名与创建时间;目录不存在时返回空表,隐藏文件(以 . 开头,如熔断状态标记)一律不列出。"""
-    cols = [name_col, "Created time"] + (["Modified time"] if with_mtime else [])
+                   exts: tuple = ()) -> pd.DataFrame:
+    """列出 directory 下满足条件的条目名与最后修改时间;目录不存在时返回空表,隐藏文件(以 . 开头,如熔断状态标记)一律不列出。
+    用 mtime 而非 getctime:后者在 Windows 上是创建时间、在 Linux 上是 inode 变更时间,跨平台语义不一致。"""
+    cols = [name_col, "Modified time"]
     if not os.path.isdir(directory):
         return pd.DataFrame(columns=cols)
     rows = []
@@ -29,16 +30,12 @@ def _list_to_table(directory: str, *, name_col: str, dirs: bool,
             continue
         path = os.path.join(directory, name)
         if os.path.isdir(path) == dirs:
-            row = {name_col: name, "Created time": _ctime_str(path)}
-            if with_mtime:
-                row["Modified time"] = datetime.fromtimestamp(
-                    os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
-            rows.append(row)
+            rows.append({name_col: name, "Modified time": _mtime_str(path)})
     return pd.DataFrame(rows, columns=cols)
 
 
 def list_cache_files(category: str, *, exts: tuple = ()) -> pd.DataFrame:
-    """列出指定类别缓存目录（如 "drug" 或 "disease"）下的文件名与创建时间；目录为空时返回空表。"""
+    """列出指定类别缓存目录（如 "drug" 或 "disease"）下的文件名与最后修改时间；目录为空时返回空表。"""
     import config
 
     return _list_to_table(os.path.join(config.CACHE_DIR, category), name_col="File name",
@@ -46,20 +43,20 @@ def list_cache_files(category: str, *, exts: tuple = ()) -> pd.DataFrame:
 
 
 def list_download_dirs() -> pd.DataFrame:
-    """列出下载目录下的各次分析子目录及其创建时间；无子目录时返回空表。"""
+    """列出下载目录下的各次分析子目录及其最后修改时间；无子目录时返回空表。"""
     import config
 
     return _list_to_table(config.DOWNLOADS_DIR, name_col="Directory", dirs=True)
 
 
 def list_log_files() -> pd.DataFrame:
-    """列出日志文件的文件名、创建与修改时间；无日志文件时返回空表。
+    """列出日志文件的文件名与最后修改时间；无日志文件时返回空表。
     app.log 为当前正在写入的日志（即"今天"的），app.log.日期 为历史日志。
     """
     import config
 
     return _list_to_table(
-        config.LOG_DIR, name_col="File name", dirs=False, with_mtime=True,
+        config.LOG_DIR, name_col="File name", dirs=False,
         name_pred=lambda n: n.endswith(".log") or n.startswith("app.log."),
     )
 

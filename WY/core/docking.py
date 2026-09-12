@@ -13,7 +13,7 @@ from typing import Iterator, NamedTuple
 import pandas as pd
 import requests
 
-from .caching import load_json_file, save_json_file
+from .caching import load_json_file, save_json_file, save_text_atomic
 from i18n import t
 
 # PDB 结构中的水分子残基名,不参与结合位点定位与共晶配体识别
@@ -292,8 +292,8 @@ def download_pdb(pdb_id: str) -> str:
     url = config.PDB_DOWNLOAD_URL.format(pdb_id=pdb_id)
     resp = requests.get(url, timeout=config.API_TIMEOUT)
     resp.raise_for_status()
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(resp.text)
+    # 原子写:同一 PDB 被两个会话并发处理时,半截文件不会被"存在即复用"判定永久信任
+    save_text_atomic(path, resp.text)
     return path
 
 
@@ -359,8 +359,7 @@ def fetch_ligand_sdf_3d(cid: int, out_dir: str | None = None) -> str:
     if not sdf_text:
         logging.warning("pubchempy: no 3D SDF for CID %s", cid)
         return ""
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(sdf_text)
+    save_text_atomic(path, sdf_text)
     logging.info("Fetched 3D SDF for CID %d -> %s", cid, path)
     return path
 
@@ -1037,8 +1036,7 @@ def fetch_alphafold_pdb(accession: str) -> str:
     if len(resp.text) < 1024 or "\nATOM" not in resp.text:
         # 目录在函数开头已创建;这里只报错,不落盘
         raise RuntimeError(f"AlphaFold PDB unexpected content for {acc}: {url}")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(resp.text)
+    save_text_atomic(path, resp.text)
     logging.info("Fetched AlphaFold model %s -> %s", url, path)
     return path
 

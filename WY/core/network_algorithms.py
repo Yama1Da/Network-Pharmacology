@@ -388,10 +388,15 @@ def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: 
 
     mu = float(rand.mean())
     sd = float(rand.std())
-    z = (d_obs - mu) / sd if sd > 0 else 0.0
     p_emp = (1 + int((rand <= d_obs).sum())) / (n_perm + 1)
-    result.update(ok=True, d_c=d_obs, z=float(z), p_empirical=float(p_emp),
-                  mean_random=mu, std_random=sd)
+    if sd > 0:
+        result.update(ok=True, d_c=d_obs, z=float((d_obs - mu) / sd),
+                      p_empirical=float(p_emp), mean_random=mu, std_random=sd)
+    else:
+        # 零分布退化(所有随机距离相同):z 无意义,输出 None(与去交集分支一致),
+        # 不把可能的显著结果伪装成 z=0 的"不显著"
+        result.update(ok=True, d_c=d_obs, z=None, p_empirical=float(p_emp),
+                      mean_random=mu, std_random=sd)
 
     if d_obs_excl is not None:
         valid = rand_excl[~np.isnan(rand_excl)]
@@ -453,11 +458,10 @@ def _load_json_cache(cache_path: str, label: str, validate=None) -> dict | None:
 
 
 def _save_json_cache(cache_path: str, result: dict) -> None:
-    """计算成功后把结果写入 JSON 缓存。"""
-    import json
+    """计算成功后把结果写入 JSON 缓存(临时文件+原子替换,并发写不会留下半截文件)。"""
+    from .caching import save_json_file
 
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False)
+    save_json_file(cache_path, result)
 
 
 def _clean_expired_caches(directory: str) -> None:

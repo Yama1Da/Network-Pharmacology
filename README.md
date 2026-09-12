@@ -1,4 +1,4 @@
-简体中文 | [English](README_EN.md)
+简体中文 | [EN](README_EN.md)
 
 # 网络药理学分析平台（Network Pharmacology Platform）
 

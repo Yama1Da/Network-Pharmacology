@@ -682,9 +682,14 @@ def _render_proximity(ppi: dict, input_mode: str) -> None:
         elif proximity_result.get("ok"):
             col_p1, col_p2, col_p3 = st.columns(3)
             col_p1.metric(t("net.prox_dc"), f"{proximity_result['d_c']:.3f}")
-            col_p2.metric(t("net.prox_z"), f"{proximity_result['z']:.3f}")
+            prox_z = proximity_result.get("z")
+            col_p2.metric(t("net.prox_z"),
+                          f"{prox_z:.3f}" if prox_z is not None else "—")
             col_p3.metric(t("net.prox_p"), f"{proximity_result['p_empirical']:.4f}")
-            if proximity_result["z"] < 0:
+            if prox_z is None:
+                # 零分布退化时 z 无意义,不给出支持/不支持的结论
+                st.info(t("net.prox_degenerate"))
+            elif prox_z < 0:
                 st.success(t("net.prox_support"))
             else:
                 st.info(t("net.prox_nosupport"))
@@ -849,8 +854,14 @@ def _render_gsea(ppi: dict, input_mode: str, drug_name: str, disease_name: str,
                     st.warning(t("net.params_changed"))
                 else:
                     with st.spinner(t("net.gsea_spinner")):
-                        gsea_df, rstats, reason = _gsea_prerank_side(
-                            gsea_side, drug_name, disease_name, prefix)
+                        try:
+                            gsea_df, rstats, reason = _gsea_prerank_side(
+                                gsea_side, drug_name, disease_name, prefix)
+                        except Exception:
+                            # 手动入口与自动流程同等兜底:网络/文件链路异常不白屏,
+                            # 按请求失败记录,由下方 reason 分支提示并允许重试
+                            logging.exception("Manual GSEA rerun failed (%s side)", gsea_side)
+                            gsea_df, rstats, reason = None, {}, "request_failed"
                         st.session_state.ppi_gsea[gsea_side] = {
                             "df": gsea_df,
                             "stats": rstats,

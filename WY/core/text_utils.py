@@ -9,14 +9,26 @@ from .caching import load_json_file, save_json_file
 _name_map_lock = threading.Lock()
 
 
+# Windows 保留设备名:查询名恰为这些词时直接建文件必失败,前缀加下划线规避。
+# 映射表(remember_name_mapping)仍按 safe 名记录原始名,管理页还原不受影响。
+_WINDOWS_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
+
+
 def safe_name(name: str) -> str:
     """把用户输入(药物名/疾病名/基因等)转成能安全用作文件名的形式:文件名不允许的符号统一替换成下划线,
-    防止输入内容被当作路径、破坏文件组织;转换结果为空时用 "unnamed"。只用于文件命名,查询时仍使用原始输入。
+    防止输入内容被当作路径、破坏文件组织;转换结果为空时用 "unnamed";Windows 保留设备名加下划线前缀。
+    只用于文件命名,查询时仍使用原始输入。
     """
     import re
 
-    cleaned = re.sub(r"[^\w\-]+", "_", str(name).strip())
-    return cleaned.strip("._-") or "unnamed"
+    cleaned = re.sub(r"[^\w\-]+", "_", str(name).strip()).strip("._-") or "unnamed"
+    if cleaned.upper() in _WINDOWS_RESERVED:
+        cleaned = f"_{cleaned}"
+    return cleaned
 
 
 def _name_map_file() -> str:

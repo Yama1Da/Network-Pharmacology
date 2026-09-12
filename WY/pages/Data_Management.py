@@ -109,7 +109,7 @@ else:
     with col_h_sel:
         select_all = Utils.render_select_all_checkbox("data_dirs", all_dirs)
     col_h_name.markdown(t("common.col_directory"))
-    col_h_time.markdown(t("common.col_created"))
+    col_h_time.markdown(t("common.col_modified"))
     col_h_btn.markdown(t("common.col_download"))
 
     # 每行一个 Download 按钮，打包并下载该行目录的 zip
@@ -120,7 +120,7 @@ else:
             with col_sel:
                 Utils.render_row_checkbox("data_dirs", row["Directory"], select_all)
             col_name.write(row["Directory"])
-            col_time.write(row["Created time"])
+            col_time.write(row["Modified time"])
             with col_btn:
                 st.download_button(
                     t("common.download"),

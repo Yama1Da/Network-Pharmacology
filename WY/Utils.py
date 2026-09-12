@@ -8,6 +8,7 @@
 import logging
 import os
 import shutil
+import threading
 from collections.abc import Callable
 
 import pandas as pd
@@ -160,6 +161,14 @@ def collect_selected(ns: str, names: list[str]) -> list[str]:
 
 # ---------- 搜索框 + 搜索历史 ----------
 
+# search_history.json 的进程内读写锁:读-改-写是事务,多标签页/多会话并发时互斥,
+# 否则并发写入互相整文件覆盖、丢历史
+_search_history_lock = threading.Lock()
+
+# ui_settings.json 的进程内读写锁:齿轮面板与对接页都会高频保存设置
+_ui_settings_lock = threading.Lock()
+
+
 def load_search_history(search_key: str) -> list[str]:
     """读取指定搜索框的历史记录(最新的在前,最多 SEARCH_HISTORY_MAX 条)。
 
@@ -193,20 +202,22 @@ def add_search_history(search_key: str, query: str) -> None:
     query = (query or "").strip().lower()
     if not query:
         return
-    hist = load_search_history(search_key)
-    if hist and hist[0] == query:
-        return
-    data: dict = {}
-    if os.path.exists(config.SEARCH_HISTORY_FILE):
-        try:
-            with open(config.SEARCH_HISTORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f) or {}
-        except Exception:
-            data = {}  # 旧文件损坏时按空文件处理,以本次写入为准
-    data[search_key] = [query] + [h for h in hist if h != query]
-    os.makedirs(os.path.dirname(config.SEARCH_HISTORY_FILE), exist_ok=True)
-    with open(config.SEARCH_HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with _search_history_lock:  # 读-改-写整段互斥,并发时后写者不能覆盖先写者的条目
+        hist = load_search_history(search_key)
+        if hist and hist[0] == query:
+            return
+        data: dict = {}
+        if os.path.exists(config.SEARCH_HISTORY_FILE):
+            try:
+                with open(config.SEARCH_HISTORY_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception:
+                data = {}  # 旧文件损坏时按空文件处理,以本次写入为准
+        data[search_key] = [query] + [h for h in hist if h != query]
+        os.makedirs(os.path.dirname(config.SEARCH_HISTORY_FILE), exist_ok=True)
+        # 原子写(临时文件+替换),中断不会留下半截 JSON
+        from core.caching import save_json_file
+        save_json_file(config.SEARCH_HISTORY_FILE, data)
 
 
 def search_input(search_key: str) -> str:
@@ -274,7 +285,7 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
                       ns: str | None = None,
                       path_of: Callable[[str], str] | None = None,
                       disabled: bool = False) -> list[str] | None:
-    """"文件名 | 创建时间 | 下载"三列文件列表:顶部搜索框过滤文件名,表头 + 每行一个下载按钮。
+    """文件名 | 最后修改时间 | 下载"三列文件列表:顶部搜索框过滤文件名,表头 + 每行一个下载按钮。
 
     display_map 提供 {真实文件名: 展示名}:列表展示展示名(友好名称),搜索同时匹配
     展示名与真实文件名,下载按钮仍下载真实文件。
@@ -319,7 +330,7 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
         with col_h_sel:
             select_all = render_select_all_checkbox(ns, all_names)
     col_h_name.markdown(t("common.col_file_name"))
-    col_h_time.markdown(t("common.col_created"))
+    col_h_time.markdown(t("common.col_modified"))
     col_h_dl.markdown(t("common.col_download"))
 
     with st.container(key="file_rows"):
@@ -340,7 +351,7 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
                 with col_sel:
                     render_row_checkbox(ns, name, select_all, label=_disp(name))
             col_name.write(_disp(name))
-            col_time.write(row["Created time"])
+            col_time.write(row["Modified time"])
             with col_dl:
                 csv_download_button(resolve(name), name, key=f"download_{name}",
                                     disabled=disabled)
@@ -901,17 +912,19 @@ def save_ui_settings(overrides: dict) -> None:
             clean[k] = v.strip().upper()  # 日志级别等枚举字符串,统一大写
     if not clean:
         return
-    merged: dict = {}
-    if os.path.exists(config.UI_SETTINGS_FILE):
-        try:
-            with open(config.UI_SETTINGS_FILE, "r", encoding="utf-8") as f:
-                merged = json.load(f) or {}
-        except Exception:
-            merged = {}  # 旧文件损坏时按空文件处理,以本次写入为准
-    merged.update(clean)
-    os.makedirs(os.path.dirname(config.UI_SETTINGS_FILE), exist_ok=True)
-    with open(config.UI_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
+    with _ui_settings_lock:  # 读-改-写整段互斥:不同入口各自改各自的参数,并发时不能互相覆盖
+        merged: dict = {}
+        if os.path.exists(config.UI_SETTINGS_FILE):
+            try:
+                with open(config.UI_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    merged = json.load(f) or {}
+            except Exception:
+                merged = {}  # 旧文件损坏时按空文件处理,以本次写入为准
+        merged.update(clean)
+        os.makedirs(os.path.dirname(config.UI_SETTINGS_FILE), exist_ok=True)
+        # 原子写(临时文件+替换),中断不会留下半截 JSON
+        from core.caching import save_json_file
+        save_json_file(config.UI_SETTINGS_FILE, merged)
 
 
 def purge_merged_cache() -> int:

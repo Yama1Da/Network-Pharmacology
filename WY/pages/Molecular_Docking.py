@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import shutil
@@ -140,19 +141,30 @@ def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
 
 def _read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
     """读取所选 PPI 结果目录,返回 HUB 基因集合与富集验证基因集合;
-    对应文件缺失时返回空集合。"""
+    对应文件缺失时返回空集合。历史版本产出的 nodes 表可能缺 is_hub/gene 列
+    (downloads 目录跨版本留存),缺列或读不了时按空集合处理,不让页面崩溃。"""
     base = os.path.join(config.DOWNLOADS_DIR, dir_name)
     prefix = dir_name[:-5] if dir_name.endswith("_data") else dir_name
     hub: set[str] = set()
     nodes_path = os.path.join(base, f"{prefix}_nodes.csv")
     if os.path.exists(nodes_path):
-        nodes = pd.read_csv(nodes_path, encoding="utf-8-sig", comment="#")
-        hub = set(nodes.loc[nodes["is_hub"].fillna(False), "gene"]
-                  .dropna().astype(str).str.upper())
+        try:
+            nodes = pd.read_csv(nodes_path, encoding="utf-8-sig", comment="#")
+            if {"is_hub", "gene"}.issubset(nodes.columns):
+                hub = set(nodes.loc[nodes["is_hub"].fillna(False), "gene"]
+                          .dropna().astype(str).str.upper())
+            else:
+                logging.warning("nodes file lacks is_hub/gene columns, hub list "
+                                "skipped: %s", nodes_path)
+        except Exception:
+            logging.exception("Failed to read nodes file: %s", nodes_path)
     enr: set[str] = set()
     enr_path = os.path.join(base, f"{prefix}_enrichment.csv")
     if os.path.exists(enr_path):
-        enr = _genes_from_df(pd.read_csv(enr_path, encoding="utf-8-sig", comment="#"))
+        try:
+            enr = _genes_from_df(pd.read_csv(enr_path, encoding="utf-8-sig", comment="#"))
+        except Exception:
+            logging.exception("Failed to read enrichment file: %s", enr_path)
     return hub, enr
 
 
@@ -437,18 +449,18 @@ def _step1_select_source(dock: dict) -> None:
     else:
         enr_files = Utils.list_cache_files("enrichment", exts=(".csv",))
         # 只保留普通富集(ORA)结果供选择:GSEA 文件没有逐条目的基因列,选中也提不出候选基因;
-        # 按创建时间倒序,最近一次分析排最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称
+        # 按最后修改时间倒序,最近一次分析排最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称
         if not enr_files.empty:
             is_ora = enr_files["File name"].map(
                 lambda n: (parse_enrichment_filename(n) or {}).get("kind") == "ora")
             enr_files = (enr_files[is_ora]
-                         .sort_values("Created time", ascending=False))
+                         .sort_values("Modified time", ascending=False))
         if enr_files.empty:
             st.warning(t("dock.no_enr_files"))
         else:
-            # 同名分析可能有多份不同参数的缓存,展示名带上创建时间以便区分
+            # 同名分析可能有多份不同参数的缓存,展示名带上时间戳以便区分
             file_disp = {row["File name"]:
-                         f"{Utils.enrichment_display_name(row['File name'])} · {row['Created time']}"
+                         f"{Utils.enrichment_display_name(row['File name'])} · {row['Modified time']}"
                          for _, row in enr_files.iterrows()}
             sel_file = st.selectbox(t("dock.sel_enr_file"), enr_files["File name"].tolist(), key="sel_enr",
                                     index=None, placeholder=t("dock.sel_enr_file_ph"),
