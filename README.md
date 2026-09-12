@@ -17,7 +17,7 @@
 ## 环境要求
 
 - Python ≥ 3.11
-- [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina)（加入 PATH，或在 `API.env` （请将API.env.example重命名为API.env）中指定 `VINA_DIR`）
+- [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina)（加入 PATH，或在 `WY/API.env` （请将API.env.example重命名为API.env）中指定 `VINA_DIR`）
 - [DisGeNET](https://www.disgenet.org/) 学术账号 API Key（免费申请）/ 其他级别账号 API Key
 
 ## 快速开始
@@ -35,14 +35,13 @@ pip install -r requirements.txt
 编辑 API.env，填入 DisGeNET_API_KEY 与 VINA_DIR 路径
 
 # 4. 启动
-streamlit run App.py #终端输入
+streamlit run App.py  #终端输入
 ```
 
 ## 使用流程
 
-1. **首页发起分析**：输入药物名与疾病名（默认示例为 metformin 与 2 型糖尿病），
-   点击「开始分析」。程序会并发请求 ChEMBL / DGIdb / Open Targets / DisGeNET 四个数据源，
-   展示进度条；单路数据源失败会给出警告，重试时只补拉失败的那一路。
+1. **首页发起分析**：输入药物名与疾病名（默认示例为 metformin 与 Type 2 diabetes mellitus）,现暂时不支持中文疾病名输入，
+   点击「开始分析」。程序会并发请求 ChEMBL / DGIdb / Open Targets / DisGeNET 四个数据源。
 2. **查看靶点概览**：分析完成后首页展示药物靶点数、疾病靶点数、交集靶点数与韦恩图，
    展开折叠面板可查看各数据源的靶点明细表（按来源数与打分排序）。
 3. **数据管理**：通过首页左上角的「数据管理」菜单进入各信息页面，
@@ -54,26 +53,27 @@ streamlit run App.py #终端输入
 6. **日志与设置**：右上角可切换中/英文界面并查看运行日志；左下角齿轮可调整全局设置
    （如靶点过滤阈值），设置变更后整合缓存自动失效重建。
 
-所有中间结果自动缓存（默认 6 小时，见 `config.py`），重复分析秒级返回。
+所有中间结果自动缓存（默认 6 小时，见 `WY/config.py`），重复分析秒级返回。
 
 ## 配置说明
 
 | 文件 | 用途 |
 |---|---|
-| `API.env` | 密钥与可执行文件路径（`DisGeNET_API_KEY`、`VINA_DIR`），不入库 |
-| `config.py` | 数据源地址、限流/重试、缓存 TTL、靶点过滤阈值 |
+| `WY/API.env` | 密钥与可执行文件路径（`DisGeNET_API_KEY`、`VINA_DIR`），不入库 |
+| `WY/config.py` | 数据源地址、限流/重试、缓存 TTL、靶点过滤阈值 |
 
-> 改行为看 `config.py`，填密钥看 `API.env`：`API.env` 只放不提交到 git 的敏感信息
-> 与本机路径，其余请求控制、缓存有效期、靶点降噪过滤阈值集中在 `config.py`。
+> 改行为看 `WY/config.py`，填密钥看 `WY/API.env`：`WY/API.env` 只放不提交到 git 的敏感信息
+> 与本机路径，其余请求控制、缓存有效期、靶点降噪过滤阈值集中在 `WY/config.py`。
 
 ## 常见问题
 
 - **DisGeNET 返回 429？** 程序已在学术配额（50 次/分）内做了本地限流，仍触发时稍等即可；
-  配额为每天 25,000 次，正常单次分析仅消耗 1 次请求。
+  配额为每天 25,000 次，正常单次分析仅消耗 1 次请求。如有其他等级配额，请自行更改 `WY/config.py`中的
+  `DISGENET_RATE_LIMIT_PER_MINUTE` `DISGENET_RATE_LIMIT_PER_DAY` `DISGENET_RATE_LIMIT_PER_MONTH`。
 - **富集分析没结果？** g:Profiler 服务不可达时会自动熔断 30 分钟并改用 Enrichr。
 - **改了过滤阈值后结果没变？** 靶点过滤阈值变更需同步递增 `TARGET_FILTER_VERSION`，
   旧整合缓存会自动失效重建。
-- **分子对接找不到 Vina？** 确认 `vina` 已加入 PATH，或在 `API.env` 中将 `VINA_DIR`
+- **分子对接找不到 Vina？** 确认 `vina` 已加入 PATH，或在 `WY/API.env` 中将 `VINA_DIR`
   指向 Vina 所在目录（也可填可执行文件全路径）。
 
 ## 免责声明
