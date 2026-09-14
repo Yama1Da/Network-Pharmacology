@@ -375,7 +375,8 @@ def _open_settings_dialog() -> None:
     _custom_opt = t("app.settings.string_ver_custom_opt")
     _choice = st.selectbox(
         t("app.settings.string_ver"), _known + [_custom_opt],
-        index=0 if config.STRING_VERSION in _known else len(_known),
+        index=(_known.index(config.STRING_VERSION)
+               if config.STRING_VERSION in _known else len(_known)),
         key="set_string_ver_choice", label_visibility="collapsed")
     if _choice == _custom_opt:
         _raw = st.text_input(
