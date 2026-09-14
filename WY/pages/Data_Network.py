@@ -15,6 +15,7 @@ from core.network_algorithms import (
 )
 from core.enrichment import (
     build_ranked_list,
+    enrichment_retry_hint_minutes,
     fetch_enrichment_gsea_prerank,
     gsea_gene_sets,
     render_drug_target_pathway_plot,
@@ -216,10 +217,21 @@ def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str
     return gdf, rstats, gsea_status.get("reason", "")
 
 
+def _enrich_retry_suffix() -> str:
+    """富集服务失败提示的重试后缀:有熔断冷却信息时给"约 X 分钟后自动重试"的大致时长,
+    否则退回通用文案。"""
+    mins = enrichment_retry_hint_minutes()
+    return (t("net.enrich_retry_hint", mins=mins) if mins is not None
+            else t("net.enrich_retry_later"))
+
+
 def _enrichment_task(genes: list[str], organism: str, prefix: str):
-    """功能富集(g:Profiler 主 + Enrichr 备,输入为交集靶点),返回 (结果表, 数据源)。"""
-    return Utils.run_enrichment(genes, organism=organism,
-                                pvalue=config.ENRICHMENT_PVALUE, label=prefix)
+    """功能富集(g:Profiler 主 + Enrichr 备,输入为交集靶点),返回 (结果表, 数据源, 状态原因)。"""
+    enr_status: dict = {}
+    df, source = Utils.run_enrichment(genes, organism=organism,
+                                      pvalue=config.ENRICHMENT_PVALUE, label=prefix,
+                                      status=enr_status)
+    return df, source, enr_status.get("reason", "")
 
 
 def _gsea_task(drug_name: str, disease_name: str, prefix: str):
@@ -518,7 +530,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
             if done:
                 _prog(fraction=0.48 + per_task * (len(fut_key) - len(pending)))
 
-        enrichment_df, enrichment_source = fut_enr.result()
+        enrichment_df, enrichment_source, enrichment_reason = fut_enr.result()
         enrichment_bar_fig = enrichment_dot_fig = None
         if not enrichment_df.empty:
             enrichment_bar_fig, enrichment_dot_fig = Utils.render_enrichment_plots(enrichment_df)
@@ -574,6 +586,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         "core_genes": core_genes,
         "enrichment_df": enrichment_df,
         "enrichment_source": enrichment_source,
+        "enrichment_reason": enrichment_reason,
         "enrichment_bar_fig": enrichment_bar_fig,
         "enrichment_dot_fig": enrichment_dot_fig,
         "dtp_fig": dtp_fig,
@@ -792,7 +805,12 @@ def _render_enrichment(ppi: dict, genes: list[str]) -> None:
     enrichment_bar_fig = ppi["enrichment_bar_fig"]
     enrichment_dot_fig = ppi["enrichment_dot_fig"]
     if enrichment_df is None or enrichment_df.empty:
-        st.info(t("net.no_enrich"))
+        # 双源都不可用(或无兜底物种的主源失败)时显著告警,与"真无显著项"的普通提示区分开;
+        # 并附上大致的自动重试时间,避免用户反复手动重跑
+        if ppi.get("enrichment_reason") in ("both_sources_down", "gprofiler_down_no_fallback"):
+            st.error(t("net.enrich_both_down") + _enrich_retry_suffix())
+        else:
+            st.info(t("net.no_enrich"))
     else:
         st.caption(
             t("net.enrich_caption", src=enrichment_source, n=len(enrichment_df), m=len(genes))
@@ -981,7 +999,7 @@ def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
                 no_sig = mods_res["no_sig"]
                 if failures:
                     ids = ", ".join(f"#{f['module_id']}" for f in failures)
-                    st.error(t("net.modules_fail", ids=ids))
+                    st.error(t("net.modules_fail", ids=ids) + _enrich_retry_suffix())
                 if no_sig:
                     ids = ", ".join(f"#{mid}" for mid in no_sig)
                     st.info(t("net.modules_nosig", ids=ids))

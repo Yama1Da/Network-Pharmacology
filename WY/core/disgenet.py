@@ -142,7 +142,7 @@ def fetch_disease_targets_disgenet(disease_name: str, need_rows: int | None = No
         params = {**base_params, "page_number": page}
         resp = None
         try:
-            for _ in range(config.ENRICHMENT_MAX_RETRIES + 1):
+            for _ in range(config.DISGENET_MAX_RETRIES + 1):
                 _acquire_disgenet_rate_limit_slot()
                 resp = _get_session().get(
                     config.DisGeNET_URL, params=params, headers=headers, timeout=request_timeout
@@ -157,7 +157,7 @@ def fetch_disease_targets_disgenet(disease_name: str, need_rows: int | None = No
                     # 官方偶发返回非数字提示头:按本地默认间隔退避,不要让整页请求按失败处理
                     retry_after = config.API_RETRY_DELAY
                 # 若需等待过久则直接放弃，避免界面一直卡住
-                if retry_after > config.API_RETRY_DELAY * config.ENRICHMENT_MAX_RETRIES * 10:
+                if retry_after > config.API_RETRY_DELAY * config.DISGENET_MAX_RETRIES * 10:
                     logging.error(
                         "DisGeNET rate limit requires %ss wait; aborting to avoid blocking",
                         retry_after

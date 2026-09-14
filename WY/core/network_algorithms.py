@@ -17,11 +17,12 @@ from .enrichment import (
     enrichment_cache_filename,
     fetch_enrichment_enrichr,
     fetch_enrichment_gprofiler,
+    TRUSTED_REASONS,
 )
 
-# fetch_enrichment_* 返回状态中代表"调用成功"的取值；
-# "circuit_open"（被熔断跳过，未真正请求）与 "request_failed" 均视为不可信。
-_OK_REASONS = ("success", "no_significant", "cache")
+# fetch_enrichment_* 返回状态中代表"调用成功"的取值复用 core.enrichment.TRUSTED_REASONS；
+# "circuit_open"（被熔断跳过）、"probe_failed"（冷却到期的探测失败）与 "request_failed" 均视为不可信。
+_UNTRUSTED_REASONS = ("request_failed", "probe_failed", "circuit_open")
 
 
 def detect_louvain_modules(graph: "nx.Graph", resolution: float = 1.0, seed: int = 0) -> list[dict]:
@@ -130,14 +131,18 @@ def _enrich_single_module(genes: list[str], organism: str, sources: tuple,
 
     # 两条链路都拿到空表时：只有每条已启用链路都真实成功（无显著项/正常缓存）才算真无显著项；
     # 被熔断跳过或请求失败一律按失败处理（大鼠无 Enrichr 库时视为可信缺省）。
-    gp_ok = bool(st_gp.get("ok")) and st_gp.get("reason") in _OK_REASONS
+    gp_ok = bool(st_gp.get("ok")) and st_gp.get("reason") in TRUSTED_REASONS
     enrichr_applicable = bool(enrichr_org and libs)
     enrichr_ok = (not enrichr_applicable) or (
-        bool(st_enr.get("ok")) and st_enr.get("reason") in _OK_REASONS
+        bool(st_enr.get("ok")) and st_enr.get("reason") in TRUSTED_REASONS
     )
     if gp_ok and enrichr_ok:
         return pd.DataFrame(), False, "no_significant"
-    detail = f"gProfiler:{st_gp.get('reason', 'unknown')}; Enrichr:{st_enr.get('reason', 'not_applicable')}"
+    if (st_gp.get("reason") in _UNTRUSTED_REASONS
+            and enrichr_applicable and st_enr.get("reason") in _UNTRUSTED_REASONS):
+        detail = "both_sources_down"  # 双源都不可用：页面据此显著告警,提示稍后重试
+    else:
+        detail = f"gProfiler:{st_gp.get('reason', 'unknown')}; Enrichr:{st_enr.get('reason', 'not_applicable')}"
     logging.warning("Module enrichment failed (%s) for %d genes", detail, len(genes))
     return pd.DataFrame(), True, detail
 

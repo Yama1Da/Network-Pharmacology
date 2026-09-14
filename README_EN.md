@@ -14,11 +14,14 @@ name, and it automatically completes the full workflow of
 - **PPI network**: builds protein–protein interaction networks based on STRING v12.0,
   with multiple visualization styles
 - **Enrichment analysis**: GO / KEGG pathway enrichment; automatically falls back to
-  Enrichr when g:Profiler is unreachable
+  Enrichr when g:Profiler is unreachable. Both sources have circuit breakers (escalating
+  cooldown ladders with automatic probing and recovery), and when both are down the page
+  shows an "automatic retry in about X minutes" notice
 - **Molecular docking**: integrates AutoDock Vina, with RDKit + Meeko for automatic
   ligand preparation, built-in 3D result viewing, and focused-pocket display (surroundings dimmed)
-- **Engineering**: request-level caching with local DisGeNET rate limiting (within the academic
-  quota), bilingual Chinese/English UI, daily rotating logs, and data management pages
+- **Engineering**: request-level caching, local DisGeNET rate limiting (within the academic
+  quota), circuit-breaker failover and automatic recovery for enrichment data sources,
+  bilingual Chinese/English UI, daily rotating logs, and data management pages
   for drug/disease targets
 
 ## Requirements
@@ -78,7 +81,7 @@ so repeated analyses return in seconds.
 | File | Purpose |
 |---|---|
 | `WY/API.env` | Secrets and executable paths (`DisGeNET_API_KEY`, `VINA_DIR`); not committed to git |
-| `WY/config.py` | Data source URLs, rate limits/retries, cache TTL, target filter thresholds |
+| `WY/config.py` | Data source URLs, rate limits/retries, circuit-breaker cooldown ladders, cache TTL, target filter thresholds |
 
 > Change behavior in `WY/config.py`, put secrets in `WY/API.env`: `WY/API.env` only holds
 > sensitive information and local machine paths that stay out of git, while request control,
@@ -91,8 +94,10 @@ so repeated analyses return in seconds.
   and a normal single analysis consumes only 1 request. If your account has a different tier's
   quota, adjust `DISGENET_RATE_LIMIT_PER_MINUTE`, `DISGENET_RATE_LIMIT_PER_DAY`, and
   `DISGENET_RATE_LIMIT_PER_MONTH` in `WY/config.py` yourself.
-- **No enrichment results?** When the g:Profiler service is unreachable, the app automatically
-  trips a 30-minute circuit breaker and switches to Enrichr.
+- **No enrichment results?** Repeated g:Profiler failures trip a circuit breaker and switch to
+  Enrichr; when both sources are down the page shows an "automatic retry in about X minutes"
+  notice. The cooldown ladders (starting at 30 s, escalating to a 30-minute cap) are configured
+  in `GPROFILER_CIRCUIT_COOLDOWN_LADDER` / `ENRICHR_CIRCUIT_COOLDOWN_LADDER`.
 - **Changed the filter thresholds but results look the same?** Threshold changes require
   incrementing `TARGET_FILTER_VERSION` accordingly; old integrated caches then expire
   automatically and are rebuilt.

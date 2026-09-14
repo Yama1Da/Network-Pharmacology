@@ -12,13 +12,15 @@
 import glob
 import logging
 import os
+import shutil
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from selfcheck_common import run
+from selfcheck_common import patch_attr, run
 
 import networkx as nx
 import numpy as np
@@ -26,8 +28,11 @@ import pandas as pd
 
 import config
 import core.network_algorithms as na
+from core import enrichment as en
 from core import interactome as itx
+from core.caching import save_json_file
 from core.enrichment import (
+    TRUSTED_REASONS,
     _gsea_cache_file,
     _normalize_enrichment_gsea,
     build_ranked_list,
@@ -168,8 +173,7 @@ def t_avg_degree():
 
 # ---------- 模块富集测试（用假函数代替真实请求） ----------
 
-# 这些返回状态视为可信：真正成功，或确实无显著项
-_OK_REASONS = ("success", "no_significant", "cache")
+# 这些返回状态视为可信（即 core.enrichment.TRUSTED_REASONS）：真正成功，或确实无显著项
 
 
 def _fake_fetch(reason, df):
@@ -179,7 +183,7 @@ def _fake_fetch(reason, df):
             if reason is None:
                 status.update(ok=True, reason="success")
             else:
-                status.update(ok=reason in _OK_REASONS, reason=reason)
+                status.update(ok=reason in TRUSTED_REASONS, reason=reason)
         return df.copy()
     return f
 
@@ -302,6 +306,124 @@ def t_min_size_filter():
         assert long_df.empty and not failures and not no_sig
     finally:
         _restore(orig)
+
+
+# ---------- 富集数据源熔断测试（标记文件隔离到临时目录,不碰真实缓存） ----------
+
+
+def _circuit_sandbox() -> str:
+    """把富集缓存目录切到临时目录（熔断标记随目录隔离）,返回原目录供恢复。"""
+    orig = config.ENRICHMENT_CACHE_DIR
+    config.ENRICHMENT_CACHE_DIR = tempfile.mkdtemp(prefix="enrichcircuit_")
+    return orig
+
+
+def _circuit_restore(orig: str) -> None:
+    shutil.rmtree(config.ENRICHMENT_CACHE_DIR, ignore_errors=True)
+    config.ENRICHMENT_CACHE_DIR = orig
+
+
+def _expire_circuit(circuit, stage: int) -> None:
+    """写入一条"已过冷却期"的失败标记,让下一次请求作为探测放行。"""
+    save_json_file(circuit._file(),
+                   {"failed_at": time.time() - circuit.cooldown(stage) - 1,
+                    "stage": stage})
+
+
+def t_circuit_ladder_advance():
+    # 阶梯语义:常规失败保持第 1 档;冷却期内的失败(并发探测撞车)不推进;
+    # 到期后的探测失败推进一档;冷却时长按阶梯加长且最后一档封顶。
+    orig = _circuit_sandbox()
+    try:
+        en._gp_circuit.trip(advance=False)
+        en._gp_circuit.trip(advance=False)  # 常规失败不推进档位
+        assert en._gp_circuit.read()["stage"] == 1
+        en._gp_circuit.trip(advance=True)   # 冷却期内:探测撞车去抖,不推进
+        assert en._gp_circuit.read()["stage"] == 1
+        # 熔断冷却期内,重试提示应给出大致分钟数(向上取整,不足 1 分钟按 1 分钟)
+        assert en.enrichment_retry_hint_minutes() == 1
+        _expire_circuit(en._gp_circuit, 1)
+        en._gp_circuit.trip(advance=True)   # 确实到期后的失败才推进
+        assert en._gp_circuit.read()["stage"] == 2
+        assert en._gp_circuit.state() == "open"
+        cooldowns = [en._gp_circuit.cooldown(s) for s in (1, 2, 3, 4, 9)]
+        assert cooldowns[0] < cooldowns[1] < cooldowns[2] <= cooldowns[3] == cooldowns[4], cooldowns
+    finally:
+        _circuit_restore(orig)
+
+
+def t_circuit_probe_empty_result_resets():
+    # 冷却到期后的探测拿到空结果（服务可用、恰好无显著项）也必须完全复位,不再保持熔断
+    orig = _circuit_sandbox()
+    try:
+        en._gp_circuit.trip(advance=False)
+        _expire_circuit(en._gp_circuit, 1)
+        with patch_attr(en, "_profile_gprofiler", lambda *a, **k: pd.DataFrame()):
+            st: dict = {}
+            df = en.fetch_enrichment_gprofiler(["TP53", "TNF"], status=st)
+            assert df.empty and st.get("reason") == "no_significant", st
+            assert en._gp_circuit.state() == "closed", \
+                "empty probe result must reset the breaker"
+        assert en.enrichment_retry_hint_minutes() is None  # 复位后无冷却信息
+    finally:
+        _circuit_restore(orig)
+
+
+def t_circuit_probe_fail_advances():
+    # 冷却到期后的探测失败:status 记 probe_failed,冷却阶梯推进一档;
+    # 冷却期内后续请求直接跳过(circuit_open),不再发起
+    orig = _circuit_sandbox()
+    try:
+        en._gp_circuit.trip(advance=False)
+        _expire_circuit(en._gp_circuit, 1)
+
+        def _down(*a, **k):
+            raise ConnectionError("g:Profiler still down")
+
+        with patch_attr(en, "_profile_gprofiler", _down):
+            st: dict = {}
+            df = en.fetch_enrichment_gprofiler(["TP53", "TNF"], status=st)
+            assert df.empty and st.get("reason") == "probe_failed", st
+            assert en._gp_circuit.read()["stage"] == 2
+            assert en._gp_circuit.state() == "open"
+            st2: dict = {}
+            df2 = en.fetch_enrichment_gprofiler(["TP53", "TNF"], status=st2)
+            assert df2.empty and st2.get("reason") == "circuit_open", st2
+    finally:
+        _circuit_restore(orig)
+
+
+def t_enrichr_breaker_single_attempt():
+    # Enrichr 兜底源熔断:单次尝试失败即跳闸(请求内不重试);冷却期内跳过;探测成功复位
+    orig = _circuit_sandbox()
+    try:
+        calls = {"n": 0}
+
+        def _down(*a, **k):
+            calls["n"] += 1
+            raise ConnectionError("Enrichr down")
+
+        with patch_attr(en, "_query_enrichr", _down):
+            st: dict = {}
+            df = en.fetch_enrichment_enrichr(["TP53", "TNF"],
+                                             libs=["KEGG_2021_Human"], status=st)
+            assert df.empty and st.get("reason") == "request_failed", st
+            assert calls["n"] == 1, "fallback source must not retry in-request"
+            assert en._enrichr_circuit.read()["stage"] == 1
+            st2: dict = {}
+            en.fetch_enrichment_enrichr(["TP53", "TNF"],
+                                        libs=["KEGG_2021_Human"], status=st2)
+            assert st2.get("reason") == "circuit_open", st2
+            assert calls["n"] == 1, "breaker open must skip the request"
+        _expire_circuit(en._enrichr_circuit, 1)
+        with patch_attr(en, "_query_enrichr", lambda *a, **k: pd.DataFrame()):
+            st3: dict = {}
+            df3 = en.fetch_enrichment_enrichr(["TP53", "TNF"],
+                                              libs=["KEGG_2021_Human"], status=st3)
+            assert df3.empty and st3.get("reason") == "no_significant", st3
+            assert en._enrichr_circuit.state() == "closed"
+    finally:
+        _circuit_restore(orig)
 
 
 # ---------- GSEA prerank 测试（本地离线运行） ----------
@@ -905,6 +1027,10 @@ def main():
         ("enrich genuine no-significant", t_enrich_genuine_no_sig),
         ("enrich success path", t_enrich_success),
         ("enrich min-size filter", t_min_size_filter),
+        ("circuit ladder advance & debounce", t_circuit_ladder_advance),
+        ("circuit probe empty result resets", t_circuit_probe_empty_result_resets),
+        ("circuit probe fail advances ladder", t_circuit_probe_fail_advances),
+        ("enrichr breaker single-attempt trip", t_enrichr_breaker_single_attempt),
         ("gsea build_ranked_list dedupe/drop/sort", t_gsea_build_ranked),
         ("gsea normalize res2d columns", t_gsea_normalize),
         ("gsea prerank local + cache hit", t_gsea_prerank_local),

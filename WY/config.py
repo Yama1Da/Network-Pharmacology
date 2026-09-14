@@ -32,8 +32,11 @@ LIGHT_API_MAX_RETRIES = 2
 # ChEMBL 请求超时(秒)与重试次数:靶点详情批量响应大,服务端偶发很慢,放宽以免整个抓取中止
 CHEMBL_API_TIMEOUT = 90
 CHEMBL_API_MAX_RETRIES = 3
-# 富集请求(g:Profiler / Enrichr)重试次数:服务不可达时等待时间长,故压低。
-ENRICHMENT_MAX_RETRIES = 2
+# 富集请求(g:Profiler / Enrichr)尝试次数:连续该次数请求异常(重试机会耗尽)即触发熔断降级,
+# 冷却期内直接改用 Enrichr,避免反复苦等超时。
+ENRICHMENT_MAX_RETRIES = 3
+# DisGeNET 单页请求尝试次数(初次+重试):每次分析仅数页请求,重试 2 次即可。
+DISGENET_MAX_RETRIES = 2
 # DisGeNET 主动限流:学术(Academic)计划官方 API 配额为 每分钟 50 次 / 每天 25,000 次 /
 # 每月 500,000 次。本地限额在官方配额内再留约 10% 余量,避免本地窗口与服务器
 # 计数口径差异导致 429。本程序每次分析仅 1 次请求,正常使用远达不到这些上限。
@@ -42,8 +45,18 @@ DISGENET_RATE_LIMIT_PER_DAY = 20000
 DISGENET_RATE_LIMIT_PER_MONTH = 450000
 # 限流等待上限(秒):超过则放弃本次请求
 DISGENET_RATE_LIMIT_MAX_WAIT = 60
-# g:Profiler 连续失败后的熔断时长(秒):期间直接改用 Enrichr,避免反复等超时。
-GPROFILER_CIRCUIT_TTL_SECONDS = 1800
+# g:Profiler 熔断冷却阶梯(秒):触发熔断从第 1 档开始,之后每次"恢复失败"(冷却到期后的探测失败)
+# 推进一档,请求成功(任何有效响应)即清零复位;最后一档为上限。网络故障通常几分钟内恢复,
+# 前两档短便于快速恢复,后两档拉长避免频繁撞超时。
+GPROFILER_CIRCUIT_COOLDOWN_LADDER = (30, 60, 600, 1800)
+# 冷却到期后的探测超时(秒):探测按单次尝试在独立线程限时执行,超时按探测失败继续延长冷却,
+# 避免触发探测的分析苦等整个 API_TIMEOUT。
+GPROFILER_PROBE_TIMEOUT_SECONDS = 15
+# Enrichr 熔断冷却阶梯(秒):兜底源每个请求只尝试 1 次,失败即熔断(重试上移到熔断层,
+# 冷却后的探测即重试);首档比 g:Profiler 长,因为每次探测会占用一个模块线程。
+ENRICHR_CIRCUIT_COOLDOWN_LADDER = (60, 600, 1800)
+# Enrichr 冷却到期后的探测超时(秒),语义与 g:Profiler 相同。
+ENRICHR_PROBE_TIMEOUT_SECONDS = 15
 # 缓存有效期(秒):PPI/富集缓存超过该时长即过期,下次分析重新请求。
 CACHE_TTL_SECONDS = 6 * 3600
 # 数据源 HTTP 响应缓存有效期(小时):DGIdb/Open Targets/DisGeNET 共用,与 ChEMBL 库默认一致

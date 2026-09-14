@@ -11,10 +11,12 @@
 - **疾病/药物靶点获取**：接入 DisGeNET、DGIdb、Open Targets、ChEMBL 四个数据源，
   自动整合去重，并过滤非特异性结合蛋白（白蛋白、CYP 代谢酶等）降噪
 - **PPI 网络**：基于 STRING v12.0 构建蛋白互作网络，支持多种可视化风格展示
-- **富集分析**：GO / KEGG 等通路富集，g:Profiler 失败时自动切换 Enrichr
+- **富集分析**：GO / KEGG 等通路富集，g:Profiler 失败时自动切换 Enrichr；
+  两源均带熔断降级（冷却阶梯逐次加长、到期自动探测恢复），双源都不可用时页面提示
+  "约 X 分钟后自动重试"
 - **分子对接**：集成 AutoDock Vina，RDKit + Meeko 自动完成配体准备，内置 3D 结果查看 + 聚焦口袋（虚化周边）
-- **工程化**：请求级缓存与 DisGeNET 本地限流（学术配额内）、中英双语界面、
-  每日滚动日志、靶点/疾病数据管理页面
+- **工程化**：请求级缓存、DisGeNET 本地限流（学术配额内）、富集数据源熔断降级与自动恢复、
+  中英双语界面、每日滚动日志、靶点/疾病数据管理页面
 
 ## 环境要求
 
@@ -62,7 +64,7 @@ streamlit run App.py  #终端输入
 | 文件 | 用途 |
 |---|---|
 | `WY/API.env` | 密钥与可执行文件路径（`DisGeNET_API_KEY`、`VINA_DIR`），不入库 |
-| `WY/config.py` | 数据源地址、限流/重试、缓存 TTL、靶点过滤阈值 |
+| `WY/config.py` | 数据源地址、限流/重试、熔断冷却阶梯、缓存 TTL、靶点过滤阈值 |
 
 > 改行为看 `WY/config.py`，填密钥看 `WY/API.env`：`WY/API.env` 只放不提交到 git 的敏感信息
 > 与本机路径，其余请求控制、缓存有效期、靶点降噪过滤阈值集中在 `WY/config.py`。
@@ -72,7 +74,9 @@ streamlit run App.py  #终端输入
 - **DisGeNET 返回 429？** 程序已在学术配额（50 次/分）内做了本地限流，仍触发时稍等即可；
   配额为每天 25,000 次，正常单次分析仅消耗 1 次请求。如有其他等级配额，请自行更改 `WY/config.py`中的
   `DISGENET_RATE_LIMIT_PER_MINUTE` `DISGENET_RATE_LIMIT_PER_DAY` `DISGENET_RATE_LIMIT_PER_MONTH`。
-- **富集分析没结果？** g:Profiler 服务不可达时会自动熔断 30 分钟并改用 Enrichr。
+- **富集分析没结果？** g:Profiler 连续请求失败会自动熔断并改用 Enrichr；两源都不可用时页面
+  会提示"约 X 分钟后自动重试"。冷却阶梯（30 秒起、逐次加长至 30 分钟上限）见
+  `GPROFILER_CIRCUIT_COOLDOWN_LADDER` / `ENRICHR_CIRCUIT_COOLDOWN_LADDER`。
 - **改了过滤阈值后结果没变？** 靶点过滤阈值变更需同步递增 `TARGET_FILTER_VERSION`，
   旧整合缓存会自动失效重建。
 - **分子对接找不到 Vina？** 确认 `vina` 已加入 PATH 或环境变量存在 `VINA_DIR` ，或在 `WY/API.env` 中将 `VINA_DIR`
