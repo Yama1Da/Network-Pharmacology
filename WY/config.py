@@ -12,8 +12,8 @@ load_dotenv(os.path.join(BASE_DIR, "API.env"))
 DisGeNET_API_KEY = os.getenv("DisGeNET_API_KEY", "")
 # ======== 主要路径 =========
 # PPI网络路径
-# 固定版本的 STRING 地址,保证分析结果可复现
-STRING_BASE_URL = "https://version-12-0.string-db.org/api/json"
+# STRING 查询 API 基址不在此写死:按最终生效的 STRING_VERSION 在文件末尾统一派生
+# (设置面板可切换版本),保证 PPI 查询与背景互作组始终用同一版本。
 # STRING 单次查询基因数上限(约 1000 个)
 STRING_QUERY_LIMIT = 1000
 # STRING 调用方标识(官方要求,避免被限流)
@@ -221,15 +221,35 @@ GSEA_TOP_DISPLAY = 20
 # 页面显著性筛选阈值(按惯例 FDR<0.25;仅用于筛选展示,完整结果见 CSV)
 GSEA_FDR_SCREEN = 0.25
 
-# ======== 背景互作组(STRING v12.0 全网络本地缓存) ========
-# 版本需与上面的 STRING API 一致,保证 PPI 查询与背景网络计算用同一版本数据。
+# ======== 背景互作组(STRING 全网络本地缓存) ========
+# 查询 API 基址与下载路径都由本版本派生,保证 PPI 查询与背景网络计算用同一版本数据;
+# 可在设置面板切换(写 ui_settings.json),新版本发布后无需改代码。
 STRING_VERSION = "v12.0"
+# 预设版本下拉:官方下载站在售的版本(2026-09 实测:v11.0/v11.5/v12.0/v12.5,v10.5 及更早已下线);
+# 更新的版本直接手输即可(经下载站探活后接受)
+STRING_KNOWN_VERSIONS = ("v12.0", "v12.5")
+
+
+def normalized_string_version(value) -> str | None:
+    """校验并归一 STRING 版本号:合法返回 'v<数字>[.<数字>][字母后缀]' 小写形式(如 v12.0、
+    v12.0a、v10;漏 v 前缀自动补),非法返回 None。设置面板保存与 ui_settings.json 加载共用,
+    保证写盘与读回的格式一致。允许字母后缀:官方历史上有补丁版命名(如 v10.0a)。"""
+    import re
+
+    s = str(value).strip().lower()
+    if s and not s.startswith("v"):
+        s = f"v{s}"
+    return s if re.fullmatch(r"v\d+(\.\d+)?[a-z]?", s) else None
+
+
 # 官方下载站(人类全网络文件约 83MB)
 STRING_DOWNLOAD_BASE = "https://stringdb-downloads.org/download"
 # 国内镜像:优先使用,不可用时自动改用官方站。
 STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"
 # 全网络大文件下载并发分段数(仅对支持 HTTP Range 的源生效):镜像单连接限速时
 # 多段并行可成倍提速;不支持 Range 或分段失败自动回退单流下载并提醒用户(慢)。
+# 官方站 stringdb-downloads.org 实测单连接仅 ~10KB/s,镜像未同步新版本回退官方源时,
+# 调大此值可近似线性提速(官方站对多连接无明显聚合限速)。
 INTERACTOME_DOWNLOAD_CONCURRENCY = 6
 # 背景互作组缓存目录
 INTERACTOME_CACHE_DIR = os.path.join(CACHE_DIR, "interactome")
@@ -392,6 +412,7 @@ UI_SETTINGS_KEYS = (
     "CHEMBL_CORROBORATION_REQUIRED", "OT_TOP_N", "DISGENET_PAGES",
     "PPI_CONFIDENCE",  # STRING 置信度阈值:PPI 边筛选与背景互作组共用
     "LOG_LEVEL",  # Logs 页的 DEBUG 开关:持久化后重启按此级别初始化日志
+    "STRING_VERSION",  # STRING 数据版本:查询 API/下载路径/各缓存键随版本派生或隔离
 )
 # LOG_LEVEL 允许的取值:加载设置文件时校验,坏值按内置默认运行
 _LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -405,6 +426,12 @@ if os.path.exists(UI_SETTINGS_FILE):
                 # 黑名单是字符串列表,单独校验后套用
                 if isinstance(_v, list) and all(isinstance(_i, str) for _i in _v):
                     globals()[_k] = tuple(_v)
+            elif _k == "STRING_VERSION":
+                # 版本号经统一校验归一,坏值按内置默认运行;必须先于通用数值/布尔分支,
+                # 防止手改设置文件写入数字/布尔被原样赋值后,末尾派生 URL 时崩溃
+                _sv = normalized_string_version(_v)
+                if _sv:
+                    globals()[_k] = _sv
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, bool):
                 globals()[_k] = _v
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, (int, float)) \
@@ -420,3 +447,8 @@ if os.path.exists(UI_SETTINGS_FILE):
 # PPI 置信度可能被上面的设置文件覆盖,而背景互作组的置信度阈值在上方按内置值派生:
 # 覆盖生效后必须重算,保证两处阈值始终一致(运行时齿轮面板修改亦需同样同步)
 INTERACTOME_CONFIDENCE = int(PPI_CONFIDENCE * 1000)
+
+# STRING 版本可能被上面的设置文件覆盖:查询 API 基址按最终生效版本派生
+# (STRING 版本化子域名把 v12.0 写作 version-12-0),与下载路径/背景互作组保持同版本;
+# 运行时齿轮面板切换版本亦需同步重算此值
+STRING_BASE_URL = f"https://version-{STRING_VERSION[1:].replace('.', '-')}.string-db.org/api/json"

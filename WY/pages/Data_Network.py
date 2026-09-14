@@ -92,6 +92,8 @@ with col_params:
     # 物种固定为人类:疾病靶点数据源(Open Targets/DisGeNET)只有人类数据,
     # 药物靶点与富集库亦以人类为准;多物种支持待接入相应疾病数据源后再议。
     score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
+    # 发起分析的位置常驻显示数据版本:切版本后不忘当前用的是哪版 STRING 数据
+    st.caption(t("net.string_ver_caption", ver=config.STRING_VERSION))
     network_type = st.selectbox(
         t("net.network_type"), ("full", "physical"),
         format_func=lambda v: (t("net.network_type_full") if v == "full"

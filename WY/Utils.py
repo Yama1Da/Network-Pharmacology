@@ -911,6 +911,12 @@ def save_ui_settings(overrides: dict) -> None:
         if k == "CHEMBL_TARGET_BLACKLIST":
             if isinstance(v, (list, tuple)):
                 clean[k] = sorted({str(x).strip().upper() for x in v if str(x).strip()})
+        elif k == "STRING_VERSION":
+            # 版本号统一校验归一(保小写,供 URL 派生),非法格式/非字符串一律不写盘;
+            # 必须先于通用数值/布尔分支,避免数字被原样落盘
+            sv = config.normalized_string_version(v)
+            if sv:
+                clean[k] = sv
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, bool):
             clean[k] = v
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, int):

@@ -108,6 +108,26 @@ def _probe_range_support(url: str) -> int:
         return 0
 
 
+def string_version_exists(version: str) -> bool:
+    """轻量探测下载站是否已提供该版本的数据文件(protein.info 小文件,流式即开即关)。
+    200/206 即认为版本存在(不要求 Range 支持);镜像与官方站任一可用即可。
+    供设置面板在保存版本切换前拦截拼错/尚未发布的版本号。"""
+    import requests
+
+    import config
+
+    rel = f"/protein.info.{version}/{_taxon('Human')}.protein.info.{version}.txt.gz"
+    for base in (config.STRING_DOWNLOAD_MIRROR_BASE, config.STRING_DOWNLOAD_BASE):
+        try:
+            with requests.get(base.rstrip("/") + rel, stream=True,
+                              timeout=config.API_TIMEOUT) as resp:
+                if resp.status_code in (200, 206):
+                    return True
+        except Exception:
+            logging.exception("STRING version probe failed: %s", base + rel)
+    return False
+
+
 def _download_segment(url: str, start: int, end: int, path: str,
                       done: list, lock) -> None:
     """下载 [start, end] 字节区间到 path(工作线程内执行,不碰进度回调);
@@ -325,6 +345,22 @@ def _download_gz(url_path: str, dest: str,
                     os.replace(tmp, dest)
                 logging.info("Downloaded %s -> %s", url, dest)
                 return dest
+            except requests.HTTPError as exc:
+                last_err = exc
+                status = getattr(exc.response, "status_code", None)
+                if status is not None and 400 <= status < 500:
+                    # 404/410 等 4xx 是确定性失败(实测镜像仅覆盖 v12.0,其余版本一律
+                    # 404),重试只会白等,立即换下一个下载源,并在进度条上告知原因
+                    logging.warning("Download source %s returned %d for %s, skipping "
+                                    "retries and trying next source", base, status, url)
+                    if not warned_fallback and progress_cb:
+                        warned_fallback = True
+                        progress_cb("mirror_skip", None, base.split("//", 1)[-1])
+                    break
+                logging.exception("Download failed (attempt %d/%d): %s",
+                                  attempt, config.API_MAX_RETRIES, url)
+                if attempt < config.API_MAX_RETRIES:
+                    time.sleep(config.API_RETRY_DELAY)
             except Exception as exc:
                 last_err = exc
                 logging.exception("Download failed (attempt %d/%d): %s",
@@ -488,6 +524,63 @@ def build_interactome(species: str = "Human",
     logging.info("Interactome built: %d nodes / %d edges (%s, confidence>=%d)",
                  meta["n_nodes"], meta["n_edges"], string_version, confidence)
     return meta
+
+
+def clean_old_version_caches(species: str = "Human") -> int:
+    """删除该物种其它 STRING 版本/置信度组合的背景网络缓存(边表/度表/构建记录三件套)。
+    供数据管理页在新版本构建成功后调用(确认弹窗已告知清理代价):当前生效组合一律保留,
+    切回旧组合需重新构建。只删各 _meta.json 登记的文件,无构建记录的孤儿文件不动。返回删除文件数。"""
+    import config
+
+    cur_conf = int(config.INTERACTOME_CONFIDENCE)
+    cur_ver = config.STRING_VERSION
+    removed = 0
+    try:
+        meta_names = [n for n in os.listdir(_cache_dir()) if n.endswith("_meta.json")]
+    except OSError:
+        return 0
+    for name in meta_names:
+        path = os.path.join(_cache_dir(), name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if not isinstance(meta, dict):
+                raise ValueError("meta is not a dict")
+        except Exception:
+            # 读不出的记录无法判断归属,保守保留
+            logging.exception("Interactome meta unreadable, kept: %s", path)
+            continue
+        if meta.get("species") != species:
+            continue
+        try:
+            is_current = (int(meta.get("confidence", -1)) == cur_conf
+                          and meta.get("string_version") == cur_ver)
+        except (TypeError, ValueError):
+            is_current = False  # 置信度都解析不出的记录必不属于当前组合
+        if is_current:
+            continue  # 当前生效组合,保留
+        # 非当前组合:尽力删除登记的边表/度表,再删除记录本身;清理绝不抛异常,
+        # 避免传到页面把成功的构建误报为失败
+        files = meta.get("files")
+        if isinstance(files, dict):
+            for key in ("edges", "degrees"):
+                fname = files.get(key)
+                if not fname:
+                    continue
+                try:
+                    os.remove(os.path.join(_cache_dir(), fname))
+                    removed += 1
+                except OSError:
+                    logging.exception("Failed to remove old interactome cache: %s", fname)
+        try:
+            os.remove(path)
+            removed += 1
+        except OSError:
+            logging.exception("Failed to remove old interactome meta: %s", path)
+    if removed:
+        logging.info("Old interactome caches removed: %d file(s) (active: %s, confidence>=%d)",
+                     removed, cur_ver, cur_conf)
+    return removed
 
 
 # ---------- 加载侧(页面/算法用) ----------

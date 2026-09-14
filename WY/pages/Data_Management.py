@@ -7,6 +7,7 @@ import Utils
 from i18n import t
 from core.interactome import (
     build_interactome,
+    clean_old_version_caches,
     interactome_age_days,
     is_built,
     is_stale,
@@ -49,6 +50,8 @@ if st.session_state.itx_build_result is not None:
     result = st.session_state.itx_build_result
     if result[0] == "ok":
         st.success(t("data_mgmt.itx_build_done", nodes=result[1], edges=result[2], secs=result[3]))
+        if result[4]:
+            st.info(t("data_mgmt.itx_old_cleaned", n=result[4]))
     else:
         st.error(t("data_mgmt.itx_build_fail", err=result[1]))
     st.session_state.itx_build_result = None
@@ -64,7 +67,7 @@ if itx_built:
     if is_stale("Human"):
         st.warning(t("data_mgmt.itx_stale", age=age))
 else:
-    st.error(t("data_mgmt.itx_missing"))
+    st.error(t("data_mgmt.itx_missing", ver=config.STRING_VERSION))
 
 if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", width="stretch"):
     progress = st.progress(0.0, text=t("data_mgmt.itx_stage_processing"))
@@ -86,8 +89,11 @@ if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", 
 
     try:
         meta_new = build_interactome(progress_cb=_on_progress)
+        # 新版本构建成功后清理其它版本/置信度组合的三件套(齿轮确认弹窗已告知该清理;
+        # 只在成功后删,保证任何时刻至少有一个可用背景网络)
+        cleaned = clean_old_version_caches("Human")
         st.session_state.itx_build_result = (
-            "ok", meta_new["n_nodes"], meta_new["n_edges"], time.time() - t0)
+            "ok", meta_new["n_nodes"], meta_new["n_edges"], time.time() - t0, cleaned)
     except Exception as exc:
         st.session_state.itx_build_result = ("fail", str(exc), None, None)
     st.rerun()

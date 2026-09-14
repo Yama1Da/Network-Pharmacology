@@ -11,8 +11,11 @@ name, and it automatically completes the full workflow of
 - **Disease/drug target acquisition**: integrates four data sources — DisGeNET, DGIdb,
   Open Targets, and ChEMBL — with automatic deduplication, and filters out
   non-specific binding proteins (albumin, CYP metabolic enzymes, etc.) to reduce noise
-- **PPI network**: builds protein–protein interaction networks based on STRING v12.0,
-  with multiple visualization styles
+- **PPI network**: builds protein–protein interaction networks based on STRING
+  (v12.0 by default; the data version is switchable in Settings), with multiple visualization styles
+- **Background interactome**: a local cache of the full STRING network powering proximity
+  Z-score / RWR target prioritization; one-click build on the Data Management page,
+  with mirror/official multi-source fallback and segmented concurrent downloads
 - **Enrichment analysis**: GO / KEGG pathway enrichment; automatically falls back to
   Enrichr when g:Profiler is unreachable. Both sources have circuit breakers (escalating
   cooldown ladders with automatic probing and recovery), and when both are down the page
@@ -63,14 +66,17 @@ streamlit run App.py  # run from the terminal
    (sorted by source count and score).
 3. **Data management**: use the "Data Management" menu at the top-left of the home page
    to open the information pages, where you can view, add, remove, or correct
-   the fetched disease and drug targets.
+   the fetched disease and drug targets. The same page builds the background interactome
+   in one click (a prerequisite for proximity / RWR analyses).
 4. **PPI network and enrichment**: open the "Data Network" page from the menu to build a STRING
    interaction network from the integrated targets (multiple visualization styles available)
    and run GO / KEGG enrichment analysis.
 5. **Molecular docking**: open the "Molecular Docking" page from the menu, select core targets,
    run AutoDock Vina docking, and inspect the 3D binding poses and focused-pocket view online.
 6. **Logs and settings**: switch between Chinese/English and view run logs at the top-right;
-   the gear button at the bottom-left opens global settings (e.g., target filter thresholds).
+   the gear button at the bottom-left opens global settings (e.g., target filter thresholds)
+   and the STRING data version (when STRING releases a new version, just enter the tag in
+   Settings and rebuild the background network — no program update needed).
    Changing settings automatically invalidates the integrated caches and rebuilds them.
 
 All intermediate results are cached automatically (7 days by default, see `WY/config.py`),
@@ -81,7 +87,7 @@ so repeated analyses return in seconds.
 | File | Purpose |
 |---|---|
 | `WY/API.env` | Secrets and executable paths (`DisGeNET_API_KEY`, `VINA_DIR`); not committed to git |
-| `WY/config.py` | Data source URLs, rate limits/retries, circuit-breaker cooldown ladders, cache TTL, target filter thresholds |
+| `WY/config.py` | Data source URLs, rate limits/retries, circuit-breaker cooldown ladders, cache TTL, target filter thresholds, STRING version and download concurrency |
 
 > Change behavior in `WY/config.py`, put secrets in `WY/API.env`: `WY/API.env` only holds
 > sensitive information and local machine paths that stay out of git, while request control,
@@ -101,6 +107,12 @@ so repeated analyses return in seconds.
 - **Changed the filter thresholds but results look the same?** Threshold changes require
   incrementing `TARGET_FILTER_VERSION` accordingly; old integrated caches then expire
   automatically and are rebuilt.
+- **Background interactome downloads slowly?** The CN mirror usually carries only the latest
+  release (currently v12.0 only, as measured); other versions automatically fall back to the
+  official download site (slow per connection). Raise `INTERACTOME_DOWNLOAD_CONCURRENCY`
+  (default 6) in `WY/config.py` to speed things up — the official site throttles per
+  connection, so more segments scale nearly linearly; or stick to a version the mirror
+  already carries.
 - **Molecular docking can't find Vina?** Make sure `vina` is on PATH or the `VINA_DIR` environment
   variable exists, or point `VINA_DIR` in `WY/API.env` to the directory containing Vina
   (a full path to the executable also works).
