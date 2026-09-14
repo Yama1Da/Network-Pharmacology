@@ -25,6 +25,7 @@ from selfcheck_common import patch_attr, run
 import networkx as nx
 import numpy as np
 import pandas as pd
+import requests
 
 import config
 import core.network_algorithms as na
@@ -562,6 +563,139 @@ def t_interactome_links_to_edges():
     assert config.INTERACTOME_CONFIDENCE == int(config.PPI_CONFIDENCE * 1000)
 
 
+class _FakeResp:
+    """_download_gz 打桩用的最小响应对象:支持 with 上下文与流式 iter_content。"""
+
+    def __init__(self, status, headers=None, body=b""):
+        self.status_code = status
+        self.headers = headers or {}
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def close(self):
+        pass
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"http {self.status_code}")
+
+    def iter_content(self, chunk_size=1 << 20):
+        for i in range(0, len(self._body), chunk_size):
+            yield self._body[i:i + chunk_size]
+
+
+def _fake_string_get(payload, fail_ranges=False):
+    """伪装 STRING 下载源:带 Range 头按区间切片回 206,Range 探测回总大小,
+    不带 Range 回 200 全量(模拟不支持分段的源);fail_ranges=True 时区间请求一律失败。"""
+    def fake_get(url, headers=None, stream=True, timeout=None, **kw):
+        rng = (headers or {}).get("Range", "")
+        if rng == "bytes=0-0":
+            return _FakeResp(206, {"Content-Range": f"bytes 0-0/{len(payload)}"},
+                             payload[:1])
+        if rng.startswith("bytes="):
+            if fail_ranges:
+                raise IOError("simulated segment failure")
+            s, e = rng[6:].split("-")
+            return _FakeResp(206, {}, payload[int(s):int(e) + 1])
+        return _FakeResp(200, {}, payload)
+
+    return fake_get
+
+
+def t_interactome_ranged_download():
+    """Range 可用时按段并发下载并拼接出与原文件一致的产物,无 .part 残留。"""
+    payload = bytes(range(256)) * 64  # 16 KiB,把分段下限调小以便离线测试
+    events = []
+    with patch_attr(requests, "get", _fake_string_get(payload)), \
+         patch_attr(itx, "_RANGE_MIN_SIZE", 4096), \
+         patch_attr(itx, "_RANGE_SEG_MIN_SIZE", 4096):
+        with tempfile.TemporaryDirectory() as td:
+            dest = os.path.join(td, "links.txt.gz")
+            out = itx._download_gz("/x.gz", dest,
+                                   progress_cb=lambda *a: events.append(a),
+                                   progress_label="download_links")
+            assert out == dest
+            with open(dest, "rb") as f:
+                assert f.read() == payload
+            leftover = [n for n in os.listdir(td) if ".part" in n]
+            assert not leftover, leftover
+    assert any(ev[0] == "download_links" for ev in events), events
+
+
+def t_interactome_fallback_notice():
+    """大文件的分段在重试轮次耗尽后仍失败:回退单流,文件完整,且只发一次 fallback 提醒。"""
+    payload = bytes(range(256)) * 64  # 16 KiB
+    events = []
+    with patch_attr(requests, "get", _fake_string_get(payload, fail_ranges=True)), \
+         patch_attr(itx, "_RANGE_MIN_SIZE", 4096), \
+         patch_attr(itx, "_RANGE_SEG_MIN_SIZE", 4096), \
+         patch_attr(config, "API_MAX_RETRIES", 1), \
+         patch_attr(config, "API_RETRY_DELAY", 0):
+        with tempfile.TemporaryDirectory() as td:
+            dest = os.path.join(td, "links.txt.gz")
+            itx._download_gz("/x.gz", dest, progress_cb=lambda *a: events.append(a))
+            with open(dest, "rb") as f:
+                assert f.read() == payload
+    assert sum(1 for ev in events if ev[0] == "fallback") == 1, events
+
+
+def t_interactome_small_file_no_notice():
+    """小文件(低于分段阈值)走单流属正常路径,不应触发 fallback 误报。"""
+    payload = b"tiny" * 512  # 2 KiB
+
+    def no_range_get(url, headers=None, stream=True, timeout=None, **kw):
+        return _FakeResp(200, {}, payload)
+
+    events = []
+    with patch_attr(requests, "get", no_range_get), \
+         patch_attr(itx, "_RANGE_MIN_SIZE", 4096), \
+         patch_attr(itx, "_RANGE_SEG_MIN_SIZE", 4096):
+        with tempfile.TemporaryDirectory() as td:
+            dest = os.path.join(td, "info.txt.gz")
+            itx._download_gz("/x.gz", dest, progress_cb=lambda *a: events.append(a))
+            with open(dest, "rb") as f:
+                assert f.read() == payload
+    assert not any(ev[0] == "fallback" for ev in events), events
+
+
+def t_interactome_segment_resume():
+    """源每次只给出区间的一小段就提前收流:靠段内续传补完,全程不应触发 fallback。"""
+    payload = bytes(range(256)) * 64  # 16 KiB
+    calls = {"range": 0}
+
+    def stingy_get(url, headers=None, stream=True, timeout=None, **kw):
+        rng = (headers or {}).get("Range", "")
+        if rng == "bytes=0-0":
+            return _FakeResp(206, {"Content-Range": f"bytes 0-0/{len(payload)}"},
+                             payload[:1])
+        if rng.startswith("bytes="):
+            s, e = (int(x) for x in rng[6:].split("-"))
+            calls["range"] += 1
+            cut = min(s + 512, e + 1)  # 每次只给 512 字节就提前收流
+            return _FakeResp(206, {}, payload[s:cut])
+        return _FakeResp(200, {}, payload)
+
+    events = []
+    with patch_attr(requests, "get", stingy_get), \
+         patch_attr(itx, "_RANGE_MIN_SIZE", 4096), \
+         patch_attr(itx, "_RANGE_SEG_MIN_SIZE", 4096), \
+         patch_attr(config, "API_MAX_RETRIES", 64), \
+         patch_attr(config, "API_RETRY_DELAY", 0):
+        with tempfile.TemporaryDirectory() as td:
+            dest = os.path.join(td, "links.txt.gz")
+            itx._download_gz("/x.gz", dest, progress_cb=lambda *a: events.append(a))
+            with open(dest, "rb") as f:
+                assert f.read() == payload
+    assert not any(ev[0] == "fallback" for ev in events), events
+    assert calls["range"] > 4, calls  # 每段都要多次续传才能补完
+
+
 def t_interactome_load_or_skip():
     """互作组未构建时必须明确报错；已构建时正常加载并检查基因覆盖情况。"""
     if not itx.is_built("Human"):
@@ -1037,6 +1171,10 @@ def main():
         ("gsea insufficient input leaves no cache", t_gsea_insufficient_no_cache),
         ("interactome protein.info column pick", t_interactome_info_cols),
         ("interactome links->edges transform", t_interactome_links_to_edges),
+        ("interactome ranged concurrent download", t_interactome_ranged_download),
+        ("interactome fallback notice (segments fail)", t_interactome_fallback_notice),
+        ("interactome small file no fallback notice", t_interactome_small_file_no_notice),
+        ("interactome segment resume completes", t_interactome_segment_resume),
         ("interactome load/coverage (skip if not built)", t_interactome_load_or_skip),
         ("interactome staleness age/is_stale", t_interactome_staleness),
         ("prox sparse BFS matches networkx", t_prox_bfs_matches_networkx),

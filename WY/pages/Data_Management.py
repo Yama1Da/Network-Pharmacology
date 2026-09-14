@@ -71,6 +71,10 @@ if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", 
     t0 = time.time()
 
     def _on_progress(stage: str, fraction, detail: str) -> None:
+        # 并发分段不可用回退单流:进度条文字会被后续进度覆盖,另发一条常驻警告提醒慢
+        if stage == "fallback":
+            st.warning(t("data_mgmt.itx_fallback_notice", detail=detail))
+            return
         # 把构建阶段名翻译成当前语言,显示在进度条上
         base = t(f"data_mgmt.itx_stage_{stage}")
         if detail == "cached":

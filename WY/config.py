@@ -228,6 +228,9 @@ STRING_VERSION = "v12.0"
 STRING_DOWNLOAD_BASE = "https://stringdb-downloads.org/download"
 # 国内镜像:优先使用,不可用时自动改用官方站。
 STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"
+# 全网络大文件下载并发分段数(仅对支持 HTTP Range 的源生效):镜像单连接限速时
+# 多段并行可成倍提速;不支持 Range 或分段失败自动回退单流下载并提醒用户(慢)。
+INTERACTOME_DOWNLOAD_CONCURRENCY = 6
 # 背景互作组缓存目录
 INTERACTOME_CACHE_DIR = os.path.join(CACHE_DIR, "interactome")
 # 置信度换算:PPI_CONFIDENCE 是 0~1 小数,全网络打分是 0~1000 整数。

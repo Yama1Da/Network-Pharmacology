@@ -80,12 +80,198 @@ def is_built(species: str = "Human",
 
 # ---------- 构建侧(命令行专用) ----------
 
+# 分段并发下载的适用下限:文件太小不值得多连接;单段太小则握手/重试开销占主导
+_RANGE_MIN_SIZE = 8 * 1024 * 1024
+_RANGE_SEG_MIN_SIZE = 8 * 1024 * 1024
+# 分段整体重试轮数:每轮只重跑未完成的段(段内从盘上续传),避免个别掉队段
+# 连累全部已完成段一起作废重下
+_RANGED_MAX_ROUNDS = 3
+
+
+def _probe_range_support(url: str) -> int:
+    """探测下载源是否支持 HTTP Range 分段:支持返回文件总字节数,否则返回 0。
+    用 1 字节区间实测(部分服务器 HEAD 不回 Accept-Ranges,206 + Content-Range 才算数);
+    stream=True 下立即关闭,不会把 200 的完整响应体拉下来。"""
+    import requests
+
+    import config
+
+    try:
+        with requests.get(url, headers={"Range": "bytes=0-0"}, stream=True,
+                          timeout=config.API_TIMEOUT) as resp:
+            if resp.status_code != 206:
+                return 0
+            total = resp.headers.get("Content-Range", "").rsplit("/", 1)[-1]
+            return int(total) if total.isdigit() else 0
+    except Exception:
+        logging.exception("Range probe failed: %s", url)
+        return 0
+
+
+def _download_segment(url: str, start: int, end: int, path: str,
+                      done: list, lock) -> None:
+    """下载 [start, end] 字节区间到 path(工作线程内执行,不碰进度回调);
+    整段重试耗尽才抛错,由调用方按轮次只重跑失败段。支持断点续传:重试只拉取
+    未完成的尾部区间并追加写入;path 已有部分内容(上一轮的成果)时从盘上字节数
+    续传。done[0] 只累计新落盘的字节,某次尝试失败时回滚该次计入的部分。"""
+    import time
+
+    import requests
+
+    import config
+
+    expected = end - start + 1
+    have = 0
+    if os.path.exists(path):
+        have = os.path.getsize(path)
+        if have > expected:  # 残留文件不可信(如上次越界多写),删除重下
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            have = 0
+    if have == expected:
+        return
+    last_err: Exception | None = None
+    for attempt in range(1, config.API_MAX_RETRIES + 1):
+        base = have
+        overrun = False
+        try:
+            with requests.get(url, headers={"Range": f"bytes={start + have}-{end}"},
+                              stream=True, timeout=config.API_TIMEOUT) as resp:
+                if resp.status_code != 206:
+                    raise RuntimeError(f"http {resp.status_code}: range not honored")
+                with open(path, "ab" if have else "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        have += len(chunk)
+                        with lock:
+                            done[0] += len(chunk)
+                        if have > expected:
+                            overrun = True
+                            break
+                if overrun:
+                    raise RuntimeError(f"server overran range ({have} > {expected})")
+                if have == expected:
+                    return
+                raise RuntimeError(f"incomplete segment: {have}/{expected} bytes")
+        except Exception as exc:
+            last_err = exc
+            with lock:
+                done[0] -= have - base
+            if have > expected:
+                # 越界多写后文件不可信,删除并从段首重来
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                with lock:
+                    done[0] -= have
+                have = 0
+            logging.warning("Segment %s failed (attempt %d/%d): %s",
+                            os.path.basename(path), attempt,
+                            config.API_MAX_RETRIES, exc)
+            if attempt < config.API_MAX_RETRIES:
+                time.sleep(config.API_RETRY_DELAY)
+    raise RuntimeError(f"segment exhausted retries: {last_err}")
+
+
+def _download_gz_ranged(url: str, dest: str, progress_cb,
+                        lo: float, hi: float, progress_label: str) -> tuple[str, int]:
+    """并发分段下载:源支持 HTTP Range 时按 config.INTERACTOME_DOWNLOAD_CONCURRENCY
+    切段并行拉取;某段失败只重跑该段(段内续传,已完成段不动),最多
+    _RANGED_MAX_ROUNDS 轮,全部成功后按序拼接(先写 .part 再原子替换,不留半截文件)。
+    返回 (状态, 探测到的总字节数):"ok" 成功;"skip" 源不支持 Range 或文件太小
+    (本就不该分段,不算失败);"failed" 重试轮次耗尽(半成品已清掉),由调用方回退单流。"""
+    import shutil
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import config
+
+    total = _probe_range_support(url)
+    if total < _RANGE_MIN_SIZE:
+        return "skip", total
+    n_seg = min(int(getattr(config, "INTERACTOME_DOWNLOAD_CONCURRENCY", 1) or 1),
+                total // _RANGE_SEG_MIN_SIZE)
+    if n_seg <= 1:
+        return "skip", total
+    seg_size = total // n_seg
+    # 末段到文件末尾,吸收整除余数
+    bounds = [(i * seg_size, (i + 1) * seg_size - 1) for i in range(n_seg - 1)]
+    bounds.append(((n_seg - 1) * seg_size, total - 1))
+    parts = [f"{dest}.part{i}" for i in range(n_seg)]
+    for p in parts:  # 清掉上次进程中断可能残留的段文件:本次调用从零开始
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    done = [0]
+    lock = threading.Lock()
+    logging.info("Ranged download %s: %d segments x ~%.0f MB",
+                 url, n_seg, seg_size / 1e6)
+    try:
+        pending = list(range(n_seg))
+        for round_no in range(1, _RANGED_MAX_ROUNDS + 1):
+            with ThreadPoolExecutor(max_workers=len(pending)) as pool:
+                futures = {pool.submit(_download_segment, url, bounds[i][0],
+                                       bounds[i][1], parts[i], done, lock): i
+                           for i in pending}
+                # 进度回调只在本线程发(回调可能操作 Streamlit 组件,不能跨线程调用):
+                # 工作线程只更新计数字节,这里每半秒聚合一次
+                while not all(f.done() for f in futures):
+                    time.sleep(0.5)
+                    if progress_cb:
+                        with lock:
+                            cur = done[0]
+                        progress_cb(progress_label,
+                                    lo + (hi - lo) * min(cur / total, 1.0),
+                                    f"{cur / 1e6:.0f}/{total / 1e6:.0f} MB")
+            pending = [i for f, i in futures.items() if f.exception()]
+            if not pending:
+                break
+            logging.warning("Ranged download round %d: %d/%d segment(s) failed, "
+                            "retrying only those", round_no, len(pending), n_seg)
+            time.sleep(config.API_RETRY_DELAY)
+        if pending:
+            logging.warning("Ranged download gave up after %d round(s) (%d segment "
+                            "unrecovered), falling back to single stream",
+                            _RANGED_MAX_ROUNDS, len(pending))
+            return "failed", total
+        tmp = dest + ".part"
+        with open(tmp, "wb") as out:
+            for p in parts:
+                with open(p, "rb") as f:
+                    shutil.copyfileobj(f, out)
+        if os.path.getsize(tmp) != total:
+            logging.warning("Ranged download size mismatch (%d != %d), falling "
+                            "back to single stream", os.path.getsize(tmp), total)
+            return "failed", total
+        os.replace(tmp, dest)
+        logging.info("Ranged download finished: %s (%.1f MB)", dest, total / 1e6)
+        return "ok", total
+    finally:
+        for p in parts:  # 成功时各段已拼入目标文件,失败时丢弃半成品
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        try:
+            os.remove(dest + ".part")
+        except OSError:
+            pass
+
 
 def _download_gz(url_path: str, dest: str,
                  progress_cb=None, progress_range: tuple[float, float] = (0.0, 1.0),
                  progress_label: str = "download") -> str:
     """从 STRING 下载压缩文件到本地,返回文件路径;本地已有同名文件时直接跳过下载,
-    多个下载源依次尝试,全部失败时报错。"""
+    多个下载源依次尝试,全部失败时报错。每个源先尝试并发分段(Range),未成功自动
+    回退单流;大文件首次回退时经进度回调发一次用户提醒(单流约需 10 分钟以上),
+    小文件单流本来就快,不提醒以免误报。"""
     import time
 
     import requests
@@ -103,9 +289,22 @@ def _download_gz(url_path: str, dest: str,
     bases = [getattr(config, "STRING_DOWNLOAD_MIRROR_BASE", None),
              config.STRING_DOWNLOAD_BASE]
     bases = [b.rstrip("/") for b in bases if b]
+    warned_fallback = False  # 提醒每次下载只发一次,两个源都回退时不重复打扰
     last_err: Exception | None = None
     for base in bases:
         url = base + url_path
+        status, total = _download_gz_ranged(url, dest, progress_cb, lo, hi,
+                                            progress_label)
+        if status == "ok":
+            return dest
+        if not warned_fallback and total >= _RANGE_MIN_SIZE:
+            warned_fallback = True
+            host = base.split("//", 1)[-1]
+            logging.warning("Concurrent download did not finish on %s (status %s), "
+                            "falling back to single stream (may take 10+ minutes)",
+                            host, status)
+            if progress_cb:
+                progress_cb("fallback", None, host)
         for attempt in range(1, config.API_MAX_RETRIES + 1):
             try:
                 with requests.get(url, stream=True, timeout=config.API_TIMEOUT) as resp:
