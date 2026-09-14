@@ -24,7 +24,7 @@ _chembl_cache_hours: float | None = None
 
 
 def set_chembl_cache_ttl(hours: int | None) -> None:
-    """调整 ChEMBL 请求结果的缓存有效期(默认与全局 HTTP 缓存一致,24 小时)。
+    """调整 ChEMBL 请求结果的缓存有效期(默认与全局 HTTP 缓存一致)。
     hours 为缓存小时数:设得越小,数据越新、联网请求越频繁;超过有效期的旧数据会自动重新联网获取。
     """
     global _chembl_cache_hours

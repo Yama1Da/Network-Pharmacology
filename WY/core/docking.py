@@ -330,8 +330,12 @@ def smiles_to_sdf_3d(smiles: str, out_path: str, seed: int = 0, n_confs: int = 2
     if not cids:
         raise RuntimeError(t("dock.err_rdkit_3d"))
     best_cid, best_e = None, None
+    # MMFF 力场的第二个位置参数(分子参数表)必需:个别分子无 MMFF 参数时跳过
+    # 能量最小化,直接用第一个构象,不让配体准备因此失败
+    mmff_props = AllChem.MMFFGetMoleculeProperties(mol)
     for cid in cids:
-        ff = AllChem.MMFFGetMoleculeForceField(mol, confId=cid)
+        ff = (AllChem.MMFFGetMoleculeForceField(mol, mmff_props, confId=cid)
+              if mmff_props is not None else None)
         if ff is None:
             continue
         ff.Minimize()
@@ -445,6 +449,7 @@ def _rcsb_search_entry_ids(gene_symbol: str, max_hits: int) -> list[str]:
         max_retries=config.RCSB_SEARCH_MAX_RETRIES, timeout=config.API_TIMEOUT,
         label=f"RCSB search for {gene_symbol}", throttle_key="rcsb_search",
         headers=_RCSB_HEADERS, raise_on_exhausted=True, use_cache=True,
+        cache_ttl_hours=config.RCSB_SEARCH_CACHE_TTL_HOURS,
         no_retry_status=(204,),
     )
     # RCSB 官方行为:查询成功但 0 命中时返回 204 No Content(空响应体),

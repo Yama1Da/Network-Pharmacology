@@ -73,7 +73,7 @@ streamlit run App.py  # run from the terminal
    the gear button at the bottom-left opens global settings (e.g., target filter thresholds).
    Changing settings automatically invalidates the integrated caches and rebuilds them.
 
-All intermediate results are cached automatically (6 hours by default, see `WY/config.py`),
+All intermediate results are cached automatically (7 days by default, see `WY/config.py`),
 so repeated analyses return in seconds.
 
 ## Configuration
