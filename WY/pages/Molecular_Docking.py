@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import shutil
@@ -103,13 +104,18 @@ def _genes_from_df(df: pd.DataFrame) -> set[str]:
 
 
 def _reset_docking_downstream() -> None:
-    """切换候选基因数据源后,清空配体、受体、对接盒和对接结果,
-    避免上一份数据的旧结果混入新分析。"""
+    """切换候选基因数据源后,清空配体、受体、对接盒和对接结果,以及由这些数据派生的
+    会话控件键(基因/结构/构象下拉、盒子微调数字输入、药物/疾病名输入与结论):
+    残留的控件会话值不在新选项里会让 selectbox 抛异常,旧盒会静默覆盖新推断盒。"""
     for _k in ("lig_pdbqt", "cid", "lig_auto_done",
                "gene", "rec_pdbqt", "pdb_id", "pdb_path",
                "box", "result", "result_dir", "starred",
                "gene_structures", "candidate_pre", "batch_results"):
         dock.pop(_k, None)
+    for _k in ("gene_sel", "pdb_sel", "pose_sel", "conclusion",
+               "drug_name", "disease_name", "lig_query",
+               "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
+        st.session_state.pop(_k, None)
 
 
 def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
@@ -123,32 +129,79 @@ def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
             dock["lig_auto_done"] = True
         st.error(t(not_found_key, drug=query, q=query))
         return
-    sdf_path = Utils.fetch_ligand_sdf_3d(cid)
+    try:
+        sdf_path = Utils.fetch_ligand_sdf_3d(cid)
+    except Exception as exc:
+        # PubChem 网络故障/HTTP 错误:给友好提示而不是整页异常栈;
+        # 自动获取失败置 lig_auto_done,否则页面上任意点击都会重试并再次抛异常
+        if auto_mode:
+            dock["lig_auto_done"] = True
+        st.error(t("dock.ligand_failed", exc=exc))
+        return
     if not sdf_path:
         if auto_mode:
             dock["lig_auto_done"] = True
         st.error(t(no_3d_key, cid=cid))
         return
     dock["cid"] = cid
-    dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+    try:
+        dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+    except Exception as exc:
+        # SDF 下载成功但 RDKit/meeko 处理不了(如特殊金属配合物):同页 SMILES
+        # 分支已有的兜底,此处保持一致;重试也不会成功,同样置 lig_auto_done
+        if auto_mode:
+            dock["lig_auto_done"] = True
+        st.error(t("dock.ligand_failed", exc=exc))
+        return
 
 
 def _read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
     """读取所选 PPI 结果目录,返回 HUB 基因集合与富集验证基因集合;
-    对应文件缺失时返回空集合。"""
+    对应文件缺失时返回空集合。历史版本产出的 nodes 表可能缺 is_hub/gene 列
+    (downloads 目录跨版本留存),缺列或读不了时按空集合处理,不让页面崩溃。"""
     base = os.path.join(config.DOWNLOADS_DIR, dir_name)
     prefix = dir_name[:-5] if dir_name.endswith("_data") else dir_name
     hub: set[str] = set()
     nodes_path = os.path.join(base, f"{prefix}_nodes.csv")
     if os.path.exists(nodes_path):
-        nodes = pd.read_csv(nodes_path, encoding="utf-8-sig", comment="#")
-        hub = set(nodes.loc[nodes["is_hub"].fillna(False), "gene"]
-                  .dropna().astype(str).str.upper())
+        try:
+            nodes = pd.read_csv(nodes_path, encoding="utf-8-sig", comment="#")
+            if {"is_hub", "gene"}.issubset(nodes.columns):
+                hub = set(nodes.loc[nodes["is_hub"].fillna(False), "gene"]
+                          .dropna().astype(str).str.upper())
+            else:
+                logging.warning("nodes file lacks is_hub/gene columns, hub list "
+                                "skipped: %s", nodes_path)
+        except Exception:
+            logging.exception("Failed to read nodes file: %s", nodes_path)
     enr: set[str] = set()
     enr_path = os.path.join(base, f"{prefix}_enrichment.csv")
     if os.path.exists(enr_path):
-        enr = _genes_from_df(pd.read_csv(enr_path, encoding="utf-8-sig", comment="#"))
+        try:
+            enr = _genes_from_df(pd.read_csv(enr_path, encoding="utf-8-sig", comment="#"))
+        except Exception:
+            logging.exception("Failed to read enrichment file: %s", enr_path)
     return hub, enr
+
+
+def _split_result_prefix(prefix: str) -> tuple[str, str]:
+    """把结果目录名/富集缓存名前缀拆回 (药物名, 疾病名)。
+
+    前缀是 f"{safe(drug)}_{safe(disease)}" 拼接,而药物名自身可能含空格
+    (如 "Salicylic acid" → "Salicylic_acid"),简单 split("_", 1) 会把药物名截断,
+    导致 Step2 用半截名字去 PubChem 取错配体、归档前缀张冠李戴。
+    这里借 name_map(safe 名 → 原始名,各数据源抓取时都有记录)贪心匹配:
+    从最长的药物名前缀试起,药物与疾病两段都能还原才采用;识别不出时退回旧拆法。
+    """
+    name_map = Utils.load_name_map()
+    parts = prefix.split("_")
+    for i in range(len(parts) - 1, 0, -1):
+        drug = name_map.get("_".join(parts[:i]))
+        disease = name_map.get("_".join(parts[i:]))
+        if drug and disease:
+            return str(drug), str(disease)
+    parts = prefix.split("_", 1)
+    return (parts[0], parts[1] if len(parts) > 1 else "")
 
 
 def _docking_result_prefix(drug: str, disease: str, gene: str) -> str:
@@ -166,8 +219,10 @@ def _docking_result_prefix(drug: str, disease: str, gene: str) -> str:
 
 def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, box: dict,
                          out_pdbqt: str, scores: pd.DataFrame, conclusion: str,
-                         receptor_source: str = "experiment") -> str:
-    """归档本次对接成果:打分表、最佳构象和参数信息存入结果文件夹,并清理旧版本。"""
+                         receptor_source: str = "experiment",
+                         pose_mode: int | None = None) -> str:
+    """归档本次对接成果:打分表、所选构象和参数信息存入结果文件夹,并清理旧版本。
+    pose_mode 提供时归档用户在 Step6 选定的 pose,未提供(默认)归档打分最佳的构象。"""
     gene = Utils.safe_name(gene)  # 清理基因名中的非法字符,再用于文件命名
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = os.path.join(config.MD_RESULT_DIR, f"{prefix}_{ts}")
@@ -179,10 +234,14 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
     summary_path = os.path.join(result_dir, f"summary_{ts}.csv")
     summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
 
-    # 最佳构象:按序号从 Vina 原始输出中提取
+    # 归档构象:页面下拉选了 pose 就按选择归档(与"选择要保存的 pose"文案一致),
+    # 否则按亲和力排序取最佳;选择值不在打分表里时回退最佳,保证归档必有构象
     best_mode = int(summary.iloc[0]["mode"])
+    save_mode = best_mode
+    if pose_mode is not None and int(pose_mode) in set(summary["mode"].tolist()):
+        save_mode = int(pose_mode)
     best_path = os.path.join(result_dir, f"best_{gene}_{ts}.pdbqt")
-    extract_model(out_pdbqt, best_mode, best_path)
+    extract_model(out_pdbqt, save_mode, best_path)
 
     # 参数信息(药物、靶点、对接盒、打分等),便于日后复查
     Utils.write_docking_metadata(os.path.join(result_dir, f"meta_{ts}.txt"), {
@@ -197,8 +256,9 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
         "exhaustiveness": config.EXHAUSTIVENESS,
         "num_modes": config.NUM_MODES,
         "seed": config.DOCKING_SEED,
-        "best_mode": best_mode,
-        "best_affinity": float(summary.iloc[0]["affinity"]),
+        "best_mode": save_mode,
+        "best_affinity": float(
+            summary.loc[summary["mode"] == save_mode, "affinity"].iloc[0]),
         "conclusion": conclusion,
     })
 
@@ -425,25 +485,23 @@ def _step1_select_source(dock: dict) -> None:
                 # 从目录名拆出药物名和疾病名,供 Step 2 自动获取配体
                 prefix = sel_dir[:-5] if sel_dir.endswith("_data") else sel_dir
                 dock["label"] = prefix
-                parts = prefix.split("_", 1)
-                dock["drug"] = parts[0] if parts[0] else ""
-                dock["disease"] = parts[1] if len(parts) > 1 else ""
+                dock["drug"], dock["disease"] = _split_result_prefix(prefix)
                 _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
     else:
         enr_files = Utils.list_cache_files("enrichment", exts=(".csv",))
         # 只保留普通富集(ORA)结果供选择:GSEA 文件没有逐条目的基因列,选中也提不出候选基因;
-        # 按创建时间倒序,最近一次分析排最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称
+        # 按最后修改时间倒序,最近一次分析排最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称
         if not enr_files.empty:
             is_ora = enr_files["File name"].map(
                 lambda n: (parse_enrichment_filename(n) or {}).get("kind") == "ora")
             enr_files = (enr_files[is_ora]
-                         .sort_values("Created time", ascending=False))
+                         .sort_values("Modified time", ascending=False))
         if enr_files.empty:
             st.warning(t("dock.no_enr_files"))
         else:
-            # 同名分析可能有多份不同参数的缓存,展示名带上创建时间以便区分
+            # 同名分析可能有多份不同参数的缓存,展示名带上时间戳以便区分
             file_disp = {row["File name"]:
-                         f"{Utils.enrichment_display_name(row['File name'])} · {row['Created time']}"
+                         f"{Utils.enrichment_display_name(row['File name'])} · {row['Modified time']}"
                          for _, row in enr_files.iterrows()}
             sel_file = st.selectbox(t("dock.sel_enr_file"), enr_files["File name"].tolist(), key="sel_enr",
                                     index=None, placeholder=t("dock.sel_enr_file_ph"),
@@ -457,9 +515,7 @@ def _step1_select_source(dock: dict) -> None:
                 dock["hub_genes"] = []  # 没有 HUB 信息,只按富集基因筛选
                 label = _extract_label(sel_file)
                 dock["label"] = label
-                parts = label.split("_", 1)
-                dock["drug"] = parts[0] if parts[0] else ""
-                dock["disease"] = parts[1] if len(parts) > 1 else ""
+                dock["drug"], dock["disease"] = _split_result_prefix(label)
                 _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
 
 
@@ -611,16 +667,20 @@ st.divider()
 st.subheader(t("dock.step3"))
 
 if dock.get("genes"):
+    # dock["genes"] 可能被重新筛选(重跑结构批量检查等),残留会话值不在新列表里
+    # 会让 selectbox 抛异常,先按新列表校验
+    if st.session_state.get("gene_sel") not in dock["genes"]:
+        st.session_state.pop("gene_sel", None)
     gene = st.selectbox(t("dock.gene_label"), dock["genes"], key="gene_sel")
-    # 换靶点基因后,清空旧受体和对接结果
+    # 换靶点基因后,清空旧受体和对接结果,以及派生的控件会话键
     if dock.get("gene") != gene:
         dock["gene"] = gene
-        dock.pop("rec_pdbqt", None)
-        dock.pop("pdb_path", None)
-        dock.pop("pdb_id", None)
-        dock.pop("box", None)
-        dock.pop("result", None)
-        dock.pop("receptor_source", None)
+        for _k in ("rec_pdbqt", "pdb_path", "pdb_id", "box", "result",
+                   "result_dir", "starred", "receptor_source"):
+            dock.pop(_k, None)
+        for _k in ("pose_sel", "conclusion",
+                   "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
+            st.session_state.pop(_k, None)
 
     # 自动查询该基因的候选结构:优先复用 Step 1 批量结果,查不到再单基因查
     allow_af = st.session_state.get("allow_af", False) and config.ALPHAFOLD_ENABLED
@@ -637,12 +697,19 @@ if dock.get("genes"):
         st.warning(t("dock.no_human_struct", gene=gene))
     else:
         st.dataframe(cand, hide_index=True, use_container_width=True)
+        # 换基因后新候选列表不含残留的旧 PDB id,先校验再渲染,避免 selectbox 抛异常
+        if st.session_state.get("pdb_sel") not in [str(x) for x in cand["pdb_id"].tolist()]:
+            st.session_state.pop("pdb_sel", None)
         pdb_id = st.selectbox(t("dock.sel_pdb"), cand["pdb_id"].tolist(), key="pdb_sel")
-        # 更换 PDB 结构后,作废旧受体和后续步骤的旧结果
+        # 更换 PDB 结构后,作废旧受体和后续步骤的旧结果,以及派生的控件会话键
         if dock.get("pdb_sel") != pdb_id:
             dock["pdb_sel"] = pdb_id
-            for _k in ("rec_pdbqt", "pdb_id", "pdb_path", "box", "result", "receptor_source"):
+            for _k in ("rec_pdbqt", "pdb_id", "pdb_path", "box", "result",
+                       "result_dir", "starred", "receptor_source"):
                 dock.pop(_k, None)
+            for _k in ("pose_sel", "conclusion",
+                       "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
+                st.session_state.pop(_k, None)
         if st.button(t("dock.dl_receptor_btn"), key="prep_rec"):
             with st.spinner(t("dock.dl_pdb_spinner")):
                 try:
@@ -722,6 +789,11 @@ st.subheader(t("dock.step4"))
 
 if dock.get("pdb_path"):
     if st.button(t("dock.infer_box_btn"), key="infer_box"):
+        # 先清掉旧盒的微调控件会话值再写新推断盒:数字输入按 key 复用会话值,
+        # 不清的话下面的 number_input 会忽略 value= 用旧值覆写 dock["box"],
+        # 同一受体上第二次"Infer box"等于无效(换基因/换受体的路径在上方已清)。
+        for _k in ("cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
+            st.session_state.pop(_k, None)
         try:
             dock["box"] = Utils.infer_box_from_cofactor(dock["pdb_path"])
             # 预测结构没有共晶配体可参考,按整蛋白范围估盒子;过大时收缩到可计算大小
@@ -801,6 +873,11 @@ if dock.get("rec_pdbqt") and dock.get("lig_pdbqt") and dock.get("box"):
                 poses = Utils.split_vina(out_pdbqt, out_dir=os.path.dirname(out_pdbqt))
                 scores = Utils.parse_vina_scores(out_pdbqt)
                 dock["result"] = {"proc": proc, "out": out_pdbqt, "poses": poses, "scores": scores}
+                # 新一轮对接:清掉上一轮残留的构象选择、结论与归档状态
+                st.session_state.pop("pose_sel", None)
+                st.session_state.pop("conclusion", None)
+                dock.pop("result_dir", None)
+                dock.pop("starred", None)
             except Exception as exc:
                 st.error(t("dock.dock_failed", exc=exc))
 
@@ -822,6 +899,9 @@ if dock.get("result"):
     if scores.empty:
         st.warning(t("dock.no_modes"))
     else:
+        # 新一轮对接的 mode 数可能少于旧会话残留的选中值,先按新打分表校验再渲染
+        if st.session_state.get("pose_sel") not in scores["mode"].tolist():
+            st.session_state.pop("pose_sel", None)
         pose_sel = st.selectbox(t("dock.sel_pose"),
                                 scores["mode"].tolist(), index=0, key="pose_sel")
         conclusion = st.text_area(t("dock.conclusion_label"),
@@ -841,7 +921,8 @@ if dock.get("result"):
                     result_dir = _save_docking_result(
                         prefix, gene, dock.get("pdb_id", ""), dock.get("cid"),
                         dock["box"], dock["result"]["out"], scores, conclusion,
-                        receptor_source=dock.get("receptor_source", "experiment"))
+                        receptor_source=dock.get("receptor_source", "experiment"),
+                        pose_mode=int(pose_sel))
                     dock["result_dir"] = result_dir
                     dock.pop("starred", None)  # 新保存的结果视为未收藏
                     st.success(t("dock.saved"))
@@ -882,14 +963,19 @@ if dock.get("result"):
         st.markdown(t("dock.preview3d"))
         if dock.get("pdb_path"):
             try:
+                # 文件名带本次对接输出的时间戳维度:vina_out 文件名含秒级时间戳,
+                # 两个并发会话各自对接时不会互相覆盖对方的构象/预览中间文件
+                out_stem = os.path.splitext(os.path.basename(dock["result"]["out"]))[0]
                 pose_path = os.path.join(config.DOCKING_RAW_CACHE_DIR,
-                                         f"pose_{int(pose_sel)}.pdbqt")
+                                         f"{out_stem}_pose_{int(pose_sel)}.pdbqt")
                 extract_model(dock["result"]["out"], int(pose_sel), pose_path)
-                # 半径默认取全局分析参数(config.POCKET_CUTOFF,齿轮面板可改、重启仍生效);
-                # −/+ 步进按钮 + 滑条。按钮必须写在滑条实例化之前
+                # 半径以主页齿轮的全局参数(config.POCKET_CUTOFF)为主导:齿轮改动后
+                # 本页滑条自动跟随;页内 −/+/滑条仅本次会话生效,不回写配置
+                # (回写会让对接页的旧值覆盖齿轮设置)。按钮必须写在滑条实例化之前
                 # (控件键在其控件创建后不可再写),点击当轮即生效;步进 0.5 Å,边界夹紧
-                if "pocket_cutoff" not in st.session_state:
-                    st.session_state.pocket_cutoff = float(config.POCKET_CUTOFF)
+                if st.session_state.get("_pocket_cutoff_sync") != float(config.POCKET_CUTOFF):
+                    st.session_state["_pocket_cutoff_sync"] = float(config.POCKET_CUTOFF)
+                    st.session_state["pocket_cutoff"] = float(config.POCKET_CUTOFF)
                 cbtn, cslider = st.columns([1.2, 6])
                 with cbtn:
                     bminus, bplus = st.columns(2)
@@ -906,15 +992,12 @@ if dock.get("result"):
                 with cslider:
                     cutoff = st.slider(t("dock.cutoff_label"), 3.0, 6.0,
                                        step=0.5, key="pocket_cutoff")
-                # 与全局参数不同步时更新运行时配置并持久化到 ui_settings.json
-                if cutoff != float(config.POCKET_CUTOFF):
-                    config.POCKET_CUTOFF = cutoff
-                    Utils.save_ui_settings({"POCKET_CUTOFF": cutoff})
                 pocket = residues_near_ligand(dock["pdb_path"], pose_path, cutoff=cutoff)
                 interactions = interactions_near_ligand(dock["pdb_path"], pose_path)
                 # 构象 pdbqt→pdb 只转换一次、受体 PDB 全文只读一次,
                 # 3D 预览与保存 HTML 复用同一份结果(每次刷新少一次转换、少两次读盘)
-                pose_pdb = os.path.join(os.path.dirname(pose_path), "pose_view.pdb")
+                pose_pdb = os.path.join(os.path.dirname(pose_path),
+                                        f"{out_stem}_pose_view.pdb")
                 try:
                     pose_pdbqt_to_pdb(pose_path, pose_pdb)
                 except Exception:

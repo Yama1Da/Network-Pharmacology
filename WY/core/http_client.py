@@ -14,6 +14,7 @@ _next_allowed_at: dict[str, float] = {}
 
 # 共享 HTTP 会话(懒加载):带 sqlite 落盘缓存,供 DGIdb/Open Targets/DisGeNET 复用
 _session: requests.Session | None = None
+_session_lock = threading.Lock()
 
 
 def _get_session() -> requests.Session:
@@ -22,21 +23,23 @@ def _get_session() -> requests.Session:
     """
     global _session
     if _session is None:
-        try:
-            import os
+        with _session_lock:  # 双重检查加锁:并发首请求只创建一个会话,避免先创建的 sqlite 连接泄漏
+            if _session is None:
+                try:
+                    import os
 
-            import config
-            from requests_cache import CachedSession
+                    import config
+                    from requests_cache import CachedSession
 
-            os.makedirs(os.path.dirname(config.HTTP_CACHE_FILE), exist_ok=True)
-            _session = CachedSession(
-                config.HTTP_CACHE_FILE, backend="sqlite",
-                expire_after=config.HTTP_CACHE_TTL_HOURS * 3600,
-                allowable_methods=("GET", "POST"), allowable_codes=(200,),
-            )
-        except Exception:
-            logging.exception("requests_cache unavailable, falling back to plain session")
-            _session = requests.Session()
+                    os.makedirs(os.path.dirname(config.HTTP_CACHE_FILE), exist_ok=True)
+                    _session = CachedSession(
+                        config.HTTP_CACHE_FILE, backend="sqlite",
+                        expire_after=config.HTTP_CACHE_TTL_HOURS * 3600,
+                        allowable_methods=("GET", "POST"), allowable_codes=(200,),
+                    )
+                except Exception:
+                    logging.exception("requests_cache unavailable, falling back to plain session")
+                    _session = requests.Session()
     return _session
 
 

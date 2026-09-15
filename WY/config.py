@@ -12,8 +12,8 @@ load_dotenv(os.path.join(BASE_DIR, "API.env"))
 DisGeNET_API_KEY = os.getenv("DisGeNET_API_KEY", "")
 # ======== 主要路径 =========
 # PPI网络路径
-# 固定版本的 STRING 地址,保证分析结果可复现
-STRING_BASE_URL = "https://version-12-0.string-db.org/api/json"
+# STRING 查询 API 基址不在此写死:按最终生效的 STRING_VERSION 在文件末尾统一派生
+# (设置面板可切换版本),保证 PPI 查询与背景互作组始终用同一版本。
 # STRING 单次查询基因数上限(约 1000 个)
 STRING_QUERY_LIMIT = 1000
 # STRING 调用方标识(官方要求,避免被限流)
@@ -32,8 +32,11 @@ LIGHT_API_MAX_RETRIES = 2
 # ChEMBL 请求超时(秒)与重试次数:靶点详情批量响应大,服务端偶发很慢,放宽以免整个抓取中止
 CHEMBL_API_TIMEOUT = 90
 CHEMBL_API_MAX_RETRIES = 3
-# 富集请求(g:Profiler / Enrichr)重试次数:服务不可达时等待时间长,故压低。
-ENRICHMENT_MAX_RETRIES = 2
+# 富集请求(g:Profiler / Enrichr)尝试次数:连续该次数请求异常(重试机会耗尽)即触发熔断降级,
+# 冷却期内直接改用 Enrichr,避免反复苦等超时。
+ENRICHMENT_MAX_RETRIES = 3
+# DisGeNET 单页请求尝试次数(初次+重试):每次分析仅数页请求,重试 2 次即可。
+DISGENET_MAX_RETRIES = 2
 # DisGeNET 主动限流:学术(Academic)计划官方 API 配额为 每分钟 50 次 / 每天 25,000 次 /
 # 每月 500,000 次。本地限额在官方配额内再留约 10% 余量,避免本地窗口与服务器
 # 计数口径差异导致 429。本程序每次分析仅 1 次请求,正常使用远达不到这些上限。
@@ -42,22 +45,37 @@ DISGENET_RATE_LIMIT_PER_DAY = 20000
 DISGENET_RATE_LIMIT_PER_MONTH = 450000
 # 限流等待上限(秒):超过则放弃本次请求
 DISGENET_RATE_LIMIT_MAX_WAIT = 60
-# g:Profiler 连续失败后的熔断时长(秒):期间直接改用 Enrichr,避免反复等超时。
-GPROFILER_CIRCUIT_TTL_SECONDS = 1800
-# 缓存有效期(秒):PPI/富集缓存超过该时长即过期,下次分析重新请求。
-CACHE_TTL_SECONDS = 6 * 3600
-# 数据源 HTTP 响应缓存有效期(小时):DGIdb/Open Targets/DisGeNET 共用,与 ChEMBL 库默认一致
-HTTP_CACHE_TTL_HOURS = 24
+# g:Profiler 熔断冷却阶梯(秒):触发熔断从第 1 档开始,之后每次"恢复失败"(冷却到期后的探测失败)
+# 推进一档,请求成功(任何有效响应)即清零复位;最后一档为上限。网络故障通常几分钟内恢复,
+# 前两档短便于快速恢复,后两档拉长避免频繁撞超时。
+GPROFILER_CIRCUIT_COOLDOWN_LADDER = (30, 60, 600, 1800)
+# 冷却到期后的探测超时(秒):探测按单次尝试在独立线程限时执行,超时按探测失败继续延长冷却,
+# 避免触发探测的分析苦等整个 API_TIMEOUT。
+GPROFILER_PROBE_TIMEOUT_SECONDS = 15
+# Enrichr 熔断冷却阶梯(秒):兜底源每个请求只尝试 1 次,失败即熔断(重试上移到熔断层,
+# 冷却后的探测即重试);首档比 g:Profiler 长,因为每次探测会占用一个模块线程。
+ENRICHR_CIRCUIT_COOLDOWN_LADDER = (60, 600, 1800)
+# Enrichr 冷却到期后的探测超时(秒),语义与 g:Profiler 相同。
+ENRICHR_PROBE_TIMEOUT_SECONDS = 15
+# 缓存有效期(秒):PPI/富集/邻近度/RWR 等分析缓存超过该时长即过期,过期只挡复用不删文件。
+# 上游源多为月/年级 release,取 7 天减少重复请求;需要立即刷新走管理页"更新"(入口清缓存)。
+CACHE_TTL_SECONDS = 7 * 86400
+# 数据源 HTTP 响应缓存有效期(小时):DGIdb/Open Targets/DisGeNET 共用,ChEMBL 默认沿用。
+# 上游为月/年级 release,取 7 天减少重复下载;强制更新走管理页"更新"(入口先清缓存)。
+HTTP_CACHE_TTL_HOURS = 168
+# RCSB 结构搜索的缓存有效期(小时),覆盖全局 HTTP 缓存值:新结构会持续发布,取 4 天折中;
+# 结构元数据(GraphQL)条目发布后不可变,沿用全局值即可。
+RCSB_SEARCH_CACHE_TTL_HOURS = 96
 
 # ======== 靶点降噪过滤 ========
 # 药物/疾病靶点在整合(merge)时做降噪过滤,阈值集中在此配置,过滤逻辑在 core/targets.py。
 # 过滤规则或阈值变更后需把 TARGET_FILTER_VERSION 加 1:merged 整合缓存的文件名
 # 带该版本号,加 1 后旧缓存自动失效,下次分析按新阈值重建(原始缓存不受影响)。
-TARGET_FILTER_VERSION = 2
+TARGET_FILTER_VERSION = 3
 # ChEMBL 黑名单:非特异性结合/药物代谢蛋白,不计入药物靶点
 # (白蛋白 ALB 与主要药物代谢 CYP 酶;CYP46A1 是脑特异胆固醇酶、可能是药效靶点,不列入)
 CHEMBL_TARGET_BLACKLIST = (
-    "ALB", "CYP1A2", "CYP2A6", "CYP2C9", "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4",
+    "ALB", "CYP1A1", "CYP1A2", "CYP2A6", "CYP2C9", "CYP2C19", "CYP2D6", "CYP2E1", "CYP3A4",
 )
 # 设置面板里黑名单的常用候选(白蛋白、主要代谢 CYP、常见结合蛋白);面板也支持手输任意基因符号
 CHEMBL_BLACKLIST_OPTIONS = (
@@ -70,18 +88,18 @@ CHEMBL_BLACKLIST_OPTIONS = (
 # 关闭 CHEMBL_CORROBORATION_REQUIRED 后无定量值的基因无条件保留
 # (配合阈值为 0、DGIDB_MIN_SCORE 为 0 即"无降噪")。
 # 注意:一刀切按阈值过滤会把靶点砍到个位数(多数活性记录无 pChEMBL 值),勿删 DGIdb 佐证通道
-CHEMBL_PCHEMBL_THRESHOLD = 4.8
+CHEMBL_PCHEMBL_THRESHOLD = 0.5
 # 无 pChEMBL 定量值的 ChEMBL 基因是否必须被 DGIdb 佐证才保留(分析参数,可在主页齿轮调整)
-CHEMBL_CORROBORATION_REQUIRED = True
+CHEMBL_CORROBORATION_REQUIRED = False
 # ======== 疾病靶点规模(分析参数,主页齿轮 +- 调节) ========
 # Open Targets 整合时取关联分数前 OT_TOP_N 个靶点。原始抓取固定拉满 OT_FETCH_SIZE 条(按分数降序
 # 全量落盘),因此调整 Top-N 不需要重新联网;仅当原始缓存行数不足 Top-N 时才自动补抓。
 OT_FETCH_SIZE = 1000
-OT_TOP_N = 200
+OT_TOP_N = 500
 # DisGeNET 抓取前 DISGENET_PAGES 页(page_number 分页,学术账号每页固定 100 条,API 硬性规定);
 # 整合时按页数×每页条数截断,原始缓存行数不足时自动补抓缺的页。
 DISGENET_PAGE_SIZE = 100
-DISGENET_PAGES = 1
+DISGENET_PAGES = 5
 # DGIdb 交互分数下限,且要求至少 1 条 PMID 文献支撑,两条件同时满足才算有效相互作用
 DGIDB_MIN_SCORE = 0.05
 # Open Targets 总关联分数下限(保险丝:防少见病的 top200 混入极弱关联靶点);
@@ -147,20 +165,16 @@ SPECIES_MAP = {
     }
 }
 # ======== 分析参数 =========
-# PPI 网络置信度阈值(STRING):0.7 为高置信度,0.4 为中置信度
-PPI_CONFIDENCE = 0.7
+# PPI 网络置信度阈值(STRING):0.4 为中等置信度(多数文献取值),0.7 为高置信度
+PPI_CONFIDENCE = 0.4
 # 富集分析显著性阈值
-ENRICHMENT_PVALUE = 0.05
+ENRICHMENT_PVALUE = 0.055
 # 富集分析的条目类型:GO 生物过程 / 分子功能 / 细胞组分,以及 KEGG 通路
 ENRICHMENT_SOURCES = ("GO:BP", "GO:MF", "GO:CC", "KEGG")
 # 每类富集展示条数上限
 ENRICHMENT_TOP_PER_SOURCE = 10
 # 通路展示数量上限
 PATHWAY_DISPLAY_NUM = 30
-# PPI 建网的孤立节点隐藏阈值:仅剔除完全无互作的节点(=1),对齐文献
-# "置信度过滤 + disconnected nodes were hidden" 的做法;更高的连接度剪枝
-# 非文献标准,且会抵消 RWR 扩展拉入的外周靶点
-MIN_DEGREE_FILTER = 1
 # CytoHubba 式核心靶点:按 MCC(Maximal Clique Centrality)排序取前 N 个画核心靶点子网络图
 MCC_TOP_N = 10
 
@@ -207,17 +221,40 @@ GSEA_TOP_DISPLAY = 20
 # 页面显著性筛选阈值(按惯例 FDR<0.25;仅用于筛选展示,完整结果见 CSV)
 GSEA_FDR_SCREEN = 0.25
 
-# ======== 背景互作组(STRING v12.0 全网络本地缓存) ========
-# 版本需与上面的 STRING API 一致,保证 PPI 查询与背景网络计算用同一版本数据。
+# ======== 背景互作组(STRING 全网络本地缓存) ========
+# 查询 API 基址与下载路径都由本版本派生,保证 PPI 查询与背景网络计算用同一版本数据;
+# 可在设置面板切换(写 ui_settings.json),新版本发布后无需改代码。
 STRING_VERSION = "v12.0"
+# 预设版本下拉:官方下载站在售的版本(2026-09 实测:v11.0/v11.5/v12.0/v12.5,v10.5 及更早已下线);
+# 更新的版本直接手输即可(经下载站探活后接受)
+STRING_KNOWN_VERSIONS = ("v12.0", "v12.5")
+
+
+def normalized_string_version(value) -> str | None:
+    """校验并归一 STRING 版本号:合法返回 'v<数字>[.<数字>][字母后缀]' 小写形式(如 v12.0、
+    v12.0a、v10;漏 v 前缀自动补),非法返回 None。设置面板保存与 ui_settings.json 加载共用,
+    保证写盘与读回的格式一致。允许字母后缀:官方历史上有补丁版命名(如 v10.0a)。"""
+    import re
+
+    s = str(value).strip().lower()
+    if s and not s.startswith("v"):
+        s = f"v{s}"
+    return s if re.fullmatch(r"v\d+(\.\d+)?[a-z]?", s) else None
+
+
 # 官方下载站(人类全网络文件约 83MB)
 STRING_DOWNLOAD_BASE = "https://stringdb-downloads.org/download"
 # 国内镜像:优先使用,不可用时自动改用官方站。
 STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"
+# 全网络大文件下载并发分段数(仅对支持 HTTP Range 的源生效):镜像单连接限速时
+# 多段并行可成倍提速;不支持 Range 或分段失败自动回退单流下载并提醒用户(慢)。
+# 官方站 stringdb-downloads.org 实测单连接仅 ~10KB/s,镜像未同步新版本回退官方源时,
+# 调大此值可近似线性提速(官方站对多连接无明显聚合限速)。
+INTERACTOME_DOWNLOAD_CONCURRENCY = 6
 # 背景互作组缓存目录
 INTERACTOME_CACHE_DIR = os.path.join(CACHE_DIR, "interactome")
-# 置信度换算:上面 PPI_CONFIDENCE 是 0~1 小数,全网络打分是 0~1000 整数,由这里换算。
-INTERACTOME_CONFIDENCE = int(PPI_CONFIDENCE * 1000)  # 0.7 -> 700
+# 置信度换算:PPI_CONFIDENCE 是 0~1 小数,全网络打分是 0~1000 整数。
+# 派生值统一在本文件末尾(UI 设置覆盖之后)计算,保证与最终生效的 PPI_CONFIDENCE 一致。
 # 背景网络目前只构建人类;小鼠/大鼠需要时再放开(数据量约为 3 倍)
 INTERACTOME_ENABLED_SPECIES = ("Human",)
 # 背景网络"陈旧提醒"阈值(天):超过该天数只在页面提示检查新版本,不会自动重新下载
@@ -365,11 +402,20 @@ HOST_MIN_REQUEST_INTERVAL = {
 # 齿轮面板修改的分析参数会写入 Static/data/cache/ui_settings.json,
 # 启动时在此套用,保证重启后设置仍生效。只允许覆盖白名单内的键。
 UI_SETTINGS_FILE = os.path.join(CACHE_DIR, "ui_settings.json")
+# 搜索历史持久化文件:各页面搜索框的历史按搜索框 key 分组存放,重启仍生效
+SEARCH_HISTORY_FILE = os.path.join(CACHE_DIR, "search_history.json")
+# 每个搜索框最多保留的历史条数(最新的在前)
+SEARCH_HISTORY_MAX = 6
 UI_SETTINGS_KEYS = (
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION", "POCKET_CUTOFF",
     "CHEMBL_CORROBORATION_REQUIRED", "OT_TOP_N", "DISGENET_PAGES",
+    "PPI_CONFIDENCE",  # STRING 置信度阈值:PPI 边筛选与背景互作组共用
+    "LOG_LEVEL",  # Logs 页的 DEBUG 开关:持久化后重启按此级别初始化日志
+    "STRING_VERSION",  # STRING 数据版本:查询 API/下载路径/各缓存键随版本派生或隔离
 )
+# LOG_LEVEL 允许的取值:加载设置文件时校验,坏值按内置默认运行
+_LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 if os.path.exists(UI_SETTINGS_FILE):
     try:
         import json
@@ -380,11 +426,29 @@ if os.path.exists(UI_SETTINGS_FILE):
                 # 黑名单是字符串列表,单独校验后套用
                 if isinstance(_v, list) and all(isinstance(_i, str) for _i in _v):
                     globals()[_k] = tuple(_v)
+            elif _k == "STRING_VERSION":
+                # 版本号经统一校验归一,坏值按内置默认运行;必须先于通用数值/布尔分支,
+                # 防止手改设置文件写入数字/布尔被原样赋值后,末尾派生 URL 时崩溃
+                _sv = normalized_string_version(_v)
+                if _sv:
+                    globals()[_k] = _sv
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, bool):
                 globals()[_k] = _v
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, (int, float)) \
                     and not isinstance(_v, bool):
                 globals()[_k] = _v
+            elif _k == "LOG_LEVEL" and isinstance(_v, str) \
+                    and _v.strip().upper() in _LOG_LEVEL_NAMES:
+                globals()[_k] = _v.strip().upper()
     except Exception:
         # 设置文件损坏时不阻断启动,按 config.py 内置值运行
         pass
+
+# PPI 置信度可能被上面的设置文件覆盖,而背景互作组的置信度阈值在上方按内置值派生:
+# 覆盖生效后必须重算,保证两处阈值始终一致(运行时齿轮面板修改亦需同样同步)
+INTERACTOME_CONFIDENCE = int(PPI_CONFIDENCE * 1000)
+
+# STRING 版本可能被上面的设置文件覆盖:查询 API 基址按最终生效版本派生
+# (STRING 版本化子域名把 v12.0 写作 version-12-0),与下载路径/背景互作组保持同版本;
+# 运行时齿轮面板切换版本亦需同步重算此值
+STRING_BASE_URL = f"https://version-{STRING_VERSION[1:].replace('.', '-')}.string-db.org/api/json"

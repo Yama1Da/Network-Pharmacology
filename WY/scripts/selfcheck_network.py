@@ -12,22 +12,28 @@
 import glob
 import logging
 import os
+import shutil
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from selfcheck_common import run
+from selfcheck_common import patch_attr, run
 
 import networkx as nx
 import numpy as np
 import pandas as pd
+import requests
 
 import config
 import core.network_algorithms as na
+from core import enrichment as en
 from core import interactome as itx
+from core.caching import save_json_file
 from core.enrichment import (
+    TRUSTED_REASONS,
     _gsea_cache_file,
     _normalize_enrichment_gsea,
     build_ranked_list,
@@ -168,8 +174,7 @@ def t_avg_degree():
 
 # ---------- 模块富集测试（用假函数代替真实请求） ----------
 
-# 这些返回状态视为可信：真正成功，或确实无显著项
-_OK_REASONS = ("success", "no_significant", "cache")
+# 这些返回状态视为可信（即 core.enrichment.TRUSTED_REASONS）：真正成功，或确实无显著项
 
 
 def _fake_fetch(reason, df):
@@ -179,7 +184,7 @@ def _fake_fetch(reason, df):
             if reason is None:
                 status.update(ok=True, reason="success")
             else:
-                status.update(ok=reason in _OK_REASONS, reason=reason)
+                status.update(ok=reason in TRUSTED_REASONS, reason=reason)
         return df.copy()
     return f
 
@@ -302,6 +307,124 @@ def t_min_size_filter():
         assert long_df.empty and not failures and not no_sig
     finally:
         _restore(orig)
+
+
+# ---------- 富集数据源熔断测试（标记文件隔离到临时目录,不碰真实缓存） ----------
+
+
+def _circuit_sandbox() -> str:
+    """把富集缓存目录切到临时目录（熔断标记随目录隔离）,返回原目录供恢复。"""
+    orig = config.ENRICHMENT_CACHE_DIR
+    config.ENRICHMENT_CACHE_DIR = tempfile.mkdtemp(prefix="enrichcircuit_")
+    return orig
+
+
+def _circuit_restore(orig: str) -> None:
+    shutil.rmtree(config.ENRICHMENT_CACHE_DIR, ignore_errors=True)
+    config.ENRICHMENT_CACHE_DIR = orig
+
+
+def _expire_circuit(circuit, stage: int) -> None:
+    """写入一条"已过冷却期"的失败标记,让下一次请求作为探测放行。"""
+    save_json_file(circuit._file(),
+                   {"failed_at": time.time() - circuit.cooldown(stage) - 1,
+                    "stage": stage})
+
+
+def t_circuit_ladder_advance():
+    # 阶梯语义:常规失败保持第 1 档;冷却期内的失败(并发探测撞车)不推进;
+    # 到期后的探测失败推进一档;冷却时长按阶梯加长且最后一档封顶。
+    orig = _circuit_sandbox()
+    try:
+        en._gp_circuit.trip(advance=False)
+        en._gp_circuit.trip(advance=False)  # 常规失败不推进档位
+        assert en._gp_circuit.read()["stage"] == 1
+        en._gp_circuit.trip(advance=True)   # 冷却期内:探测撞车去抖,不推进
+        assert en._gp_circuit.read()["stage"] == 1
+        # 熔断冷却期内,重试提示应给出大致分钟数(向上取整,不足 1 分钟按 1 分钟)
+        assert en.enrichment_retry_hint_minutes() == 1
+        _expire_circuit(en._gp_circuit, 1)
+        en._gp_circuit.trip(advance=True)   # 确实到期后的失败才推进
+        assert en._gp_circuit.read()["stage"] == 2
+        assert en._gp_circuit.state() == "open"
+        cooldowns = [en._gp_circuit.cooldown(s) for s in (1, 2, 3, 4, 9)]
+        assert cooldowns[0] < cooldowns[1] < cooldowns[2] <= cooldowns[3] == cooldowns[4], cooldowns
+    finally:
+        _circuit_restore(orig)
+
+
+def t_circuit_probe_empty_result_resets():
+    # 冷却到期后的探测拿到空结果（服务可用、恰好无显著项）也必须完全复位,不再保持熔断
+    orig = _circuit_sandbox()
+    try:
+        en._gp_circuit.trip(advance=False)
+        _expire_circuit(en._gp_circuit, 1)
+        with patch_attr(en, "_profile_gprofiler", lambda *a, **k: pd.DataFrame()):
+            st: dict = {}
+            df = en.fetch_enrichment_gprofiler(["TP53", "TNF"], status=st)
+            assert df.empty and st.get("reason") == "no_significant", st
+            assert en._gp_circuit.state() == "closed", \
+                "empty probe result must reset the breaker"
+        assert en.enrichment_retry_hint_minutes() is None  # 复位后无冷却信息
+    finally:
+        _circuit_restore(orig)
+
+
+def t_circuit_probe_fail_advances():
+    # 冷却到期后的探测失败:status 记 probe_failed,冷却阶梯推进一档;
+    # 冷却期内后续请求直接跳过(circuit_open),不再发起
+    orig = _circuit_sandbox()
+    try:
+        en._gp_circuit.trip(advance=False)
+        _expire_circuit(en._gp_circuit, 1)
+
+        def _down(*a, **k):
+            raise ConnectionError("g:Profiler still down")
+
+        with patch_attr(en, "_profile_gprofiler", _down):
+            st: dict = {}
+            df = en.fetch_enrichment_gprofiler(["TP53", "TNF"], status=st)
+            assert df.empty and st.get("reason") == "probe_failed", st
+            assert en._gp_circuit.read()["stage"] == 2
+            assert en._gp_circuit.state() == "open"
+            st2: dict = {}
+            df2 = en.fetch_enrichment_gprofiler(["TP53", "TNF"], status=st2)
+            assert df2.empty and st2.get("reason") == "circuit_open", st2
+    finally:
+        _circuit_restore(orig)
+
+
+def t_enrichr_breaker_single_attempt():
+    # Enrichr 兜底源熔断:单次尝试失败即跳闸(请求内不重试);冷却期内跳过;探测成功复位
+    orig = _circuit_sandbox()
+    try:
+        calls = {"n": 0}
+
+        def _down(*a, **k):
+            calls["n"] += 1
+            raise ConnectionError("Enrichr down")
+
+        with patch_attr(en, "_query_enrichr", _down):
+            st: dict = {}
+            df = en.fetch_enrichment_enrichr(["TP53", "TNF"],
+                                             libs=["KEGG_2021_Human"], status=st)
+            assert df.empty and st.get("reason") == "request_failed", st
+            assert calls["n"] == 1, "fallback source must not retry in-request"
+            assert en._enrichr_circuit.read()["stage"] == 1
+            st2: dict = {}
+            en.fetch_enrichment_enrichr(["TP53", "TNF"],
+                                        libs=["KEGG_2021_Human"], status=st2)
+            assert st2.get("reason") == "circuit_open", st2
+            assert calls["n"] == 1, "breaker open must skip the request"
+        _expire_circuit(en._enrichr_circuit, 1)
+        with patch_attr(en, "_query_enrichr", lambda *a, **k: pd.DataFrame()):
+            st3: dict = {}
+            df3 = en.fetch_enrichment_enrichr(["TP53", "TNF"],
+                                              libs=["KEGG_2021_Human"], status=st3)
+            assert df3.empty and st3.get("reason") == "no_significant", st3
+            assert en._enrichr_circuit.state() == "closed"
+    finally:
+        _circuit_restore(orig)
 
 
 # ---------- GSEA prerank 测试（本地离线运行） ----------
@@ -438,6 +561,139 @@ def t_interactome_links_to_edges():
     assert len(edges) == 3, f"expect 3 edges, got {len(edges)}"
     # 5) 置信度换算一致：0.7 * 1000 == 700
     assert config.INTERACTOME_CONFIDENCE == int(config.PPI_CONFIDENCE * 1000)
+
+
+class _FakeResp:
+    """_download_gz 打桩用的最小响应对象:支持 with 上下文与流式 iter_content。"""
+
+    def __init__(self, status, headers=None, body=b""):
+        self.status_code = status
+        self.headers = headers or {}
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def close(self):
+        pass
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"http {self.status_code}")
+
+    def iter_content(self, chunk_size=1 << 20):
+        for i in range(0, len(self._body), chunk_size):
+            yield self._body[i:i + chunk_size]
+
+
+def _fake_string_get(payload, fail_ranges=False):
+    """伪装 STRING 下载源:带 Range 头按区间切片回 206,Range 探测回总大小,
+    不带 Range 回 200 全量(模拟不支持分段的源);fail_ranges=True 时区间请求一律失败。"""
+    def fake_get(url, headers=None, stream=True, timeout=None, **kw):
+        rng = (headers or {}).get("Range", "")
+        if rng == "bytes=0-0":
+            return _FakeResp(206, {"Content-Range": f"bytes 0-0/{len(payload)}"},
+                             payload[:1])
+        if rng.startswith("bytes="):
+            if fail_ranges:
+                raise IOError("simulated segment failure")
+            s, e = rng[6:].split("-")
+            return _FakeResp(206, {}, payload[int(s):int(e) + 1])
+        return _FakeResp(200, {}, payload)
+
+    return fake_get
+
+
+def t_interactome_ranged_download():
+    """Range 可用时按段并发下载并拼接出与原文件一致的产物,无 .part 残留。"""
+    payload = bytes(range(256)) * 64  # 16 KiB,把分段下限调小以便离线测试
+    events = []
+    with patch_attr(requests, "get", _fake_string_get(payload)), \
+         patch_attr(itx, "_RANGE_MIN_SIZE", 4096), \
+         patch_attr(itx, "_RANGE_SEG_MIN_SIZE", 4096):
+        with tempfile.TemporaryDirectory() as td:
+            dest = os.path.join(td, "links.txt.gz")
+            out = itx._download_gz("/x.gz", dest,
+                                   progress_cb=lambda *a: events.append(a),
+                                   progress_label="download_links")
+            assert out == dest
+            with open(dest, "rb") as f:
+                assert f.read() == payload
+            leftover = [n for n in os.listdir(td) if ".part" in n]
+            assert not leftover, leftover
+    assert any(ev[0] == "download_links" for ev in events), events
+
+
+def t_interactome_fallback_notice():
+    """大文件的分段在重试轮次耗尽后仍失败:回退单流,文件完整,且只发一次 fallback 提醒。"""
+    payload = bytes(range(256)) * 64  # 16 KiB
+    events = []
+    with patch_attr(requests, "get", _fake_string_get(payload, fail_ranges=True)), \
+         patch_attr(itx, "_RANGE_MIN_SIZE", 4096), \
+         patch_attr(itx, "_RANGE_SEG_MIN_SIZE", 4096), \
+         patch_attr(config, "API_MAX_RETRIES", 1), \
+         patch_attr(config, "API_RETRY_DELAY", 0):
+        with tempfile.TemporaryDirectory() as td:
+            dest = os.path.join(td, "links.txt.gz")
+            itx._download_gz("/x.gz", dest, progress_cb=lambda *a: events.append(a))
+            with open(dest, "rb") as f:
+                assert f.read() == payload
+    assert sum(1 for ev in events if ev[0] == "fallback") == 1, events
+
+
+def t_interactome_small_file_no_notice():
+    """小文件(低于分段阈值)走单流属正常路径,不应触发 fallback 误报。"""
+    payload = b"tiny" * 512  # 2 KiB
+
+    def no_range_get(url, headers=None, stream=True, timeout=None, **kw):
+        return _FakeResp(200, {}, payload)
+
+    events = []
+    with patch_attr(requests, "get", no_range_get), \
+         patch_attr(itx, "_RANGE_MIN_SIZE", 4096), \
+         patch_attr(itx, "_RANGE_SEG_MIN_SIZE", 4096):
+        with tempfile.TemporaryDirectory() as td:
+            dest = os.path.join(td, "info.txt.gz")
+            itx._download_gz("/x.gz", dest, progress_cb=lambda *a: events.append(a))
+            with open(dest, "rb") as f:
+                assert f.read() == payload
+    assert not any(ev[0] == "fallback" for ev in events), events
+
+
+def t_interactome_segment_resume():
+    """源每次只给出区间的一小段就提前收流:靠段内续传补完,全程不应触发 fallback。"""
+    payload = bytes(range(256)) * 64  # 16 KiB
+    calls = {"range": 0}
+
+    def stingy_get(url, headers=None, stream=True, timeout=None, **kw):
+        rng = (headers or {}).get("Range", "")
+        if rng == "bytes=0-0":
+            return _FakeResp(206, {"Content-Range": f"bytes 0-0/{len(payload)}"},
+                             payload[:1])
+        if rng.startswith("bytes="):
+            s, e = (int(x) for x in rng[6:].split("-"))
+            calls["range"] += 1
+            cut = min(s + 512, e + 1)  # 每次只给 512 字节就提前收流
+            return _FakeResp(206, {}, payload[s:cut])
+        return _FakeResp(200, {}, payload)
+
+    events = []
+    with patch_attr(requests, "get", stingy_get), \
+         patch_attr(itx, "_RANGE_MIN_SIZE", 4096), \
+         patch_attr(itx, "_RANGE_SEG_MIN_SIZE", 4096), \
+         patch_attr(config, "API_MAX_RETRIES", 64), \
+         patch_attr(config, "API_RETRY_DELAY", 0):
+        with tempfile.TemporaryDirectory() as td:
+            dest = os.path.join(td, "links.txt.gz")
+            itx._download_gz("/x.gz", dest, progress_cb=lambda *a: events.append(a))
+            with open(dest, "rb") as f:
+                assert f.read() == payload
+    assert not any(ev[0] == "fallback" for ev in events), events
+    assert calls["range"] > 4, calls  # 每段都要多次续传才能补完
 
 
 def t_interactome_load_or_skip():
@@ -905,12 +1161,20 @@ def main():
         ("enrich genuine no-significant", t_enrich_genuine_no_sig),
         ("enrich success path", t_enrich_success),
         ("enrich min-size filter", t_min_size_filter),
+        ("circuit ladder advance & debounce", t_circuit_ladder_advance),
+        ("circuit probe empty result resets", t_circuit_probe_empty_result_resets),
+        ("circuit probe fail advances ladder", t_circuit_probe_fail_advances),
+        ("enrichr breaker single-attempt trip", t_enrichr_breaker_single_attempt),
         ("gsea build_ranked_list dedupe/drop/sort", t_gsea_build_ranked),
         ("gsea normalize res2d columns", t_gsea_normalize),
         ("gsea prerank local + cache hit", t_gsea_prerank_local),
         ("gsea insufficient input leaves no cache", t_gsea_insufficient_no_cache),
         ("interactome protein.info column pick", t_interactome_info_cols),
         ("interactome links->edges transform", t_interactome_links_to_edges),
+        ("interactome ranged concurrent download", t_interactome_ranged_download),
+        ("interactome fallback notice (segments fail)", t_interactome_fallback_notice),
+        ("interactome small file no fallback notice", t_interactome_small_file_no_notice),
+        ("interactome segment resume completes", t_interactome_segment_resume),
         ("interactome load/coverage (skip if not built)", t_interactome_load_or_skip),
         ("interactome staleness age/is_stale", t_interactome_staleness),
         ("prox sparse BFS matches networkx", t_prox_bfs_matches_networkx),

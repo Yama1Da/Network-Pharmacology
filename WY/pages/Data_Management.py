@@ -7,6 +7,7 @@ import Utils
 from i18n import t
 from core.interactome import (
     build_interactome,
+    clean_old_version_caches,
     interactome_age_days,
     is_built,
     is_stale,
@@ -49,6 +50,8 @@ if st.session_state.itx_build_result is not None:
     result = st.session_state.itx_build_result
     if result[0] == "ok":
         st.success(t("data_mgmt.itx_build_done", nodes=result[1], edges=result[2], secs=result[3]))
+        if result[4]:
+            st.info(t("data_mgmt.itx_old_cleaned", n=result[4]))
     else:
         st.error(t("data_mgmt.itx_build_fail", err=result[1]))
     st.session_state.itx_build_result = None
@@ -64,13 +67,17 @@ if itx_built:
     if is_stale("Human"):
         st.warning(t("data_mgmt.itx_stale", age=age))
 else:
-    st.error(t("data_mgmt.itx_missing"))
+    st.error(t("data_mgmt.itx_missing", ver=config.STRING_VERSION))
 
 if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", width="stretch"):
     progress = st.progress(0.0, text=t("data_mgmt.itx_stage_processing"))
     t0 = time.time()
 
     def _on_progress(stage: str, fraction, detail: str) -> None:
+        # 并发分段不可用回退单流:进度条文字会被后续进度覆盖,另发一条常驻警告提醒慢
+        if stage == "fallback":
+            st.warning(t("data_mgmt.itx_fallback_notice", detail=detail))
+            return
         # 把构建阶段名翻译成当前语言,显示在进度条上
         base = t(f"data_mgmt.itx_stage_{stage}")
         if detail == "cached":
@@ -82,8 +89,11 @@ if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", 
 
     try:
         meta_new = build_interactome(progress_cb=_on_progress)
+        # 新版本构建成功后清理其它版本/置信度组合的三件套(齿轮确认弹窗已告知该清理;
+        # 只在成功后删,保证任何时刻至少有一个可用背景网络)
+        cleaned = clean_old_version_caches("Human")
         st.session_state.itx_build_result = (
-            "ok", meta_new["n_nodes"], meta_new["n_edges"], time.time() - t0)
+            "ok", meta_new["n_nodes"], meta_new["n_edges"], time.time() - t0, cleaned)
     except Exception as exc:
         st.session_state.itx_build_result = ("fail", str(exc), None, None)
     st.rerun()
@@ -97,9 +107,9 @@ dirs_df_all = dirs_df_all[~dirs_df_all["Directory"].isin(excluded)]
 # 批量删除结果提示(删除在确认弹窗内完成,结果跨 rerun 传递)
 Utils.show_file_op_result("data_dirs")
 
-query = st.text_input(t("common.search_placeholder"), key="search_dirs").strip().lower()
-dirs_df = (dirs_df_all[dirs_df_all["Directory"].str.lower().str.contains(query, regex=False)]
-           if query else dirs_df_all)
+query = Utils.search_input("search_dirs")
+dirs_df = (dirs_df_all[dirs_df_all["Directory"].map(
+    lambda d: Utils.search_hit(d, query))] if query else dirs_df_all)
 if dirs_df.empty:
     st.info(t("common.search_no_match", query=query) if query else t("data_mgmt.empty"))
 else:
@@ -109,7 +119,7 @@ else:
     with col_h_sel:
         select_all = Utils.render_select_all_checkbox("data_dirs", all_dirs)
     col_h_name.markdown(t("common.col_directory"))
-    col_h_time.markdown(t("common.col_created"))
+    col_h_time.markdown(t("common.col_modified"))
     col_h_btn.markdown(t("common.col_download"))
 
     # 每行一个 Download 按钮，打包并下载该行目录的 zip
@@ -120,7 +130,7 @@ else:
             with col_sel:
                 Utils.render_row_checkbox("data_dirs", row["Directory"], select_all)
             col_name.write(row["Directory"])
-            col_time.write(row["Created time"])
+            col_time.write(row["Modified time"])
             with col_btn:
                 st.download_button(
                     t("common.download"),
