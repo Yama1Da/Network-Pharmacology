@@ -1,4 +1,5 @@
 # 全局配置文件
+import logging
 import os
 from dotenv import load_dotenv
 
@@ -416,7 +417,16 @@ UI_SETTINGS_KEYS = (
 )
 # LOG_LEVEL 允许的取值:加载设置文件时校验,坏值按内置默认运行
 _LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-if os.path.exists(UI_SETTINGS_FILE):
+
+
+def apply_ui_settings_overrides() -> None:
+    """读取 ui_settings.json,把白名单内的运行时设置覆盖到本模块常量。
+
+    设置文件损坏或键值非法时按本文件内置默认值运行,不阻断启动;
+    selfcheck 可改写 UI_SETTINGS_FILE 后重调本函数验证加载逻辑。
+    """
+    if not os.path.exists(UI_SETTINGS_FILE):
+        return
     try:
         import json
         with open(UI_SETTINGS_FILE, "r", encoding="utf-8") as _f:
@@ -441,8 +451,13 @@ if os.path.exists(UI_SETTINGS_FILE):
                     and _v.strip().upper() in _LOG_LEVEL_NAMES:
                 globals()[_k] = _v.strip().upper()
     except Exception:
-        # 设置文件损坏时不阻断启动,按 config.py 内置值运行
-        pass
+        # 设置文件损坏时不阻断启动,按本文件内置值运行
+        logging.getLogger(__name__).warning(
+            "ui_settings.json 读取失败,按内置默认设置运行", exc_info=True)
+
+
+# import 时套用一次:对使用方而言行为与原先"import 即生效"完全一致
+apply_ui_settings_overrides()
 
 # PPI 置信度可能被上面的设置文件覆盖,而背景互作组的置信度阈值在上方按内置值派生:
 # 覆盖生效后必须重算,保证两处阈值始终一致(运行时齿轮面板修改亦需同样同步)

@@ -989,10 +989,25 @@ def t_rwr_real_and_cached():
     assert row0["gene"] == first_ns and row0["annotated"] is True
     assert not any(r.get("annotated") for r in res2["top_nonseed"][1:])
     enr = res2.get("enrichment")
-    assert enr and enr["n_annotated"] == 1 and enr["z"] is not None and enr["p"] is not None
+    assert enr and enr["n_annotated"] == 1
     res3 = run_rwr_cached(seeds, label="selfcheck_rwr", annotate={first_ns})
     assert res3.get("cached") is True
     assert abs(res3["top_nonseed"][0]["score"] - row0["score"]) < 1e-15
+    if enr.get("degenerate"):
+        # 榜首基因可能孤悬度数分布极端尾部(如 v12.5 全网最高度的 TRIM67):度匹配
+        # 零分布退化为同一替换集,z/p 无定义,应如实为 None。此时再换分箱人口充足
+        # 的基因补验非退化路径,保证富集计算本身仍被测到。
+        assert enr["z"] is None and enr["p"] is None and enr["n_perms"] > 0
+        degree_map = na._lcc_context("Human")[3]
+        bin_size = config.PROXIMITY_DEGREE_BIN_SIZE
+        bins = na._build_degree_bins(degree_map, bin_size)
+        rich = next(r["gene"] for r in res2["top_nonseed"]
+                    if r["gene"] != first_ns
+                    and len(bins.get(degree_map[r["gene"]] // bin_size, ())) >= 3)
+        res_rich = run_rwr_cached(seeds, label="selfcheck_rwr", annotate={rich})
+        assert res_rich["ok"] and res_rich["enrichment"]["degenerate"] is False
+        enr = res_rich["enrichment"]
+    assert enr["z"] is not None and enr["p"] is not None
     print(f"      [real interactome] iters={res1['n_iter']} converged={res1['converged']} "
           f"seeds={len(res1['seeds'])} top_nonseed={len(res1['top_nonseed'])} "
           f"top5={[r['gene'] for r in res1['top_nonseed'][:5]]} "
