@@ -10,7 +10,8 @@ name, and it automatically completes the full workflow of
 
 - **Disease/drug target acquisition**: integrates four data sources — DisGeNET, DGIdb,
   Open Targets, and ChEMBL — with automatic deduplication, and filters out
-  non-specific binding proteins (albumin, CYP metabolic enzymes, etc.) to reduce noise
+  non-specific binding proteins (albumin, CYP metabolic enzymes, etc.) to reduce noise;
+  the noise-filtering conditions are user-adjustable
 - **PPI network**: builds protein–protein interaction networks based on STRING
   (v12.0 by default; the data version is switchable in Settings), with multiple visualization styles
 - **Background interactome**: a local cache of the full STRING network powering proximity
@@ -81,7 +82,8 @@ streamlit run App.py
    Changing settings automatically invalidates the integrated caches and rebuilds them.
 
 All intermediate results are cached automatically (7 days by default, see `WY/config.py`),
-so repeated analyses return in seconds.
+so repeated analyses return in seconds. (The 7-day default exists because DGIdb updates
+irregularly.)
 
 ## Configuration
 
@@ -123,12 +125,15 @@ reused, and tested without a UI environment.
 
 ```bash
 cd WY
-python scripts/selfcheck_docking.py   # molecular docking module self-check
-python scripts/selfcheck_network.py   # network algorithms & enrichment module self-check
+python scripts/selfcheck_docking.py    # molecular docking module self-check
+python scripts/selfcheck_network.py    # network algorithms & enrichment module self-check
+python scripts/build_interactome.py    # download the background interactome if unsure it is already fetched
 ```
 
-Both self-check scripts run purely locally (all external requests are stubbed) and consume
-no data-source quota. Run them as a regression after changing anything in `core/`.
+The first two self-check scripts run purely locally (all external requests are stubbed) and
+consume no data-source quota. Run them as a regression after changing anything in `core/`.
+For **build_interactome.py**, prefer clicking "One-click background interactome build" on the
+Data Management page, which ensures the background interactome has been downloaded.
 
 ## FAQ
 
