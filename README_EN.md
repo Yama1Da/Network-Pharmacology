@@ -51,7 +51,8 @@ pip install -r requirements.txt
 Edit API.env and fill in DisGeNET_API_KEY and the VINA_DIR path
 
 # 4. Launch
-streamlit run App.py  # run from the terminal
+cd WY
+streamlit run App.py
 ```
 
 ## Usage Workflow
@@ -92,6 +93,42 @@ so repeated analyses return in seconds.
 > Change behavior in `WY/config.py`, put secrets in `WY/API.env`: `WY/API.env` only holds
 > sensitive information and local machine paths that stay out of git, while request control,
 > cache validity periods, and target noise-filtering thresholds are centralized in `WY/config.py`.
+
+## Project Structure
+
+```
+WY/
+├── App.py                  # Home page: start an analysis, target overview, settings entry
+├── config.py               # All tunable parameters (paths, rate limits/retries, cache TTL, filter thresholds)
+├── API.env                 # Secrets and local paths (not committed; see API.env.example)
+├── pages/                  # Streamlit subpages (target management, data network, enrichment, docking, logs, etc.)
+├── core/                   # Domain & orchestration layer: data-source fetching, PPI, enrichment, docking, cache-file management
+│   ├── management.py       #   Target data file refresh orchestration, settings persistence, cache-name display
+│   ├── targets.py          #   Multi-source target fetching and integration
+│   ├── ppi.py / enrichment.py / docking.py / interactome.py / network_algorithms.py
+│   └── http_client.py / caching.py / text_utils.py / logging_setup.py  # infrastructure
+├── ui/                     # UI component layer
+│   ├── widgets.py          #   Reusable cross-page widgets (file tables, batch action bars, search box, etc.)
+│   └── source_management.py  # Full-page rendering of the drug/disease target management pages
+├── i18n/                   # Chinese/English translation dictionaries and lookup API
+├── scripts/                # Offline self-check scripts (see "Development & Self-Checks")
+└── Static/                 # Runtime caches and analysis results
+```
+
+Dependencies are strictly one-way: `pages / App.py → ui/ → core/ → i18n, config`.
+`core/` and `i18n/` do not depend on any UI framework (Streamlit) and can be imported,
+reused, and tested without a UI environment.
+
+## Development & Self-Checks
+
+```bash
+cd WY
+python scripts/selfcheck_docking.py   # molecular docking module self-check
+python scripts/selfcheck_network.py   # network algorithms & enrichment module self-check
+```
+
+Both self-check scripts run purely locally (all external requests are stubbed) and consume
+no data-source quota. Run them as a regression after changing anything in `core/`.
 
 ## FAQ
 

@@ -35,13 +35,15 @@ python -m venv .venv
 
 # 2. 安装依赖
 pip install -r requirements.txt
-建议 conda install -c conda-forge openbabel #`openbabel>=3.2.0` 可以 pip 安装，但 conda 安装更省事
+# `openbabel>=3.2.0` 可以 pip 安装，但 conda 安装更省事：
+# conda install -c conda-forge openbabel
 
 # 3. 配置 API.env
 编辑 API.env，填入 DisGeNET_API_KEY 与 VINA_DIR 路径
 
 # 4. 启动
-streamlit run App.py  #终端输入
+cd WY
+streamlit run App.py
 ```
 
 ## 使用流程
@@ -72,6 +74,43 @@ streamlit run App.py  #终端输入
 
 > 改行为看 `WY/config.py`，填密钥看 `WY/API.env`：`WY/API.env` 只放不提交到 git 的敏感信息
 > 与本机路径，其余请求控制、缓存有效期、靶点降噪过滤阈值集中在 `WY/config.py`。
+
+## 项目结构
+
+```
+WY/
+├── App.py                  # 首页：发起分析、靶点概览、全局设置入口
+├── config.py               # 全部可调参数（路径、限流/重试、缓存 TTL、过滤阈值）
+├── API.env                 # 密钥与本机路径（不入库，模板见 API.env.example）
+├── pages/                  # Streamlit 子页面（靶点管理、数据网络、富集、对接、日志等）
+├── core/                   # 领域与编排层：数据源抓取、PPI、富集、对接、缓存文件管理
+│   ├── management.py       #   靶点数据文件刷新编排、设置持久化、缓存文件名可读化
+│   ├── targets.py          #   多数据源靶点获取与整合
+│   ├── ppi.py / enrichment.py / docking.py / interactome.py / network_algorithms.py
+│   └── http_client.py / caching.py / text_utils.py / logging_setup.py  # 基础设施
+├── ui/                     # 界面组件层
+│   ├── widgets.py          #   跨页面复用小组件（文件表、批量操作栏、搜索框等）
+│   └── source_management.py  # 药物/疾病靶点管理页整页渲染
+├── i18n/                   # 中英文案词典与取词 API
+├── scripts/                # 离线自检脚本（见「开发与自检」）
+└── Static/                 # 运行时产生的缓存与分析结果
+```
+
+依赖严格单向：`pages / App.py → ui/ → core/ → i18n、config`。`core/` 与 `i18n/`
+不依赖任何 UI 框架（Streamlit），可在无界面环境下导入、复用与测试。
+
+## 开发与自检
+
+```bash
+cd WY
+python scripts/selfcheck_docking.py   # 分子对接模块自检
+python scripts/selfcheck_network.py   # 网络算法与富集模块自检
+python scripts/build_interactome.py   # 如果不知道背景互作组是否已下载，可运行此脚本下载
+```
+
+两个自检脚本均为纯本地运行（外部请求全部打桩），不消耗数据源配额；
+修改 `core/` 后建议跑一遍作为回归。
+
 
 ## 常见问题
 

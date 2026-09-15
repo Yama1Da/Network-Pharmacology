@@ -8,30 +8,46 @@ import pandas as pd
 import streamlit as st
 
 import config
-import Utils
+from core.files import list_cache_files, list_download_dirs, make_dir_zip
+from core.management import enrichment_display_name, humanize_analysis_label
+from core.text_utils import load_name_map, safe_name
+from ui.widgets import back_button, hide_sidebar
 from i18n import t
 from core.docking import (
     clamp_box,
+    clean_docking_cache,
     cofactor_hetatm_pdb,
     download_pdb,
     extract_model,
     fetch_alphafold_receptor,
+    fetch_ligand_sdf_3d,
+    fetch_receptor_candidates_batch,
+    fetch_receptor_pdb_candidates,
+    infer_box_from_cofactor,
     interactions_near_ligand,
     interactive_3d_html,
     parse_hetatm,
+    parse_vina_scores,
     pose_pdbqt_to_pdb,
+    prepare_ligand_pdbqt,
+    prepare_receptor_pdbqt,
+    prune_docking_results,
     residues_in_box,
     residues_near_ligand,
     resolve_cid,
+    run_vina,
     save_interactive_3d_html,
     smiles_to_sdf_3d,
+    split_vina,
+    star_docking_result,
+    write_docking_metadata,
 )
-from core.enrichment import parse_enrichment_filename
+from core.enrichment import migrate_legacy_cache_names, parse_enrichment_filename
 
 st.set_page_config(page_title=t("dock.page_title"), layout="wide")
 
 # ---------- 隐藏侧边栏,全屏显示页面;Star Management 按钮(#6347A1 底、#E0D8F2 字) ----------
-Utils.hide_sidebar("""
+hide_sidebar("""
     .st-key-star_mgmt_btn button {
         background-color: #6347A1;
         color: #E0D8F2;
@@ -44,7 +60,7 @@ st.caption(t("dock.caption"))
 
 col_back, col_star = st.columns([1, 1])
 with col_back:
-    Utils.back_button()
+    back_button()
 with col_star:
     if st.button(t("dock.star_mgmt"), key="star_mgmt_btn"):
         st.switch_page("pages/Star_Management.py")
@@ -65,8 +81,8 @@ dock = st.session_state["docking"]
 # 每次进入本页时清理一次过期缓存(页内操作不重复清理);
 # 顺手把旧版完整哈希命名的富集缓存改成短哈希命名,让下方文件选择列表命名统一可读
 if not st.session_state.get("_docking_cache_cleaned"):
-    Utils.clean_docking_cache()
-    Utils.migrate_legacy_cache_names()
+    clean_docking_cache()
+    migrate_legacy_cache_names()
     st.session_state["_docking_cache_cleaned"] = True
 
 
@@ -130,7 +146,7 @@ def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
         st.error(t(not_found_key, drug=query, q=query))
         return
     try:
-        sdf_path = Utils.fetch_ligand_sdf_3d(cid)
+        sdf_path = fetch_ligand_sdf_3d(cid)
     except Exception as exc:
         # PubChem 网络故障/HTTP 错误:给友好提示而不是整页异常栈;
         # 自动获取失败置 lig_auto_done,否则页面上任意点击都会重试并再次抛异常
@@ -145,7 +161,7 @@ def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
         return
     dock["cid"] = cid
     try:
-        dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+        dock["lig_pdbqt"] = prepare_ligand_pdbqt(sdf_path)
     except Exception as exc:
         # SDF 下载成功但 RDKit/meeko 处理不了(如特殊金属配合物):同页 SMILES
         # 分支已有的兜底,此处保持一致;重试也不会成功,同样置 lig_auto_done
@@ -193,7 +209,7 @@ def _split_result_prefix(prefix: str) -> tuple[str, str]:
     这里借 name_map(safe 名 → 原始名,各数据源抓取时都有记录)贪心匹配:
     从最长的药物名前缀试起,药物与疾病两段都能还原才采用;识别不出时退回旧拆法。
     """
-    name_map = Utils.load_name_map()
+    name_map = load_name_map()
     parts = prefix.split("_")
     for i in range(len(parts) - 1, 0, -1):
         drug = name_map.get("_".join(parts[:i]))
@@ -213,7 +229,7 @@ def _docking_result_prefix(drug: str, disease: str, gene: str) -> str:
     for seg in (drug, disease, gene):
         seg = (seg or "").strip()
         if seg:
-            parts.append(Utils.safe_name(seg))
+            parts.append(safe_name(seg))
     return "_".join(parts) or "docking"
 
 
@@ -223,7 +239,7 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
                          pose_mode: int | None = None) -> str:
     """归档本次对接成果:打分表、所选构象和参数信息存入结果文件夹,并清理旧版本。
     pose_mode 提供时归档用户在 Step6 选定的 pose,未提供(默认)归档打分最佳的构象。"""
-    gene = Utils.safe_name(gene)  # 清理基因名中的非法字符,再用于文件命名
+    gene = safe_name(gene)  # 清理基因名中的非法字符,再用于文件命名
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = os.path.join(config.MD_RESULT_DIR, f"{prefix}_{ts}")
     os.makedirs(result_dir, exist_ok=True)
@@ -244,7 +260,7 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
     extract_model(out_pdbqt, save_mode, best_path)
 
     # 参数信息(药物、靶点、对接盒、打分等),便于日后复查
-    Utils.write_docking_metadata(os.path.join(result_dir, f"meta_{ts}.txt"), {
+    write_docking_metadata(os.path.join(result_dir, f"meta_{ts}.txt"), {
         "drug": prefix.split("_")[0] if "_" in prefix else prefix,
         "disease": prefix.split("_", 1)[1] if "_" in prefix else "",
         "gene": gene,
@@ -263,8 +279,8 @@ def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, b
     })
 
     # 同名结果只保留最近几版,并清理过期中间文件
-    Utils.prune_docking_results(result_dir)
-    Utils.clean_docking_cache()
+    prune_docking_results(result_dir)
+    clean_docking_cache()
     return result_dir
 
 
@@ -391,7 +407,7 @@ def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel,
     与共晶配体参照打包成单个自包含 HTML(内嵌 3Dmol.js 与坐标),可下载或存入结果目录;
     之后双击即可在任意浏览器打开,可拖动旋转、聚焦口袋,离线可用。
     pose_pdb / receptor_text 传入 3D 预览已转换/已读取的结果时直接复用,不再重复转换与读盘。"""
-    gene = Utils.safe_name(str(dock.get("gene") or "target"))
+    gene = safe_name(str(dock.get("gene") or "target"))
     pose_n = int(pose_sel)
     # 图例随视图一并写入,离线打开时颜色含义不靠猜;共晶配体判定与 HTML 生成共用同一份受体文本
     has_het = bool(cofactor_hetatm_pdb(pdb_path, receptor_text=receptor_text))
@@ -437,7 +453,7 @@ def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel,
 @st.cache_data(ttl=3600)
 def _cached_pdb_candidates(gene: str, allow_alphafold: bool = False) -> pd.DataFrame:
     """查询某基因可用的受体结构列表(近期查过则复用);无实验结构时可附加 AlphaFold 预测结构。"""
-    return Utils.fetch_receptor_pdb_candidates(gene, max_hits=20,
+    return fetch_receptor_pdb_candidates(gene, max_hits=20,
                                                allow_alphafold=allow_alphafold)
 
 
@@ -446,7 +462,7 @@ def _cached_pdb_candidates_batch(genes: tuple, allow_alphafold: bool = False) ->
     """一次批量查询多个基因的受体结构(近期查过则复用);返回 {基因: 候选表}。
     搜索合并成少数几次批量请求 + GraphQL 批量归因,速度与基因数基本无关;
     查无实验结构的基因按开关附加 AlphaFold 预测结构。"""
-    return Utils.fetch_receptor_candidates_batch(list(genes), max_hits=20,
+    return fetch_receptor_candidates_batch(list(genes), max_hits=20,
                                                  allow_alphafold=allow_alphafold)
 
 
@@ -468,12 +484,12 @@ def _step1_select_source(dock: dict) -> None:
 
     if src_mode == "ppi":
         # 只列出 PPI 分析结果目录,排除其他类型的文件夹;目录名展示为"药物 → 疾病"
-        dirs = Utils.list_download_dirs()
+        dirs = list_download_dirs()
         ppi_dirs = dirs[dirs["Directory"].str.endswith("_data", na=False)] if not dirs.empty else dirs
         if ppi_dirs.empty:
             st.warning(t("dock.no_ppi_dirs"))
         else:
-            dir_disp = {d: Utils.humanize_analysis_label(d[:-5] if d.endswith("_data") else d)
+            dir_disp = {d: humanize_analysis_label(d[:-5] if d.endswith("_data") else d)
                         for d in ppi_dirs["Directory"]}
             sel_dir = st.selectbox(t("dock.sel_ppi_dir"), ppi_dirs["Directory"].tolist(), key="sel_ppi_dir",
                                    index=None, placeholder=t("dock.sel_ppi_dir_ph"),
@@ -488,7 +504,7 @@ def _step1_select_source(dock: dict) -> None:
                 dock["drug"], dock["disease"] = _split_result_prefix(prefix)
                 _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
     else:
-        enr_files = Utils.list_cache_files("enrichment", exts=(".csv",))
+        enr_files = list_cache_files("enrichment", exts=(".csv",))
         # 只保留普通富集(ORA)结果供选择:GSEA 文件没有逐条目的基因列,选中也提不出候选基因;
         # 按最后修改时间倒序,最近一次分析排最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称
         if not enr_files.empty:
@@ -501,7 +517,7 @@ def _step1_select_source(dock: dict) -> None:
         else:
             # 同名分析可能有多份不同参数的缓存,展示名带上时间戳以便区分
             file_disp = {row["File name"]:
-                         f"{Utils.enrichment_display_name(row['File name'])} · {row['Modified time']}"
+                         f"{enrichment_display_name(row['File name'])} · {row['Modified time']}"
                          for _, row in enr_files.iterrows()}
             sel_file = st.selectbox(t("dock.sel_enr_file"), enr_files["File name"].tolist(), key="sel_enr",
                                     index=None, placeholder=t("dock.sel_enr_file_ph"),
@@ -653,7 +669,7 @@ else:
                     smiles,
                     os.path.join(tmp_dir, f"ligand_smiles_{datetime.now():%Y%m%d_%H%M%S}.sdf"))
                 dock["cid"] = None
-                dock["lig_pdbqt"] = Utils.prepare_ligand_pdbqt(sdf_path)
+                dock["lig_pdbqt"] = prepare_ligand_pdbqt(sdf_path)
             except Exception as exc:
                 st.error(t("dock.ligand_failed", exc=exc))
 
@@ -724,7 +740,7 @@ if dock.get("genes"):
                         dock["pdb_id"] = pdb_id
                         dock["receptor_source"] = "experiment"
                     dock["pdb_path"] = pdb_path
-                    dock["rec_pdbqt"] = Utils.prepare_receptor_pdbqt(pdb_path)
+                    dock["rec_pdbqt"] = prepare_receptor_pdbqt(pdb_path)
                     dock.pop("result", None)
                 except Exception as exc:
                     st.error(t("dock.receptor_failed", exc=exc))
@@ -795,7 +811,7 @@ if dock.get("pdb_path"):
         for _k in ("cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
             st.session_state.pop(_k, None)
         try:
-            dock["box"] = Utils.infer_box_from_cofactor(dock["pdb_path"])
+            dock["box"] = infer_box_from_cofactor(dock["pdb_path"])
             # 预测结构没有共晶配体可参考,按整蛋白范围估盒子;过大时收缩到可计算大小
             if (dock.get("receptor_source") == "alphafold"
                     and max(dock["box"]["size"]) > config.DOCKING_BOX_MAX_SIZE_AF):
@@ -868,10 +884,10 @@ if dock.get("rec_pdbqt") and dock.get("lig_pdbqt") and dock.get("box"):
             try:
                 out_pdbqt = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                          f"vina_out_{datetime.now():%Y%m%d_%H%M%S}.pdbqt")
-                proc = Utils.run_vina(dock["rec_pdbqt"], dock["lig_pdbqt"], dock["box"],
+                proc = run_vina(dock["rec_pdbqt"], dock["lig_pdbqt"], dock["box"],
                                       out_path=out_pdbqt)
-                poses = Utils.split_vina(out_pdbqt, out_dir=os.path.dirname(out_pdbqt))
-                scores = Utils.parse_vina_scores(out_pdbqt)
+                poses = split_vina(out_pdbqt, out_dir=os.path.dirname(out_pdbqt))
+                scores = parse_vina_scores(out_pdbqt)
                 dock["result"] = {"proc": proc, "out": out_pdbqt, "poses": poses, "scores": scores}
                 # 新一轮对接:清掉上一轮残留的构象选择、结论与归档状态
                 st.session_state.pop("pose_sel", None)
@@ -946,7 +962,7 @@ if dock.get("result"):
                 else:
                     if st.button(t("dock.star_btn"), key="star_off"):
                         try:
-                            Utils.star_docking_result(dock["result_dir"])
+                            star_docking_result(dock["result_dir"])
                             dock["starred"] = True
                             st.rerun()  # 立即更新图标为 ★
                         except Exception as exc:
@@ -955,7 +971,7 @@ if dock.get("result"):
         if dock.get("result_dir"):
             st.write(t("dock.result_dir", dir=dock["result_dir"]))
             st.download_button(t("dock.dl_all_zip"),
-                               data=Utils.make_dir_zip(dock["result_dir"]),
+                               data=make_dir_zip(dock["result_dir"]),
                                file_name=os.path.basename(dock["result_dir"]) + ".zip",
                                mime="application/zip", key="dl_zip")
 

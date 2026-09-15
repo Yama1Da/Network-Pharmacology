@@ -18,8 +18,9 @@ def silence_streamlit_bare_mode_warnings() -> None:
             logging.getLogger(name).setLevel(logging.ERROR)
 
 
-# 自检脚本 import Utils 等模块时就会触发 @st.cache_data 初始化并刷 bare-mode 警告,
-# 因此须在本模块被导入时(import 链最早处)就完成静音,等测试函数里再调就晚了。
+# 自检脚本 import 界面模块(ui.*、依赖链上的 streamlit)时就会触发 @st.cache_data
+# 初始化并刷 bare-mode 警告,因此须在本模块被导入时(import 链最早处)就完成静音,
+# 等测试函数里再调就晚了。
 silence_streamlit_bare_mode_warnings()
 
 
