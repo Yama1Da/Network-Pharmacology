@@ -148,6 +148,10 @@ TEXT_EN: dict[str, str] = {
     "common.search_placeholder": "🔍 Search files…",
     "common.search_history": "Recent searches",
     "common.search_no_match": "No files matching \"{query}\"",
+    # ---- 列表分页 ----
+    "common.page_prev": "◀ Prev",
+    "common.page_next": "Next ▶",
+    "common.page_status": "Page {cur} / {total}",
     # ---- 文件/目录表多选与批量操作(删除/打包下载) ----
     "common.select_all": "Select all",
     "common.selected_count": "{n} selected",

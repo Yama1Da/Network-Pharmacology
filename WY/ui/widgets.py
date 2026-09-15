@@ -1,5 +1,5 @@
 """跨页面复用的界面小组件:布局辅助、下载按钮、多选小件、搜索框与历史、
-文件表、批量操作栏(删除确认/打包下载/更新选中)。只做展示与交互,
+文件表、列表分页、批量操作栏(删除确认/打包下载/更新选中)。只做展示与交互,
 数据抓取与刷新编排在 core/(见 core.management)。"""
 
 import logging
@@ -27,6 +27,15 @@ CSS_BTN_UPDATE = """    [class*="update_btn"] button,
         background-color: #6347A1;
         color: #E0D8F2;
         border: 1px solid #6347A1;
+    }"""
+
+# 空闲进度条隐藏:批量更新/网络构建的进度条元素每轮常驻、只做原地更新
+# (元素结构跨帧稳定,否则 Streamlit 前端对页面中部的增删帧会错位残留"残影",
+# 详见 ui.source_management)。进度条空闲时恒为 0%,该规则把 0% 的进度条整体
+# 隐藏;更新开始后数值大于 0 自然恢复显示,完成后重渲染回到 0% 重新隐藏。
+# aria-label 是 react-aria 固定值"progress",与文案无关,不能用作判据。
+CSS_HIDE_IDLE_PROGRESS = """    .stApp div.stProgress:has([role="progressbar"][aria-valuenow="0"]) {
+        display: none;
     }"""
 
 
@@ -228,11 +237,57 @@ def search_hit(name: str, query: str, name_map: dict[str, str] | None = None) ->
     return q in loose_name(expanded)
 
 
+# ---------- 列表分页 ----------
+# 文件/目录列表统一按 PAGE_SIZE 行分页;页码与最近一次搜索词按 search_key 存会话,
+# 与搜索历史等键一样跨 rerun 保留。翻页条画在行列表之后,点击按钮改写页码后整页重绘。
+PAGE_SIZE = 10
+
+
+def page_slice(search_key: str, n_total: int, *, query: str = "") -> tuple[int, int, int, int]:
+    """计算过滤后列表当前页的 [start, end) 切片,返回 (start, end, 页码, 总页数)。
+
+    只做状态与边界处理,不渲染:搜索词变化时页码归 1(用户新搜索应从头浏览);
+    删除/筛选导致当前页越界时收拢到最后一页,避免停在空页。
+    """
+    page_key = f"{search_key}_page"
+    last_q_key = f"{search_key}_last_query"
+    if st.session_state.get(last_q_key) != query:
+        st.session_state[last_q_key] = query
+        st.session_state[page_key] = 0
+    n_pages = max(1, -(-n_total // PAGE_SIZE))  # n_total=0 时也给出 1 页,调用方负责空态
+    page = min(max(int(st.session_state.get(page_key, 0)), 0), n_pages - 1)
+    st.session_state[page_key] = page
+    return page * PAGE_SIZE, (page + 1) * PAGE_SIZE, page, n_pages
+
+
+def render_pager(search_key: str, page: int, n_pages: int, *, disabled: bool = False) -> None:
+    """行列表下方的翻页条:◀ 上一页 | 第 x / n 页 | 下一页 ▶;不足两页时不渲染。
+
+    按钮只改写会话页码并 st.rerun,由下一轮 page_slice 按新页码切片;
+    disabled 供批量任务运行轮禁用,与行内按钮一致,防止点击排队到任务后触发。
+    """
+    if n_pages <= 1:
+        return
+    col_prev, col_status, col_next = st.columns([1, 2, 1])
+    with col_prev:
+        if st.button(t("common.page_prev"), key=f"{search_key}_page_prev",
+                     disabled=disabled or page <= 0, width="stretch"):
+            st.session_state[f"{search_key}_page"] = page - 1
+            st.rerun()
+    col_status.caption(t("common.page_status", cur=page + 1, total=n_pages))
+    with col_next:
+        if st.button(t("common.page_next"), key=f"{search_key}_page_next",
+                     disabled=disabled or page >= n_pages - 1, width="stretch"):
+            st.session_state[f"{search_key}_page"] = page + 1
+            st.rerun()
+
+
 def render_file_table(files_df, cache_dir: str, *, search_key: str,
                       display_map: dict[str, str] | None = None,
                       ns: str | None = None,
                       path_of: Callable[[str], str] | None = None,
-                      disabled: bool = False) -> list[str] | None:
+                      disabled: bool = False,
+                      pre_rows: Callable[[], None] | None = None) -> list[str] | None:
     """文件名 | 最后修改时间 | 下载"三列文件列表:顶部搜索框过滤文件名,表头 + 每行一个下载按钮。
 
     display_map 提供 {真实文件名: 展示名}:列表展示展示名(友好名称),搜索同时匹配
@@ -240,12 +295,17 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
 
     ns 不为 None 时进入多选模式:行首加复选框、表头加全选;选中项写入
     st.session_state[f"{ns}_selected"] 并作为返回值,供 render_file_action_bar 批量操作。
+    "全选"作用于全量条目(含被搜索滤掉、不在当前页的行),与分页无关,由批量操作栏
+    的已选计数向用户明示。
 
     path_of 提供时(ns 多选模式下)每行多一个 Update 按钮(管理页用),行下载/更新路径
     都按它解析(来源文件与 merged 整合文件分属不同目录);单文件更新点击记录在
     st.session_state[f"{ns}_update_clicked"],由页面取出处理。
 
-    disabled 供批量任务运行时禁用行内按钮,避免点击排队到任务结束后再次触发。
+    disabled 供批量任务运行时禁用行内按钮与翻页条,避免点击排队到任务结束后再次触发。
+
+    pre_rows 可选插槽:在搜索框之后、表头与行之前渲染(如批量更新的进度条,使其
+    出现在搜索框正下方而非整页底部)。插槽内创建的 widget 由调用方持有引用并后续更新。
     """
     display_map = display_map or {}
     resolve = path_of or (lambda n: os.path.join(cache_dir, n))
@@ -263,6 +323,10 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
     if files_df.empty:
         st.info(t("common.search_no_match", query=query))
         return None
+
+    if pre_rows is not None:
+        pre_rows()
+    start, end, page, n_pages = page_slice(search_key, len(files_df), query=query)
 
     with_update = bool(ns and path_of)
     select_all = False
@@ -282,7 +346,7 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
     col_h_dl.markdown(t("common.col_download"))
 
     with st.container(key="file_rows"):
-        for _, row in files_df.iterrows():
+        for _, row in files_df.iloc[start:end].iterrows():
             name = row["File name"]
             if ns is None:
                 col_name, col_time, col_dl = st.columns([4, 2, 1])
@@ -303,6 +367,8 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
             with col_dl:
                 csv_download_button(resolve(name), name, key=f"download_{name}",
                                     disabled=disabled)
+
+    render_pager(search_key, page, n_pages, disabled=disabled)
 
     if ns is None:
         return None

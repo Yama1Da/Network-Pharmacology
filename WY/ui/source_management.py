@@ -13,9 +13,9 @@ from i18n import t
 from core.files import list_cache_files
 from core.management import (_mgmt_file_path, refresh_cache_file,
                              update_all_cache_files)
-from ui.widgets import (CSS_BTN_DOWNLOAD, CSS_BTN_UPDATE, back_button,
-                        hide_sidebar, render_file_action_bar, render_file_table,
-                        show_file_op_result)
+from ui.widgets import (CSS_BTN_DOWNLOAD, CSS_BTN_UPDATE, CSS_HIDE_IDLE_PROGRESS,
+                        back_button, hide_sidebar, render_file_action_bar,
+                        render_file_table, show_file_op_result)
 
 
 def show_update_summary(results: pd.DataFrame) -> None:
@@ -56,7 +56,7 @@ def render_source_management_page(
     busy = bool(st.session_state.get(f"{ns}_busy"))
 
     # 隐藏侧边栏,全屏显示页面;行内 Update 按钮紫底、Download 按钮绿底、批量删除按钮红底
-    hide_sidebar(CSS_BTN_UPDATE + "\n" + CSS_BTN_DOWNLOAD + f"""
+    hide_sidebar(CSS_BTN_UPDATE + "\n" + CSS_BTN_DOWNLOAD + "\n" + CSS_HIDE_IDLE_PROGRESS + f"""
     .st-key-{ns}_files_del_btn button {{
         background-color: #F53F3F;
         color: #FFFFFF;
@@ -130,14 +130,24 @@ def render_source_management_page(
         merged_files = merged_files.iloc[0:0]
     files = pd.concat([source_files, merged_files], ignore_index=True)
 
+    # 批量更新的进度条:render_file_table 经插槽把进度条画到搜索框正下方。
+    # 进度条元素必须每轮常驻、只做原地更新(改值/文案):若该位置只在更新轮才插入
+    # 元素(或往空容器里填内容),Streamlit 前端对页面中部的增删帧会错位协调,
+    # 把上一帧的列表行残留成可交互的"残影"。空闲轮文案为空串,由页面 CSS
+    # (CSS_HIDE_IDLE_PROGRESS)把无文案的进度条隐藏。文件列表为空(没走插槽)时
+    # 执行块兜底就地创建,故容器须在分支外先初始化。
+    bars: list = []
     if files.empty:
         # 有文件但全被筛掉时,按"筛选无结果"提示,与"目录本来就空"区分开
         st.info(t("common.filter_no_match") if (n_source or n_merged) else t(f"{ns}_mgmt.no_files"))
     else:
         # 多选模式:行首复选框 + 表头全选,path_of 让来源文件与 merged 整合文件各按其目录解析
+        def _progress_slot() -> None:
+            bars.append(st.progress(0.0, text=""))
+
         render_file_table(files, spec["cache_dir"], search_key=f"search_{ns}",
                           ns=f"{ns}_files", path_of=lambda n: _mgmt_file_path(n, spec),
-                          disabled=busy)
+                          disabled=busy, pre_rows=_progress_slot)
     clicked_file = st.session_state.pop(f"{ns}_files_update_clicked", None)
 
     # 选中条目的批量操作:更新选中 / 下载选中(ZIP) / 删除选中(确认弹窗);
@@ -159,7 +169,9 @@ def render_source_management_page(
     if busy and pending_update is not None:
         is_all = pending_update == "all"
         try:
-            bar = st.progress(0.0)
+            # 进度条本体已由插槽每轮常驻在搜索框下方,这里只做原地更新;
+            # 文件列表为空没走插槽时,兜底就地创建(此时必然在页面底部)
+            bar = bars[0] if bars else st.progress(0.0)
             results = update_all_cache_files(
                 spec,
                 cache_hours=cache_hours_all if is_all else cache_hours_single,

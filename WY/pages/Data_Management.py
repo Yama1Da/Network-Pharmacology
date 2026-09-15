@@ -5,10 +5,13 @@ import streamlit as st
 import config
 from core.files import list_download_dirs, make_dir_zip
 from ui.widgets import (
+    CSS_HIDE_IDLE_PROGRESS,
     back_button,
     collect_selected,
     hide_sidebar,
+    page_slice,
     render_file_action_bar,
+    render_pager,
     render_row_checkbox,
     render_select_all_checkbox,
     search_hit,
@@ -28,7 +31,7 @@ from core.interactome import (
 st.set_page_config(page_title=t("data_mgmt.page_title"), layout="wide")
 
 # 隐藏侧边栏,全屏显示页面;Download 按钮(#207D62 底、#C8F0DF 字),删除按钮红底白字
-hide_sidebar("""
+hide_sidebar(CSS_HIDE_IDLE_PROGRESS + """
     .st-key-dir_rows button {
         background-color: #207D62;
         color: #C8F0DF;
@@ -80,8 +83,13 @@ if itx_built:
 else:
     st.error(t("data_mgmt.itx_missing", ver=config.STRING_VERSION))
 
+# 构建进度条元素每轮常驻、只做原地更新:若只在点击轮才插入元素,Streamlit 前端
+# 对"页面中部插帧"的增量协调会错位,把上一帧的内容残留成"残影"
+# (机制与修复说明见 ui.source_management / ui.widgets.CSS_HIDE_IDLE_PROGRESS)。
+itx_bar = st.progress(0.0, text="")
+
 if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", width="stretch"):
-    progress = st.progress(0.0, text=t("data_mgmt.itx_stage_processing"))
+    progress = itx_bar.progress(0.0, text=t("data_mgmt.itx_stage_processing"))
     t0 = time.time()
 
     def _on_progress(stage: str, fraction, detail: str) -> None:
@@ -125,6 +133,8 @@ if dirs_df.empty:
     st.info(t("common.search_no_match", query=query) if query else t("data_mgmt.empty"))
 else:
     all_dirs = dirs_df_all["Directory"].tolist()
+    # 分页:每页 10 行;"全选"仍作用于全量目录(含其他页),由批量栏的已选计数明示
+    start, end, page, n_pages = page_slice("search_dirs", len(dirs_df), query=query)
     # 表头(行首多选,支持批量下载/删除)
     col_h_sel, col_h_name, col_h_time, col_h_btn = st.columns([0.5, 2.5, 2, 1])
     with col_h_sel:
@@ -135,7 +145,7 @@ else:
 
     # 每行一个 Download 按钮，打包并下载该行目录的 zip
     with st.container(key="dir_rows"):
-        for _, row in dirs_df.iterrows():
+        for _, row in dirs_df.iloc[start:end].iterrows():
             dir_path = os.path.join(config.DOWNLOADS_DIR, row["Directory"])
             col_sel, col_name, col_time, col_btn = st.columns([0.5, 2.5, 2, 1])
             with col_sel:
@@ -151,6 +161,8 @@ else:
                     key=f"dl_{row['Directory']}",
                     width="stretch",
                 )
+
+    render_pager("search_dirs", page, n_pages)
 
     # 批量操作:下载选中(各目录打成一个 ZIP)/删除选中(确认弹窗)
     collect_selected("data_dirs", all_dirs)

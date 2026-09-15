@@ -147,6 +147,10 @@ TEXT_ZH: dict[str, str] = {
     "common.search_placeholder": "🔍 搜索文件名…",
     "common.search_history": "最近搜索",
     "common.search_no_match": "没有匹配“{query}”的文件",
+    # ---- 列表分页 ----
+    "common.page_prev": "◀ 上一页",
+    "common.page_next": "下一页 ▶",
+    "common.page_status": "第 {cur} / {total} 页",
     # ---- 文件/目录表多选与批量操作(删除/打包下载) ----
     "common.select_all": "全选",
     "common.selected_count": "已选 {n} 个",

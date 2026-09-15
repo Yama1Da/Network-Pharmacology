@@ -10,7 +10,9 @@ from ui.widgets import (
     back_button,
     collect_selected,
     hide_sidebar,
+    page_slice,
     render_file_action_bar,
+    render_pager,
     render_row_checkbox,
     render_select_all_checkbox,
     search_hit,
@@ -87,6 +89,9 @@ if not names:
 else:
     st.caption(t("star.total", count=len(names)))
 
+    # 分页:每页 10 行;"全选"仍作用于全量收藏(含其他页),由批量栏的已选计数明示
+    start, end, page, n_pages = page_slice("search_star", len(names), query=query)
+
     # 表头(行首多选,支持批量下载/删除)
     col_h_sel, col_h_name, col_h_time, col_h_dl, col_h_del = st.columns([0.5, 3.5, 2, 1, 1])
     with col_h_sel:
@@ -96,7 +101,7 @@ else:
     col_h_dl.markdown(t("common.col_download"))
     col_h_del.markdown(t("star.col_delete"))
 
-    for name in names:
+    for name in names[start:end]:
         path = os.path.join(star_dir, name)
         # 用 mtime 而非 getctime:后者在 Linux 上是 inode 变更时间,跨平台语义不一致;
         # 收藏目录创建后内容不再变化,mtime 即收藏时间
@@ -115,6 +120,8 @@ else:
                 st.session_state["_star_pending"] = name
                 st.session_state["_star_pending_path"] = path
                 confirm_delete()
+
+    render_pager("search_star", page, n_pages)
 
     # 批量操作:下载选中(各目录打成一个 ZIP)/删除选中(确认弹窗)
     collect_selected("star_dirs", all_names)
