@@ -8,8 +8,10 @@ import Utils
 # 各来源文件的抓取逻辑:返回 (表, 状态 "ok"/"empty"/"failed"),供 Utils.refresh_cache_file 调用。
 # "empty" 表示抓取成功但靶点数为 0——不算错误,由页面以警告提示检查查询物;请求失败等异常用 "failed"。
 def _fetch_opentargets(name: str, cache_hours):
-    # 不使用缓存,强制重新请求 API
-    Utils.get_disease_targets.clear()
+    # 只失效该疾病名的进程内 memo:来源文件已被 refresh_cache_file 移到 .bak,
+    # 失效后本次必然重新联网抓取。旧实现 .clear() 清空全部疾病的缓存,又在
+    # 批量更新的线程池里并发调用,会把其他会话正在用的疾病缓存一起清掉。
+    Utils.invalidate_disease_targets_cache(name)
     df = Utils.get_disease_targets(name)
     # 该源"查无此病"与"请求失败"都返回空表,无法区分,按 0 靶点处理
     return df, ("empty" if df.empty else "ok")

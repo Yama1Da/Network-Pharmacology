@@ -23,10 +23,19 @@ with col_back:
 
 st.divider()
 
-# 运行中可临时开启 DEBUG;正常使用仍默认 INFO,避免日志过大
+# 日志级别开关:选择持久化到 ui_settings.json(LOG_LEVEL 键,重启仍生效),
+# 初始状态取 config.LOG_LEVEL(启动时已按持久化值初始化日志)。
 if "logs_debug_enabled" not in st.session_state:
     st.session_state["logs_debug_enabled"] = config.LOG_LEVEL.upper() == "DEBUG"
-level_name = "DEBUG" if st.session_state["logs_debug_enabled"] else "INFO"
+
+
+def _persist_log_level() -> None:
+    """开关切换后落盘并即时生效:on_change 回调先于脚本重跑执行,级别不会闪回。"""
+    level = "DEBUG" if st.session_state["logs_debug_enabled"] else "INFO"
+    config.LOG_LEVEL = level
+    Utils.save_ui_settings({"LOG_LEVEL": level})
+    Utils.set_logging_level(level)
+
 
 col_level, _ = st.columns([1, 3])
 with col_level:
@@ -34,10 +43,10 @@ with col_level:
     st.toggle(
         t("logs.debug_toggle"),
         key="logs_debug_enabled",
+        on_change=_persist_log_level,
         help=t("logs.debug_toggle_help"),
     )
-    Utils.set_logging_level(level_name)
-    st.caption(t("logs.level_current", level=level_name))
+    st.caption(t("logs.level_current", level=config.LOG_LEVEL))
 
 st.divider()
 

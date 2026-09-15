@@ -1,14 +1,16 @@
 """GO/KEGG 功能富集分析：主用 g:Profiler，连不上时自动改用 Enrichr，并绘制结果图。"""
 
 import hashlib
+import json
 import logging
 import os
 import re
+import socket
 
 import pandas as pd
 
 from .caching import (_is_cache_fresh, clean_expired_cache_files, read_cache_key,
-                      save_csv_cache)
+                      save_csv_cache, save_json_file)
 
 # 两个数据源的基因集库名对应关系（GO 生物过程/分子功能/细胞组分、KEGG 通路）。
 ENRICHR_LIB_MAP = {
@@ -24,6 +26,10 @@ _ENRICHR_ORGANISM_MAP = {
     "hsapiens": "human",
     "mmusculus": "mouse",
 }
+
+# fetch_enrichment_* 返回状态中代表"调用成功"的取值;"circuit_open"/"probe_failed"/"request_failed"
+# 等服务侧失败均视为不可信。module 富集与主富集的"真无显著项 vs 服务失败"判定共用这一份定义。
+TRUSTED_REASONS = ("success", "no_significant", "cache")
 
 
 def _enrichr_libs(sources) -> list[str]:
@@ -170,83 +176,229 @@ def migrate_legacy_cache_names() -> int:
     return moved
 
 
-# ---------- g:Profiler 熔断 ----------
-# g:Profiler 暂时连不上时，短期内自动改用备选数据源 Enrichr，避免反复苦等超时；
-# 冷却期过后自动恢复尝试，服务恢复即回到正常流程。
+# ---------- 富集数据源熔断（g:Profiler 主源 / Enrichr 兜底源共用状态机） ----------
+# 数据源暂时连不上时自动改用另一个，避免反复苦等超时：
+# - g:Profiler（主源）：单次调用重试耗尽（连续 ENRICHMENT_MAX_RETRIES 次异常）即"跳闸"；
+# - Enrichr（兜底源）：每个请求只尝试 1 次，失败即"跳闸"——兜底失败时本次分析已注定告警，
+#   重试上移到熔断层（冷却后的探测即重试），不在请求里白耗；
+# - 冷却时长按阶梯逐次加长（各自的 *_CIRCUIT_COOLDOWN_LADDER）：每次"恢复失败"（冷却到期后的
+#   探测失败）推进一档，最后一档封顶；任何有效响应（含"无显著条目"的空结果）即完全复位；
+# - 冷却到期后的下一次请求作为"探测"：单次尝试 + 短超时（*_PROBE_TIMEOUT_SECONDS），
+#   快速判定服务是否恢复，避免触发探测的分析苦等整个默认超时。
+# 状态存于各自标记文件（失败时刻 + 阶梯档位），跨页面刷新与进程重启仍生效。
 
 
-def _gprofiler_circuit_file() -> str:
-    """熔断标记文件路径（记录上次失败时间）。"""
-    import config
+class _FileCircuitBreaker:
+    """基于标记文件的三态熔断器：open（冷却期内,请求跳过）→ probe（冷却到期,下一请求试探）
+    → closed（探测到有效响应,复位）。两个数据源只是标记文件与阶梯/探测参数不同。"""
 
-    return os.path.join(config.ENRICHMENT_CACHE_DIR, ".gprofiler_unreachable")
+    def __init__(self, marker_name: str, ladder_key: str, probe_timeout_key: str):
+        self._marker_name = marker_name
+        self._ladder_key = ladder_key
+        self._probe_timeout_key = probe_timeout_key
 
+    def _file(self) -> str:
+        """熔断标记文件路径（记录失败时刻与冷却阶梯档位）。"""
+        import config
 
-def _gprofiler_circuit_open() -> bool:
-    """熔断是否生效：上次失败距今仍在冷却期内则为 True。"""
-    import config
-    import time
+        return os.path.join(config.ENRICHMENT_CACHE_DIR, self._marker_name)
 
-    path = _gprofiler_circuit_file()
-    if not os.path.exists(path):
-        return False
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            failed_at = float(f.read().strip())
-    except Exception:
-        return False
-    return (time.time() - failed_at) < config.GPROFILER_CIRCUIT_TTL_SECONDS
-
-
-def _gprofiler_circuit_open_trip() -> None:
-    """记录本次失败时间，开启熔断。"""
-    import time
-
-    path = _gprofiler_circuit_file()
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(str(time.time()))
-    except Exception:
-        logging.exception("Failed to write g:Profiler circuit breaker file")
-
-
-def _gprofiler_circuit_close() -> None:
-    """请求成功时清除熔断标记。"""
-    path = _gprofiler_circuit_file()
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-    except Exception:
-        logging.exception("Failed to remove g:Profiler circuit breaker file")
-
-
-def _call_with_request_guard(fn, label: str, on_fail=None):
-    """给第三方富集查询库统一补上请求保护：请求间隔、全局超时、失败重试;全部重试失败返回 None。
-    on_fail 在每次失败后被调用（g:Profiler 用它累计熔断）。
-    """
-    import time
-    import socket
-
-    import config
-
-    res = None
-    for attempt in range(config.ENRICHMENT_MAX_RETRIES):
-        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前稍等，避免请求过快被服务器拒绝
-        socket.setdefaulttimeout(config.API_TIMEOUT)
+    def read(self) -> dict | None:
+        """读熔断标记，返回 {"failed_at", "stage"}；无标记或损坏返回 None（损坏按未熔断处理，
+        不会因坏文件永久禁用数据源）。兼容旧版"纯时间戳"标记（仅 g:Profiler 有），视作第 1 档。"""
+        path = self._file()
+        if not os.path.exists(path):
+            return None
+        raw = ""
         try:
-            res = fn()
+            with open(path, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+        except OSError:
+            return None
+        try:
+            data = json.loads(raw)
+            return {"failed_at": float(data["failed_at"]),
+                    "stage": max(1, int(data.get("stage", 1)))}
+        except Exception:
+            try:  # 旧版格式：文件里只有失败时刻的 Unix 时间戳
+                return {"failed_at": float(raw), "stage": 1}
+            except Exception:
+                return None
+
+    def cooldown(self, stage: int) -> float:
+        """第 stage 档对应的冷却时长（秒），超出阶梯按最后一档封顶。"""
+        import config
+
+        ladder = getattr(config, self._ladder_key)
+        return ladder[min(stage, len(ladder)) - 1]
+
+    def state(self) -> str:
+        """当前熔断状态："open"（冷却期内,请求跳过）/ "probe"（冷却到期待探测）/ "closed"。"""
+        import time
+
+        mark = self.read()
+        if mark is None:
+            return "closed"
+        if time.time() - mark["failed_at"] < self.cooldown(mark["stage"]):
+            return "open"
+        return "probe"
+
+    def remaining_seconds(self) -> float:
+        """冷却剩余秒数（probe 状态已到期待探测,返回接近 0）,
+        供页面提示"约 X 分钟后自动重试"。"""
+        import time
+
+        mark = self.read()
+        if mark is None:
+            return 0.0
+        return max(0.0, self.cooldown(mark["stage"]) - (time.time() - mark["failed_at"]))
+
+    def trip(self, advance: bool) -> None:
+        """记录失败时刻并开启熔断。advance=True 用于冷却到期后的探测失败：仅当上一条失败记录
+        确实已过冷却期才推进一档（封顶最后一档），并发探测同时失败只有第一个推进；
+        advance=False 用于常规请求失败：保持现有档位（无标记则为第 1 档）只刷新时间戳，
+        避免同一次故障里并发线程的逐次失败把冷却阶梯一次推满。"""
+        import time
+
+        import config
+
+        prev = self.read()
+        stage = int((prev or {}).get("stage", 0))
+        if advance:
+            if prev and (time.time() - prev["failed_at"]) < self.cooldown(stage):
+                stage = max(1, stage)  # 并发探测撞车：只刷新时间戳，不推进
+            else:
+                stage = min(stage + 1, len(getattr(config, self._ladder_key)))
+        else:
+            stage = max(1, stage)
+        try:
+            save_json_file(self._file(), {"failed_at": time.time(), "stage": stage})
+        except Exception:
+            logging.exception("Failed to write circuit breaker file: %s", self._marker_name)
+
+    def trip_normal(self) -> None:
+        """常规请求失败：保持现有档位（无标记则第 1 档），只刷新失败时刻。"""
+        self.trip(advance=False)
+
+    def trip_probe(self) -> None:
+        """冷却到期后的探测失败：属于"恢复失败"，推进冷却阶梯。"""
+        self.trip(advance=True)
+
+    def close(self) -> None:
+        """请求成功（任何有效响应）时清除熔断标记，完全复位。"""
+        path = self._file()
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            logging.exception("Failed to remove circuit breaker file: %s", self._marker_name)
+
+    def skip_reason(self) -> str | None:
+        """冷却期内返回跳过原因；冷却到期返回 None 放行（该次请求将按探测预算执行）。"""
+        return "circuit_open" if self.state() == "open" else None
+
+    def request_plan(self, normal_attempts: int | None = None) -> dict:
+        """本次请求的执行预算：冷却到期（probe）按单次尝试 + 短超时探测，失败按"恢复失败"
+        推进阶梯；closed 按常规尝试次数（normal_attempts 为 None 时取 ENRICHMENT_MAX_RETRIES）。
+        open 不会走到（skip_reason 已拦截），防御性按常规预算返回。"""
+        import config
+
+        plan: dict = {"attempts": normal_attempts or config.ENRICHMENT_MAX_RETRIES}
+        if self.state() == "probe":
+            plan.update(attempts=1,
+                        hard_deadline=getattr(config, self._probe_timeout_key),
+                        on_fail=self.trip_probe)
+        return plan
+
+
+_gp_circuit = _FileCircuitBreaker(".gprofiler_unreachable",
+                                  "GPROFILER_CIRCUIT_COOLDOWN_LADDER",
+                                  "GPROFILER_PROBE_TIMEOUT_SECONDS")
+_enrichr_circuit = _FileCircuitBreaker(".enrichr_unreachable",
+                                       "ENRICHR_CIRCUIT_COOLDOWN_LADDER",
+                                       "ENRICHR_PROBE_TIMEOUT_SECONDS")
+
+
+def enrichment_retry_hint_minutes() -> int | None:
+    """富集数据源熔断后距下次自动重试的大致分钟数（取两个数据源中较近的重试时机,
+    向上取整,不足 1 分钟按 1 分钟）,供页面横幅提示"约 X 分钟后自动重试";
+    两个数据源都不在熔断冷却期时返回 None。"""
+    import math
+
+    remaining = [c.remaining_seconds() for c in (_gp_circuit, _enrichr_circuit)
+                 if c.state() != "closed"]
+    if not remaining:
+        return None
+    return max(1, math.ceil(min(remaining) / 60))
+
+
+def _run_with_deadline(fn, timeout: float):
+    """在独立线程里限时执行一次调用，超时返回 None（由调用方按失败处理）。
+    不能用 with 管理执行器——shutdown(wait=True) 会等孤儿线程跑完，限时就失去意义；
+    孤儿线程最迟被进程级默认 socket 超时结束，不会累积。"""
+    import concurrent.futures
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1,
+                                                     thread_name_prefix="enrichcircuit")
+    try:
+        return executor.submit(fn).result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        return None
+    finally:
+        executor.shutdown(wait=False)
+
+
+_socket_timeout_set = False
+
+
+def _ensure_default_socket_timeout() -> None:
+    """给不接收超时参数的第三方富集库(g:Profiler/gseapy)兜底进程级默认 socket 超时。
+    只设置一次、之后不再复位:socket.setdefaulttimeout 是进程级全局状态,多线程里
+    逐请求 set/reset 会互相覆盖(线程 A 刚设好超时进入请求,线程 B 的 finally 复位
+    None,A 之后建立的连接将无超时);一次性设为 API_TIMEOUT 对显式传超时的
+    requests 链路无影响,只是让不带超时的库调用不再可能无限挂起。"""
+    global _socket_timeout_set
+    if not _socket_timeout_set:
+        import config
+
+        socket.setdefaulttimeout(config.API_TIMEOUT)
+        _socket_timeout_set = True
+
+
+def _call_with_request_guard(fn, label: str, on_fail=None,
+                             attempts: int | None = None,
+                             hard_deadline: float | None = None):
+    """给第三方富集查询库统一补上请求保护：请求间隔、默认超时、失败重试;全部尝试失败返回 None。
+    on_fail 在每次失败后被调用（g:Profiler 用它累计熔断）。attempts/hard_deadline 供熔断探测用：
+    限定尝试次数并在独立线程限时执行（超时按失败处理），让冷却到期后的探测快速给出结论。"""
+    import time
+
+    import config
+
+    _ensure_default_socket_timeout()
+    if attempts is None:
+        attempts = config.ENRICHMENT_MAX_RETRIES
+    res = None
+    for attempt in range(attempts):
+        time.sleep(config.API_REQUEST_DELAY)  # 每次请求前稍等，避免请求过快被服务器拒绝
+        try:
+            if hard_deadline is None:
+                res = fn()
+            else:
+                res = _run_with_deadline(fn, hard_deadline)
+                if res is None:
+                    raise TimeoutError(f"no result within {hard_deadline:g}s")
             break
         except Exception:
             logging.exception(
                 "%s enrichment failed (attempt %d/%d)",
-                label, attempt + 1, config.ENRICHMENT_MAX_RETRIES,
+                label, attempt + 1, attempts,
             )
+            res = None
             if on_fail is not None:
                 on_fail()
-            if attempt < config.ENRICHMENT_MAX_RETRIES - 1:
+            if attempt < attempts - 1:
                 time.sleep(config.API_RETRY_DELAY)
-        finally:
-            socket.setdefaulttimeout(None)
     return res
 
 
@@ -310,10 +462,13 @@ def _fetch_enrichment_cached(
     skip_if=None,
     on_fail=None,
     on_result_ok=None,
+    request_plan=None,
 ) -> pd.DataFrame:
     """g:Profiler / Enrichr 两个富集数据源共用的"清洗输入→查缓存→带保护请求→整理→缓存"流程;
     网络失败时由请求保护返回 None。skip_if 返回非 None 时按该原因跳过请求(g:Profiler 的熔断),
-    on_fail 在每次失败后被调用(用于累计熔断),on_result_ok 在拿到非空结果后调用(用于关闭熔断)。"""
+    on_fail 在每次失败后被调用(用于累计熔断),on_result_ok 在拿到有效响应后调用(用于关闭熔断;
+    空结果也算有效——服务可用性与结果多少是两回事,先复位再判空),request_plan 返回探测预算时
+    按单次限时执行(g:Profiler 冷却到期后的探测)。"""
     import config
 
     if not input_ok:
@@ -336,20 +491,32 @@ def _fetch_enrichment_cached(
         _set_status(status, False, skip)
         return pd.DataFrame()
 
-    res = _call_with_request_guard(request, source_name, on_fail=on_fail)
+    attempts = hard_deadline = None
+    if request_plan is not None:
+        plan = request_plan() or {}
+        attempts = plan.get("attempts")
+        hard_deadline = plan.get("hard_deadline")
+        if plan.get("on_fail") is not None:
+            # 探测模式下的失败按"恢复失败"计（推进冷却阶梯），替换常规失败回调
+            on_fail = plan["on_fail"]
+
+    res = _call_with_request_guard(request, source_name, on_fail=on_fail,
+                                   attempts=attempts, hard_deadline=hard_deadline)
     if res is None:
-        # 重试后仍失败（网络/服务不可用）
-        logging.warning("%s unreachable after %d retries for %d genes",
-                        source_name, config.ENRICHMENT_MAX_RETRIES, len(genes))
-        _set_status(status, False, "request_failed")
+        # 重试(或探测)后仍失败（网络/服务不可用）
+        reason = "probe_failed" if hard_deadline is not None else "request_failed"
+        logging.warning("%s unreachable after %d attempt(s) for %d genes",
+                        source_name, attempts or config.ENRICHMENT_MAX_RETRIES, len(genes))
+        _set_status(status, False, reason)
         return pd.DataFrame()
+    if on_result_ok is not None:
+        # 任何有效响应都证明服务可用，先复位熔断再判定结果是否为空
+        on_result_ok()
     if len(res) == 0:
         # 请求成功但无显著条目（真"空结果"，非失败）
         logging.info("%s: no significant terms (p < %s) for %d genes", source_name, pvalue, len(genes))
         _set_status(status, True, "no_significant")
         return pd.DataFrame()
-    if on_result_ok is not None:
-        on_result_ok()
     df = normalize(res)
     if df.empty:
         # 结果整理后为空时不写缓存，避免下次把异常空表当成有效结果
@@ -371,7 +538,9 @@ def fetch_enrichment_gprofiler(
     status: dict | None = None,
 ) -> pd.DataFrame:
     """用 g:Profiler 查询基因列表的功能富集（GO/KEGG）,结果整理为统一列后缓存,相同输入直接读缓存。
-    失败或无显著条目返回空表,status（若提供）区分"真无显著项"与"服务失败";近期失败过触发熔断,跳过并走 Enrichr 兜底。
+    失败或无显著条目返回空表,status（若提供）区分"真无显著项"与"服务失败";熔断冷却期内跳过请求
+    (reason="circuit_open"),冷却到期的首次请求按单次短超时探测,探测失败 reason="probe_failed";
+    两种状态均由调用方降级走 Enrichr 兜底。
     """
     genes = sorted({g.strip() for g in genes if g and g.strip()})
     return _fetch_enrichment_cached(
@@ -379,11 +548,12 @@ def fetch_enrichment_gprofiler(
         source_name="gProfiler",
         cache_key_extra=sources,
         input_ok=bool(genes),
-        skip_if=lambda: "circuit_open" if _gprofiler_circuit_open() else None,
+        skip_if=_gp_circuit.skip_reason,
         request=lambda: _profile_gprofiler(genes, organism, sources, pvalue),
         normalize=_normalize_enrichment_gprofiler,
-        on_fail=_gprofiler_circuit_open_trip,
-        on_result_ok=_gprofiler_circuit_close,
+        on_fail=_gp_circuit.trip_normal,
+        on_result_ok=_gp_circuit.close,
+        request_plan=_gp_circuit.request_plan,
     )
 
 
@@ -425,16 +595,32 @@ def fetch_enrichment_enrichr(
     status: dict | None = None,
 ) -> pd.DataFrame:
     """用 Enrichr 查询功能富集,作为 g:Profiler 连不上时的备选方案;结果同样缓存,相同输入直接读缓存。
+    兜底源自带熔断:每个请求只尝试 1 次,失败即跳闸,冷却期内跳过请求(reason="circuit_open"),
+    冷却到期的首次请求按单次短超时探测,探测失败 reason="probe_failed"。
     请求失败或没有显著条目时返回空表,status 含义与 g:Profiler 版本一致。
     """
     genes = sorted({g.strip() for g in genes if g and g.strip()})
+    n_query = len(genes)
+
+    def _normalize_with_query_size(df: pd.DataFrame) -> pd.DataFrame:
+        out = _normalize_enrichment_enrichr(df)
+        # Enrichr 的 Overlap "a/b" 中 b 是通路基因集大小,不是查询集大小;
+        # 统一列的 query_size 语义(g:Profiler=输入查询基因数)用真实查询数覆盖,
+        # 否则兜底路径下页面表格的 query_size 会显示成几百的库大小,误导命中比例
+        out["query_size"] = n_query
+        return out
+
     return _fetch_enrichment_cached(
         genes, organism, pvalue, label, status,
         source_name="Enrichr",
         cache_key_extra=libs,
         input_ok=bool(genes and libs),
+        skip_if=_enrichr_circuit.skip_reason,
         request=lambda: _query_enrichr(genes, libs, organism, pvalue),
-        normalize=_normalize_enrichment_enrichr,
+        normalize=_normalize_with_query_size,
+        on_fail=_enrichr_circuit.trip_normal,
+        on_result_ok=_enrichr_circuit.close,
+        request_plan=lambda: _enrichr_circuit.request_plan(normal_attempts=1),
     )
 
 
@@ -479,23 +665,39 @@ def run_enrichment(
     pvalue: float = 0.05,
     sources: tuple | None = None,
     label: str | None = None,
+    status: dict | None = None,
 ) -> tuple[pd.DataFrame, str | None]:
-    """富集分析主入口：输入基因列表（通常是药物与疾病的交集靶点），先请求 g:Profiler，失败自动改用 Enrichr。"""
+    """富集分析主入口：输入基因列表（通常是药物与疾病的交集靶点），先请求 g:Profiler，失败自动改用 Enrichr。
+    两条链路都拿不到结果时返回空表;status（若提供）区分"真无显著项"（reason="no_significant"）
+    与"服务不可用"（reason="both_sources_down"/"gprofiler_down_no_fallback"），供页面显著告警。"""
     import config
 
     sources = sources or config.ENRICHMENT_SOURCES
 
-    df = fetch_enrichment_gprofiler(genes, organism=organism, sources=sources, pvalue=pvalue, label=label)
+    st_gp: dict = {}
+    df = fetch_enrichment_gprofiler(genes, organism=organism, sources=sources,
+                                    pvalue=pvalue, label=label, status=st_gp)
     if not df.empty:
         return df, "gProfiler"
 
     # 备：Enrichr（不支持大鼠，跳过）
     enrichr_organism = _ENRICHR_ORGANISM_MAP.get(organism)
+    st_enr: dict = {}
     if enrichr_organism:
         libs = _enrichr_libs(sources)
-        df = fetch_enrichment_enrichr(genes, libs=libs, organism=enrichr_organism, pvalue=pvalue, label=label)
+        df = fetch_enrichment_enrichr(genes, libs=libs, organism=enrichr_organism,
+                                      pvalue=pvalue, label=label, status=st_enr)
         if not df.empty:
             return df, "Enrichr"
+
+    # 区分"真无显著项"与"服务不可用"：任一已启用链路给出可信空结果即算 no_significant;
+    # 否则按服务失败标注,页面据此显著告警而非当作普通空结果
+    if st_gp.get("reason") in TRUSTED_REASONS or st_enr.get("reason") in TRUSTED_REASONS:
+        _set_status(status, True, "no_significant")
+    elif enrichr_organism:
+        _set_status(status, False, "both_sources_down")
+    else:
+        _set_status(status, False, "gprofiler_down_no_fallback")
     return pd.DataFrame(), None
 
 

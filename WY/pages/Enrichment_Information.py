@@ -68,7 +68,7 @@ else:
         st.info(t("common.filter_no_match"))
     else:
         # 最新分析排在最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称,搜索仍可匹配原始文件名
-        enr_files = enr_files.sort_values("Created time", ascending=False)
+        enr_files = enr_files.sort_values("Modified time", ascending=False)
         display_map = {n: Utils.enrichment_display_name(n) for n in enr_files["File name"]}
         # 多选文件表 + 批量操作:下载选中(ZIP)/删除(确认弹窗)
         Utils.render_file_table(enr_files, config.ENRICHMENT_CACHE_DIR,

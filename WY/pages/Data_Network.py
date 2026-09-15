@@ -15,6 +15,7 @@ from core.network_algorithms import (
 )
 from core.enrichment import (
     build_ranked_list,
+    enrichment_retry_hint_minutes,
     fetch_enrichment_gsea_prerank,
     gsea_gene_sets,
     render_drug_target_pathway_plot,
@@ -91,6 +92,13 @@ with col_params:
     # 物种固定为人类:疾病靶点数据源(Open Targets/DisGeNET)只有人类数据,
     # 药物靶点与富集库亦以人类为准;多物种支持待接入相应疾病数据源后再议。
     score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
+    # 发起分析的位置常驻显示数据版本:切版本后不忘当前用的是哪版 STRING 数据
+    st.caption(t("net.string_ver_caption", ver=config.STRING_VERSION))
+    network_type = st.selectbox(
+        t("net.network_type"), ("full", "physical"),
+        format_func=lambda v: (t("net.network_type_full") if v == "full"
+                               else t("net.network_type_physical")),
+        help=t("net.network_type_help"))
     rwr_expand = st.number_input(
         t("net.rwr_expand"), 0, 100, config.RWR_EXPAND_TOP_N, 1,
         help=t("net.rwr_expand_help"))
@@ -211,10 +219,21 @@ def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str
     return gdf, rstats, gsea_status.get("reason", "")
 
 
+def _enrich_retry_suffix() -> str:
+    """富集服务失败提示的重试后缀:有熔断冷却信息时给"约 X 分钟后自动重试"的大致时长,
+    否则退回通用文案。"""
+    mins = enrichment_retry_hint_minutes()
+    return (t("net.enrich_retry_hint", mins=mins) if mins is not None
+            else t("net.enrich_retry_later"))
+
+
 def _enrichment_task(genes: list[str], organism: str, prefix: str):
-    """功能富集(g:Profiler 主 + Enrichr 备,输入为交集靶点),返回 (结果表, 数据源)。"""
-    return Utils.run_enrichment(genes, organism=organism,
-                                pvalue=config.ENRICHMENT_PVALUE, label=prefix)
+    """功能富集(g:Profiler 主 + Enrichr 备,输入为交集靶点),返回 (结果表, 数据源, 状态原因)。"""
+    enr_status: dict = {}
+    df, source = Utils.run_enrichment(genes, organism=organism,
+                                      pvalue=config.ENRICHMENT_PVALUE, label=prefix,
+                                      status=enr_status)
+    return df, source, enr_status.get("reason", "")
 
 
 def _gsea_task(drug_name: str, disease_name: str, prefix: str):
@@ -395,6 +414,7 @@ def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_cont
 
 
 def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
+                      network_type: str = "full",
                       rwr_expand: int = 0, hub_top_n: int = 10, hub_method: str = "degree",
                       progress: "_ReportProgress | None" = None) -> dict:
     """执行完整分析（交集→[RWR扩展]→STRING→建图→指标→富集→可视化→保存），返回结果字典。
@@ -446,10 +466,10 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         prefix = f"{prefix}_rwr{int(rwr_expand)}"
     _prog("targets", "done", 0.08)
 
-    # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,并隐藏孤立节点）
+    # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,孤立节点在下游展示时隐藏）
     _prog("string", "running", 0.08)
     edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score,
-                                      label=prefix, min_degree=config.MIN_DEGREE_FILTER)
+                                      network_type=network_type, label=prefix)
     _prog("string", "done", 0.30)
 
     # Step 2-4: 建图 + 拓扑指标 + Hub 筛选(排名制 top-N + 小网络保护)。
@@ -512,7 +532,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
             if done:
                 _prog(fraction=0.48 + per_task * (len(fut_key) - len(pending)))
 
-        enrichment_df, enrichment_source = fut_enr.result()
+        enrichment_df, enrichment_source, enrichment_reason = fut_enr.result()
         enrichment_bar_fig = enrichment_dot_fig = None
         if not enrichment_df.empty:
             enrichment_bar_fig, enrichment_dot_fig = Utils.render_enrichment_plots(enrichment_df)
@@ -568,6 +588,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         "core_genes": core_genes,
         "enrichment_df": enrichment_df,
         "enrichment_source": enrichment_source,
+        "enrichment_reason": enrichment_reason,
         "enrichment_bar_fig": enrichment_bar_fig,
         "enrichment_dot_fig": enrichment_dot_fig,
         "dtp_fig": dtp_fig,
@@ -578,7 +599,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         "saved": saved,
         "prefix": prefix,
         "params": (mode, drug_name, disease_name, gene_text, score,
-                   int(rwr_expand), int(hub_top_n), hub_method),
+                   network_type, int(rwr_expand), int(hub_top_n), hub_method),
     }
 
 
@@ -591,6 +612,7 @@ current_params = (
     disease_name.strip(),
     gene_text.strip(),
     score,
+    network_type,
     int(rwr_expand),
     int(hub_top_n),
     hub_method,
@@ -611,6 +633,7 @@ if run_btn:
                 disease_name.strip(),
                 gene_text.strip(),
                 score,
+                network_type=network_type,
                 rwr_expand=int(rwr_expand),
                 hub_top_n=int(hub_top_n),
                 hub_method=hub_method,
@@ -674,9 +697,14 @@ def _render_proximity(ppi: dict, input_mode: str) -> None:
         elif proximity_result.get("ok"):
             col_p1, col_p2, col_p3 = st.columns(3)
             col_p1.metric(t("net.prox_dc"), f"{proximity_result['d_c']:.3f}")
-            col_p2.metric(t("net.prox_z"), f"{proximity_result['z']:.3f}")
+            prox_z = proximity_result.get("z")
+            col_p2.metric(t("net.prox_z"),
+                          f"{prox_z:.3f}" if prox_z is not None else "—")
             col_p3.metric(t("net.prox_p"), f"{proximity_result['p_empirical']:.4f}")
-            if proximity_result["z"] < 0:
+            if prox_z is None:
+                # 零分布退化时 z 无意义,不给出支持/不支持的结论
+                st.info(t("net.prox_degenerate"))
+            elif prox_z < 0:
                 st.success(t("net.prox_support"))
             else:
                 st.info(t("net.prox_nosupport"))
@@ -779,7 +807,12 @@ def _render_enrichment(ppi: dict, genes: list[str]) -> None:
     enrichment_bar_fig = ppi["enrichment_bar_fig"]
     enrichment_dot_fig = ppi["enrichment_dot_fig"]
     if enrichment_df is None or enrichment_df.empty:
-        st.info(t("net.no_enrich"))
+        # 双源都不可用(或无兜底物种的主源失败)时显著告警,与"真无显著项"的普通提示区分开;
+        # 并附上大致的自动重试时间,避免用户反复手动重跑
+        if ppi.get("enrichment_reason") in ("both_sources_down", "gprofiler_down_no_fallback"):
+            st.error(t("net.enrich_both_down") + _enrich_retry_suffix())
+        else:
+            st.info(t("net.no_enrich"))
     else:
         st.caption(
             t("net.enrich_caption", src=enrichment_source, n=len(enrichment_df), m=len(genes))
@@ -841,8 +874,14 @@ def _render_gsea(ppi: dict, input_mode: str, drug_name: str, disease_name: str,
                     st.warning(t("net.params_changed"))
                 else:
                     with st.spinner(t("net.gsea_spinner")):
-                        gsea_df, rstats, reason = _gsea_prerank_side(
-                            gsea_side, drug_name, disease_name, prefix)
+                        try:
+                            gsea_df, rstats, reason = _gsea_prerank_side(
+                                gsea_side, drug_name, disease_name, prefix)
+                        except Exception:
+                            # 手动入口与自动流程同等兜底:网络/文件链路异常不白屏,
+                            # 按请求失败记录,由下方 reason 分支提示并允许重试
+                            logging.exception("Manual GSEA rerun failed (%s side)", gsea_side)
+                            gsea_df, rstats, reason = None, {}, "request_failed"
                         st.session_state.ppi_gsea[gsea_side] = {
                             "df": gsea_df,
                             "stats": rstats,
@@ -962,7 +1001,7 @@ def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
                 no_sig = mods_res["no_sig"]
                 if failures:
                     ids = ", ".join(f"#{f['module_id']}" for f in failures)
-                    st.error(t("net.modules_fail", ids=ids))
+                    st.error(t("net.modules_fail", ids=ids) + _enrich_retry_suffix())
                 if no_sig:
                     ids = ", ".join(f"#{mid}" for mid in no_sig)
                     st.info(t("net.modules_nosig", ids=ids))
@@ -1070,9 +1109,13 @@ if ppi is not None:
         st.warning(t("net.no_common"))
     else:
         # 交集过小(如降噪后)可能没有任何达到置信度的互作边:此时 PPI 网络为空,
-        # 但富集/GSEA/网络检验/下载等结果仍然有效,照常展示而非整页拦截
+        # 但富集/GSEA/网络检验/下载等结果仍然有效,照常展示而非整页拦截。
+        # physical 网络只保留物理结合证据,空网概率远高于 full,提示要更有针对性
         if edges_df.empty:
-            st.warning(t("net.no_interactions"))
+            # params 元组第 6 位是 network_type(旧版暂存结果可能更短,按 full 兜底)
+            net_type = ppi["params"][5] if len(ppi["params"]) > 5 else "full"
+            st.warning(t("net.no_interactions_physical" if net_type == "physical"
+                         else "net.no_interactions"))
         st.info(t("net.input_genes", n=len(genes)))
 
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)

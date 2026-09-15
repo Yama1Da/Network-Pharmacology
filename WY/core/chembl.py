@@ -24,7 +24,7 @@ _chembl_cache_hours: float | None = None
 
 
 def set_chembl_cache_ttl(hours: int | None) -> None:
-    """调整 ChEMBL 请求结果的缓存有效期(默认与全局 HTTP 缓存一致,24 小时)。
+    """调整 ChEMBL 请求结果的缓存有效期(默认与全局 HTTP 缓存一致)。
     hours 为缓存小时数:设得越小,数据越新、联网请求越频繁;超过有效期的旧数据会自动重新联网获取。
     """
     global _chembl_cache_hours
@@ -142,7 +142,7 @@ def _extract_gene_name(t: dict) -> str | None:
 
 def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]:
     """从 ChEMBL 获取药物的全部活性靶点（全靶点模式）：不按活性值过滤，靶点更全，但会包含 ALB、CYP450 等弱关联/非特异性结合的蛋白；仅保留人类靶点，按 pChEMBL 活性值降序排列。
-    请求全部批量分页:activity 1000 条/页、靶点详情 50 个/批,慢药物(如 metformin 数千条活性)也只需约 10 个请求;已有本地缓存时直接复用，请求失败时返回空表。
+    请求全部批量分页:activity 1000 条/页、靶点详情 25 个/批,慢药物(如 metformin 数千条活性)也只需约 10 个请求;已有本地缓存时直接复用，请求失败时返回空表。
     """
     import config
 

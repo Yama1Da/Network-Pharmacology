@@ -80,12 +80,218 @@ def is_built(species: str = "Human",
 
 # ---------- 构建侧(命令行专用) ----------
 
+# 分段并发下载的适用下限:文件太小不值得多连接;单段太小则握手/重试开销占主导
+_RANGE_MIN_SIZE = 8 * 1024 * 1024
+_RANGE_SEG_MIN_SIZE = 8 * 1024 * 1024
+# 分段整体重试轮数:每轮只重跑未完成的段(段内从盘上续传),避免个别掉队段
+# 连累全部已完成段一起作废重下
+_RANGED_MAX_ROUNDS = 3
+
+
+def _probe_range_support(url: str) -> int:
+    """探测下载源是否支持 HTTP Range 分段:支持返回文件总字节数,否则返回 0。
+    用 1 字节区间实测(部分服务器 HEAD 不回 Accept-Ranges,206 + Content-Range 才算数);
+    stream=True 下立即关闭,不会把 200 的完整响应体拉下来。"""
+    import requests
+
+    import config
+
+    try:
+        with requests.get(url, headers={"Range": "bytes=0-0"}, stream=True,
+                          timeout=config.API_TIMEOUT) as resp:
+            if resp.status_code != 206:
+                return 0
+            total = resp.headers.get("Content-Range", "").rsplit("/", 1)[-1]
+            return int(total) if total.isdigit() else 0
+    except Exception:
+        logging.exception("Range probe failed: %s", url)
+        return 0
+
+
+def string_version_exists(version: str) -> bool:
+    """轻量探测下载站是否已提供该版本的数据文件(protein.info 小文件,流式即开即关)。
+    200/206 即认为版本存在(不要求 Range 支持);镜像与官方站任一可用即可。
+    供设置面板在保存版本切换前拦截拼错/尚未发布的版本号。"""
+    import requests
+
+    import config
+
+    rel = f"/protein.info.{version}/{_taxon('Human')}.protein.info.{version}.txt.gz"
+    for base in (config.STRING_DOWNLOAD_MIRROR_BASE, config.STRING_DOWNLOAD_BASE):
+        try:
+            with requests.get(base.rstrip("/") + rel, stream=True,
+                              timeout=config.API_TIMEOUT) as resp:
+                if resp.status_code in (200, 206):
+                    return True
+        except Exception:
+            logging.exception("STRING version probe failed: %s", base + rel)
+    return False
+
+
+def _download_segment(url: str, start: int, end: int, path: str,
+                      done: list, lock) -> None:
+    """下载 [start, end] 字节区间到 path(工作线程内执行,不碰进度回调);
+    整段重试耗尽才抛错,由调用方按轮次只重跑失败段。支持断点续传:重试只拉取
+    未完成的尾部区间并追加写入;path 已有部分内容(上一轮的成果)时从盘上字节数
+    续传。done[0] 只累计新落盘的字节,某次尝试失败时回滚该次计入的部分。"""
+    import time
+
+    import requests
+
+    import config
+
+    expected = end - start + 1
+    have = 0
+    if os.path.exists(path):
+        have = os.path.getsize(path)
+        if have > expected:  # 残留文件不可信(如上次越界多写),删除重下
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            have = 0
+    if have == expected:
+        return
+    last_err: Exception | None = None
+    for attempt in range(1, config.API_MAX_RETRIES + 1):
+        base = have
+        overrun = False
+        try:
+            with requests.get(url, headers={"Range": f"bytes={start + have}-{end}"},
+                              stream=True, timeout=config.API_TIMEOUT) as resp:
+                if resp.status_code != 206:
+                    raise RuntimeError(f"http {resp.status_code}: range not honored")
+                with open(path, "ab" if have else "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        have += len(chunk)
+                        with lock:
+                            done[0] += len(chunk)
+                        if have > expected:
+                            overrun = True
+                            break
+                if overrun:
+                    raise RuntimeError(f"server overran range ({have} > {expected})")
+                if have == expected:
+                    return
+                raise RuntimeError(f"incomplete segment: {have}/{expected} bytes")
+        except Exception as exc:
+            last_err = exc
+            with lock:
+                done[0] -= have - base
+            if have > expected:
+                # 越界多写后文件不可信,删除并从段首重来
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                with lock:
+                    done[0] -= have
+                have = 0
+            logging.warning("Segment %s failed (attempt %d/%d): %s",
+                            os.path.basename(path), attempt,
+                            config.API_MAX_RETRIES, exc)
+            if attempt < config.API_MAX_RETRIES:
+                time.sleep(config.API_RETRY_DELAY)
+    raise RuntimeError(f"segment exhausted retries: {last_err}")
+
+
+def _download_gz_ranged(url: str, dest: str, progress_cb,
+                        lo: float, hi: float, progress_label: str) -> tuple[str, int]:
+    """并发分段下载:源支持 HTTP Range 时按 config.INTERACTOME_DOWNLOAD_CONCURRENCY
+    切段并行拉取;某段失败只重跑该段(段内续传,已完成段不动),最多
+    _RANGED_MAX_ROUNDS 轮,全部成功后按序拼接(先写 .part 再原子替换,不留半截文件)。
+    返回 (状态, 探测到的总字节数):"ok" 成功;"skip" 源不支持 Range 或文件太小
+    (本就不该分段,不算失败);"failed" 重试轮次耗尽(半成品已清掉),由调用方回退单流。"""
+    import shutil
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import config
+
+    total = _probe_range_support(url)
+    if total < _RANGE_MIN_SIZE:
+        return "skip", total
+    n_seg = min(int(getattr(config, "INTERACTOME_DOWNLOAD_CONCURRENCY", 1) or 1),
+                total // _RANGE_SEG_MIN_SIZE)
+    if n_seg <= 1:
+        return "skip", total
+    seg_size = total // n_seg
+    # 末段到文件末尾,吸收整除余数
+    bounds = [(i * seg_size, (i + 1) * seg_size - 1) for i in range(n_seg - 1)]
+    bounds.append(((n_seg - 1) * seg_size, total - 1))
+    parts = [f"{dest}.part{i}" for i in range(n_seg)]
+    for p in parts:  # 清掉上次进程中断可能残留的段文件:本次调用从零开始
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    done = [0]
+    lock = threading.Lock()
+    logging.info("Ranged download %s: %d segments x ~%.0f MB",
+                 url, n_seg, seg_size / 1e6)
+    try:
+        pending = list(range(n_seg))
+        for round_no in range(1, _RANGED_MAX_ROUNDS + 1):
+            with ThreadPoolExecutor(max_workers=len(pending)) as pool:
+                futures = {pool.submit(_download_segment, url, bounds[i][0],
+                                       bounds[i][1], parts[i], done, lock): i
+                           for i in pending}
+                # 进度回调只在本线程发(回调可能操作 Streamlit 组件,不能跨线程调用):
+                # 工作线程只更新计数字节,这里每半秒聚合一次
+                while not all(f.done() for f in futures):
+                    time.sleep(0.5)
+                    if progress_cb:
+                        with lock:
+                            cur = done[0]
+                        progress_cb(progress_label,
+                                    lo + (hi - lo) * min(cur / total, 1.0),
+                                    f"{cur / 1e6:.0f}/{total / 1e6:.0f} MB")
+            pending = [i for f, i in futures.items() if f.exception()]
+            if not pending:
+                break
+            logging.warning("Ranged download round %d: %d/%d segment(s) failed, "
+                            "retrying only those", round_no, len(pending), n_seg)
+            time.sleep(config.API_RETRY_DELAY)
+        if pending:
+            logging.warning("Ranged download gave up after %d round(s) (%d segment "
+                            "unrecovered), falling back to single stream",
+                            _RANGED_MAX_ROUNDS, len(pending))
+            return "failed", total
+        tmp = dest + ".part"
+        with open(tmp, "wb") as out:
+            for p in parts:
+                with open(p, "rb") as f:
+                    shutil.copyfileobj(f, out)
+        if os.path.getsize(tmp) != total:
+            logging.warning("Ranged download size mismatch (%d != %d), falling "
+                            "back to single stream", os.path.getsize(tmp), total)
+            return "failed", total
+        os.replace(tmp, dest)
+        logging.info("Ranged download finished: %s (%.1f MB)", dest, total / 1e6)
+        return "ok", total
+    finally:
+        for p in parts:  # 成功时各段已拼入目标文件,失败时丢弃半成品
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        try:
+            os.remove(dest + ".part")
+        except OSError:
+            pass
+
 
 def _download_gz(url_path: str, dest: str,
                  progress_cb=None, progress_range: tuple[float, float] = (0.0, 1.0),
                  progress_label: str = "download") -> str:
     """从 STRING 下载压缩文件到本地,返回文件路径;本地已有同名文件时直接跳过下载,
-    多个下载源依次尝试,全部失败时报错。"""
+    多个下载源依次尝试,全部失败时报错。每个源先尝试并发分段(Range),未成功自动
+    回退单流;大文件首次回退时经进度回调发一次用户提醒(单流约需 10 分钟以上),
+    小文件单流本来就快,不提醒以免误报。"""
     import time
 
     import requests
@@ -103,9 +309,22 @@ def _download_gz(url_path: str, dest: str,
     bases = [getattr(config, "STRING_DOWNLOAD_MIRROR_BASE", None),
              config.STRING_DOWNLOAD_BASE]
     bases = [b.rstrip("/") for b in bases if b]
+    warned_fallback = False  # 提醒每次下载只发一次,两个源都回退时不重复打扰
     last_err: Exception | None = None
     for base in bases:
         url = base + url_path
+        status, total = _download_gz_ranged(url, dest, progress_cb, lo, hi,
+                                            progress_label)
+        if status == "ok":
+            return dest
+        if not warned_fallback and total >= _RANGE_MIN_SIZE:
+            warned_fallback = True
+            host = base.split("//", 1)[-1]
+            logging.warning("Concurrent download did not finish on %s (status %s), "
+                            "falling back to single stream (may take 10+ minutes)",
+                            host, status)
+            if progress_cb:
+                progress_cb("fallback", None, host)
         for attempt in range(1, config.API_MAX_RETRIES + 1):
             try:
                 with requests.get(url, stream=True, timeout=config.API_TIMEOUT) as resp:
@@ -126,6 +345,22 @@ def _download_gz(url_path: str, dest: str,
                     os.replace(tmp, dest)
                 logging.info("Downloaded %s -> %s", url, dest)
                 return dest
+            except requests.HTTPError as exc:
+                last_err = exc
+                status = getattr(exc.response, "status_code", None)
+                if status is not None and 400 <= status < 500:
+                    # 404/410 等 4xx 是确定性失败(实测镜像仅覆盖 v12.0,其余版本一律
+                    # 404),重试只会白等,立即换下一个下载源,并在进度条上告知原因
+                    logging.warning("Download source %s returned %d for %s, skipping "
+                                    "retries and trying next source", base, status, url)
+                    if not warned_fallback and progress_cb:
+                        warned_fallback = True
+                        progress_cb("mirror_skip", None, base.split("//", 1)[-1])
+                    break
+                logging.exception("Download failed (attempt %d/%d): %s",
+                                  attempt, config.API_MAX_RETRIES, url)
+                if attempt < config.API_MAX_RETRIES:
+                    time.sleep(config.API_RETRY_DELAY)
             except Exception as exc:
                 last_err = exc
                 logging.exception("Download failed (attempt %d/%d): %s",
@@ -178,22 +413,26 @@ def _links_to_edges(links_df: pd.DataFrame, id2sym: dict, confidence: int) -> pd
 
 
 def _write_edges_auto(df: pd.DataFrame, stem: str) -> str:
-    """把边表保存到磁盘,返回实际文件路径。"""
+    """把边表保存到磁盘,返回实际文件路径。优先 parquet;失败时回退 CSV——
+    纯文本没有反序列化执行风险,不再像旧版那样回退 pickle(本地缓存一旦被篡改即任意代码执行)。"""
     try:
         path = stem + ".parquet"
         df.to_parquet(path, index=False)
         return path
     except Exception:
-        logging.exception("Parquet write failed — falling back to pickle")
-        path = stem + ".pkl"
-        df.to_pickle(path)
+        logging.exception("Parquet write failed — falling back to CSV")
+        path = stem + ".csv"
+        df.to_csv(path, index=False, encoding="utf-8-sig")
         return path
 
 
 def _read_edges_auto(path: str) -> pd.DataFrame:
     if path.endswith(".parquet"):
         return pd.read_parquet(path)
-    return pd.read_pickle(path)
+    if path.endswith(".pkl"):
+        # 仅兼容读取旧版产生的 .pkl 缓存;新构建不再写 pickle
+        return pd.read_pickle(path)
+    return pd.read_csv(path, encoding="utf-8-sig", comment="#")
 
 
 def build_interactome(species: str = "Human",
@@ -285,6 +524,63 @@ def build_interactome(species: str = "Human",
     logging.info("Interactome built: %d nodes / %d edges (%s, confidence>=%d)",
                  meta["n_nodes"], meta["n_edges"], string_version, confidence)
     return meta
+
+
+def clean_old_version_caches(species: str = "Human") -> int:
+    """删除该物种其它 STRING 版本/置信度组合的背景网络缓存(边表/度表/构建记录三件套)。
+    供数据管理页在新版本构建成功后调用(确认弹窗已告知清理代价):当前生效组合一律保留,
+    切回旧组合需重新构建。只删各 _meta.json 登记的文件,无构建记录的孤儿文件不动。返回删除文件数。"""
+    import config
+
+    cur_conf = int(config.INTERACTOME_CONFIDENCE)
+    cur_ver = config.STRING_VERSION
+    removed = 0
+    try:
+        meta_names = [n for n in os.listdir(_cache_dir()) if n.endswith("_meta.json")]
+    except OSError:
+        return 0
+    for name in meta_names:
+        path = os.path.join(_cache_dir(), name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if not isinstance(meta, dict):
+                raise ValueError("meta is not a dict")
+        except Exception:
+            # 读不出的记录无法判断归属,保守保留
+            logging.exception("Interactome meta unreadable, kept: %s", path)
+            continue
+        if meta.get("species") != species:
+            continue
+        try:
+            is_current = (int(meta.get("confidence", -1)) == cur_conf
+                          and meta.get("string_version") == cur_ver)
+        except (TypeError, ValueError):
+            is_current = False  # 置信度都解析不出的记录必不属于当前组合
+        if is_current:
+            continue  # 当前生效组合,保留
+        # 非当前组合:尽力删除登记的边表/度表,再删除记录本身;清理绝不抛异常,
+        # 避免传到页面把成功的构建误报为失败
+        files = meta.get("files")
+        if isinstance(files, dict):
+            for key in ("edges", "degrees"):
+                fname = files.get(key)
+                if not fname:
+                    continue
+                try:
+                    os.remove(os.path.join(_cache_dir(), fname))
+                    removed += 1
+                except OSError:
+                    logging.exception("Failed to remove old interactome cache: %s", fname)
+        try:
+            os.remove(path)
+            removed += 1
+        except OSError:
+            logging.exception("Failed to remove old interactome meta: %s", path)
+    if removed:
+        logging.info("Old interactome caches removed: %d file(s) (active: %s, confidence>=%d)",
+                     removed, cur_ver, cur_conf)
+    return removed
 
 
 # ---------- 加载侧(页面/算法用) ----------
@@ -382,3 +678,8 @@ def clear_runtime_caches() -> None:
     _load_graph_cached.cache_clear()
     _load_degrees_cached.cache_clear()
     _known_genes.cache_clear()
+    # 邻近度/RWR 的 LCC 上下文缓存也依赖背景网络:不清的话同进程重建后
+    # 仍会用旧图算零分布(函数内导入,避免与 network_algorithms 循环依赖)
+    from . import network_algorithms
+
+    network_algorithms._lcc_context_cached.cache_clear()

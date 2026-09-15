@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 
 from .caching import (_is_cache_fresh, clean_expired_cache_files, open_csv_cache,
-                      read_cache_key, save_csv_cache)
+                      read_cache_key, save_csv_cache, save_json_file)
 from .http_client import request_with_retry
 from .text_utils import safe_name
 
@@ -37,10 +37,9 @@ def fetch_string_ppi(
     score: float = 0.7,
     network_type: str = "full",
     label: str | None = None,
-    min_degree: int = 1,
 ) -> pd.DataFrame:
     """从 STRING 数据库获取基因列表的蛋白互作边表:先把基因符号映射为 STRING 蛋白 ID(不认识的基因被剔除),再按置信度阈值 score(0~1)筛选互作边。
-    network_type 默认 "full" 为功能关联,"physical" 仅保留有物理结合证据的互作;species 为物种编号,人类是 "9606";基因列表自动去重排序,最多取 1000 个;min_degree 为建网后按连接数隐藏节点的阈值,默认 1 即只隐藏孤立节点(对齐文献惯例,不做更高连接度剪枝)。
+    network_type 默认 "full" 为功能关联,"physical" 仅保留有物理结合证据的互作;species 为物种编号,人类是 "9606";基因列表自动去重排序,最多取 1000 个。
     相同参数的结果存为本地缓存,有效期内且基因列表指纹与文件头记录一致时直接复用,否则重新请求覆盖;请求失败、基因全部不被识别或没有达到阈值的边时,返回空表。"""
     import config
 
@@ -54,18 +53,22 @@ def fetch_string_ppi(
     # 上游变化(设置调整后交集/RWR 扩展更新等)会在 TTL 内让同名缓存命中旧查询集的边表,
     # 校验指纹不符立即视为未命中重算覆盖(旧格式无指纹行的文件按不匹配处理)。
     gene_md5 = hashlib.md5("\r".join(genes).encode("utf-8")).hexdigest()
+    # 缓存键含 STRING 版本:切版本后同名缓存按键不符处理,不会在 TTL 内命中旧版本边表
+    # (旧格式无版本前缀的文件同样按未命中,重算覆盖一次)
+    cache_key = f"{config.STRING_VERSION}|{gene_md5[:12]}"
 
-    # 缓存文件名由来源标识、置信度阈值、度数阈值拼成。
+    # 缓存文件名由来源标识、网络类型、置信度阈值拼成;network_type 必须参与命名,
+    # 否则 full/physical 切换后 TTL 内会命中另一参数组合的旧边表。
     # 相同参数组合固定同名,重新生成时直接覆盖旧文件。
     if label:
         label_part = safe_name(label)
-        name = f"StringPPI_{label_part}_{score:g}_{int(min_degree)}.csv"
+        name = f"StringPPI_{label_part}_{network_type}_{score:g}.csv"
         if label_part == "manual":
             # 手动基因模式的基因列表无法从名字区分,附加基因列表短指纹作缓存标识,
             # 避免不同基因列表混用同一份缓存
-            name = f"StringPPI_manual_{score:g}_{int(min_degree)}_{gene_md5[:8]}.csv"
+            name = f"StringPPI_manual_{network_type}_{score:g}_{gene_md5[:8]}.csv"
     else:
-        name = f"StringPPI_{score:g}_{int(min_degree)}.csv"
+        name = f"StringPPI_{network_type}_{score:g}.csv"
     cache_file = os.path.join(config.PPI_CACHE_DIR, name)
 
     # TTL 过期文件在命中判定里只会被跳过、不会被删除,这里顺手清理避免缓存目录只增不减
@@ -74,7 +77,7 @@ def fetch_string_ppi(
     # 命中需同时满足 TTL 未过期与文件头指纹一致(与富集缓存同一判定顺序):
     # 先验键再读文件,指纹不符或旧格式无键行按未命中处理,避免白读文件与误导性命中日志
     cached = None
-    if _is_cache_fresh(cache_file) and read_cache_key(cache_file) == gene_md5[:12]:
+    if _is_cache_fresh(cache_file) and read_cache_key(cache_file) == cache_key:
         cached = open_csv_cache(cache_file, fresh=True, label=f"STRING PPI for {len(genes)} genes")
     if cached is not None:
         return cached
@@ -127,7 +130,7 @@ def fetch_string_ppi(
             "ascore", "escore", "dscore", "tscore"]
     df = df[[c for c in keep if c in df.columns]]
 
-    save_csv_cache(df, cache_file, header_lines=[gene_md5[:12]])
+    save_csv_cache(df, cache_file, header_lines=[cache_key])
     logging.info("STRING PPI for %d genes: %d edges cached", len(genes), len(df))
     return df
 
@@ -697,6 +700,16 @@ def save_ppi_results(
             shutil.rmtree(old)
     subdir = os.path.join(config.DOWNLOADS_DIR, f"{prefix}_data")
     os.makedirs(subdir, exist_ok=True)
+
+    # 结果自描述:记录分析时的数据版本与阈值,任何一份旧结果都能说明自己用的
+    # STRING 版本(切版本后对比/复现的依据);结果目录每次分析整体重建,本文件随之刷新
+    from datetime import datetime
+
+    save_json_file(os.path.join(subdir, "analysis_meta.json"), {
+        "string_version": config.STRING_VERSION,
+        "interactome_confidence": int(config.INTERACTOME_CONFIDENCE),
+        "analyzed_at": datetime.now().isoformat(timespec="seconds"),
+    }, indent=2, sort_keys=True)
 
     paths = {
         "nodes": os.path.join(subdir, f"{prefix}_nodes.csv"),

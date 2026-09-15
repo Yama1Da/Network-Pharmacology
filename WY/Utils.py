@@ -8,6 +8,8 @@
 import logging
 import os
 import shutil
+import threading
+from collections.abc import Callable
 
 import pandas as pd
 import streamlit as st
@@ -47,7 +49,7 @@ from core.files import (
     make_ppi_zip,
 )
 from core.logging_setup import set_logging_level, setup_logging
-from core.opentargets import get_disease_targets
+from core.opentargets import get_disease_targets, invalidate_disease_targets_cache
 from core.ppi import (
     build_ppi_graph,
     compute_ppi_metrics,
@@ -63,7 +65,7 @@ from core.targets import (
     get_drug_targets_merged,
     get_targets_concurrent,
 )
-from core.text_utils import resolve_original_name, safe_name
+from core.text_utils import load_name_map, resolve_original_name, safe_name
 
 
 # ---------- 界面公共组件 ----------
@@ -94,19 +96,21 @@ def hide_sidebar(extra_css: str = "") -> None:
 
 
 def back_button(label_key: str = "common.back_main", *, key: str = "back_btn",
-                target: str = "App.py") -> None:
-    """"返回"按钮:点击后切到 target 页面;页面自行把它放进列布局。"""
-    if st.button(t(label_key), key=key):
+                target: str = "App.py", disabled: bool = False) -> None:
+    """"返回"按钮:点击后切到 target 页面;页面自行把它放进列布局。
+    disabled 供批量任务运行时禁用,避免点击排队到任务结束后触发跳转、丢掉结果展示。"""
+    if st.button(t(label_key), key=key, disabled=disabled):
         st.switch_page(target)
 
 
-def csv_download_button(file_path: str, file_name: str, *, key: str) -> None:
+def csv_download_button(file_path: str, file_name: str, *, key: str,
+                        disabled: bool = False) -> None:
     """行内 CSV 下载按钮:文件存在时读取字节并渲染按钮,不存在时静默跳过。"""
     if not os.path.exists(file_path):
         return
     with open(file_path, "rb") as f:
         st.download_button(t("common.download"), data=f.read(), file_name=file_name,
-                           mime="text/csv", key=key)
+                           mime="text/csv", key=key, disabled=disabled)
 
 
 def download_button(label_key: str, data, file_name: str, mime: str) -> None:
@@ -129,7 +133,8 @@ def download_file_button(label_key: str, path: str, file_name: str, mime: str) -
 
 def render_select_all_checkbox(ns: str, names: list[str]) -> bool:
     """表头"全选"复选框;切换时批量改写各行复选框状态(须在行复选框渲染前调用)。"""
-    select_all = st.checkbox("", key=f"{ns}_all", help=t("common.select_all"))
+    select_all = st.checkbox(t("common.select_all"), key=f"{ns}_all",
+                             label_visibility="collapsed")
     if st.session_state.get(f"{ns}_all_prev") != select_all:
         st.session_state[f"{ns}_all_prev"] = select_all
         for n in names:
@@ -137,9 +142,14 @@ def render_select_all_checkbox(ns: str, names: list[str]) -> bool:
     return select_all
 
 
-def render_row_checkbox(ns: str, name: str, select_all: bool) -> None:
-    """行首复选框;value 仅在新键首次创建时生效,新出现的条目跟随当前全选状态。"""
-    st.checkbox("", key=f"{ns}_sel::{name}", value=select_all)
+def render_row_checkbox(ns: str, name: str, select_all: bool,
+                        label: str | None = None) -> None:
+    """行首复选框;value 仅在新键首次创建时生效,新出现的条目跟随当前全选状态。
+
+    label 折叠隐藏、仅供读屏(建议传展示名),缺省用真实名。
+    """
+    st.checkbox(label or name, key=f"{ns}_sel::{name}", value=select_all,
+                label_visibility="collapsed")
 
 
 def collect_selected(ns: str, names: list[str]) -> list[str]:
@@ -149,41 +159,183 @@ def collect_selected(ns: str, names: list[str]) -> list[str]:
     return selected
 
 
+# ---------- 搜索框 + 搜索历史 ----------
+
+# search_history.json 的进程内读写锁:读-改-写是事务,多标签页/多会话并发时互斥,
+# 否则并发写入互相整文件覆盖、丢历史
+_search_history_lock = threading.Lock()
+
+# ui_settings.json 的进程内读写锁:齿轮面板与对接页都会高频保存设置
+_ui_settings_lock = threading.Lock()
+
+
+def load_search_history(search_key: str) -> list[str]:
+    """读取指定搜索框的历史记录(最新的在前,最多 SEARCH_HISTORY_MAX 条)。
+
+    全部历史按搜索框 key 分组存于 Static/data/cache/search_history.json,
+    重启 Streamlit 后仍在;文件缺失或损坏时按空历史处理。
+    """
+    import json
+
+    import config
+
+    if not os.path.exists(config.SEARCH_HISTORY_FILE):
+        return []
+    try:
+        with open(config.SEARCH_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return []  # 文件损坏时按空历史处理,下次写入会重建
+    hist = data.get(search_key, [])
+    return [h for h in hist if isinstance(h, str) and h][:config.SEARCH_HISTORY_MAX]
+
+
+def add_search_history(search_key: str, query: str) -> None:
+    """记录一次搜索:去重后提到最前,超出 SEARCH_HISTORY_MAX 的旧记录淘汰。
+
+    与最近一次记录相同时不重写文件,避免页面内其他操作触发的 rerun 反复落盘。
+    """
+    import json
+
+    import config
+
+    query = (query or "").strip().lower()
+    if not query:
+        return
+    with _search_history_lock:  # 读-改-写整段互斥,并发时后写者不能覆盖先写者的条目
+        hist = load_search_history(search_key)
+        if hist and hist[0] == query:
+            return
+        data: dict = {}
+        if os.path.exists(config.SEARCH_HISTORY_FILE):
+            try:
+                with open(config.SEARCH_HISTORY_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception:
+                data = {}  # 旧文件损坏时按空文件处理,以本次写入为准
+        data[search_key] = [query] + [h for h in hist if h != query]
+        os.makedirs(os.path.dirname(config.SEARCH_HISTORY_FILE), exist_ok=True)
+        # 原子写(临时文件+替换),中断不会留下半截 JSON
+        from core.caching import save_json_file
+        save_json_file(config.SEARCH_HISTORY_FILE, data)
+
+
+def search_input(search_key: str) -> str:
+    """带历史记录的搜索框:每个搜索框按自己的 key 维护独立历史。
+
+    输入框下方以 pills 展示历史(最多 6 条),点击历史项回填搜索框并重渲染;
+    每次提交的非空搜索写入 JSON 历史,重启 Streamlit 后仍有效。返回小写查询串。
+    """
+    hist = load_search_history(search_key)
+    # 点击历史项后先回填搜索框的会话值,必须在 widget 创建前设置才会生效
+    picked = st.session_state.pop(f"{search_key}_hist_pick", None)
+    if picked:
+        st.session_state[search_key] = picked
+    # pills 的选中态会跨 rerun 保留:点击历史项后残留的选中值与新查询不一致,
+    # 会被下面误判成又一次点击,把输入框弹回历史词、丢掉用户刚输入的查询。
+    # 故在 pills 实例化前清掉选中(创建后改控件键会抛异常);本次点击的浏览器
+    # 事件在控件创建时写入,不受影响。
+    st.session_state.pop(f"{search_key}_hist_pills", None)
+    query = st.text_input(t("common.search_placeholder"), key=search_key).strip().lower()
+    if query:
+        # 先记录本次搜索再渲染历史,保证提交的这一轮就能看到自己的历史项
+        add_search_history(search_key, query)
+        hist = load_search_history(search_key)
+    if hist:
+        choice = st.pills(t("common.search_history"), hist,
+                          key=f"{search_key}_hist_pills", label_visibility="collapsed")
+        if choice and choice != (st.session_state.get(search_key) or ""):
+            st.session_state[f"{search_key}_hist_pick"] = choice
+            st.rerun()
+    return query
+
+
+def loose_name(text: str) -> str:
+    """搜索用归一化:转小写并去掉空白、下划线与其他标点。
+
+    让 "Type 2 diabetes mellitus" 能匹配 Type_2_diabetes_mellitus、
+    "Alzheimer's" 能匹配 Alzheimer_s 这类安全文件名与原始输入的差异。
+    """
+    import re
+
+    return re.sub(r"[\W_]+", "", str(text), flags=re.UNICODE).lower()
+
+
+def search_hit(name: str, query: str, name_map: dict[str, str] | None = None) -> bool:
+    """判断文件/目录名是否命中搜索词(归一化子串匹配,分隔符与标点差异不敏感)。
+
+    除直接匹配外,还借 name_map.json 把文件名内嵌的安全名(如 Type_2_diabetes_mellitus)
+    还原成原始名(Type 2 diabetes mellitus)后再匹配一次,覆盖原始名含被
+    safe_name 替换掉的字符(如 "My+Drug@2024" ↔ My_Drug_2024)的场景。
+    name_map 传入时直接使用(避免文件列表逐个重读),缺省现读一次。
+    """
+    q = loose_name(query)
+    if not q:
+        return True
+    if q in loose_name(name):
+        return True
+    if name_map is None:
+        from core.text_utils import load_name_map
+
+        name_map = load_name_map()
+    expanded = str(name)
+    for key, original in name_map.items():
+        if key and key in expanded:
+            expanded = expanded.replace(key, str(original))
+    return q in loose_name(expanded)
+
+
 def render_file_table(files_df, cache_dir: str, *, search_key: str,
                       display_map: dict[str, str] | None = None,
-                      ns: str | None = None) -> list[str] | None:
-    """"文件名 | 创建时间 | 下载"三列文件列表:顶部搜索框过滤文件名,表头 + 每行一个下载按钮。
+                      ns: str | None = None,
+                      path_of: Callable[[str], str] | None = None,
+                      disabled: bool = False) -> list[str] | None:
+    """文件名 | 最后修改时间 | 下载"三列文件列表:顶部搜索框过滤文件名,表头 + 每行一个下载按钮。
 
     display_map 提供 {真实文件名: 展示名}:列表展示展示名(友好名称),搜索同时匹配
     展示名与真实文件名,下载按钮仍下载真实文件。
 
     ns 不为 None 时进入多选模式:行首加复选框、表头加全选;选中项写入
     st.session_state[f"{ns}_selected"] 并作为返回值,供 render_file_action_bar 批量操作。
+
+    path_of 提供时(ns 多选模式下)每行多一个 Update 按钮(管理页用),行下载/更新路径
+    都按它解析(来源文件与 merged 整合文件分属不同目录);单文件更新点击记录在
+    st.session_state[f"{ns}_update_clicked"],由页面取出处理。
+
+    disabled 供批量任务运行时禁用行内按钮,避免点击排队到任务结束后再次触发。
     """
     display_map = display_map or {}
+    resolve = path_of or (lambda n: os.path.join(cache_dir, n))
 
     def _disp(name: str) -> str:
         return display_map.get(name, name)
 
     all_names = files_df["File name"].tolist()
-    query = st.text_input(t("common.search_placeholder"), key=search_key).strip().lower()
+    query = search_input(search_key)
     if query:
-        # 展示名/真实文件名任一命中即保留;子串大小写不敏感匹配
+        # 展示名/真实文件名/还原后的原始名任一命中即保留;分隔符与标点差异不敏感
+        name_map = load_name_map()
         files_df = files_df[files_df["File name"].map(
-            lambda n: query in n.lower() or query in _disp(n).lower())]
+            lambda n: search_hit(n, query, name_map) or search_hit(_disp(n), query, name_map))]
     if files_df.empty:
         st.info(t("common.search_no_match", query=query))
         return None
 
+    with_update = bool(ns and path_of)
     select_all = False
     if ns is None:
         col_h_name, col_h_time, col_h_dl = st.columns([4, 2, 1])
+    elif with_update:
+        col_h_sel, col_h_name, col_h_time, col_h_upd, col_h_dl = st.columns([0.5, 3, 2, 1, 1])
+        with col_h_sel:
+            select_all = render_select_all_checkbox(ns, all_names)
+        col_h_upd.markdown(t("common.col_update"))
     else:
         col_h_sel, col_h_name, col_h_time, col_h_dl = st.columns([0.5, 3.5, 2, 1])
         with col_h_sel:
             select_all = render_select_all_checkbox(ns, all_names)
     col_h_name.markdown(t("common.col_file_name"))
-    col_h_time.markdown(t("common.col_created"))
+    col_h_time.markdown(t("common.col_modified"))
     col_h_dl.markdown(t("common.col_download"))
 
     with st.container(key="file_rows"):
@@ -191,15 +343,23 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
             name = row["File name"]
             if ns is None:
                 col_name, col_time, col_dl = st.columns([4, 2, 1])
+            elif with_update:
+                col_sel, col_name, col_time, col_upd, col_dl = st.columns([0.5, 3, 2, 1, 1])
+                with col_sel:
+                    render_row_checkbox(ns, name, select_all, label=_disp(name))
+                with col_upd:
+                    if st.button(t("common.update"), key=f"update_{name}",
+                                 disabled=disabled):
+                        st.session_state[f"{ns}_update_clicked"] = name
             else:
                 col_sel, col_name, col_time, col_dl = st.columns([0.5, 3.5, 2, 1])
                 with col_sel:
-                    render_row_checkbox(ns, name, select_all)
+                    render_row_checkbox(ns, name, select_all, label=_disp(name))
             col_name.write(_disp(name))
-            col_time.write(row["Created time"])
+            col_time.write(row["Modified time"])
             with col_dl:
-                csv_download_button(os.path.join(cache_dir, name),
-                                    name, key=f"download_{name}")
+                csv_download_button(resolve(name), name, key=f"download_{name}",
+                                    disabled=disabled)
 
     if ns is None:
         return None
@@ -210,43 +370,52 @@ def render_file_table(files_df, cache_dir: str, *, search_key: str,
 # 删除交互与收藏管理页一致:点删除先弹确认框,点"是"才真正删除。
 
 
-@st.dialog(t("common.delete_dialog_title"))
-def _confirm_batch_delete(ns: str, base_dir: str, *, dirs: bool = False,
-                          confirm_key: str = "common.delete_dialog_confirm") -> None:
+def _confirm_batch_delete(ns: str, base_dir: str | None, *, dirs: bool = False,
+                          confirm_key: str = "common.delete_dialog_confirm",
+                          path_of=None) -> None:
     """批量删除确认弹窗:点"是"才删除并刷新列表,点"否"只关闭窗口。
 
     dirs=False 删除文件(os.remove);True 删除目录及内容(shutil.rmtree)。
     confirm_key 指定确认文案的 i18n 键,目录类页面可用更贴切的提示。
+    path_of 提供时按它把条目名解析成完整路径(条目分属多个目录的页面用,如管理页的
+    来源文件与 merged 整合文件);缺省用 base_dir 拼接。
+    st.dialog 装饰器放在函数内而不是模块级:@st.dialog 的参数只在装饰时求值,
+    Utils 是进程级单次导入,放外面会把弹窗标题冻结成首个会话的语言。
     """
-    names = st.session_state.get(f"{ns}_pending_delete", [])
-    st.write(t(confirm_key, n=len(names)))
-    if names:
-        st.caption(", ".join(names[:10]) + (" …" if len(names) > 10 else ""))
-    col_yes, col_no = st.columns(2)
-    with col_yes:
-        if st.button(t("common.yes"), key=f"{ns}_dlg_yes", width="stretch"):
-            failed: list[str] = []
-            for n in names:
-                path = os.path.join(base_dir, n)
-                try:
-                    if dirs:
-                        shutil.rmtree(path, ignore_errors=True)
-                        if os.path.isdir(path):  # rmtree 静默失败时目录仍在,按失败处理
-                            raise OSError(path)
+    @st.dialog(t("common.delete_dialog_title"))
+    def _dialog() -> None:
+        names = st.session_state.get(f"{ns}_pending_delete", [])
+        st.write(t(confirm_key, n=len(names)))
+        if names:
+            st.caption(", ".join(names[:10]) + (" …" if len(names) > 10 else ""))
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button(t("common.yes"), key=f"{ns}_dlg_yes", width="stretch"):
+                failed: list[str] = []
+                resolve = path_of or (lambda n: os.path.join(base_dir, n))
+                for n in names:
+                    path = resolve(n)
+                    try:
+                        if dirs:
+                            shutil.rmtree(path, ignore_errors=True)
+                            if os.path.isdir(path):  # rmtree 静默失败时目录仍在,按失败处理
+                                raise OSError(path)
+                        else:
+                            os.remove(path)
+                    except OSError:
+                        logging.exception("Failed to delete %s", path)
+                        failed.append(n)
                     else:
-                        os.remove(path)
-                except OSError:
-                    logging.exception("Failed to delete %s", path)
-                    failed.append(n)
-                else:
-                    st.session_state.pop(f"{ns}_sel::{n}", None)
-            st.session_state.pop(f"{ns}_pending_delete", None)
-            st.session_state[f"{ns}_deleted"] = (len(names) - len(failed), failed)
-            st.rerun()  # 关闭弹窗并刷新列表
-    with col_no:
-        if st.button(t("common.no"), key=f"{ns}_dlg_no", width="stretch"):
-            st.session_state.pop(f"{ns}_pending_delete", None)
-            st.rerun()  # 仅关闭弹窗
+                        st.session_state.pop(f"{ns}_sel::{n}", None)
+                st.session_state.pop(f"{ns}_pending_delete", None)
+                st.session_state[f"{ns}_deleted"] = (len(names) - len(failed), failed)
+                st.rerun()  # 关闭弹窗并刷新列表
+        with col_no:
+            if st.button(t("common.no"), key=f"{ns}_dlg_no", width="stretch"):
+                st.session_state.pop(f"{ns}_pending_delete", None)
+                st.rerun()  # 仅关闭弹窗
+
+    _dialog()
 
 
 def show_file_op_result(ns: str) -> None:
@@ -261,34 +430,54 @@ def show_file_op_result(ns: str) -> None:
         st.error(t("common.delete_failed", names=", ".join(failed)))
 
 
-def render_file_action_bar(ns: str, base_dir: str, *, zip_name: str,
+def render_file_action_bar(ns: str, base_dir: str | None, *, zip_name: str,
                            dirs: bool = False,
-                           confirm_key: str = "common.delete_dialog_confirm") -> None:
-    """选中条目的批量操作栏:下载 ZIP / 删除(确认弹窗)。
+                           confirm_key: str = "common.delete_dialog_confirm",
+                           path_of: Callable[[str], str] | None = None,
+                           update_label: str | None = None,
+                           disabled: bool = False) -> list[str] | None:
+    """选中条目的批量操作栏:下载 ZIP / 删除(确认弹窗);update_label 提供时多一列
+    "更新选中"按钮(管理页用),被点击时返回选中的文件名列表交由页面执行,否则恒返回 None。
 
     选中项来自多选模式写入的 {ns}_selected(render_file_table 或
     render_select_all_checkbox + render_row_checkbox + collect_selected 组合)。
     dirs=False 条目为 base_dir 下的文件;True 为子目录(删除整目录、zip 内保留目录结构)。
+    path_of 提供时按它把条目名解析成完整路径(条目分属多目录的页面用,如管理页的
+    来源文件与 merged 整合文件);缺省用 base_dir 拼接。
+    disabled 供批量任务运行时禁用整栏按钮。注意"更新选中"按钮自身在点击当轮不得
+    变为 disabled:disabled 是 widget 身份的一部分,参数变化会让点击值丢失,
+    页面须走"置位 busy → st.rerun → 禁用轮执行"的两段式(见 render_source_management_page)。
     """
+    resolve = path_of or (lambda n: os.path.join(base_dir, n))
     selected = [n for n in st.session_state.get(f"{ns}_selected", [])
-                if os.path.exists(os.path.join(base_dir, n))]
-    col_cnt, col_dl, col_del = st.columns([2, 2, 2])
+                if os.path.exists(resolve(n))]
+    if update_label:
+        col_cnt, col_upd, col_dl, col_del = st.columns([2, 2, 2, 2])
+    else:
+        col_cnt, col_dl, col_del = st.columns([2, 2, 2])
     col_cnt.caption(t("common.selected_count", n=len(selected)))
+    update_clicked = None
+    if update_label:
+        with col_upd:
+            if st.button(update_label, key=f"{ns}_batch_update_btn",
+                         disabled=disabled or not selected, width="stretch"):
+                update_clicked = selected
     with col_dl:
         if dirs:
-            data = make_dirs_zip({n: os.path.join(base_dir, n) for n in selected}) \
-                if selected else b""
+            data = make_dirs_zip({n: resolve(n) for n in selected}) if selected else b""
         else:
-            data = make_ppi_zip({n: os.path.join(base_dir, n) for n in selected}) \
-                if selected else b""
+            data = make_ppi_zip({n: resolve(n) for n in selected}) if selected else b""
         st.download_button(t("common.download_selected"), data=data,
                            file_name=zip_name, mime="application/zip",
-                           key=f"{ns}_dl_btn", disabled=not selected, width="stretch")
+                           key=f"{ns}_dl_btn",
+                           disabled=disabled or not selected, width="stretch")
     with col_del:
         if st.button(t("common.delete_selected"), key=f"{ns}_del_btn",
-                     disabled=not selected, width="stretch"):
+                     disabled=disabled or not selected, width="stretch"):
             st.session_state[f"{ns}_pending_delete"] = selected
-            _confirm_batch_delete(ns, base_dir, dirs=dirs, confirm_key=confirm_key)
+            _confirm_batch_delete(ns, base_dir, dirs=dirs, confirm_key=confirm_key,
+                                  path_of=path_of)
+    return update_clicked
 
 
 # ---------- 富集结果文件的友好命名展示 ----------
@@ -428,9 +617,12 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
 
 
 def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
-                           progress: bool = True, max_workers: int = 4):
+                           progress: bool = True, max_workers: int = 4,
+                           filenames: list[str] | None = None):
     """更新某类别全部来源文件并重建全部整合文件,返回结果表(File/Status/Message)。
 
+    filenames 提供时只更新这些来源文件,并只重建它们对应的整合文件(管理页"更新选中"
+    的批量入口);选中清单里的 merged 整合文件按当前来源直接重建,不重抓来源。
     来源文件互相独立,线程池并发抓取提速;抓取链路自带按源限流(throttle 与
     DisGeNET 配额均有锁保护),并发安全。HTTP 响应缓存在入口只清一次:
     每文件中途清理会干扰其他线程的在途请求,且批量开始后本批抓取是唯一的
@@ -446,11 +638,23 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
         if bar is not None:
             bar.progress(frac, text=t(key, **fmt))
 
-    # 第一步:先并发更新所有来源文件
+    def _short(name: str) -> str:
+        """进度文案用的短文件名:去 .csv 后缀,超长截断加省略号。"""
+        short = name.removesuffix(".csv")
+        return short[:31] + "…" if len(short) > 32 else short
+
+    # 第一步:先并发更新所有来源文件(filenames 提供时只更新选中的)
     jobs: list[str] = []
     names = set()
-    for filename in sorted(os.listdir(spec["cache_dir"])):
+    # 全新安装、从未抓取过数据时缓存目录尚不存在:按无来源文件处理,直接跳到 merged 重建
+    try:
+        cache_entries = sorted(os.listdir(spec["cache_dir"]))
+    except OSError:
+        cache_entries = []
+    for filename in cache_entries:
         if not filename.endswith(".csv"):
+            continue
+        if filenames is not None and filename not in filenames:
             continue
         for prefix in spec["source_prefixes"]:
             if filename.startswith(prefix):
@@ -469,11 +673,13 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
         results: dict[str, dict] = {}
         workers = max(1, min(max_workers, len(jobs)))
         if workers == 1:
-            for filename in jobs:
+            for done, filename in enumerate(jobs, 1):
                 try:
                     results[filename] = _run_one(filename)
                 except Exception:
                     results[filename] = {"Status": "FAILED", "Message": "update error"}
+                _tick(0.8 * done / len(jobs), "mgmt.prog.sources",
+                      done=done, total=len(jobs), latest=_short(filename))
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {pool.submit(_run_one, f): f for f in jobs}
@@ -484,11 +690,17 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
                     except Exception:
                         results[filename] = {"Status": "FAILED", "Message": "update error"}
                     _tick(0.8 * done / len(jobs), "mgmt.prog.sources",
-                          done=done, total=len(jobs))
+                          done=done, total=len(jobs), latest=_short(filename))
         # 按文件名排序输出,与并发完成顺序无关
         rows = [{"File": f, **results[f]} for f in sorted(results)]
 
-    # 第二步:再重建所有 merged 整合文件(name 已还原为原始名,文件名需再走 safe_name)
+    # 第二步:再重建所有 merged 整合文件(name 已还原为原始名,文件名需再走 safe_name);
+    # 选中清单里的整合文件也加入重建(按当前来源重建,不重抓来源)
+    if filenames is not None:
+        for filename in filenames:
+            if filename.startswith(spec["merged_prefix"]):
+                stem = filename[len(spec["merged_prefix"]):-len(".csv")]
+                names.add(resolve_original_name(stem) or stem)
     merged_names = sorted(names)
     for idx, name in enumerate(merged_names, 1):
         merged_file = f"{spec['merged_prefix']}{safe_name(name)}.csv"
@@ -511,34 +723,18 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
     return pd.DataFrame(rows, columns=["File", "Status", "Message"])
 
 
-def render_updateable_file_table(files_df, spec: dict, *, search_key: str) -> str | None:
-    """"文件名 | 创建时间 | 更新 | 下载"四列文件列表;返回被点击 Update 的文件名。顶部搜索框过滤文件名。"""
-    query = st.text_input(t("common.search_placeholder"), key=search_key).strip().lower()
-    if query:
-        files_df = files_df[files_df["File name"].str.lower().str.contains(query, regex=False)]
-    if files_df.empty:
-        st.info(t("common.search_no_match", query=query))
-        return None
-    col_h_name, col_h_time, col_h_btn, col_h_dl = st.columns([3, 2, 1, 1])
-    col_h_name.markdown(t("common.col_file_name"))
-    col_h_time.markdown(t("common.col_created"))
-    col_h_btn.markdown(t("common.col_update"))
-    col_h_dl.markdown(t("common.col_download"))
-
-    # 每行:Update 只更新该文件,Download 下载该 CSV
-    clicked = None
-    with st.container(key="file_rows"):
-        for _, row in files_df.iterrows():
-            col_name, col_time, col_btn, col_dl = st.columns([3, 2, 1, 1])
-            col_name.write(row["File name"])
-            col_time.write(row["Created time"])
-            with col_btn:
-                if st.button(t("common.update"), key=f"update_{row['File name']}"):
-                    clicked = row["File name"]
-            with col_dl:
-                csv_download_button(_mgmt_file_path(row["File name"], spec),
-                                    row["File name"], key=f"download_{row['File name']}")
-    return clicked
+def show_update_summary(results: pd.DataFrame) -> None:
+    """更新结果表的三态汇总:全 OK 成功;有 FAILED 警告"部分失败";仅 0 靶点警告检查查询物;
+    结果为空(全新安装、缓存目录尚未生成)提示先去首页完成一次分析。"""
+    if results.empty:
+        st.info(t("common.update_no_files"))
+        return
+    if results["Status"].eq("OK").all():
+        st.success(t("common.all_complete"))
+    elif results["Status"].eq("FAILED").any():
+        st.warning(t("common.some_failed"))
+    else:
+        st.warning(t("common.some_empty"))
 
 
 def render_source_management_page(
@@ -561,8 +757,16 @@ def render_source_management_page(
     """
     st.set_page_config(page_title=t(f"{ns}_mgmt.page_title"), layout="wide")
 
-    # 隐藏侧边栏,全屏显示页面;行内 Update 按钮紫底、Download 按钮绿底
-    hide_sidebar(CSS_BTN_UPDATE + "\n" + CSS_BTN_DOWNLOAD)
+    # 批量任务运行期间 busy=True:所有按钮禁用,防止点击排队到任务结束后再次触发
+    busy = bool(st.session_state.get(f"{ns}_busy"))
+
+    # 隐藏侧边栏,全屏显示页面;行内 Update 按钮紫底、Download 按钮绿底、批量删除按钮红底
+    hide_sidebar(CSS_BTN_UPDATE + "\n" + CSS_BTN_DOWNLOAD + f"""
+    .st-key-{ns}_files_del_btn button {{
+        background-color: #F53F3F;
+        color: #FFFFFF;
+        border: 1px solid #F53F3F;
+    }}""")
 
     st.title(t(f"{ns}_mgmt.title"))
     st.caption(t(f"{ns}_mgmt.caption"))
@@ -578,26 +782,23 @@ def render_source_management_page(
         else:
             st.error(t("common.file_update_failed", file=last_update["File"], msg=last_update["Message"]))
 
+    # 批量删除结果(删除在确认弹窗内完成,跨 rerun 传回页面顶部)
+    show_file_op_result(f"{ns}_files")
+
     col_back, col_update = st.columns([1, 1])
     with col_back:
-        back_button()
+        back_button(disabled=busy)
     with col_update:
-        all_update_clicked = st.button(t("common.all_updates"), key=f"{ns}_update_btn")
+        all_update_clicked = st.button(t("common.all_updates"), key=f"{ns}_update_btn",
+                                       disabled=busy)
 
     if all_update_clicked:
-        with st.spinner(t(f"{ns}_mgmt.updating_all")):
-            results = update_all_cache_files(spec, cache_hours=cache_hours_all)
-        if results.empty:
-            st.info(t(f"{ns}_mgmt.no_files_to_update"))
-        else:
-            st.dataframe(results, width="stretch", hide_index=True)
-            if results["Status"].eq("OK").all():
-                st.success(t("common.all_complete"))
-            elif results["Status"].eq("FAILED").any():
-                st.warning(t("common.some_failed"))
-            else:
-                # 只有 0 靶点条目(无真失败):同样以警告提示检查查询物
-                st.warning(t("common.some_empty"))
+        # 两段式:点击轮只置位并立刻重渲染(本轮按钮的 disabled 与上一轮相同,widget
+        # 身份不变,点击值不会丢);下一轮 busy=True,全部按钮以禁用态绘制后再执行任务。
+        # 不能在按钮自身当轮变 disabled——参数变化会改变 widget 身份,点击值会丢失。
+        st.session_state[f"{ns}_busy"] = True
+        st.session_state[f"{ns}_pending_update"] = "all"
+        st.rerun()
 
     st.divider()
 
@@ -633,13 +834,52 @@ def render_source_management_page(
     if not show_merged:
         merged_files = merged_files.iloc[0:0]
     files = pd.concat([source_files, merged_files], ignore_index=True)
-    clicked_file = None
 
     if files.empty:
         # 有文件但全被筛掉时,按"筛选无结果"提示,与"目录本来就空"区分开
         st.info(t("common.filter_no_match") if (n_source or n_merged) else t(f"{ns}_mgmt.no_files"))
     else:
-        clicked_file = render_updateable_file_table(files, spec, search_key=f"search_{ns}")
+        # 多选模式:行首复选框 + 表头全选,path_of 让来源文件与 merged 整合文件各按其目录解析
+        render_file_table(files, spec["cache_dir"], search_key=f"search_{ns}",
+                          ns=f"{ns}_files", path_of=lambda n: _mgmt_file_path(n, spec),
+                          disabled=busy)
+    clicked_file = st.session_state.pop(f"{ns}_files_update_clicked", None)
+
+    # 选中条目的批量操作:更新选中 / 下载选中(ZIP) / 删除选中(确认弹窗);
+    # "更新选中"复用 update_all_cache_files 的并发抓取(filenames 限定选中清单)
+    batch_update = render_file_action_bar(
+        f"{ns}_files", None, zip_name=f"{ns}_files_selected.zip",
+        path_of=lambda n: _mgmt_file_path(n, spec),
+        update_label=t("common.update_selected"), disabled=busy)
+    if batch_update:
+        # 两段式点击轮:置位 busy 与待办清单后立刻重渲染,禁用轮再执行(见上方说明)
+        st.session_state[f"{ns}_busy"] = True
+        st.session_state[f"{ns}_pending_update"] = batch_update
+        st.rerun()
+
+    # 批量执行轮(busy=True):本轮所有按钮已按禁用态渲染,跑完复位并重渲染展示结果。
+    # pending_update 为 "all"(全部更新)或选中文件名清单(更新选中);
+    # 选中更新复用 update_all_cache_files 的并发抓取(filenames 限定选中清单)。
+    pending_update = st.session_state.get(f"{ns}_pending_update")
+    if busy and pending_update is not None:
+        is_all = pending_update == "all"
+        try:
+            results = update_all_cache_files(
+                spec,
+                cache_hours=cache_hours_all if is_all else cache_hours_single,
+                filenames=None if is_all else pending_update)
+        finally:
+            st.session_state[f"{ns}_busy"] = False
+            st.session_state.pop(f"{ns}_pending_update", None)
+        st.session_state[f"{ns}_batch_results"] = results
+        st.rerun()  # 复位 busy 后重渲染:按钮恢复可用,结果由下方 pop 展示
+    batch_results = st.session_state.pop(f"{ns}_batch_results", None)
+    if batch_results is not None:
+        if batch_results.empty:
+            st.info(t(f"{ns}_mgmt.no_files_to_update"))
+        else:
+            st.dataframe(batch_results, width="stretch", hide_index=True)
+            show_update_summary(batch_results)
 
     # 单文件更新在页面渲染完成后执行,完成或出错都会记录结果并刷新页面
     if clicked_file:
@@ -656,10 +896,10 @@ def render_source_management_page(
 # ---------- 设置面板(主页面板齿轮)公共逻辑 ----------
 
 def save_ui_settings(overrides: dict) -> None:
-    """把齿轮面板/对接页修改的分析参数持久化到 ui_settings.json。
+    """把齿轮面板/对接页/日志页修改的分析参数持久化到 ui_settings.json。
 
     config.py 启动时会读取该文件套用覆盖值,因此设置重启后仍生效;
-    只写白名单内的键(数值参数与 ChEMBL 黑名单),其余忽略。
+    只写白名单内的键(数值/布尔参数、ChEMBL 黑名单与日志级别),其余忽略。
     与文件中已有内容按键合并(不同入口各自改各自的参数,互不覆盖)。
     """
     import json
@@ -671,6 +911,12 @@ def save_ui_settings(overrides: dict) -> None:
         if k == "CHEMBL_TARGET_BLACKLIST":
             if isinstance(v, (list, tuple)):
                 clean[k] = sorted({str(x).strip().upper() for x in v if str(x).strip()})
+        elif k == "STRING_VERSION":
+            # 版本号统一校验归一(保小写,供 URL 派生),非法格式/非字符串一律不写盘;
+            # 必须先于通用数值/布尔分支,避免数字被原样落盘
+            sv = config.normalized_string_version(v)
+            if sv:
+                clean[k] = sv
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, bool):
             clean[k] = v
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, int):
@@ -678,19 +924,23 @@ def save_ui_settings(overrides: dict) -> None:
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, (int, float)) \
                 and not isinstance(v, bool):
             clean[k] = float(v)
+        elif k in config.UI_SETTINGS_KEYS and isinstance(v, str):
+            clean[k] = v.strip().upper()  # 日志级别等枚举字符串,统一大写
     if not clean:
         return
-    merged: dict = {}
-    if os.path.exists(config.UI_SETTINGS_FILE):
-        try:
-            with open(config.UI_SETTINGS_FILE, "r", encoding="utf-8") as f:
-                merged = json.load(f) or {}
-        except Exception:
-            merged = {}  # 旧文件损坏时按空文件处理,以本次写入为准
-    merged.update(clean)
-    os.makedirs(os.path.dirname(config.UI_SETTINGS_FILE), exist_ok=True)
-    with open(config.UI_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
+    with _ui_settings_lock:  # 读-改-写整段互斥:不同入口各自改各自的参数,并发时不能互相覆盖
+        merged: dict = {}
+        if os.path.exists(config.UI_SETTINGS_FILE):
+            try:
+                with open(config.UI_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    merged = json.load(f) or {}
+            except Exception:
+                merged = {}  # 旧文件损坏时按空文件处理,以本次写入为准
+        merged.update(clean)
+        os.makedirs(os.path.dirname(config.UI_SETTINGS_FILE), exist_ok=True)
+        # 原子写(临时文件+替换),中断不会留下半截 JSON
+        from core.caching import save_json_file
+        save_json_file(config.UI_SETTINGS_FILE, merged)
 
 
 def purge_merged_cache() -> int:

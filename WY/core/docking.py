@@ -13,7 +13,7 @@ from typing import Iterator, NamedTuple
 import pandas as pd
 import requests
 
-from .caching import load_json_file, save_json_file
+from .caching import load_json_file, save_json_file, save_text_atomic
 from i18n import t
 
 # PDB 结构中的水分子残基名,不参与结合位点定位与共晶配体识别
@@ -53,7 +53,8 @@ def _strip_receptor_pdb(pdb_path: str, out_path: str) -> None:
             if rec == "ATOM":
                 if line[16] not in (" ", "A"):
                     continue  # 跳过 altloc 冗余构象
-                key = (line[21], line[22:26].strip(), line[17:20], line[12:16].strip())
+                key = (line[21], line[22:26].strip(), line[26], line[17:20],
+                       line[12:16].strip())  # 键含插入码(line[26]):82 与 82A 是不同残基
                 if key in seen:
                     continue
                 seen.add(key)
@@ -292,8 +293,8 @@ def download_pdb(pdb_id: str) -> str:
     url = config.PDB_DOWNLOAD_URL.format(pdb_id=pdb_id)
     resp = requests.get(url, timeout=config.API_TIMEOUT)
     resp.raise_for_status()
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(resp.text)
+    # 原子写:同一 PDB 被两个会话并发处理时,半截文件不会被"存在即复用"判定永久信任
+    save_text_atomic(path, resp.text)
     return path
 
 
@@ -329,8 +330,12 @@ def smiles_to_sdf_3d(smiles: str, out_path: str, seed: int = 0, n_confs: int = 2
     if not cids:
         raise RuntimeError(t("dock.err_rdkit_3d"))
     best_cid, best_e = None, None
+    # MMFF 力场的第二个位置参数(分子参数表)必需:个别分子无 MMFF 参数时跳过
+    # 能量最小化,直接用第一个构象,不让配体准备因此失败
+    mmff_props = AllChem.MMFFGetMoleculeProperties(mol)
     for cid in cids:
-        ff = AllChem.MMFFGetMoleculeForceField(mol, confId=cid)
+        ff = (AllChem.MMFFGetMoleculeForceField(mol, mmff_props, confId=cid)
+              if mmff_props is not None else None)
         if ff is None:
             continue
         ff.Minimize()
@@ -359,8 +364,7 @@ def fetch_ligand_sdf_3d(cid: int, out_dir: str | None = None) -> str:
     if not sdf_text:
         logging.warning("pubchempy: no 3D SDF for CID %s", cid)
         return ""
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(sdf_text)
+    save_text_atomic(path, sdf_text)
     logging.info("Fetched 3D SDF for CID %d -> %s", cid, path)
     return path
 
@@ -445,6 +449,7 @@ def _rcsb_search_entry_ids(gene_symbol: str, max_hits: int) -> list[str]:
         max_retries=config.RCSB_SEARCH_MAX_RETRIES, timeout=config.API_TIMEOUT,
         label=f"RCSB search for {gene_symbol}", throttle_key="rcsb_search",
         headers=_RCSB_HEADERS, raise_on_exhausted=True, use_cache=True,
+        cache_ttl_hours=config.RCSB_SEARCH_CACHE_TTL_HOURS,
         no_retry_status=(204,),
     )
     # RCSB 官方行为:查询成功但 0 命中时返回 204 No Content(空响应体),
@@ -768,11 +773,18 @@ def split_vina(out_pdbqt: str, out_dir: str | None = None) -> list[str]:
                 timeout=config.DOCKING_TIMEOUT, encoding="utf-8", errors="replace",
             )
             if proc.returncode == 0:
-                files = sorted(glob.glob(os.path.join(out_dir, f"{stem}*")))
+                # 排除原始多模型输出自身:glob 的 f"{stem}*" 会把它一并收进来,
+                # 且字典序还排在各 pose 文件之前,混进 pose 列表会误导调用方
+                out_name = os.path.basename(out_pdbqt)
+                files = sorted(
+                    f for f in glob.glob(os.path.join(out_dir, f"{stem}*"))
+                    if os.path.basename(f) != out_name)
                 if files:
                     return files
-        except OSError:
-            logging.warning("vina_split unavailable (%s), fallback to python split", split_exe)
+        except (OSError, subprocess.SubprocessError):
+            # OSError:可执行文件缺失/无法执行;SubprocessError:含 TimeoutExpired
+            # (vina_split 卡死超时)。两者都回落到内置拆分,不让超时直接炸到页面
+            logging.warning("vina_split failed (%s), fallback to python split", split_exe)
 
     files = _split_models_python(out_pdbqt, out_dir)
     if not files:
@@ -802,10 +814,14 @@ def parse_vina_scores(out_pdbqt: str) -> pd.DataFrame:
         for line in block:
             if line.startswith("REMARK VINA RESULT"):
                 parts = line.split()
-                if len(parts) >= 5:
+                try:
                     info["affinity"] = float(parts[3])
                     info["rmsd_lb"] = float(parts[4])
                     info["rmsd_ub"] = float(parts[5]) if len(parts) > 5 else None
+                except (IndexError, ValueError):
+                    # 个别构象的打分行数值残缺时跳过该行,不让整个解析中止
+                    logging.warning("Malformed VINA RESULT line skipped: %r", line.strip())
+                    info.clear()
         if info:  # 与原逻辑一致:没有打分行的构象不计入
             modes.append(info)
     df = pd.DataFrame(modes)
@@ -1037,8 +1053,7 @@ def fetch_alphafold_pdb(accession: str) -> str:
     if len(resp.text) < 1024 or "\nATOM" not in resp.text:
         # 目录在函数开头已创建;这里只报错,不落盘
         raise RuntimeError(f"AlphaFold PDB unexpected content for {acc}: {url}")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(resp.text)
+    save_text_atomic(path, resp.text)
     logging.info("Fetched AlphaFold model %s -> %s", url, path)
     return path
 
@@ -1218,8 +1233,8 @@ def _load_3dmol_js() -> str | None:
             if "$3Dmol" not in resp.text or "</script" in resp.text:
                 raise RuntimeError(f"unexpected content from {url}")
             os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
-            with open(cache_path, "w", encoding="utf-8") as f:
-                f.write(resp.text)
+            # 原子写:下载中途被打断不会留下半截 JS 被上面"大小达标即信任"的判定永久复用
+            save_text_atomic(cache_path, resp.text)
             logging.info("Cached 3Dmol.js (%d KB) from %s", len(resp.text) // 1024, url)
             return resp.text
         except Exception:

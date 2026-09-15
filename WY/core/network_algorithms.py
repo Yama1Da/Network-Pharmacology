@@ -17,11 +17,12 @@ from .enrichment import (
     enrichment_cache_filename,
     fetch_enrichment_enrichr,
     fetch_enrichment_gprofiler,
+    TRUSTED_REASONS,
 )
 
-# fetch_enrichment_* 返回状态中代表"调用成功"的取值；
-# "circuit_open"（被熔断跳过，未真正请求）与 "request_failed" 均视为不可信。
-_OK_REASONS = ("success", "no_significant", "cache")
+# fetch_enrichment_* 返回状态中代表"调用成功"的取值复用 core.enrichment.TRUSTED_REASONS；
+# "circuit_open"（被熔断跳过）、"probe_failed"（冷却到期的探测失败）与 "request_failed" 均视为不可信。
+_UNTRUSTED_REASONS = ("request_failed", "probe_failed", "circuit_open")
 
 
 def detect_louvain_modules(graph: "nx.Graph", resolution: float = 1.0, seed: int = 0) -> list[dict]:
@@ -130,14 +131,18 @@ def _enrich_single_module(genes: list[str], organism: str, sources: tuple,
 
     # 两条链路都拿到空表时：只有每条已启用链路都真实成功（无显著项/正常缓存）才算真无显著项；
     # 被熔断跳过或请求失败一律按失败处理（大鼠无 Enrichr 库时视为可信缺省）。
-    gp_ok = bool(st_gp.get("ok")) and st_gp.get("reason") in _OK_REASONS
+    gp_ok = bool(st_gp.get("ok")) and st_gp.get("reason") in TRUSTED_REASONS
     enrichr_applicable = bool(enrichr_org and libs)
     enrichr_ok = (not enrichr_applicable) or (
-        bool(st_enr.get("ok")) and st_enr.get("reason") in _OK_REASONS
+        bool(st_enr.get("ok")) and st_enr.get("reason") in TRUSTED_REASONS
     )
     if gp_ok and enrichr_ok:
         return pd.DataFrame(), False, "no_significant"
-    detail = f"gProfiler:{st_gp.get('reason', 'unknown')}; Enrichr:{st_enr.get('reason', 'not_applicable')}"
+    if (st_gp.get("reason") in _UNTRUSTED_REASONS
+            and enrichr_applicable and st_enr.get("reason") in _UNTRUSTED_REASONS):
+        detail = "both_sources_down"  # 双源都不可用：页面据此显著告警,提示稍后重试
+    else:
+        detail = f"gProfiler:{st_gp.get('reason', 'unknown')}; Enrichr:{st_enr.get('reason', 'not_applicable')}"
     logging.warning("Module enrichment failed (%s) for %d genes", detail, len(genes))
     return pd.DataFrame(), True, detail
 
@@ -259,7 +264,17 @@ def _multi_source_bfs(Mt, source_idx) -> "np.ndarray":
 
 @functools.lru_cache(maxsize=2)
 def _lcc_context(species: str):
-    """背景互作组 LCC 的计算上下文（进程内缓存）：节点表、基因→行号、邻接矩阵、度数表。"""
+    """背景互作组 LCC 的计算上下文（进程内缓存）：节点表、基因→行号、邻接矩阵、度数表。
+    缓存键含磁盘构建记录的置信度与 STRING 版本:重建为不同参数后不会命中旧图;
+    同参数重建则由 interactome.clear_runtime_caches() 一并清除本缓存。"""
+    from . import interactome as itx
+
+    meta = itx.require_meta(species)  # 未构建时由此抛 InteractomeNotBuiltError
+    return _lcc_context_cached(species, int(meta["confidence"]), str(meta["string_version"]))
+
+
+@functools.lru_cache(maxsize=2)
+def _lcc_context_cached(species: str, confidence: int, string_version: str):
     import networkx as nx
 
     from . import interactome as itx
@@ -388,10 +403,15 @@ def _proximity_zscore_from_context(ctx: tuple, drug_genes: list, disease_genes: 
 
     mu = float(rand.mean())
     sd = float(rand.std())
-    z = (d_obs - mu) / sd if sd > 0 else 0.0
     p_emp = (1 + int((rand <= d_obs).sum())) / (n_perm + 1)
-    result.update(ok=True, d_c=d_obs, z=float(z), p_empirical=float(p_emp),
-                  mean_random=mu, std_random=sd)
+    if sd > 0:
+        result.update(ok=True, d_c=d_obs, z=float((d_obs - mu) / sd),
+                      p_empirical=float(p_emp), mean_random=mu, std_random=sd)
+    else:
+        # 零分布退化(所有随机距离相同):z 无意义,输出 None(与去交集分支一致),
+        # 不把可能的显著结果伪装成 z=0 的"不显著"
+        result.update(ok=True, d_c=d_obs, z=None, p_empirical=float(p_emp),
+                      mean_random=mu, std_random=sd)
 
     if d_obs_excl is not None:
         valid = rand_excl[~np.isnan(rand_excl)]
@@ -413,15 +433,26 @@ def proximity_zscore(drug_genes: list, disease_genes: list, species: str = "Huma
     任一基因集入网率低于 config.PROXIMITY_MIN_COVERAGE 或过滤后为空时返回 ok=False,绝不输出不可靠结果;
     背景互作组未构建时抛 InteractomeNotBuiltError,由调用方转为用户提示。"""
     import config
-    from . import interactome as itx
 
     n_perm = int(n_perm if n_perm is not None else config.PROXIMITY_N_PERM)
     seed = int(seed if seed is not None else config.PROXIMITY_SEED)
     ctx = _lcc_context(species)
-    d_in, _ = itx.get_network_coverage(drug_genes, species)
-    s_in, _ = itx.get_network_coverage(disease_genes, species)
+
+    def _norm(genes: list) -> list[str]:
+        """规范化去重(大写、去空白),不做网络过滤:入网率保护与 coverage 统计
+        必须以原始输入数为分母。旧实现先用 get_network_coverage 过滤成在网基因
+        再传入,导致低入网率保护失效、coverage 分母虚高(只统计 LCC 占比)。"""
+        seen: set[str] = set()
+        out: list[str] = []
+        for raw in genes:
+            g = str(raw).strip().upper()
+            if g and g not in seen:
+                seen.add(g)
+                out.append(g)
+        return out
+
     return _proximity_zscore_from_context(
-        ctx, d_in, s_in, n_perm=n_perm, seed=seed,
+        ctx, _norm(drug_genes), _norm(disease_genes), n_perm=n_perm, seed=seed,
         bin_size=config.PROXIMITY_DEGREE_BIN_SIZE,
         drug_ratio=config.PROXIMITY_MIN_COVERAGE,
         disease_ratio=config.PROXIMITY_MIN_COVERAGE,
@@ -453,11 +484,10 @@ def _load_json_cache(cache_path: str, label: str, validate=None) -> dict | None:
 
 
 def _save_json_cache(cache_path: str, result: dict) -> None:
-    """计算成功后把结果写入 JSON 缓存。"""
-    import json
+    """计算成功后把结果写入 JSON 缓存(临时文件+原子替换,并发写不会留下半截文件)。"""
+    from .caching import save_json_file
 
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False)
+    save_json_file(cache_path, result)
 
 
 def _clean_expired_caches(directory: str) -> None:

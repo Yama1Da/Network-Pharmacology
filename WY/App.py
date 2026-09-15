@@ -347,6 +347,10 @@ def _open_settings_dialog() -> None:
         "POCKET_CUTOFF": st.number_input(
             t("app.settings.pocket"), min_value=3.0, max_value=6.0, step=0.5,
             value=float(config.POCKET_CUTOFF), key="set_pocket"),
+        "PPI_CONFIDENCE": st.slider(
+            t("app.settings.ppi_conf"), min_value=0.1, max_value=0.9, step=0.05,
+            value=float(config.PPI_CONFIDENCE), key="set_ppi_conf",
+            help=t("app.settings.ppi_conf_help")),
     }
     # 有变化才动手:改 config 运行时值 + 持久化 + 清 merged 整合缓存
     changed = {k: v for k, v in new_vals.items() if v != getattr(config, k)}
@@ -355,13 +359,86 @@ def _open_settings_dialog() -> None:
     if changed:
         for _k, _v in changed.items():
             setattr(config, _k, _v)
+        # PPI 置信度变更时同步派生阈值:背景互作组(RWR/邻近度)的筛选与缓存文件名都依赖它
+        config.INTERACTOME_CONFIDENCE = int(config.PPI_CONFIDENCE * 1000)
         Utils.save_ui_settings(changed)
         Utils.purge_merged_cache()
         st.toast(t("app.settings.toast"))
 
+    # ---------- STRING 数据版本切换 ----------
+    # 查询 API 与背景互作组按版本同源派生;切换需二次确认,保存前经下载站探活,
+    # 新版本发布后在此输入版本号即可,无需改代码。齿轮弹窗内不能嵌套弹窗,
+    # 确认步骤用两段式按钮实现(先「切换到」再「确认切换」)。
+    st.divider()
+    st.caption(t("app.settings.string_ver_caption"))
+    _known = list(config.STRING_KNOWN_VERSIONS)
+    _custom_opt = t("app.settings.string_ver_custom_opt")
+    _choice = st.selectbox(
+        t("app.settings.string_ver"), _known + [_custom_opt],
+        index=(_known.index(config.STRING_VERSION)
+               if config.STRING_VERSION in _known else len(_known)),
+        key="set_string_ver_choice", label_visibility="collapsed")
+    if _choice == _custom_opt:
+        _raw = st.text_input(
+            t("app.settings.string_ver_custom"),
+            value=config.STRING_VERSION if config.STRING_VERSION not in _known else "",
+            placeholder="v13.0", key="set_string_ver_input")
+        _target = config.normalized_string_version(_raw)
+        if _raw.strip() and _target is None:
+            # 非法格式给内联提示,不再静默禁用按钮让用户摸不着头脑
+            st.error(t("app.settings.string_ver_bad_format", raw=_raw.strip()))
+    else:
+        _target = _choice
+    if st.button(
+            t("app.settings.string_ver_apply", ver=_target or "?"),
+            key="set_string_ver_apply",
+            disabled=not _target or _target == config.STRING_VERSION,
+            use_container_width=True):
+        from core.interactome import string_version_exists
+
+        if string_version_exists(_target):
+            st.session_state["set_string_ver_pending"] = _target
+        else:
+            st.session_state["set_string_ver_pending"] = None
+            st.error(t("app.settings.string_ver_missing", ver=_target))
+    _pending = st.session_state.get("set_string_ver_pending")
+    if _pending and _pending != _target:
+        # 待确认期间又改了所选版本:旧确认作废
+        st.session_state["set_string_ver_pending"] = None
+        _pending = None
+    if _pending:
+        st.warning(t("app.settings.string_ver_confirm", ver=_pending))
+        if st.button(t("app.settings.string_ver_confirm_btn", ver=_pending),
+                     key="set_string_ver_confirm", type="primary",
+                     use_container_width=True):
+            config.STRING_VERSION = _pending
+            # 与 config.py 末尾的派生保持同一变换:版本化子域名把 v12.0 写作 version-12-0
+            config.STRING_BASE_URL = (
+                f"https://version-{_pending[1:].replace('.', '-')}.string-db.org/api/json")
+            from core.interactome import clear_runtime_caches
+
+            clear_runtime_caches()  # 图/度表/LCC 上下文按版本隔离,清一次防旧版本残留
+            Utils.save_ui_settings({"STRING_VERSION": _pending})
+            # 清掉版本控件自身的会话状态:重开齿轮时按新当前版本重新定位选中项,
+            # 避免停留在切换前的旧选项上被误点切回
+            for _wk in ("set_string_ver_choice", "set_string_ver_input"):
+                st.session_state.pop(_wk, None)
+            st.session_state["set_string_ver_pending"] = None
+            st.toast(t("app.settings.string_ver_done", ver=_pending))
+            st.rerun()
+
 
 # ---------- Title ----------
-st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtitle")}</p></div>',
+def _string_ver_status_line() -> str:
+    """首页常驻的 STRING 版本行(版本 + 背景网络构建状态):切换版本后不至于遗忘当前用的是哪版数据。"""
+    from core.interactome import is_built
+
+    status = t("app.string_ver_built") if is_built("Human") else t("app.string_ver_not_built")
+    return t("app.string_ver_line", ver=config.STRING_VERSION, status=status)
+
+
+st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtitle")}</p>'
+            f'<p>{_string_ver_status_line()}</p></div>',
             unsafe_allow_html=True)
 
 # ---------- Bottom-left gear: opens the settings modal ----------
@@ -377,7 +454,7 @@ with st.container(key="top_right_logs"):
         if st.session_state.get("_lang_switch_synced") != get_lang():
             st.session_state["_lang_switch"] = is_en
             st.session_state["_lang_switch_synced"] = get_lang()
-        lang_is_en = st.toggle("Language", value=is_en, key="_lang_switch",
+        lang_is_en = st.toggle("Language", key="_lang_switch",
                                label_visibility="collapsed")
         if lang_is_en != is_en:
             set_lang("en" if lang_is_en else "zh")
