@@ -463,9 +463,9 @@ def _load_json_cache(cache_path: str, label: str, validate=None) -> dict | None:
     """读取 JSON 结果缓存：未命中/过期返回 None；损坏或未通过校验则清除后返回 None。"""
     import json
 
-    from .caching import _is_cache_fresh
+    from .caching import is_cache_fresh
 
-    if not _is_cache_fresh(cache_path):
+    if not is_cache_fresh(cache_path):
         return None
     try:
         with open(cache_path, "r", encoding="utf-8") as f:

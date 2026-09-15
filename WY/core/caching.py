@@ -86,7 +86,7 @@ def _read_cache_csv(cache_file: str) -> pd.DataFrame | None:
         return None
 
 
-def _is_cache_fresh(cache_file: str, ttl_seconds: int | None = None) -> bool:
+def is_cache_fresh(cache_file: str, ttl_seconds: int | None = None) -> bool:
     """缓存文件是否仍有效:文件存在、且保存时间距今没超过有效期（过期需重新请求,有效期默认取全局配置）。"""
     import time
     import config
@@ -105,7 +105,7 @@ def open_csv_cache(cache_file: str, *, fresh: bool = False, label: str = "") -> 
     """命中缓存则读取返回;未命中返回 None,由调用方自行请求数据。
     fresh=True 时按 TTL 判定有效性(超期视为未命中),False 时只要文件存在即命中;label 用于命中日志。
     """
-    hit = _is_cache_fresh(cache_file) if fresh else os.path.exists(cache_file)
+    hit = is_cache_fresh(cache_file) if fresh else os.path.exists(cache_file)
     if not hit:
         return None
     logging.info("Loading cached %s", label or os.path.basename(cache_file))

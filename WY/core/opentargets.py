@@ -7,13 +7,30 @@ import threading
 import pandas as pd
 
 from .caching import load_json_file, open_named_csv_cache, save_csv_cache, save_json_file
-from .http_client import _opentargets_post
-from .text_utils import _safe_round, remember_name_mapping
+from .http_client import request_with_retry
+from .text_utils import remember_name_mapping, safe_round
+
+OPENTARGETS_API_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 
 # 进程内成功结果 memo:只记成功抓取的结果,网络失败不缓存(下次自动重试)。
 # 原实现用 @st.cache_data,失败返回的空表也被记忆化,直到重启前同一疾病永不重试。
 _success_memo: dict[tuple, pd.DataFrame] = {}
 _memo_lock = threading.Lock()
+
+
+def opentargets_post(query: str, variables: dict, timeout: int = 30,
+                     use_cache: bool = False) -> dict | None:
+    """向 Open Targets 数据库发送查询;网络失败时自动重试几次,仍失败则返回 None。
+    查询本身报错(返回结果带 errors)不算网络失败,由调用方自行处理。
+    """
+    import config
+
+    resp = request_with_retry(
+        OPENTARGETS_API_URL, json={"query": query, "variables": variables},
+        max_retries=config.LIGHT_API_MAX_RETRIES, timeout=timeout,
+        label="Open Targets POST", use_cache=use_cache,
+    )
+    return resp.json() if resp is not None else None
 
 
 def find_disease_id(disease_name: str,
@@ -32,8 +49,8 @@ def find_disease_id(disease_name: str,
         }
     }
     """
-    payload = _opentargets_post(search_query, {"queryString": disease_name.strip()},
-                                use_cache=True)
+    payload = opentargets_post(search_query, {"queryString": disease_name.strip()},
+                               use_cache=True)
     if payload is None:
         return None
 
@@ -117,9 +134,9 @@ def _get_disease_targets_impl(disease_name: str,
             }
         }
         """
-        payload = _opentargets_post(disease_query,
-                                    {"diseaseId": disease_id, "size": config.OT_FETCH_SIZE},
-                                    use_cache=True)
+        payload = opentargets_post(disease_query,
+                                   {"diseaseId": disease_id, "size": config.OT_FETCH_SIZE},
+                                   use_cache=True)
         if payload is None:
             return pd.DataFrame(), "failed"
 
@@ -148,14 +165,14 @@ def _get_disease_targets_impl(disease_name: str,
                 "genomic_start": gloc.get("start"),                # 基因组起始位置
                 "genomic_end": gloc.get("end"),                    # 基因组结束位置
                 "targetClass": tc[0].get("label") if tc else None, # 靶点类别（取第一个）
-                "association_score": _safe_round(r.get("score", 0.0)),           # 总关联分数
-                "novelty": _safe_round(r.get("novelty", 0.0)),                   # 新颖性
-                "genetic_association": _safe_round(dt_scores.get("genetic_association")),  # 遗传关联分数
-                "somatic_mutation": _safe_round(dt_scores.get("somatic_mutation")),        # 体细胞突变分数
-                "literature": _safe_round(dt_scores.get("literature")),                    # 文献分数
-                "animal_model": _safe_round(dt_scores.get("animal_model")),                # 动物模型分数
-                "affected_pathway": _safe_round(dt_scores.get("affected_pathway")),        # 通路分数
-                "clinical": _safe_round(dt_scores.get("clinical")),                        # 临床证据分数
+                "association_score": safe_round(r.get("score", 0.0)),           # 总关联分数
+                "novelty": safe_round(r.get("novelty", 0.0)),                   # 新颖性
+                "genetic_association": safe_round(dt_scores.get("genetic_association")),  # 遗传关联分数
+                "somatic_mutation": safe_round(dt_scores.get("somatic_mutation")),        # 体细胞突变分数
+                "literature": safe_round(dt_scores.get("literature")),                    # 文献分数
+                "animal_model": safe_round(dt_scores.get("animal_model")),                # 动物模型分数
+                "affected_pathway": safe_round(dt_scores.get("affected_pathway")),        # 通路分数
+                "clinical": safe_round(dt_scores.get("clinical")),                        # 临床证据分数
             })
 
         df = pd.DataFrame(records)
