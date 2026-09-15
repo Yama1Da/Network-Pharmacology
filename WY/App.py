@@ -2,9 +2,15 @@ import pandas as pd
 import streamlit as st
 import config
 import Utils
-from i18n import t, set_lang, get_lang
+import i18n
+from i18n import DEFAULT_LANG, t, get_lang
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
+
+# 语言读取注入:i18n 包本身不依赖 streamlit(core 也能安全引用),
+# 由宿主在此注册"当前语言"的存取;语言切换直接写 st.session_state["lang"]。
+# 必须在本文件任何 t()/get_lang() 调用之前注册。
+i18n.set_lang_provider(lambda: st.session_state.get("lang", DEFAULT_LANG))
 
 # 初始化日志:每天一个日志文件,保留两年。
 Utils.setup_logging()
@@ -457,7 +463,7 @@ with st.container(key="top_right_logs"):
         lang_is_en = st.toggle("Language", key="_lang_switch",
                                label_visibility="collapsed")
         if lang_is_en != is_en:
-            set_lang("en" if lang_is_en else "zh")
+            st.session_state["lang"] = "en" if lang_is_en else "zh"
             st.session_state["_lang_switch_synced"] = get_lang()
             st.rerun()
     if st.button(t("app.logs_btn"), key="logs_btn"):
