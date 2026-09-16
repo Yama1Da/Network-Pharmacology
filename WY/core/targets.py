@@ -355,6 +355,11 @@ def get_targets_concurrent(
         disgenet_df = results.get("disgenet")
         ot_df = ot_df if isinstance(ot_df, pd.DataFrame) else pd.DataFrame()
         disgenet_df = disgenet_df if isinstance(disgenet_df, pd.DataFrame) else pd.DataFrame()
+        # 密钥未配置导致的空表是配置错误而非"查无关联":计入失败源,
+        # 复用现有失败提示,且不让残缺 merged 表写缓存(save 条件已排除失败源),
+        # 配好密钥后下次分析会自动重试补拉
+        if disgenet_df.empty and not config.DisGeNET_API_KEY and "disgenet" not in failed:
+            failed.append("disgenet")
         ot_df, disgenet_df = _prepare_disease_sources(disease_name, ot_df, disgenet_df)
         disease_df = _merge_source_pair(
             disease_name, ot_df, disgenet_df,

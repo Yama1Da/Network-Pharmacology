@@ -64,6 +64,7 @@ TEXT_EN: dict[str, str] = {
     "app.progress_fetch": "Fetched {done}/{total} databases; waiting for: {pending}",
     "app.progress_done_word": "all done",
     "app.warn_source_failed": "Failed to fetch: {sources}. Results may be incomplete; successful sources are cached, retry to refetch only the failed ones.",
+    "app.warn_disgenet_key_missing": "No DisGeNET API key configured, so the DisGeNET source is missing from disease targets. Set DisGeNET_API_KEY in API.env and re-run (this result is not cached; it will be refetched automatically once configured).",
     "source.chembl": "ChEMBL",
     "source.dgidb": "DGIdb",
     "source.opentargets": "Open Targets",

@@ -540,10 +540,17 @@ if analyze_btn:
             disease_targets = disease_df["approvedSymbol"].tolist() if not disease_df.empty else []
 
         if failed_sources:
-            # 单路失败时结果可能不完整:此时该侧 merged 缓存不会被写入,重试只补拉失败源
-            st.warning(t("app.warn_source_failed",
-                         sources=t("app.and_join").join(
-                             t(f"source.{key}") for key in failed_sources)))
+            # 单路失败时结果可能不完整:此时该侧 merged 缓存不会被写入,重试只补拉失败源。
+            # DisGeNET 空表若系未配置密钥所致,换成指明原因的专用提示,避免误判为网络故障
+            if "disgenet" in failed_sources and not config.DisGeNET_API_KEY:
+                st.warning(t("app.warn_disgenet_key_missing"))
+                other_failed = [key for key in failed_sources if key != "disgenet"]
+            else:
+                other_failed = failed_sources
+            if other_failed:
+                st.warning(t("app.warn_source_failed",
+                             sources=t("app.and_join").join(
+                                 t(f"source.{key}") for key in other_failed)))
 
         st.markdown('<div class="result-card">', unsafe_allow_html=True)
 

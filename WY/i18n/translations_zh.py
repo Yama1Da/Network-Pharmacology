@@ -64,6 +64,7 @@ TEXT_ZH: dict[str, str] = {
     "app.progress_fetch": "已获取 {done}/{total} 个数据库，等待：{pending}",
     "app.progress_done_word": "全部完成",
     "app.warn_source_failed": "以下数据源获取失败，结果可能不完整：{sources}。成功的数据源已缓存，重试只需补拉失败的部分。",
+    "app.warn_disgenet_key_missing": "未配置 DisGeNET API 密钥，疾病靶点暂缺 DisGeNET 数据源。请在 API.env 中设置 DisGeNET_API_KEY 后重新分析（结果不会写入缓存，配置后自动补拉）。",
     "source.chembl": "ChEMBL",
     "source.dgidb": "DGIdb",
     "source.opentargets": "Open Targets",
