@@ -5,7 +5,8 @@ import pandas as pd
 import config
 from core.disgenet import fetch_disease_targets_disgenet
 from core.management import refresh_cache_file
-from core.opentargets import get_disease_targets, invalidate_disease_targets_cache
+from core.opentargets import (get_disease_targets_stated,
+                              invalidate_disease_targets_cache)
 from core.targets import get_disease_targets_merged
 from core.text_utils import safe_name
 from ui.source_management import render_source_management_page
@@ -17,14 +18,16 @@ def _fetch_opentargets(name: str, cache_hours):
     # 失效后本次必然重新联网抓取。旧实现 .clear() 清空全部疾病的缓存,又在
     # 批量更新的线程池里并发调用,会把其他会话正在用的疾病缓存一起清掉。
     invalidate_disease_targets_cache(name)
-    df = get_disease_targets(name)
-    # 该源"查无此病"与"请求失败"都返回空表,无法区分,按 0 靶点处理
-    return df, ("empty" if df.empty else "ok")
+    # 带状态变体:请求失败(failed)与查无疾病(empty)分开上报,不再把网络故障误报成 0 靶点
+    df, status = get_disease_targets_stated(name)
+    return df, status
 
 
 def _fetch_disgenet(name: str, cache_hours):
     if not config.DisGeNET_API_KEY:
-        return pd.DataFrame(), "failed"  # 密钥缺失是配置错误,不属于"0 靶点"
+        # 密钥缺失是配置错误,不属于"0 靶点":状态带原因后缀,经 refresh_cache_file
+        # 透传到结果 Message,管理页据此显示"未配置密钥"的专用提示
+        return pd.DataFrame(), "failed:no_api_key"
     df = fetch_disease_targets_disgenet(name)
     # 该源"查无关联"与"请求失败"都返回空表,无法区分,按 0 靶点处理
     return df, ("empty" if df.empty else "ok")

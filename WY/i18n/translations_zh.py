@@ -143,6 +143,8 @@ TEXT_ZH: dict[str, str] = {
     "common.updating_file": "正在更新 {file}…",
     "common.all_complete": "✅ 全部更新完成",
     "common.some_failed": "部分文件更新失败",
+    "common.some_failed_no_key": "部分文件更新失败：未配置 DisGeNET API 密钥。请在 API.env 中设置 DisGeNET_API_KEY 后重试（上表中标为 FAILED 的即受影响文件）。",
+    "common.file_update_no_key": "⚠️ {file} 更新失败：未配置 DisGeNET API 密钥。请在 API.env 中设置 DisGeNET_API_KEY 后重试。",
     "common.some_empty": "全部文件已更新；部分条目抓取到 0 个靶点，请核对对应查询物（药物名/疾病名）是否正确。",
     "common.update_no_files": "暂无可更新的缓存文件：缓存目录为空。请先在首页完成一次分析，缓存结果会出现在这里。",
     "common.search_placeholder": "🔍 搜索文件名…",

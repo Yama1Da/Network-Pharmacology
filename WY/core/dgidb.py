@@ -9,10 +9,13 @@ from .http_client import request_with_retry
 from .text_utils import remember_name_mapping
 
 
-def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
+def fetch_drug_targets_dgidb_stated(drug_name: str) -> tuple[pd.DataFrame, str]:
     """从 DGIdb 获取药物的相互作用基因，含交互分数与证据来源（文献、数据库）。
 
-    失败或无数据时返回空表；结果存为本地 CSV，已有缓存则直接复用。
+    另返回状态 "ok"(有数据)/"empty"(抓取成功但查无相互作用)/"failed"(请求失败),
+    供管理页区分网络故障与查无数据,避免把失败误报成 0 靶点。
+    失败或无数据时返回空表；结果存为本地 CSV，已有缓存则直接复用
+    (空结果不落盘,故缓存命中必非空)。
     """
     import config
 
@@ -23,7 +26,7 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
         remember=remember_name_mapping,  # 记录安全文件名→原始名,供管理页还原
     )
     if cached is not None:
-        return cached
+        return cached, ("ok" if not cached.empty else "empty")
 
     query = """
     query getInteractionsByDrug($names: [String!]) {
@@ -54,11 +57,11 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
         payload = resp.json() if resp is not None else None
 
         if payload is None:
-            return pd.DataFrame()
+            return pd.DataFrame(), "failed"
 
         if "errors" in payload or "data" not in payload:
             logging.error("DGIdb query failed: %s", payload.get("errors"))
-            return pd.DataFrame()
+            return pd.DataFrame(), "failed"
 
         records: list[dict] = []
         for node in payload.get("data", {}).get("drugs", {}).get("nodes", []):
@@ -86,7 +89,7 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
 
         if not records:
             logging.warning("DGIdb returned no interactions for '%s'", drug_name)
-            return pd.DataFrame()
+            return pd.DataFrame(), "empty"
 
         df = (
             pd.DataFrame(records)
@@ -95,8 +98,14 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
         )
         save_csv_cache(df, csv_path)
         logging.info("DGIdb '%s': %d targets fetched", drug_name, len(df))
-        return df
+        return df, "ok"
 
     except Exception:
         logging.exception("fetch_drug_targets_dgidb failed for '%s'", drug_name)
-        return pd.DataFrame()
+        return pd.DataFrame(), "failed"
+
+
+def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
+    """从 DGIdb 获取药物的相互作用基因；失败或无数据时返回空表。
+    分析主流程用本函数；管理页用 fetch_drug_targets_dgidb_stated 区分失败与查无。"""
+    return fetch_drug_targets_dgidb_stated(drug_name)[0]

@@ -189,20 +189,29 @@ def _get_disease_targets_impl(disease_name: str,
         return pd.DataFrame(), "failed"
 
 
-def get_disease_targets(disease_name: str, need_rows: int | None = None) -> pd.DataFrame:
-    """进程内 memo 化入口:只有成功抓取的结果进入 memo,失败(网络/HTTP/解析)返回空表
-    但不缓存,下一次同疾病分析自动重试;跨重启持久化仍由本地 CSV 缓存负责。
-    并发安全:读写均在锁内。
+def get_disease_targets_stated(disease_name: str,
+                               need_rows: int | None = None
+                               ) -> tuple[pd.DataFrame, str]:
+    """进程内 memo 化入口,另返回内部状态 "ok"/"empty"(查无此疾病)/"failed"(网络/HTTP/解析),
+    供管理页区分请求失败与查无数据,避免把失败误报成 0 靶点。
+    只有成功抓取的结果进入 memo,失败返回空表但不缓存,下一次同疾病分析自动重试;
+    跨重启持久化仍由本地 CSV 缓存负责。并发安全:读写均在锁内。
     """
     key = (str(disease_name), None if need_rows is None else int(need_rows))
     with _memo_lock:
         if key in _success_memo:
-            return _success_memo[key]
+            return _success_memo[key], "ok"
     df, status = _get_disease_targets_impl(disease_name, need_rows)
     if status == "ok":
         with _memo_lock:
             _success_memo[key] = df
-    return df
+    return df, status
+
+
+def get_disease_targets(disease_name: str, need_rows: int | None = None) -> pd.DataFrame:
+    """取疾病的关联靶点表;失败或无数据时返回空表(分析主流程用,
+    管理页用 get_disease_targets_stated 区分失败与查无)。"""
+    return get_disease_targets_stated(disease_name, need_rows)[0]
 
 
 def invalidate_disease_targets_cache(disease_name: str) -> None:

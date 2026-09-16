@@ -144,6 +144,8 @@ TEXT_EN: dict[str, str] = {
     "common.updating_file": "Updating {file}…",
     "common.all_complete": "✅ All updates complete",
     "common.some_failed": "Some files failed to update",
+    "common.some_failed_no_key": "Some files failed to update: no DisGeNET API key configured. Set DisGeNET_API_KEY in API.env and retry (FAILED rows in the table above are affected).",
+    "common.file_update_no_key": "⚠️ {file} update failed: no DisGeNET API key configured. Set DisGeNET_API_KEY in API.env and retry.",
     "common.some_empty": "All files updated; some entries fetched 0 targets — please double-check those query terms (drug/disease names).",
     "common.update_no_files": "Nothing to update: no cached target files yet. Run an analysis on the home page first — cached results will appear here.",
     "common.search_placeholder": "🔍 Search files…",

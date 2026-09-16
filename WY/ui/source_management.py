@@ -17,9 +17,18 @@ from ui.widgets import (CSS_BTN_DOWNLOAD, CSS_BTN_UPDATE, CSS_HIDE_IDLE_PROGRESS
                         back_button, hide_sidebar, render_file_action_bar,
                         render_file_table, show_file_op_result)
 
+# refresh_cache_file 结果 Message 里的"未配置 API 密钥"标记:
+# fetch_source 返回 "failed:no_api_key",core 原样并入 Message,见 core.management
+_NO_KEY_MARK = "no_api_key"
+
+
+def _has_no_key_mark(messages: pd.Series) -> bool:
+    return messages.fillna("").astype(str).str.contains(_NO_KEY_MARK).any()
+
 
 def show_update_summary(results: pd.DataFrame) -> None:
-    """更新结果表的三态汇总:全 OK 成功;有 FAILED 警告"部分失败";仅 0 靶点警告检查查询物;
+    """更新结果表的状态汇总:全 OK 成功;有 FAILED 警告"部分失败",其中因未配置
+    API 密钥导致的失败给出指明原因的专用提示;仅 0 靶点警告检查查询物;
     结果为空(全新安装、缓存目录尚未生成)提示先去首页完成一次分析。"""
     if results.empty:
         st.info(t("common.update_no_files"))
@@ -27,7 +36,10 @@ def show_update_summary(results: pd.DataFrame) -> None:
     if results["Status"].eq("OK").all():
         st.success(t("common.all_complete"))
     elif results["Status"].eq("FAILED").any():
-        st.warning(t("common.some_failed"))
+        if _has_no_key_mark(results["Message"]):
+            st.warning(t("common.some_failed_no_key"))
+        else:
+            st.warning(t("common.some_failed"))
     else:
         st.warning(t("common.some_empty"))
 
@@ -74,6 +86,9 @@ def render_source_management_page(
         elif last_update["Status"] == "EMPTY":
             # 抓取成功但 0 靶点:警告而非错误,提示检查查询物
             st.warning(t("common.file_update_empty", file=last_update["File"]))
+        elif _NO_KEY_MARK in str(last_update.get("Message", "")):
+            # 未配置 API 密钥的失败:指明原因的专用提示,避免误判为网络故障
+            st.warning(t("common.file_update_no_key", file=last_update["File"]))
         else:
             st.error(t("common.file_update_failed", file=last_update["File"], msg=last_update["Message"]))
 

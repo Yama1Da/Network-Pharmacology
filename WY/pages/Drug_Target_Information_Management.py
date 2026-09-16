@@ -2,7 +2,7 @@ import os
 
 import config
 from core.chembl import fetch_drug_targets_chembl, set_chembl_cache_ttl
-from core.dgidb import fetch_drug_targets_dgidb
+from core.dgidb import fetch_drug_targets_dgidb_stated
 from core.management import refresh_cache_file
 from core.targets import get_drug_targets_merged
 from core.text_utils import safe_name
@@ -19,9 +19,9 @@ def _fetch_chembl(name: str, cache_hours):
 
 
 def _fetch_dgidb(name: str, cache_hours):
-    df = fetch_drug_targets_dgidb(name)
-    # 该源"查无相互作用"与"请求失败"都返回空表,无法区分,按 0 靶点处理
-    return df, ("empty" if df.empty else "ok")
+    # 带状态变体:请求失败(failed)与查无相互作用(empty)分开上报,不再把网络故障误报成 0 靶点
+    df, status = fetch_drug_targets_dgidb_stated(name)
+    return df, status
 
 
 def _invalidate_merged_drug(drug_name: str) -> None:

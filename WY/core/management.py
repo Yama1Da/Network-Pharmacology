@@ -220,10 +220,13 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
         spec["invalidate_merged"](name)
         return {"Status": "OK" if status == "ok" else "EMPTY",
                 "Message": f"{len(df)} targets"}
-    # 失败:恢复旧文件
+    # 失败:恢复旧文件;状态为 "failed:原因" 时把原因并入 Message 透传给页面,
+    # 供界面区分配置问题(如未配置 DisGeNET 密钥)与一般请求失败
     if os.path.exists(backup):
         os.replace(backup, path)
-    return {"Status": "FAILED", "Message": "fetch failed"}
+    reason = status[len("failed:"):] if status.startswith("failed:") else ""
+    return {"Status": "FAILED",
+            "Message": f"fetch failed: {reason}" if reason else "fetch failed"}
 
 
 def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
