@@ -22,27 +22,41 @@
 
 ## 环境要求
 
-- Python ≥ 3.11
-- [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina)（加入 PATH，或在 `WY/API.env` （请将API.env.example重命名为API.env）中指定 `VINA_DIR`）
+- Python >= 3.13, < 3.14（开发基准 3.13.x；依赖钉版尚未提供 3.14 的预编译轮子）
+- [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) 可执行文件（按平台安装方式见「快速开始」第 3 步；在 `WY/API.env`（请将API.env.example重命名为API.env）中指定 `VINA_DIR`，或将其所在目录加入 PATH）
 - [DisGeNET](https://www.disgenet.org/) 学术账号 API Key（免费申请）/ 其他级别账号 API Key
 
 ## 快速开始
 
 ```bash
-# 1. 创建虚拟环境
+# 1. 安装依赖（二选一）
+
+# 方式 A（推荐）：conda 一条命令建依赖环境（openbabel 由此安装，三平台通用；
+#               密钥与本机路径不属于环境，仍需下面第 2、3 步配置）
+cd WY
+conda env create -f environment.yml
+conda activate npy
+
+# 方式 B：pip + venv
+cd WY
 python -m venv .venv
 .venv\Scripts\activate        # Windows（Linux/macOS: source .venv/bin/activate）
-
-# 2. 安装依赖
 pip install -r requirements.txt
-# `openbabel>=3.2.0` 可以 pip 安装，但 conda 安装更省事：
-# conda install -c conda-forge openbabel
+# openbabel 不在 requirements.txt（pip 安装在缺编译环境的平台常失败）：
+# 应用可正常启动，仅分子对接的受体转换需要它（懒加载），届时补装：
+# conda install -c conda-forge openbabel    （或 pip install openbabel）
 
-# 3. 配置 API.env
-编辑 API.env，填入 DisGeNET_API_KEY 与 VINA_DIR 路径
+# 2. 配置 API.env（conda / pip 两种方式完全相同：密钥是运行时配置，不属于任何环境）
+复制 API.env.example 为 API.env（保留模板便于日后接收更新），编辑并填入 DisGeNET_API_KEY
+
+# 3. 安装 AutoDock Vina（conda-forge 的 vina 无 win-64 构建，按平台二选一）
+# Windows：到 https://github.com/ccsb-scripps/AutoDock-Vina/releases 下载
+#          vina_1.2.7_windows_x86_64.exe 放入任意目录，在 API.env 中将 VINA_DIR
+#          指向该目录（或将该目录加入 PATH）；vina_split 无官方 Windows 版，
+#          程序已内置 python 分割兜底，可不装。
+# Linux/macOS：conda install -c conda-forge vina   # 同时安装 vina 与 vina_split
 
 # 4. 启动
-cd WY
 streamlit run App.py
 ```
 

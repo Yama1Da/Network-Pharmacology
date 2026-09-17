@@ -30,29 +30,50 @@ name, and it automatically completes the full workflow of
 
 ## Requirements
 
-- Python ≥ 3.11
-- [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) (add to PATH, or set `VINA_DIR`
-  in `WY/API.env` — rename `API.env.example` to `API.env` first)
+- Python >= 3.13, < 3.14 (development baseline 3.13.x; the pinned dependencies do not
+  ship prebuilt wheels for 3.14 yet)
+- [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) executable (per-platform
+  install steps in Quick Start step 3; set `VINA_DIR` in `WY/API.env` — rename
+  `API.env.example` to `API.env` first — or add its folder to PATH)
 - A [DisGeNET](https://www.disgenet.org/) API key (academic accounts are free to apply;
   keys from other account tiers also work)
 
 ## Quick Start
 
 ```bash
-# 1. Create a virtual environment
+# 1. Install dependencies (choose one)
+
+# Option A (recommended): one-shot conda environment for dependencies (installs openbabel;
+# works on Windows/Linux/macOS). Keys and local paths are NOT part of the env —
+# steps 2 and 3 below are still required.
+cd WY
+conda env create -f environment.yml
+conda activate npy
+
+# Option B: pip + venv
+cd WY
 python -m venv .venv
 .venv\Scripts\activate        # Windows (Linux/macOS: source .venv/bin/activate)
-
-# 2. Install dependencies
 pip install -r requirements.txt
-# `openbabel>=3.2.0` can be installed with pip, but conda is easier:
-# conda install -c conda-forge openbabel
+# openbabel is not in requirements.txt (its pip build often fails on platforms without
+# a compiler toolchain): the app starts fine without it — only the receptor conversion
+# in molecular docking needs it (lazy import). Install later if needed:
+# conda install -c conda-forge openbabel    (or: pip install openbabel)
 
-# 3. Configure API.env
-Edit API.env and fill in DisGeNET_API_KEY and the VINA_DIR path
+# 2. Configure API.env (identical for conda and pip: keys are runtime config, not part
+#    of any environment)
+Copy API.env.example to API.env (keep the template so future updates still arrive),
+edit it and fill in DisGeNET_API_KEY
+
+# 3. Install AutoDock Vina (conda-forge has no win-64 build; pick per platform)
+# Windows: download vina_1.2.7_windows_x86_64.exe from
+#          https://github.com/ccsb-scripps/AutoDock-Vina/releases into any folder,
+#          then point VINA_DIR in API.env to that folder (or add it to PATH);
+#          vina_split has no official Windows build — the app falls back to a
+#          Python splitter, so it is optional.
+# Linux/macOS: conda install -c conda-forge vina   # installs vina and vina_split
 
 # 4. Launch
-cd WY
 streamlit run App.py
 ```
 

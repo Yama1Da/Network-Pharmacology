@@ -1,0 +1,23 @@
+# ===== conda 环境定义（薄壳）=====
+# pip 依赖以 requirements.txt 为唯一权威，本文件不直接维护任何 pip 包——
+# 依赖变更只改 requirements.txt，本文件的 conda 层仅在 openbabel 大版本变动时才需要动。
+#
+# 创建（务必在 WY 目录下执行，保证 -r 相对路径按本文件所在目录解析）：
+#   conda env create -f environment.yml
+#   conda activate npy
+# 之后流程与 README 一致：复制 API.env.example 为 API.env 并填入密钥，streamlit run App.py。
+#
+# ===== 关于 Vina（不在本文件的原因，勿直接加回依赖）=====
+# conda-forge 的 vina 包没有 win-64 构建，写进依赖会让 Windows 的 conda env create
+# 直接报 PackagesNotFoundError；按平台安装步骤见 README「快速开始」第 3 步。
+name: npy
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.13,<3.14   # 钉 3.13 系列(与 .venv 一致)；3.14 待全栈实测通过后再放开
+  # conda 层只放 pip 装不稳/需编译的包；版本交由求解器选择（conda-forge 与 pip 版本号不同步，勿照抄 pip 钉版；
+  # 如需跨平台严格一致，可在 CI 三平台矩阵验证后补钉版本号）
+  - openbabel
+  - pip
+  - pip:
+    - -r requirements.txt
