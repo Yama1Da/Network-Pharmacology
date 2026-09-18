@@ -139,6 +139,10 @@ DISGENET_RATE_LIMIT_STATE_FILE = os.path.join(CACHE_DIR, "disgenet_rate_limit.js
 # 数据源 HTTP 响应缓存(DGIdb/Open Targets/DisGeNET)的 sqlite 落盘位置
 HTTP_CACHE_FILE = os.path.join(CACHE_DIR, "http_cache.sqlite")
 
+# CLI 结果目录:取 API.env 里的 CLI_RESULTS_DIR(配一次永久生效,与 VINA_DIR 同类的本机路径,不入库);
+# 未配置时为空串,cli.py 兜底落到 ./results。供 cli.py 的 --out 三级解析作第二优先级。
+CLI_RESULTS_DIR = os.getenv("CLI_RESULTS_DIR", "").strip()
+
 # ======== 日志配置 ========
 # 日志目录:每天一个日志文件 app_YYYY-MM-DD.log
 LOG_DIR = os.path.join(BASE_DIR, "Static", "log")

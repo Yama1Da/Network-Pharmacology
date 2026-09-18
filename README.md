@@ -50,11 +50,11 @@ pip install -r requirements.txt
 复制 API.env.example 为 API.env（保留模板便于日后接收更新），编辑并填入 DisGeNET_API_KEY
 
 # 3. 安装 AutoDock Vina（conda-forge 的 vina 无 win-64 构建，按平台二选一）
-# Windows：到 https://github.com/ccsb-scripps/AutoDock-Vina/releases 下载
-#          vina_1.2.7_windows_x86_64.exe 放入任意目录，在 API.env 中将 VINA_DIR
-#          指向该目录（或将该目录加入 PATH）；vina_split 无官方 Windows 版，
-#          程序已内置 python 分割兜底，可不装。
-# Linux/macOS：conda install -c conda-forge vina   # 同时安装 vina 与 vina_split
+Windows：到 https://github.com/ccsb-scripps/AutoDock-Vina/releases 下载
+#          vina_1.2.7_win.exe（可连同 vina_split_1.2.7_win.exe 一起）放入任意目录，
+#          在 API.env 中将 VINA_DIR 指向该目录（或将该目录加入 PATH）；
+#          不装 vina_split 亦可，程序已内置 python 分割兜底。
+Linux/macOS：conda install -c conda-forge vina   # 同时安装 vina 与 vina_split
 
 # 4. 启动
 streamlit run App.py

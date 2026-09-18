@@ -66,12 +66,11 @@ Copy API.env.example to API.env (keep the template so future updates still arriv
 edit it and fill in DisGeNET_API_KEY
 
 # 3. Install AutoDock Vina (conda-forge has no win-64 build; pick per platform)
-# Windows: download vina_1.2.7_windows_x86_64.exe from
-#          https://github.com/ccsb-scripps/AutoDock-Vina/releases into any folder,
+Windows: download vina_1.2.7_win.exe (optionally together with vina_split_1.2.7_win.exe) 
+#          from https://github.com/ccsb-scripps/AutoDock-Vina/releases into any folder,
 #          then point VINA_DIR in API.env to that folder (or add it to PATH);
-#          vina_split has no official Windows build — the app falls back to a
-#          Python splitter, so it is optional.
-# Linux/macOS: conda install -c conda-forge vina   # installs vina and vina_split
+#          vina_split is optional — the app falls back to a Python splitter.
+Linux/macOS: conda install -c conda-forge vina   # installs vina and vina_split    
 
 # 4. Launch
 streamlit run App.py
