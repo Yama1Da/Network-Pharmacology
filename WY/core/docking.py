@@ -615,12 +615,37 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
     return results[gene]
 
 
+def _run_obabel(source: str, out_path: str, *flags: str) -> None:
+    """以子进程调用 obabel 命令行(与 Vina 同类的外部程序,不依赖其 Python 绑定)。
+
+    obabel 对读不到输入等情况只打错误日志、仍返回退出码 0 并留下空输出文件,
+    因此除退出码外还须校验输出文件存在且非空。找不到可执行文件、转换失败或超时报错。
+    """
+    import subprocess
+
+    import config
+
+    if not os.path.isfile(config.OBABEL_EXE):
+        raise RuntimeError(
+            f"未找到 Open Babel 可执行文件（obabel）：{config.OBABEL_EXE or '未探测到'}。"
+            "请设置环境变量 OBABEL_DIR 指向 obabel 所在目录，或将 obabel 加入 PATH。")
+    try:
+        proc = subprocess.run(
+            [config.OBABEL_EXE, source, "-O", out_path, *flags], capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=config.OBABEL_TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"obabel 转换超时（>{config.OBABEL_TIMEOUT} 秒）") from exc
+    if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        lines = (proc.stderr or proc.stdout or "").strip().splitlines()
+        detail = lines[-1] if lines else f"exit code {proc.returncode}"
+        raise RuntimeError(f"obabel 转换失败（{source}）：{detail}")
+
+
 def prepare_receptor_pdbqt(pdb_path: str, out_path: str | None = None) -> str:
     """把受体蛋白 PDB 转成对接所需的 pdbqt 格式:去水去杂原子、加氢(pH 7.4)、分配 AutoDock 原子类型,结果可复用。
     失败时报错,成功返回 pdbqt 文件路径。
     """
     import config
-    from openbabel import openbabel as ob
 
     os.makedirs(config.DOCKING_RAW_CACHE_DIR, exist_ok=True)
     cleaned = os.path.join(
@@ -639,14 +664,8 @@ def prepare_receptor_pdbqt(pdb_path: str, out_path: str | None = None) -> str:
         out_path = os.path.join(config.DOCKING_RECEPTOR_CACHE_DIR, f"receptor_{fingerprint}.pdbqt")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    conv = ob.OBConversion()
-    conv.SetInAndOutFormats("pdb", "pdbqt")
-    conv.SetOptions("r", ob.OBConversion.OUTOPTIONS)  # 受体模式:加氢、去水、AutoDock 原子类型
-    mol = ob.OBMol()
-    if not conv.ReadFile(mol, source):
-        raise RuntimeError(f"openbabel failed to read receptor PDB: {source}")
-    if not conv.WriteFile(mol, out_path):
-        raise RuntimeError(f"openbabel failed to write receptor pdbqt: {out_path}")
+    # -xr:刚性受体模式(不加扭转树),加氢与 AutoDock 原子类型由 pdbqt 写出器完成
+    _run_obabel(source, out_path, "-xr")
     logging.info("Prepared receptor pdbqt: %s", out_path)
     return out_path
 
@@ -1244,13 +1263,7 @@ def _load_3dmol_js() -> str | None:
 
 def pose_pdbqt_to_pdb(pose_pdbqt: str, out_path: str) -> str:
     """把对接构象从 pdbqt 转成通用 PDB 格式(供各查看器显示);失败时抛 RuntimeError。"""
-    from openbabel import openbabel as ob
-
-    conv = ob.OBConversion()
-    conv.SetInAndOutFormats("pdbqt", "pdb")
-    mol = ob.OBMol()
-    if not (conv.ReadFile(mol, pose_pdbqt) and conv.WriteFile(mol, out_path)):
-        raise RuntimeError(f"pose pdbqt -> pdb conversion failed: {pose_pdbqt}")
+    _run_obabel(pose_pdbqt, out_path)
     return out_path
 
 
