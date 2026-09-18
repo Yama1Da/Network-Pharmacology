@@ -8,7 +8,7 @@ import threading
 import pandas as pd
 
 from .caching import load_json_file, open_named_csv_cache, save_csv_cache, save_json_file
-from .http_client import _get_session
+from .http_client import get_session
 from .text_utils import remember_name_mapping
 
 # 限流记录文件的进程内互斥锁:并发获取靶点时防止同时读写把时间戳记乱
@@ -144,7 +144,7 @@ def fetch_disease_targets_disgenet(disease_name: str, need_rows: int | None = No
         try:
             for _ in range(config.DISGENET_MAX_RETRIES + 1):
                 _acquire_disgenet_rate_limit_slot()
-                resp = _get_session().get(
+                resp = get_session().get(
                     config.DisGeNET_URL, params=params, headers=headers, timeout=request_timeout
                 )
                 if resp.status_code != 429:

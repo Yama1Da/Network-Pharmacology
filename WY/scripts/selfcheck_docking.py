@@ -23,7 +23,7 @@ import requests
 import config
 import core.docking as dock
 import core.http_client as hc
-import Utils
+from core.management import save_ui_settings
 from core.http_client import throttle
 
 
@@ -308,7 +308,7 @@ def t_interactive_3d_html():
 
 
 def t_ui_settings_roundtrip():
-    """口袋半径作为全局分析参数:在齿轮白名单内,经 Utils.save_ui_settings 落盘到
+    """口袋半径作为全局分析参数:在齿轮白名单内,经 save_ui_settings 落盘到
     ui_settings.json,且多次写入按键合并(对接页与齿轮面板互不覆盖)。"""
     assert "POCKET_CUTOFF" in config.UI_SETTINGS_KEYS, config.UI_SETTINGS_KEYS
     tmp = os.path.join(tempfile.gettempdir(), "selfcheck_ui_settings.json")
@@ -316,13 +316,13 @@ def t_ui_settings_roundtrip():
         os.remove(tmp)
     try:
         with patch_attr(config, "UI_SETTINGS_FILE", tmp):
-            Utils.save_ui_settings({"POCKET_CUTOFF": 4.5})
-            Utils.save_ui_settings({"DGIDB_MIN_SCORE": 0.1})
+            save_ui_settings({"POCKET_CUTOFF": 4.5})
+            save_ui_settings({"DGIDB_MIN_SCORE": 0.1})
             with open(tmp, encoding="utf-8") as f:
                 saved = json.load(f)
             assert saved == {"POCKET_CUTOFF": 4.5, "DGIDB_MIN_SCORE": 0.1}, saved
             # 白名单外的键(如黑名单以外的任意字符串值)不落盘
-            Utils.save_ui_settings({"NOT_IN_WHITELIST": 1.0})
+            save_ui_settings({"NOT_IN_WHITELIST": 1.0})
             with open(tmp, encoding="utf-8") as f:
                 assert "NOT_IN_WHITELIST" not in json.load(f)
     finally:

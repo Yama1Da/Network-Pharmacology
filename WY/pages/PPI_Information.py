@@ -1,13 +1,21 @@
 import streamlit as st
 
 import config
-import Utils
+from core.files import list_cache_files
+from ui.widgets import (
+    CSS_BTN_DOWNLOAD,
+    back_button,
+    hide_sidebar,
+    render_file_action_bar,
+    render_file_table,
+    show_file_op_result,
+)
 from i18n import t
 
 st.set_page_config(page_title=t("ppi_info.page_title"), layout="wide")
 
 # 隐藏侧边栏,全屏显示页面;行内 Download 按钮绿底、删除按钮红底白字
-Utils.hide_sidebar(Utils.CSS_BTN_DOWNLOAD + """
+hide_sidebar(CSS_BTN_DOWNLOAD + """
     .st-key-ppi_files_del_btn button {
         background-color: #F53F3F;
         color: #FFFFFF;
@@ -20,17 +28,17 @@ st.caption(t("ppi_info.caption"))
 
 col_back, _ = st.columns([1, 4])
 with col_back:
-    Utils.back_button()
+    back_button()
 
 st.divider()
 
-Utils.show_file_op_result("ppi_files")
+show_file_op_result("ppi_files")
 
-ppi_files = Utils.list_cache_files("ppi")
+ppi_files = list_cache_files("ppi")
 if ppi_files.empty:
     st.info(t("ppi_info.empty"))
 else:
     # 多选文件表 + 批量操作:下载选中(ZIP)/删除(确认弹窗)
-    Utils.render_file_table(ppi_files, config.PPI_CACHE_DIR, search_key="search_ppi",
+    render_file_table(ppi_files, config.PPI_CACHE_DIR, search_key="search_ppi",
                             ns="ppi_files")
-    Utils.render_file_action_bar("ppi_files", config.PPI_CACHE_DIR, zip_name="PPI_files.zip")
+    render_file_action_bar("ppi_files", config.PPI_CACHE_DIR, zip_name="PPI_files.zip")

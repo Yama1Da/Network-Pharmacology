@@ -1,4 +1,5 @@
 # 全局配置文件
+import logging
 import os
 from dotenv import load_dotenv
 
@@ -138,6 +139,10 @@ DISGENET_RATE_LIMIT_STATE_FILE = os.path.join(CACHE_DIR, "disgenet_rate_limit.js
 # 数据源 HTTP 响应缓存(DGIdb/Open Targets/DisGeNET)的 sqlite 落盘位置
 HTTP_CACHE_FILE = os.path.join(CACHE_DIR, "http_cache.sqlite")
 
+# CLI 结果目录:取 API.env 里的 CLI_RESULTS_DIR(配一次永久生效,与 VINA_DIR 同类的本机路径,不入库);
+# 未配置时为空串,cli.py 兜底落到 ./results。供 cli.py 的 --out 三级解析作第二优先级。
+CLI_RESULTS_DIR = os.getenv("CLI_RESULTS_DIR", "").strip()
+
 # ======== 日志配置 ========
 # 日志目录:每天一个日志文件 app_YYYY-MM-DD.log
 LOG_DIR = os.path.join(BASE_DIR, "Static", "log")
@@ -242,7 +247,7 @@ def normalized_string_version(value) -> str | None:
     return s if re.fullmatch(r"v\d+(\.\d+)?[a-z]?", s) else None
 
 
-# 官方下载站(人类全网络文件约 83MB)
+# 官方下载站
 STRING_DOWNLOAD_BASE = "https://stringdb-downloads.org/download"
 # 国内镜像:优先使用,不可用时自动改用官方站。
 STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"
@@ -338,7 +343,7 @@ VINA_SPLIT_EXE = _find_exe(VINA_DIR, "vina_split")  # 缺失时 docking 自动�
 # 对接算法参数
 EXHAUSTIVENESS = 8          # 搜索深度（越大越充分，耗时越长）
 NUM_MODES = 9               # 输出结合模式数量（--num_modes）
-DOCKING_CPU = 4             # 并行 CPU 核数（--cpu）
+DOCKING_CPU = 0             # 并行 CPU 核数（--cpu）,0 表示自动用全部核心
 DOCKING_TIMEOUT = 600       # 单次对接超时(秒),超时视为失败
 DOCKING_SEED = 0            # vina 随机种子（--seed），固定可复现
 
@@ -416,7 +421,16 @@ UI_SETTINGS_KEYS = (
 )
 # LOG_LEVEL 允许的取值:加载设置文件时校验,坏值按内置默认运行
 _LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-if os.path.exists(UI_SETTINGS_FILE):
+
+
+def apply_ui_settings_overrides() -> None:
+    """读取 ui_settings.json,把白名单内的运行时设置覆盖到本模块常量。
+
+    设置文件损坏或键值非法时按本文件内置默认值运行,不阻断启动;
+    selfcheck 可改写 UI_SETTINGS_FILE 后重调本函数验证加载逻辑。
+    """
+    if not os.path.exists(UI_SETTINGS_FILE):
+        return
     try:
         import json
         with open(UI_SETTINGS_FILE, "r", encoding="utf-8") as _f:
@@ -441,8 +455,13 @@ if os.path.exists(UI_SETTINGS_FILE):
                     and _v.strip().upper() in _LOG_LEVEL_NAMES:
                 globals()[_k] = _v.strip().upper()
     except Exception:
-        # 设置文件损坏时不阻断启动,按 config.py 内置值运行
-        pass
+        # 设置文件损坏时不阻断启动,按本文件内置值运行
+        logging.getLogger(__name__).warning(
+            "ui_settings.json 读取失败,按内置默认设置运行", exc_info=True)
+
+
+# import 时套用一次:对使用方而言行为与原先"import 即生效"完全一致
+apply_ui_settings_overrides()
 
 # PPI 置信度可能被上面的设置文件覆盖,而背景互作组的置信度阈值在上方按内置值派生:
 # 覆盖生效后必须重算,保证两处阈值始终一致(运行时齿轮面板修改亦需同样同步)

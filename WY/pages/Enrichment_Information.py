@@ -1,13 +1,23 @@
 import streamlit as st
 
 import config
-import Utils
+from core.enrichment import migrate_legacy_cache_names, parse_enrichment_filename
+from core.files import list_cache_files
+from core.management import enrichment_display_name
+from ui.widgets import (
+    CSS_BTN_DOWNLOAD,
+    back_button,
+    hide_sidebar,
+    render_file_action_bar,
+    render_file_table,
+    show_file_op_result,
+)
 from i18n import t
 
 st.set_page_config(page_title=t("enrich_info.page_title"), layout="wide")
 
 # 隐藏侧边栏,全屏显示页面;行内 Download 按钮绿底、删除按钮红底白字
-Utils.hide_sidebar(Utils.CSS_BTN_DOWNLOAD + """
+hide_sidebar(CSS_BTN_DOWNLOAD + """
     .st-key-enr_files_del_btn button {
         background-color: #F53F3F;
         color: #FFFFFF;
@@ -20,16 +30,16 @@ st.caption(t("enrich_info.caption"))
 
 col_back, _ = st.columns([1, 4])
 with col_back:
-    Utils.back_button()
+    back_button()
 
 st.divider()
 
 # 旧版完整哈希命名的历史文件先改成短哈希命名(幂等),再列出,保证列表命名统一可读
-Utils.migrate_legacy_cache_names()
+migrate_legacy_cache_names()
 
-Utils.show_file_op_result("enr_files")
+show_file_op_result("enr_files")
 
-enr_files = Utils.list_cache_files("enrichment", exts=(".csv",))
+enr_files = list_cache_files("enrichment", exts=(".csv",))
 if enr_files.empty:
     st.info(t("enrich_info.empty"))
 else:
@@ -48,7 +58,7 @@ else:
         show_enrichr = st.checkbox("Enrichr", value=True, key="flt_enrichr")
 
     def _match_source(n: str) -> bool:
-        info = Utils.parse_enrichment_filename(n)
+        info = parse_enrichment_filename(n)
         if info is None:
             return True
         if info["kind"] == "gsea":
@@ -69,10 +79,10 @@ else:
     else:
         # 最新分析排在最前;文件名展示为"药物 → 疾病 · 数据源"的友好名称,搜索仍可匹配原始文件名
         enr_files = enr_files.sort_values("Modified time", ascending=False)
-        display_map = {n: Utils.enrichment_display_name(n) for n in enr_files["File name"]}
+        display_map = {n: enrichment_display_name(n) for n in enr_files["File name"]}
         # 多选文件表 + 批量操作:下载选中(ZIP)/删除(确认弹窗)
-        Utils.render_file_table(enr_files, config.ENRICHMENT_CACHE_DIR,
+        render_file_table(enr_files, config.ENRICHMENT_CACHE_DIR,
                                 search_key="search_enrich", display_map=display_map,
                                 ns="enr_files")
-        Utils.render_file_action_bar("enr_files", config.ENRICHMENT_CACHE_DIR,
+        render_file_action_bar("enr_files", config.ENRICHMENT_CACHE_DIR,
                                      zip_name="Enrichment_files.zip")

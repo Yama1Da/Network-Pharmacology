@@ -1,0 +1,27 @@
+# 网络药理学平台打包配置(npap 命令行入口)。
+# 只支持可编辑安装:pip install -e . —— 本项目按"就地运行"设计,
+# 缓存/日志/API.env 均相对 WY/ 源码目录解析,非可编辑安装会把它们写进 site-packages。
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "npap"
+version = "1.0.0"
+description = "Network pharmacology pipeline CLI (shares cache & settings with the web UI)"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+# 依赖单一来源是 WY/requirements.txt(该文件头部有维护约定),这里动态引用避免两处钉版漂移
+dynamic = ["dependencies"]
+
+[project.scripts]
+npap = "WY.cli:main"
+
+[tool.setuptools]
+# 显式列出包:根目录还有 .venv 等与发布无关的顶层目录,禁止 setuptools 自动发现乱吸。
+# CLI 只依赖 WY 本体(config.py/cli.py)与 core、i18n 三个包;pages/ui/scripts 属网页端,
+# 依旧按就地运行方式使用,不参与安装。
+packages = ["WY", "WY.core", "WY.i18n"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["WY/requirements.txt"] }
