@@ -247,7 +247,7 @@ def normalized_string_version(value) -> str | None:
     return s if re.fullmatch(r"v\d+(\.\d+)?[a-z]?", s) else None
 
 
-# 官方下载站(人类全网络文件约 83MB)
+# 官方下载站
 STRING_DOWNLOAD_BASE = "https://stringdb-downloads.org/download"
 # 国内镜像:优先使用,不可用时自动改用官方站。
 STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"

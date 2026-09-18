@@ -58,6 +58,10 @@ Linux/macOS：conda install -c conda-forge vina   # 同时安装 vina 与 vina_s
 
 # 4. 启动
 streamlit run App.py
+
+# 5. （可选）把命令行批量分析装成全局命令 npap（详见「命令行批量分析（CLI）」一节）
+pip install -e ..        # 在 WY 目录下执行；必须带 -e（可编辑安装）
+npap --help              # 在已激活的环境中任意目录可用
 ```
 
 ## 使用流程
@@ -79,11 +83,69 @@ streamlit run App.py
 
 所有中间结果自动缓存（默认 7 天，见 `WY/config.py`），重复分析秒级返回。（由于DGIdb 不定期更新，所以设置缓存 7 天以上。）
 
+## 命令行批量分析（CLI）
+
+`WY/cli.py` 是 core 之上的薄封装：与网页共享全部缓存与设置（网页跑过的对 CLI 秒回；
+网页齿轮改过的阈值 CLI 自动沿用），面向「湿实验 + 文献对照」的批量出表。
+不绘图、不对接——论文用图走网页端（图均可下载），CLI 保持纯数据输出。
+
+```bash
+cd WY
+conda activate npy        # 或激活.venv
+
+# 单步命令：每个环节产出 CSV/JSON 到 --out 目录（默认 ./results；
+# 可在 API.env 里用 CLI_RESULTS_DIR 配置一次永久输出目录）
+python cli.py targets   --drug aspirin --disease "colorectal cancer"   # 四数据源靶点明细
+python cli.py ppi       --genes genes.txt                              # STRING 网络 + MCC 核心靶点
+python cli.py enrich    --genes common_targets.csv [--pvalue 0.05] [--sources GO:BP,KEGG]
+python cli.py proximity --drug aspirin --disease "colorectal cancer"   # 邻近度 Z-score
+python cli.py rwr       --seeds core_targets.csv                       # RWR 全网络排序
+
+# 单对全流程：一个结果子目录 + summary.json（参数快照与各步状态，结果可追溯）
+python cli.py analyze --drug aspirin --disease "colorectal cancer"
+
+# 批量跑批：pairs.csv 表头须含 drug、disease 两列（大小写不敏感，Excel 里的
+# No. 序号列等多余列自动忽略；Excel 编辑后另存即可），
+# 行 = 一对，一对一配对；每对一个子目录 + batch_summary.csv 汇总
+python cli.py batch --pairs D:\cases\pairs.csv --out D:\cases\results
+python cli.py batch --pairs D:\cases\pairs.csv --out D:\cases\results --resume   # 断点续跑
+```
+
+- **退出码**：全部成功 0，任一失败 1（CI/自检脚本可直接用）；失败会在终端给出具体
+  原因（富集双源不可用、疾病名无返回、背景互作组未构建等），结果不会静默残缺。
+- **单对失败不中断整批**；`--resume` 跳过已成功的对、自动重试失败的对。
+- 基因清单三种写法对 `ppi`/`enrich` 的 `--genes` 与 `rwr` 的 `--seeds` **通用**，任选其一：
+  txt 一行一个基因（支持 `#` 注释）、csv（自动取 `gene`/`approvedSymbol` 列）、逗号分隔
+  字面列表。
+  名称类命令（`targets`/`proximity`/`analyze`/`batch`）只收药名/病名。
+  两组命令靠产出文件衔接（如 `enrich --genes <对目录>\common_targets.csv`）。
+- proximity / RWR 依赖背景互作组：未构建时跳过并提示，不会自动触发大文件下载
+  （构建走网页「一键构建」或 `scripts/build_interactome.py`）。
+- 与网页一样仅支持英文疾病名；批量时建议顺序跑，不要同时开多个 batch 进程。
+
+**装成全局命令 `npap`（可选；开发期 `python cli.py` 即可用；Windows/Linux/macOS 通用）**：
+
+```bash
+cd WY
+pip install -e ..        # conda 用户先 conda activate npy；必须带 -e（可编辑安装），见下
+npap --help              # 入口脚本装进当前环境的 Scripts\（Windows）或 bin/（Linux/macOS）
+```
+
+- **必须用可编辑安装（`-e`）**：项目按"就地运行"设计，缓存/日志/`API.env` 均相对
+  `WY/` 源码目录解析；不带 `-e` 的普通安装会把它们写进 site-packages。
+- 装完后 `npap` 在**已激活的环境**里任意目录可用（三平台一致）；要在不激活环境的终端
+  直接用，需把该环境的 `Scripts\`（Windows）或 `bin/`（Linux/macOS）目录加入 PATH。
+- Windows 专属的免安装过渡：复制 `npap.bat.example` 为 `npap.bat`，把所在目录加入 PATH
+  即可（含本机路径，与 `API.env` 同类不入库；标准布局零修改可用，conda 等其他布局把其中
+  的 python 路径改成绝对路径）。Linux/macOS 的免安装分发后续由 Docker 提供。
+- 全局使用建议先在 `API.env` 里配一次 `CLI_RESULTS_DIR`（结果输出目录）：否则不带 `--out`
+  时结果会落到**当前目录**的 `results` 目录。
+
 ## 配置说明
 
 | 文件 | 用途 |
 |---|---|
-| `WY/API.env` | 密钥与可执行文件路径（`DisGeNET_API_KEY`、`VINA_DIR`），不入库 |
+| `WY/API.env` | 密钥与本机路径（`DisGeNET_API_KEY`、`VINA_DIR`、`CLI_RESULTS_DIR`），不入库 |
 | `WY/config.py` | 数据源地址、限流/重试、熔断冷却阶梯、缓存 TTL、靶点过滤阈值、STRING 版本与下载并发 |
 
 > 改行为看 `WY/config.py`，填密钥看 `WY/API.env`：`WY/API.env` 只放不提交到 git 的敏感信息
@@ -94,6 +156,7 @@ streamlit run App.py
 ```
 WY/
 ├── App.py                  # 首页：发起分析、靶点概览、全局设置入口
+├── cli.py                  # 命令行批量分析入口（targets/ppi/enrich/proximity/rwr/analyze/batch）
 ├── config.py               # 全部可调参数（路径、限流/重试、缓存 TTL、过滤阈值）
 ├── API.env                 # 密钥与本机路径（不入库，模板见 API.env.example）
 ├── pages/                  # Streamlit 子页面（靶点管理、数据网络、富集、对接、日志等）
@@ -111,7 +174,8 @@ WY/
 ```
 
 依赖严格单向：`pages / App.py → ui/ → core/ → i18n、config`。`core/` 与 `i18n/`
-不依赖任何 UI 框架（Streamlit），可在无界面环境下导入、复用与测试。
+不依赖任何 UI 框架（Streamlit），可在无界面环境下导入、复用与测试；
+`cli.py` 同样只依赖 `core/` 与 `config`，与网页共享缓存与设置。
 
 ## 开发与自检
 
@@ -142,6 +206,9 @@ python scripts/build_interactome.py   # 如果不知道背景互作组是否已�
   （默认 6）调大提速——官方站按连接限速，多段并行近似线性提速；或先用镜像已同步的版本。
 - **分子对接找不到 Vina？** 确认 `vina` 已加入 PATH 或环境变量存在 `VINA_DIR` ，或在 `WY/API.env` 中将 `VINA_DIR`
   指向 Vina 所在目录（也可填可执行文件全路径）。
+- **命令行结果没落在预期目录？** 不带 `--out` 时的落点优先级为：`--out` 参数 >
+  `CLI_RESULTS_DIR`（`WY/API.env` 或同名系统环境变量）> 当前目录的 `results`；
+  `--out` 仍可单次覆盖，无需删除已配置的 `CLI_RESULTS_DIR`。
 
 ## 免责声明
 

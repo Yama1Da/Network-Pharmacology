@@ -74,6 +74,11 @@ Linux/macOS: conda install -c conda-forge vina   # installs vina and vina_split
 
 # 4. Launch
 streamlit run App.py
+
+# 5. (Optional) install the command-line batch analysis as a global `npap` command
+#    (see "Command-Line Batch Analysis (CLI)")
+pip install -e ..        # run inside the WY directory; -e (editable) is required
+npap --help              # usable from any directory while the environment is active
 ```
 
 ## Usage Workflow
@@ -105,11 +110,81 @@ All intermediate results are cached automatically (7 days by default, see `WY/co
 so repeated analyses return in seconds. (The 7-day default exists because DGIdb updates
 irregularly.)
 
+## Command-Line Batch Analysis (CLI)
+
+`WY/cli.py` is a thin wrapper over `core/`: it shares all caches and settings with the web UI
+(pairs the web has already analyzed return instantly; thresholds changed in the web gear apply
+to the CLI automatically). It targets wet-lab + literature-comparison batch tabulation.
+No plots, no docking — paper figures come from the web UI (all downloadable); the CLI
+produces pure data output.
+
+```bash
+cd WY
+conda activate npy        # or activate .venv
+
+# Single-step commands: each writes CSV/JSON files into --out (default ./results;
+# set CLI_RESULTS_DIR in API.env once for a permanent output directory)
+python cli.py targets   --drug aspirin --disease "colorectal cancer"   # targets from 4 sources
+python cli.py ppi       --genes genes.txt                              # STRING network + MCC core targets
+python cli.py enrich    --genes common_targets.csv [--pvalue 0.05] [--sources GO:BP,KEGG]
+python cli.py proximity --drug aspirin --disease "colorectal cancer"   # proximity Z-score
+python cli.py rwr       --seeds core_targets.csv                       # network-wide RWR ranking
+
+# Full pipeline for one pair: one result subdirectory + summary.json (parameter snapshot
+# and per-step status, fully traceable)
+python cli.py analyze --drug aspirin --disease "colorectal cancer"
+
+# Batch: pairs.csv must contain 'drug' and 'disease' columns (case-insensitive; extra
+# columns like Excel row numbers are ignored; edit in Excel and save as CSV),
+# one pair per row (no cross product); one subdirectory per pair + batch_summary.csv
+python cli.py batch --pairs D:\cases\pairs.csv --out D:\cases\results
+python cli.py batch --pairs D:\cases\pairs.csv --out D:\cases\results --resume   # checkpoint resume
+```
+
+- **Exit codes**: 0 when everything succeeds, 1 when anything fails (ready for CI/self-check
+  scripts); failures print a concrete reason (both enrichment sources down, disease name with
+  no returns, background interactome missing, etc.) — results are never silently incomplete.
+- **One failed pair never aborts the batch**; `--resume` skips pairs that already succeeded
+  and retries failed ones.
+- Gene lists are **interchangeable** across `--genes` (`ppi`/`enrich`) and `--seeds` (`rwr`),
+  in any of three forms: a .txt with one gene per line (`#` comments allowed), a .csv
+  (auto-detects the `gene`/`approvedSymbol` column), or a comma-separated literal list.
+  Name-based commands (`targets`/`proximity`/`analyze`/`batch`) take drug/disease names only;
+  the two groups connect through the produced CSV files
+  (e.g. `enrich --genes <pair dir>\common_targets.csv`).
+- proximity / RWR require the background interactome: when it is missing they are skipped with
+  a notice and never trigger the large download automatically (build it via the web UI or
+  `scripts/build_interactome.py`).
+- English disease names only, same as the web UI; run batches sequentially — do not start
+  multiple batch processes at once.
+
+**Install as a global `npap` command (optional; during development `python cli.py` works as is; Windows/Linux/macOS alike)**:
+
+```bash
+cd WY
+pip install -e ..        # conda users: conda activate npy first; -e (editable) is required, see below
+npap --help              # the entry script lands in the env's Scripts\ (Windows) or bin/ (Linux/macOS)
+```
+
+- **Editable install (`-e`) is mandatory**: the project is designed to run in place — caches,
+  logs, and `API.env` are all resolved relative to the `WY/` source directory; a regular
+  (non-editable) install would write them into site-packages.
+- After installing, `npap` is available in any directory **while the environment is active**
+  (identical on all three platforms); to use it in a terminal without activation, add the
+  environment's `Scripts\` (Windows) or `bin/` (Linux/macOS) directory to PATH.
+- Windows-only install-free transitional script: copy `npap.bat.example` as `npap.bat` and
+  put its folder on PATH (machine-specific paths, kept out of git like `API.env`; the default
+  works unmodified for the standard layout, conda and other layouts should replace the python
+  path inside with an absolute one). Install-free distribution for Linux/macOS will come with
+  Docker later.
+- For global use, set `CLI_RESULTS_DIR` in `API.env` once: without `--out`, results land in
+  the `results` folder under the **current directory**.
+
 ## Configuration
 
 | File | Purpose |
 |---|---|
-| `WY/API.env` | Secrets and executable paths (`DisGeNET_API_KEY`, `VINA_DIR`); not committed to git |
+| `WY/API.env` | Secrets and executable paths (`DisGeNET_API_KEY`, `VINA_DIR`, `CLI_RESULTS_DIR`); not committed to git |
 | `WY/config.py` | Data source URLs, rate limits/retries, circuit-breaker cooldown ladders, cache TTL, target filter thresholds, STRING version and download concurrency |
 
 > Change behavior in `WY/config.py`, put secrets in `WY/API.env`: `WY/API.env` only holds
@@ -121,6 +196,7 @@ irregularly.)
 ```
 WY/
 ├── App.py                  # Home page: start an analysis, target overview, settings entry
+├── cli.py                  # Command-line batch analysis entry (targets/ppi/enrich/proximity/rwr/analyze/batch)
 ├── config.py               # All tunable parameters (paths, rate limits/retries, cache TTL, filter thresholds)
 ├── API.env                 # Secrets and local paths (not committed; see API.env.example)
 ├── pages/                  # Streamlit subpages (target management, data network, enrichment, docking, logs, etc.)
@@ -139,7 +215,8 @@ WY/
 
 Dependencies are strictly one-way: `pages / App.py → ui/ → core/ → i18n, config`.
 `core/` and `i18n/` do not depend on any UI framework (Streamlit) and can be imported,
-reused, and tested without a UI environment.
+reused, and tested without a UI environment; `cli.py` likewise depends only on `core/`
+and `config`, sharing caches and settings with the web UI.
 
 ## Development & Self-Checks
 
@@ -178,6 +255,10 @@ Data Management page, which ensures the background interactome has been download
 - **Molecular docking can't find Vina?** Make sure `vina` is on PATH or the `VINA_DIR` environment
   variable exists, or point `VINA_DIR` in `WY/API.env` to the directory containing Vina
   (a full path to the executable also works).
+- **CLI results not where you expected?** Without `--out`, the output location priority is:
+  the `--out` argument > `CLI_RESULTS_DIR` (in `WY/API.env` or an environment variable of the
+  same name) > the `results` folder in the current directory; `--out` still overrides for a
+  single run — no need to remove a configured `CLI_RESULTS_DIR`.
 
 ## Disclaimer
 

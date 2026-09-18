@@ -24,7 +24,7 @@ i18n.set_lang_provider(lambda: "en")  # 纪律 1:core 内 t() 输出钉死英文
 import pandas as pd
 
 from core import interactome
-from core.caching import save_json_file
+from core.caching import load_json_file, save_json_file
 from core.enrichment import (TRUSTED_REASONS, enrichment_retry_hint_minutes,
                              run_enrichment)
 from core.logging_setup import setup_logging
@@ -60,7 +60,7 @@ def _pair_prefix(drug: str, disease: str) -> str:
 
 
 def _resolve_out_dir(out_arg: str | None) -> str:
-    """--out 落点三级解析(先命中先用):命令行参数 > API.env 的 RESULTS_DIR > 兜底 ./results。
+    """--out 落点三级解析(先命中先用):命令行参数 > API.env 的 CLI_RESULTS_DIR > 兜底 ./results。
     第二级取 config.CLI_RESULTS_DIR(config 导入时经 load_dotenv 读到的本机路径,与 VINA_DIR 同类,不入库)。"""
     if out_arg:
         path = os.path.abspath(out_arg)
@@ -352,6 +352,11 @@ def run_pair(drug: str, disease: str, out_dir: str) -> dict:
             cache_txt = " (cache hit)" if rwr_res.get("cached") else ""
             print(f"[analyze] expansion  ok        query set +{len(added)} genes "
                   f"via RWR (total {len(genes)}){cache_txt}")
+        else:
+            # 扩展失败按原始交集继续(与网页一致),但失败原因要记进 summary 供追溯
+            expansion = {"added": 0, "error": rwr_res.get("error") or "unknown"}
+            print(f"[analyze] expansion  skipped   RWR expansion failed "
+                  f"({expansion['error']}); continuing with raw intersection")
             steps["targets"]["detail"] += f"; RWR expanded +{len(added)}"
 
     # ---- PPI / 富集 / 邻近度 / RWR(相互独立,某步失败不影响其余) ----
@@ -406,7 +411,7 @@ def _setup_targets(p: argparse.ArgumentParser) -> None:
     p.add_argument("--disease", default=None,
                    help="Disease name in English, e.g. 'colorectal cancer' (omit to fetch drug targets only)")
     p.add_argument("--out", default=None,
-                   help="Output directory (default: RESULTS_DIR from API.env, else ./results)")
+                   help="Output directory (default: CLI_RESULTS_DIR from API.env, else ./results)")
 
 
 def cmd_targets(args) -> int:
@@ -463,7 +468,7 @@ def _setup_ppi(p: argparse.ArgumentParser) -> None:
     p.add_argument("--genes", required=True,
                    help="Gene list: path to a .txt (one gene per line) or .csv (gene/approvedSymbol column), or a comma-separated list")
     p.add_argument("--out", default=None,
-                   help="Output directory (default: RESULTS_DIR from API.env, else ./results)")
+                   help="Output directory (default: CLI_RESULTS_DIR from API.env, else ./results)")
 
 
 def cmd_ppi(args) -> int:
@@ -511,7 +516,7 @@ def _setup_enrich(p: argparse.ArgumentParser) -> None:
     p.add_argument("--organism", default=config.SPECIES_MAP["Human"]["gprofiler"],
                    help=f"Organism code for g:Profiler (default: {config.SPECIES_MAP['Human']['gprofiler']})")
     p.add_argument("--out", default=None,
-                   help="Output directory (default: RESULTS_DIR from API.env, else ./results)")
+                   help="Output directory (default: CLI_RESULTS_DIR from API.env, else ./results)")
 
 
 def cmd_enrich(args) -> int:
@@ -547,7 +552,7 @@ def _setup_proximity(p: argparse.ArgumentParser) -> None:
     p.add_argument("--disease", required=True,
                    help="Disease name in English, e.g. 'colorectal cancer'")
     p.add_argument("--out", default=None,
-                   help="Output directory (default: RESULTS_DIR from API.env, else ./results)")
+                   help="Output directory (default: CLI_RESULTS_DIR from API.env, else ./results)")
 
 
 def cmd_proximity(args) -> int:
@@ -586,7 +591,7 @@ def _setup_rwr(p: argparse.ArgumentParser) -> None:
     p.add_argument("--seeds", required=True,
                    help="Seed genes (usually core targets): path to a .txt/.csv, or a comma-separated list")
     p.add_argument("--out", default=None,
-                   help="Output directory (default: RESULTS_DIR from API.env, else ./results)")
+                   help="Output directory (default: CLI_RESULTS_DIR from API.env, else ./results)")
 
 
 def cmd_rwr(args) -> int:
@@ -628,7 +633,7 @@ def _setup_analyze(p: argparse.ArgumentParser) -> None:
     p.add_argument("--disease", required=True,
                    help="Disease name in English, e.g. 'colorectal cancer'")
     p.add_argument("--out", default=None,
-                   help="Output directory (default: RESULTS_DIR from API.env, else ./results); the pair gets a subdirectory named after it")
+                   help="Output directory (default: CLI_RESULTS_DIR from API.env, else ./results); the pair gets a subdirectory named after it")
 
 
 def cmd_analyze(args) -> int:
@@ -654,6 +659,120 @@ def cmd_analyze(args) -> int:
     return 0 if summary["ok"] else 1
 
 
+# ======== 子命令:batch ========
+
+def _setup_batch(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--pairs", required=True,
+                   help="Pairs CSV with 'drug' and 'disease' columns (case-insensitive, any position; extra columns like row numbers are ignored; utf-8-sig, Excel-friendly)")
+    p.add_argument("--out", default=None,
+                   help="Output directory (default: CLI_RESULTS_DIR from API.env, else ./results); one subdirectory per pair")
+    p.add_argument("--resume", action="store_true",
+                   help="Skip pairs whose subdirectory already holds a successful summary.json (checkpoint resume; failed pairs are retried)")
+
+
+def _read_pairs(path: str) -> tuple[list[tuple[str, str]], list[tuple[int, str]]]:
+    """读 pairs.csv:表头须含 drug、disease 两列(大小写不敏感、列位置不限;Excel 常见的
+    No. 序号列等多余列自动忽略);utf-8-sig 读(兼容 Excel 导出)。
+    行 = 一对,一对一配对;同药多病写多行,不做笛卡尔积。
+    返回 (合法对列表, 非法行列表[(行号, 原因)]):缺列抛 ValueError;drug/disease 有空缺的行记非法。"""
+    df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
+    by_lower = {str(c).strip().lower(): c for c in df.columns}
+    missing = [name for name in ("drug", "disease") if name not in by_lower]
+    if missing:
+        raise ValueError(f"pairs CSV must have 'drug' and 'disease' columns; "
+                         f"got: {', '.join(str(c) for c in df.columns)}")
+    drug_col, disease_col = by_lower["drug"], by_lower["disease"]
+    pairs: list[tuple[str, str]] = []
+    bad: list[tuple[int, str]] = []
+    for i, row in df.iterrows():
+        drug_raw, disease_raw = row[drug_col], row[disease_col]
+        drug = str(drug_raw).strip() if pd.notna(drug_raw) else ""
+        disease = str(disease_raw).strip() if pd.notna(disease_raw) else ""
+        if drug and disease:
+            pairs.append((drug, disease))
+        else:
+            bad.append((i + 2, "empty drug or disease"))  # +2:文件首行为表头,行号从 1 计
+    return pairs, bad
+
+
+_BATCH_SUMMARY_COLUMNS = ("drug", "disease", "status", "resumed",
+                          "failed_steps", "detail", "seconds", "directory")
+
+
+def cmd_batch(args) -> int:
+    """批量跑批(文献对照主力):逐行读药病对循环调用 run_pair,每对一个子目录,
+    最后出 batch_summary.csv(每对一行:状态/耗时/失败原因)。单对失败不中断;
+    --resume 跳过已成功的对(断点续跑);结束打印 ok=N failed=M,failed>0 退出码 1。"""
+    out_dir = _resolve_out_dir(args.out)
+    try:
+        pairs, bad_rows = _read_pairs(args.pairs)
+    except (OSError, ValueError) as e:
+        _warn(f"failed to read pairs CSV '{args.pairs}': {e}")
+        return 1
+    if not pairs and not bad_rows:
+        _warn("pairs CSV has no data rows")
+        return 1
+    print(f"[batch] {len(pairs)} pair(s)"
+          + (f", {len(bad_rows)} invalid row(s)" if bad_rows else "")
+          + f" from {args.pairs}\n[batch] output directory: {out_dir}"
+          + (" (resume on)" if args.resume else ""))
+
+    t0 = time.monotonic()
+    rows: list[dict] = []
+    for n, (drug, disease) in enumerate(pairs, 1):
+        slug = _slug(drug, disease)
+        pair_dir = os.path.join(out_dir, slug)
+        print(f"\n[batch] ({n}/{len(pairs)}) {drug} vs {disease}")
+        record = {"drug": drug, "disease": disease, "status": "failed", "resumed": 0,
+                  "failed_steps": "", "detail": "", "seconds": "", "directory": slug}
+        rows.append(record)
+        summary_path = os.path.join(pair_dir, "summary.json")
+        prev = load_json_file(summary_path, None) if args.resume else None
+        if prev is not None and prev.get("ok"):
+            # 断点续跑:已成功(且落盘 summary.json)的对直接跳过,状态沿用落盘记录
+            print("[batch] skipped: successful summary.json found")
+            record.update(status="ok", resumed=1, detail="resumed from existing summary",
+                          seconds=prev.get("elapsed_seconds", ""))
+            continue
+        if args.resume and os.path.exists(summary_path):
+            print("[batch] previous run not ok: retrying")
+        try:
+            summary = run_pair(drug, disease, pair_dir)
+            failed_steps = [name for name, st in summary["steps"].items()
+                            if st.get("status") != "ok"]
+            detail = ("; ".join(f"{name}: {summary['steps'][name].get('detail', '')}"
+                                for name in failed_steps)
+                      if failed_steps else "all steps ok")
+            record.update(status="ok" if summary["ok"] else "failed",
+                          failed_steps=", ".join(failed_steps), detail=detail,
+                          seconds=summary["elapsed_seconds"])
+        except KeyboardInterrupt:
+            raise  # 主动中断:整批停止;已完成的对已各自落盘,--resume 可续跑
+        except Exception as e:
+            logging.exception("pair '%s' vs '%s' crashed", drug, disease)
+            record.update(failed_steps="crash", detail=f"{type(e).__name__}: {e}")
+
+    # 结构非法的行(空 drug/disease)也按失败入汇总,保证"每行一条记录"对得上账
+    for lineno, reason in bad_rows:
+        rows.append({"drug": "", "disease": "", "status": "failed", "resumed": 0,
+                     "failed_steps": "invalid_row", "detail": f"line {lineno}: {reason}",
+                     "seconds": "", "directory": ""})
+
+    summary_csv = os.path.join(out_dir, "batch_summary.csv")
+    pd.DataFrame(rows, columns=_BATCH_SUMMARY_COLUMNS).to_csv(
+        summary_csv, index=False, encoding="utf-8-sig")
+
+    ok_n = sum(1 for r in rows if r["status"] == "ok")
+    failed_n = len(rows) - ok_n
+    print(f"\n[batch] done in {time.monotonic() - t0:.1f}s: ok={ok_n} failed={failed_n}")
+    for r in rows:
+        if r["status"] != "ok":
+            print(f"[batch] FAILED: {r['drug'] or '(row)'} | {r['disease'] or '(row)'}"
+                  f" -> {r['detail']}"[:220])
+    print(f"[batch] summary: {summary_csv}")
+    return 1 if failed_n else 0
+
+
 # ======== 命令注册表:名字 → (参数装配, 处理函数) ========
 
 HANDLER_HELP = {
@@ -663,7 +782,7 @@ HANDLER_HELP = {
     "proximity": "Network proximity Z-score between drug and disease target modules",
     "rwr": "Random-walk-with-restart ranking of the whole network from seed genes",
     "analyze": "Full pipeline for one drug-disease pair (all steps + summary.json)",
-    # M3: batch
+    "batch": "Run the full pipeline for many drug-disease pairs from a CSV (batch summary + resume)",
 }
 
 COMMANDS = {
@@ -673,6 +792,7 @@ COMMANDS = {
     "proximity": (_setup_proximity, cmd_proximity),
     "rwr": (_setup_rwr, cmd_rwr),
     "analyze": (_setup_analyze, cmd_analyze),
+    "batch": (_setup_batch, cmd_batch),
 }
 
 
