@@ -68,7 +68,7 @@ def resolve_original_name(stem: str) -> str | None:
     return str(original) if original else None
 
 
-def _safe_round(value, ndigits: int = 4) -> float:
+def safe_round(value, ndigits: int = 4) -> float:
     """安全取数:部分靶点在数据库中没有指标数值,统一按 0 处理后再四舍五入。"""
     try:
         return round(float(value), ndigits)

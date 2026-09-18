@@ -1,13 +1,21 @@
 import pandas as pd
 import streamlit as st
 import config
-import Utils
-from i18n import t, set_lang, get_lang
+from core.logging_setup import setup_logging
+from core.management import purge_merged_cache, save_ui_settings
+from core.targets import get_targets_concurrent
+import i18n
+from i18n import DEFAULT_LANG, t, get_lang
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
 
+# 语言读取注入:i18n 包本身不依赖 streamlit(core 也能安全引用),
+# 由宿主在此注册"当前语言"的存取;语言切换直接写 st.session_state["lang"]。
+# 必须在本文件任何 t()/get_lang() 调用之前注册。
+i18n.set_lang_provider(lambda: st.session_state.get("lang", DEFAULT_LANG))
+
 # 初始化日志:每天一个日志文件,保留两年。
-Utils.setup_logging()
+setup_logging()
 
 st.set_page_config(page_title=t("app.page_title"), layout="centered")
 
@@ -361,8 +369,8 @@ def _open_settings_dialog() -> None:
             setattr(config, _k, _v)
         # PPI 置信度变更时同步派生阈值:背景互作组(RWR/邻近度)的筛选与缓存文件名都依赖它
         config.INTERACTOME_CONFIDENCE = int(config.PPI_CONFIDENCE * 1000)
-        Utils.save_ui_settings(changed)
-        Utils.purge_merged_cache()
+        save_ui_settings(changed)
+        purge_merged_cache()
         st.toast(t("app.settings.toast"))
 
     # ---------- STRING 数据版本切换 ----------
@@ -418,7 +426,7 @@ def _open_settings_dialog() -> None:
             from core.interactome import clear_runtime_caches
 
             clear_runtime_caches()  # 图/度表/LCC 上下文按版本隔离,清一次防旧版本残留
-            Utils.save_ui_settings({"STRING_VERSION": _pending})
+            save_ui_settings({"STRING_VERSION": _pending})
             # 清掉版本控件自身的会话状态:重开齿轮时按新当前版本重新定位选中项,
             # 避免停留在切换前的旧选项上被误点切回
             for _wk in ("set_string_ver_choice", "set_string_ver_input"):
@@ -457,7 +465,7 @@ with st.container(key="top_right_logs"):
         lang_is_en = st.toggle("Language", key="_lang_switch",
                                label_visibility="collapsed")
         if lang_is_en != is_en:
-            set_lang("en" if lang_is_en else "zh")
+            st.session_state["lang"] = "en" if lang_is_en else "zh"
             st.session_state["_lang_switch_synced"] = get_lang()
             st.rerun()
     if st.button(t("app.logs_btn"), key="logs_btn"):
@@ -524,7 +532,7 @@ if analyze_btn:
                     text=t("app.progress_fetch", done=len(done), total=total,
                            pending=waiting or t("app.progress_done_word")))
 
-            drug_df, disease_df, failed_sources = Utils.get_targets_concurrent(
+            drug_df, disease_df, failed_sources = get_targets_concurrent(
                 drug_name, disease_name, progress_cb=_on_fetch_progress)
             progress.empty()
             # 从表格取出基因符号列表,供韦恩图和统计使用
@@ -532,10 +540,17 @@ if analyze_btn:
             disease_targets = disease_df["approvedSymbol"].tolist() if not disease_df.empty else []
 
         if failed_sources:
-            # 单路失败时结果可能不完整:此时该侧 merged 缓存不会被写入,重试只补拉失败源
-            st.warning(t("app.warn_source_failed",
-                         sources=t("app.and_join").join(
-                             t(f"source.{key}") for key in failed_sources)))
+            # 单路失败时结果可能不完整:此时该侧 merged 缓存不会被写入,重试只补拉失败源。
+            # DisGeNET 空表若系未配置密钥所致,换成指明原因的专用提示,避免误判为网络故障
+            if "disgenet" in failed_sources and not config.DisGeNET_API_KEY:
+                st.warning(t("app.warn_disgenet_key_missing"))
+                other_failed = [key for key in failed_sources if key != "disgenet"]
+            else:
+                other_failed = failed_sources
+            if other_failed:
+                st.warning(t("app.warn_source_failed",
+                             sources=t("app.and_join").join(
+                                 t(f"source.{key}") for key in other_failed)))
 
         st.markdown('<div class="result-card">', unsafe_allow_html=True)
 

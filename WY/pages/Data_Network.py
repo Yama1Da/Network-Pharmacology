@@ -5,7 +5,9 @@ import pandas as pd
 import streamlit as st
 
 import config
-import Utils
+from core.files import make_ppi_zip
+from core.targets import get_common_targets, get_disease_targets_merged, get_drug_targets_merged
+from ui.widgets import back_button, download_button, download_file_button, hide_sidebar
 from i18n import t
 from core.network_algorithms import (
     detect_louvain_modules,
@@ -19,17 +21,25 @@ from core.enrichment import (
     fetch_enrichment_gsea_prerank,
     gsea_gene_sets,
     render_drug_target_pathway_plot,
+    render_enrichment_plots,
     render_gsea_plot,
+    run_enrichment,
 )
 from core.ppi import (
+    build_ppi_graph,
     compute_mcc_scores,
+    compute_ppi_metrics,
+    fetch_string_ppi,
+    mark_hub_genes,
     pick_top_mcc_genes,
     render_core_target_plot,
     render_cytoscape_style_plot,
     render_pyvis_html,
+    render_static_plot,
     render_string_style_plot,
     save_gsea_results,
     save_module_results,
+    save_ppi_results,
     save_proximity_results,
     save_query_genes,
     save_rwr_results,
@@ -38,7 +48,7 @@ from core.ppi import (
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
 # ---------- 隐藏侧边栏全屏显示;Run 按钮(#167A9C)、Data Management 按钮(#6347A1)配色 ----------
-Utils.hide_sidebar("""
+hide_sidebar("""
     .st-key-run_btn button {
         background-color: #167A9C;
         color: #C6E7F5;
@@ -56,7 +66,7 @@ st.caption(t("net.caption"))
 
 col_back, col_mgmt = st.columns([1, 1])
 with col_back:
-    Utils.back_button()
+    back_button()
 with col_mgmt:
     if st.button(t("net.data_mgmt"), key="data_mgmt_btn"):
         st.switch_page("pages/Data_Management.py")
@@ -206,10 +216,10 @@ def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str
     """对药物/疾病一侧构建排秩表并运行 GSEA prerank（Build Report 自动流程与手动重跑共用）；
     返回 (结果表, 排秩统计, 状态原因)。"""
     if side == "drug":
-        src_df = Utils.get_drug_targets_merged(drug_name.strip())
+        src_df = get_drug_targets_merged(drug_name.strip())
         score_col = "score_pchembl"
     else:
-        src_df = Utils.get_disease_targets_merged(disease_name.strip())
+        src_df = get_disease_targets_merged(disease_name.strip())
         score_col = "score_ot"
     rnk, rstats = build_ranked_list(src_df, "approvedSymbol", score_col)
     gsea_status: dict = {}
@@ -230,7 +240,7 @@ def _enrich_retry_suffix() -> str:
 def _enrichment_task(genes: list[str], organism: str, prefix: str):
     """功能富集(g:Profiler 主 + Enrichr 备,输入为交集靶点),返回 (结果表, 数据源, 状态原因)。"""
     enr_status: dict = {}
-    df, source = Utils.run_enrichment(genes, organism=organism,
+    df, source = run_enrichment(genes, organism=organism,
                                       pvalue=config.ENRICHMENT_PVALUE, label=prefix,
                                       status=enr_status)
     return df, source, enr_status.get("reason", "")
@@ -264,8 +274,8 @@ def _network_tests_task(drug_name: str, disease_name: str, prefix: str):
     drug_df_full = pd.DataFrame()
     disease_df_full = pd.DataFrame()
     try:
-        drug_df_full = Utils.get_drug_targets_merged(drug_name.strip())
-        disease_df_full = Utils.get_disease_targets_merged(disease_name.strip())
+        drug_df_full = get_drug_targets_merged(drug_name.strip())
+        disease_df_full = get_disease_targets_merged(disease_name.strip())
         proximity_result = run_proximity_cached(
             drug_df_full["approvedSymbol"].tolist(),
             disease_df_full["approvedSymbol"].tolist(),
@@ -306,8 +316,8 @@ def _render_main_figures(graph, metrics_df, edges_df, hub_method: str, mcc_map: 
     失败只跳过自身。返回 (html_content, static_fig, mcc_map, hub_df, core_fig,
     core_genes, string_fig, cyto_fig)。
     """
-    html_content = Utils.render_pyvis_html(graph, metrics_df)
-    static_fig = Utils.render_static_plot(graph, metrics_df)
+    html_content = render_pyvis_html(graph, metrics_df)
+    static_fig = render_static_plot(graph, metrics_df)
     string_fig = cyto_fig = None
     try:
         string_fig = render_string_style_plot(graph, metrics_df, edges_df)
@@ -358,7 +368,7 @@ def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_cont
                 progress.advance(fraction)
 
     _prog("save", "running", 0.80)
-    saved = Utils.save_ppi_results(
+    saved = save_ppi_results(
         graph, static_fig, metrics_df, edges_df, html_content, prefix=prefix,
         enrichment_df=enrichment_df if not enrichment_df.empty else None,
         enrichment_bar_fig=enrichment_bar_fig,
@@ -435,7 +445,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
     # Step 0: 确定输入基因列表
     _prog("targets", "running", 0.02)
     if mode == "names":
-        genes = Utils.get_common_targets(drug_name, disease_name, top_n=config.STRING_QUERY_LIMIT)
+        genes = get_common_targets(drug_name, disease_name, top_n=config.STRING_QUERY_LIMIT)
         # 结果目录/文件名前缀：药物名_疾病名
         prefix = re.sub(r"[^\w\-]+", "_", f"{drug_name}_{disease_name}")
     else:
@@ -468,22 +478,22 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
 
     # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,孤立节点在下游展示时隐藏）
     _prog("string", "running", 0.08)
-    edges_df = Utils.fetch_string_ppi(genes, species=species_id, score=score,
+    edges_df = fetch_string_ppi(genes, species=species_id, score=score,
                                       network_type=network_type, label=prefix)
     _prog("string", "done", 0.30)
 
     # Step 2-4: 建图 + 拓扑指标 + Hub 筛选(排名制 top-N + 小网络保护)。
     # hub_method="mcc" 时 MCC 须在标记前算好,后面核心靶点图复用同一份结果。
     _prog("graph", "running", 0.30)
-    graph = Utils.build_ppi_graph(edges_df, genes)
-    metrics_df = Utils.compute_ppi_metrics(graph)
+    graph = build_ppi_graph(edges_df, genes)
+    metrics_df = compute_ppi_metrics(graph)
     mcc_map: dict[str, float] = {}
     if hub_method == "mcc":
         try:
             mcc_map = compute_mcc_scores(graph)
         except Exception:
             logging.exception("MCC computation failed — hub ranking falls back to degree")
-    metrics_df = Utils.mark_hub_genes(metrics_df,
+    metrics_df = mark_hub_genes(metrics_df,
                                       top_n=hub_top_n, method=hub_method,
                                       mcc_map=mcc_map,
                                       small_net_factor=config.HUB_SMALL_NET_FACTOR)
@@ -535,7 +545,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         enrichment_df, enrichment_source, enrichment_reason = fut_enr.result()
         enrichment_bar_fig = enrichment_dot_fig = None
         if not enrichment_df.empty:
-            enrichment_bar_fig, enrichment_dot_fig = Utils.render_enrichment_plots(enrichment_df)
+            enrichment_bar_fig, enrichment_dot_fig = render_enrichment_plots(enrichment_df)
         # 药物-靶点-通路网络图(纯本地绘图,基于富集结果):无 KEGG 通路时为 None,
         # 失败只跳过自身
         dtp_fig = None
@@ -789,7 +799,7 @@ def _render_rwr(ppi: dict, input_mode: str, prefix: str, saved: dict) -> None:
                     with st.expander(t("net.rwr_seeds_header", n=len(seeds_df))):
                         st.dataframe(seeds_df[["gene", "score"]],
                                      width="stretch", hide_index=True)
-                    Utils.download_button(
+                    download_button(
                         "net.dl_rwr_csv",
                         top_df.to_csv(index=False).encode("utf-8-sig"),
                         f"{prefix}_rwr_{rwr_side}.csv", "text/csv",
@@ -931,7 +941,7 @@ def _render_gsea(ppi: dict, input_mode: str, drug_name: str, disease_name: str,
                             if gsea_fig is not None:
                                 st.caption(t("net.gsea_bar_caption"))
                                 st.pyplot(gsea_fig)
-                        Utils.download_button(
+                        download_button(
                             "net.dl_gsea_csv",
                             gsea_df.to_csv(index=False).encode("utf-8-sig"),
                             f"{prefix}_gsea_{gsea_side}.csv", "text/csv",
@@ -1016,13 +1026,13 @@ def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
                     st.dataframe(show_df[cols], width="stretch", hide_index=True)
                     col_ms, col_me = st.columns(2)
                     with col_ms:
-                        Utils.download_button(
+                        download_button(
                             "net.dl_module_summary_csv",
                             summary_df.to_csv(index=False).encode("utf-8-sig"),
                             f"{prefix}_modules.csv", "text/csv",
                         )
                     with col_me:
-                        Utils.download_button(
+                        download_button(
                             "net.dl_module_enrich_csv",
                             long_df.to_csv(index=False).encode("utf-8-sig"),
                             f"{prefix}_module_enrichment.csv", "text/csv",
@@ -1075,7 +1085,7 @@ def _render_downloads(metrics_df, edges_df, html_content: str, saved: dict, pref
         if "cyto_svg" in saved:
             items.append(("net.dl_cyto_svg", saved["cyto_svg"],
                           f"{prefix}_network_cytoscape.svg", "image/svg+xml"))
-        items.append(("net.dl_zip", Utils.make_ppi_zip(saved),
+        items.append(("net.dl_zip", make_ppi_zip(saved),
                       f"{prefix}_results.zip", "application/zip"))
 
         for start in range(0, len(items), 3):
@@ -1083,9 +1093,9 @@ def _render_downloads(metrics_df, edges_df, html_content: str, saved: dict, pref
             for col, (label_key, data, file_name, mime) in zip(cols, items[start:start + 3]):
                 with col:
                     if isinstance(data, (bytes, bytearray)):
-                        Utils.download_button(label_key, data, file_name, mime)
+                        download_button(label_key, data, file_name, mime)
                     else:
-                        Utils.download_file_button(label_key, data, file_name, mime)
+                        download_file_button(label_key, data, file_name, mime)
         st.caption(
             t("net.files_grouped", dir=saved["directory"])
         )

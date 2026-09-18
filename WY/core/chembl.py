@@ -3,7 +3,6 @@
 import logging
 
 import pandas as pd
-import streamlit as st
 
 from .caching import open_named_csv_cache, save_csv_cache
 from .http_client import request_with_retry
@@ -44,12 +43,10 @@ def _sort_drug_df_by_pchembl(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _abort_fetch() -> tuple[pd.DataFrame, None]:
-    """统一失败出口:界面提示后返回空表(不写缓存,避免把失败当有效数据)。"""
-    try:
-        st.toast("靶点获取错误，停止信息获取", icon="⚠️")
-    except Exception:
-        # 并发线程里没有 Streamlit 脚本上下文,toast 不可用时退化为日志
-        logging.warning("靶点获取错误，停止信息获取")
+    """统一失败出口:记日志后返回空表(不写缓存,避免把失败当有效数据)。
+    提示用户由调用层负责:调用方按 (空表, None) 契约识别失败,
+    管理页据此显示 FAILED 状态,分析流由结果汇总呈现。"""
+    logging.warning("靶点获取错误，停止信息获取")
     return pd.DataFrame(), None
 
 

@@ -8,7 +8,7 @@ import os
 import pandas as pd
 import requests
 
-from .caching import (_is_cache_fresh, clean_expired_cache_files, open_csv_cache,
+from .caching import (clean_expired_cache_files, is_cache_fresh, open_csv_cache,
                       read_cache_key, save_csv_cache, save_json_file)
 from .http_client import request_with_retry
 from .text_utils import safe_name
@@ -77,7 +77,7 @@ def fetch_string_ppi(
     # 命中需同时满足 TTL 未过期与文件头指纹一致(与富集缓存同一判定顺序):
     # 先验键再读文件,指纹不符或旧格式无键行按未命中处理,避免白读文件与误导性命中日志
     cached = None
-    if _is_cache_fresh(cache_file) and read_cache_key(cache_file) == cache_key:
+    if is_cache_fresh(cache_file) and read_cache_key(cache_file) == cache_key:
         cached = open_csv_cache(cache_file, fresh=True, label=f"STRING PPI for {len(genes)} genes")
     if cached is not None:
         return cached

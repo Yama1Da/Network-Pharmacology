@@ -3,23 +3,26 @@ import os
 import streamlit as st
 
 import config
-import Utils
+from core.files import list_log_files
+from core.logging_setup import set_logging_level, setup_logging
+from core.management import save_ui_settings
+from ui.widgets import back_button, hide_sidebar
 from i18n import t
 
 # 初始化日志系统
-Utils.setup_logging()
+setup_logging()
 
 st.set_page_config(page_title=t("logs.page_title"), layout="wide")
 
 # 隐藏侧边栏,全屏显示页面
-Utils.hide_sidebar()
+hide_sidebar()
 
 st.title(t("logs.title"))
 st.caption(t("logs.caption"))
 
 col_back, _ = st.columns([1, 4])
 with col_back:
-    Utils.back_button()
+    back_button()
 
 st.divider()
 
@@ -33,8 +36,8 @@ def _persist_log_level() -> None:
     """开关切换后落盘并即时生效:on_change 回调先于脚本重跑执行,级别不会闪回。"""
     level = "DEBUG" if st.session_state["logs_debug_enabled"] else "INFO"
     config.LOG_LEVEL = level
-    Utils.save_ui_settings({"LOG_LEVEL": level})
-    Utils.set_logging_level(level)
+    save_ui_settings({"LOG_LEVEL": level})
+    set_logging_level(level)
 
 
 col_level, _ = st.columns([1, 3])
@@ -50,7 +53,7 @@ with col_level:
 
 st.divider()
 
-log_files = Utils.list_log_files()
+log_files = list_log_files()
 if log_files.empty:
     st.info(t("logs.empty"))
 else:

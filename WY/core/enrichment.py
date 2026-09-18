@@ -9,7 +9,7 @@ import socket
 
 import pandas as pd
 
-from .caching import (_is_cache_fresh, clean_expired_cache_files, read_cache_key,
+from .caching import (clean_expired_cache_files, is_cache_fresh, read_cache_key,
                       save_csv_cache, save_json_file)
 
 # 两个数据源的基因集库名对应关系（GO 生物过程/分子功能/细胞组分、KEGG 通路）。
@@ -438,7 +438,7 @@ def _hit_csv_cache(cache_file: str, md5: str, label: str) -> pd.DataFrame | None
     """同名覆盖式缓存的命中判定:文件存在、有效期内、且头部键与当前查询一致。
     键不一致(同一标识但基因集/参数变了)或旧格式无键文件按未命中处理,重算后覆盖,避免旧输入结果被误当新分析结果。
     """
-    if not _is_cache_fresh(cache_file):
+    if not is_cache_fresh(cache_file):
         return None
     if read_cache_key(cache_file) != md5:
         logging.info("%s: cache key changed, recompute %s", label, os.path.basename(cache_file))

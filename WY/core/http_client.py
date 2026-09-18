@@ -5,8 +5,6 @@ import threading
 
 import requests
 
-OPENTARGETS_API_URL = "https://api.platform.opentargets.org/api/v4/graphql"
-
 # 记录每个数据源下一次允许访问的时间,
 # 用于控制访问频率,避免请求过快被对方拒绝。
 _throttle_lock = threading.Lock()
@@ -17,7 +15,7 @@ _session: requests.Session | None = None
 _session_lock = threading.Lock()
 
 
-def _get_session() -> requests.Session:
+def get_session() -> requests.Session:
     """返回共享 HTTP 会话;requests_cache 可用时为带 TTL 的落盘缓存会话。
     只缓存 GET/POST 的 200 响应(失败/限流不缓存,重试逻辑不受影响);POST 按完整请求体作缓存键,同一查询命中、不同查询互不干扰。
     """
@@ -46,7 +44,7 @@ def _get_session() -> requests.Session:
 def clear_http_cache() -> None:
     """清空 HTTP 响应缓存(管理页强制更新前调用,确保抓到新数据)。"""
     try:
-        _get_session().cache.clear()
+        get_session().cache.clear()
     except Exception:
         logging.exception("Failed to clear HTTP cache")
 
@@ -104,7 +102,7 @@ def request_with_retry(
             # use_cache=True 走共享缓存会话,否则用 requests 本体;
             # 按方法分别走 .get/.post(而不是 .request),
             # 保持对 requests.post/get 打补丁的测试与工具兼容。
-            http = _get_session() if use_cache else requests
+            http = get_session() if use_cache else requests
             # 按请求缓存有效期仅对真正的缓存会话生效(降级为普通会话时忽略)
             extra: dict = {}
             if use_cache and cache_ttl_hours is not None and hasattr(http, "cache"):
@@ -126,18 +124,3 @@ def request_with_retry(
     if raise_on_exhausted and last_exc is not None:
         raise last_exc
     return None
-
-
-def _opentargets_post(query: str, variables: dict, timeout: int = 30,
-                      use_cache: bool = False) -> dict | None:
-    """向 Open Targets 数据库发送查询;网络失败时自动重试几次,仍失败则返回 None。
-    查询本身报错(返回结果带 errors)不算网络失败,由调用方自行处理。
-    """
-    import config
-
-    resp = request_with_retry(
-        OPENTARGETS_API_URL, json={"query": query, "variables": variables},
-        max_retries=config.LIGHT_API_MAX_RETRIES, timeout=timeout,
-        label="Open Targets POST", use_cache=use_cache,
-    )
-    return resp.json() if resp is not None else None

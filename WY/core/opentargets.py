@@ -7,13 +7,30 @@ import threading
 import pandas as pd
 
 from .caching import load_json_file, open_named_csv_cache, save_csv_cache, save_json_file
-from .http_client import _opentargets_post
-from .text_utils import _safe_round, remember_name_mapping
+from .http_client import request_with_retry
+from .text_utils import remember_name_mapping, safe_round
+
+OPENTARGETS_API_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 
 # 进程内成功结果 memo:只记成功抓取的结果,网络失败不缓存(下次自动重试)。
 # 原实现用 @st.cache_data,失败返回的空表也被记忆化,直到重启前同一疾病永不重试。
 _success_memo: dict[tuple, pd.DataFrame] = {}
 _memo_lock = threading.Lock()
+
+
+def opentargets_post(query: str, variables: dict, timeout: int = 30,
+                     use_cache: bool = False) -> dict | None:
+    """向 Open Targets 数据库发送查询;网络失败时自动重试几次,仍失败则返回 None。
+    查询本身报错(返回结果带 errors)不算网络失败,由调用方自行处理。
+    """
+    import config
+
+    resp = request_with_retry(
+        OPENTARGETS_API_URL, json={"query": query, "variables": variables},
+        max_retries=config.LIGHT_API_MAX_RETRIES, timeout=timeout,
+        label="Open Targets POST", use_cache=use_cache,
+    )
+    return resp.json() if resp is not None else None
 
 
 def find_disease_id(disease_name: str,
@@ -32,8 +49,8 @@ def find_disease_id(disease_name: str,
         }
     }
     """
-    payload = _opentargets_post(search_query, {"queryString": disease_name.strip()},
-                                use_cache=True)
+    payload = opentargets_post(search_query, {"queryString": disease_name.strip()},
+                               use_cache=True)
     if payload is None:
         return None
 
@@ -117,9 +134,9 @@ def _get_disease_targets_impl(disease_name: str,
             }
         }
         """
-        payload = _opentargets_post(disease_query,
-                                    {"diseaseId": disease_id, "size": config.OT_FETCH_SIZE},
-                                    use_cache=True)
+        payload = opentargets_post(disease_query,
+                                   {"diseaseId": disease_id, "size": config.OT_FETCH_SIZE},
+                                   use_cache=True)
         if payload is None:
             return pd.DataFrame(), "failed"
 
@@ -148,14 +165,14 @@ def _get_disease_targets_impl(disease_name: str,
                 "genomic_start": gloc.get("start"),                # 基因组起始位置
                 "genomic_end": gloc.get("end"),                    # 基因组结束位置
                 "targetClass": tc[0].get("label") if tc else None, # 靶点类别（取第一个）
-                "association_score": _safe_round(r.get("score", 0.0)),           # 总关联分数
-                "novelty": _safe_round(r.get("novelty", 0.0)),                   # 新颖性
-                "genetic_association": _safe_round(dt_scores.get("genetic_association")),  # 遗传关联分数
-                "somatic_mutation": _safe_round(dt_scores.get("somatic_mutation")),        # 体细胞突变分数
-                "literature": _safe_round(dt_scores.get("literature")),                    # 文献分数
-                "animal_model": _safe_round(dt_scores.get("animal_model")),                # 动物模型分数
-                "affected_pathway": _safe_round(dt_scores.get("affected_pathway")),        # 通路分数
-                "clinical": _safe_round(dt_scores.get("clinical")),                        # 临床证据分数
+                "association_score": safe_round(r.get("score", 0.0)),           # 总关联分数
+                "novelty": safe_round(r.get("novelty", 0.0)),                   # 新颖性
+                "genetic_association": safe_round(dt_scores.get("genetic_association")),  # 遗传关联分数
+                "somatic_mutation": safe_round(dt_scores.get("somatic_mutation")),        # 体细胞突变分数
+                "literature": safe_round(dt_scores.get("literature")),                    # 文献分数
+                "animal_model": safe_round(dt_scores.get("animal_model")),                # 动物模型分数
+                "affected_pathway": safe_round(dt_scores.get("affected_pathway")),        # 通路分数
+                "clinical": safe_round(dt_scores.get("clinical")),                        # 临床证据分数
             })
 
         df = pd.DataFrame(records)
@@ -172,20 +189,29 @@ def _get_disease_targets_impl(disease_name: str,
         return pd.DataFrame(), "failed"
 
 
-def get_disease_targets(disease_name: str, need_rows: int | None = None) -> pd.DataFrame:
-    """进程内 memo 化入口:只有成功抓取的结果进入 memo,失败(网络/HTTP/解析)返回空表
-    但不缓存,下一次同疾病分析自动重试;跨重启持久化仍由本地 CSV 缓存负责。
-    并发安全:读写均在锁内。
+def get_disease_targets_stated(disease_name: str,
+                               need_rows: int | None = None
+                               ) -> tuple[pd.DataFrame, str]:
+    """进程内 memo 化入口,另返回内部状态 "ok"/"empty"(查无此疾病)/"failed"(网络/HTTP/解析),
+    供管理页区分请求失败与查无数据,避免把失败误报成 0 靶点。
+    只有成功抓取的结果进入 memo,失败返回空表但不缓存,下一次同疾病分析自动重试;
+    跨重启持久化仍由本地 CSV 缓存负责。并发安全:读写均在锁内。
     """
     key = (str(disease_name), None if need_rows is None else int(need_rows))
     with _memo_lock:
         if key in _success_memo:
-            return _success_memo[key]
+            return _success_memo[key], "ok"
     df, status = _get_disease_targets_impl(disease_name, need_rows)
     if status == "ok":
         with _memo_lock:
             _success_memo[key] = df
-    return df
+    return df, status
+
+
+def get_disease_targets(disease_name: str, need_rows: int | None = None) -> pd.DataFrame:
+    """取疾病的关联靶点表;失败或无数据时返回空表(分析主流程用,
+    管理页用 get_disease_targets_stated 区分失败与查无)。"""
+    return get_disease_targets_stated(disease_name, need_rows)[0]
 
 
 def invalidate_disease_targets_cache(disease_name: str) -> None:

@@ -463,9 +463,9 @@ def _load_json_cache(cache_path: str, label: str, validate=None) -> dict | None:
     """读取 JSON 结果缓存：未命中/过期返回 None；损坏或未通过校验则清除后返回 None。"""
     import json
 
-    from .caching import _is_cache_fresh
+    from .caching import is_cache_fresh
 
-    if not _is_cache_fresh(cache_path):
+    if not is_cache_fresh(cache_path):
         return None
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
@@ -650,14 +650,19 @@ def _rwr_from_context(ctx: tuple, seed_genes: list, alpha: float,
                 s_idx = np.array([idx[g] for g in sample])
                 null_means[i] = float(scores[s_idx].mean())
             valid = null_means[~np.isnan(null_means)]
+            # 零分布退化:度数极端尾部的"孤峰"基因(全网最高度附近分箱里没有可比候选,
+            # 如 v12.5 的 TRIM67)每次置换都抽到同一替换集,标准差恒为 0,z/p 无定义——
+            # 如实标 degenerate=True 并保持 z/p 为 None,由页面/测试区分提示,不硬算。
+            degenerate = bool(len(valid) > 0 and float(valid.std()) == 0.0)
             enrichment = {
                 "n_annotated": len(ann),
                 "obs_mean": obs_mean,
                 "null_mean": float(valid.mean()) if len(valid) else None,
                 "n_perms": int(len(valid)),
+                "degenerate": degenerate,
                 "z": None, "p": None,
             }
-            if len(valid) > 0 and float(valid.std()) > 0:
+            if len(valid) > 0 and not degenerate:
                 mu_n, sd_n = float(valid.mean()), float(valid.std())
                 enrichment["z"] = float((obs_mean - mu_n) / sd_n)
                 # 单侧经验 p：极端方向是 obs 偏大（富集），故数 null >= obs（与邻近度的 d_c 偏小相反）。
