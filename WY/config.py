@@ -370,6 +370,8 @@ DOCKING_CPU = 0             # 并行 CPU 核数（--cpu）,0 表示自动用全�
 DOCKING_TIMEOUT = 600       # 单次对接超时(秒),超时视为失败
 OBABEL_TIMEOUT = 120        # 单次 obabel 转换超时(秒),超时视为失败
 DOCKING_SEED = 0            # vina 随机种子（--seed），固定可复现
+PUBCHEM_BUSY_RETRIES = 2    # PubChem 503 繁忙自动重试次数(瞬时抖动常见,总尝试=次数+1)
+PUBCHEM_BUSY_BACKOFF = 2.0  # 重试退避基数(秒),逐次加倍(2s、4s)
 
 # 缓存与归档策略
 DOCKING_CACHE_TTL_DAYS = 7  # 加工后的中间文件(受体/配体 pdbqt 等)保留天数,超期自动清理

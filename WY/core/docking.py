@@ -301,18 +301,39 @@ def download_pdb(pdb_id: str) -> str:
 # -------------------- 配体链 --------------------
 
 
+class PubChemUnavailable(RuntimeError):
+    """PubChem 暂不可用:网络故障或服务端错误(503 重试后仍失败),与"查无化合物"区分。"""
+
+
 def resolve_cid(query: str) -> int | None:
-    """把药物名换成 PubChem 化合物编号(CID);输入本身就是编号时直接使用。"""
+    """把药物名换成 PubChem 化合物编号(CID);输入本身就是编号时直接使用。
+
+    查无化合物(404)返回 None;网络故障或服务端错误抛 PubChemUnavailable——
+    其中 503 ServerBusy 为瞬时抖动,按退避自动重试 PUBCHEM_BUSY_RETRIES 次,
+    其余不重试直接抛出。调用方据此给出与"查无化合物"不同的提示。
+    """
+    import time
+
+    import config
     import pubchempy
 
     query = query.strip()
     if query.isdigit():
         return int(query)
-    try:
-        comps = pubchempy.get_compounds(query, "name")
-        return comps[0].cid if comps else None
-    except Exception:
-        return None
+    attempts = config.PUBCHEM_BUSY_RETRIES + 1
+    for attempt in range(attempts):
+        try:
+            comps = pubchempy.get_compounds(query, "name")
+            return comps[0].cid if comps else None
+        except pubchempy.NotFoundError:          # 404:真·查无此药
+            return None
+        except pubchempy.PubChemHTTPError as exc:
+            # 503 服务端繁忙为瞬时抖动:退避重试;其余 HTTP 错误重试无意义
+            if exc.code != 503 or attempt >= attempts - 1:
+                raise PubChemUnavailable(f"HTTP {exc.code} {exc.msg}") from exc
+            time.sleep(config.PUBCHEM_BUSY_BACKOFF * (2 ** attempt))
+        except Exception as exc:                 # requests 网络层异常(断网/DNS/超时)
+            raise PubChemUnavailable(str(exc) or type(exc).__name__) from exc
 
 
 def smiles_to_sdf_3d(smiles: str, out_path: str, seed: int = 0, n_confs: int = 20) -> str:
