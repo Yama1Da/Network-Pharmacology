@@ -14,6 +14,7 @@ from core.text_utils import load_name_map, safe_name
 from ui.widgets import back_button, hide_sidebar
 from i18n import t
 from core.docking import (
+    PubChemUnavailable,
     clamp_box,
     clean_docking_cache,
     cofactor_hetatm_pdb,
@@ -139,7 +140,14 @@ def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
     """Step 2 的 PubChem 配体获取公共链路:药物名/CID → 3D SDF → pdbqt,成功后写入 dock。
     查无化合物/无 3D 结构两种失败提示的文案由 i18n 键区分;auto_mode 为真时失败也置
     lig_auto_done,本次会话不再自动重试。"""
-    cid = resolve_cid(query)
+    try:
+        cid = resolve_cid(query)
+    except PubChemUnavailable as exc:
+        # 网络故障/服务端繁忙(重试后仍失败):与"查无化合物"区分,明确提示可重试
+        if auto_mode:
+            dock["lig_auto_done"] = True
+        st.error(t("dock.pubchem_unavailable", q=query, exc=exc))
+        return
     if cid is None:
         if auto_mode:
             dock["lig_auto_done"] = True

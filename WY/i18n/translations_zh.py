@@ -418,6 +418,7 @@ TEXT_ZH: dict[str, str] = {
     "dock.fetch_ligand_btn": "获取并准备配体",
     "dock.fetching_pubchem": "正在从 PubChem 获取 3D 结构并转 pdbqt…",
     "dock.pubchem_no_compound": "PubChem 未找到化合物：{q}，请检查名称或直接输入 CID",
+    "dock.pubchem_unavailable": "PubChem 暂不可用（{exc}），请稍后重试或直接输入 CID",
     "dock.cid_try_another": "CID {cid} 无 3D 结构，换一个药物试试",
     "dock.smiles_placeholder": "如阿司匹林：CC(=O)Oc1ccccc1C(=O)O",
     "dock.gen_ligand_btn": "生成并准备配体",

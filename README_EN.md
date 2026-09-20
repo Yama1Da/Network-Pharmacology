@@ -35,6 +35,9 @@ name, and it automatically completes the full workflow of
 - [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) executable (per-platform
   install steps in Quick Start step 3; set `VINA_DIR` in `WY/API.env` — rename
   `API.env.example` to `API.env` first — or add its folder to PATH)
+- The `obabel` command line from [Open Babel](https://openbabel.org/) (receptor conversion
+  in molecular docking runs it as a subprocess; per-platform install steps in Quick Start
+  step 3; set `OBABEL_DIR` or add its folder to PATH)
 - A [DisGeNET](https://www.disgenet.org/) API key (academic accounts are free to apply;
   keys from other account tiers also work)
 
@@ -43,7 +46,7 @@ name, and it automatically completes the full workflow of
 ```bash
 # 1. Install dependencies (choose one)
 
-# Option A (recommended): one-shot conda environment for dependencies (installs openbabel;
+# Option A (recommended): one-shot conda environment for dependencies (installs obabel;
 # works on Windows/Linux/macOS). Keys and local paths are NOT part of the env —
 # steps 2 and 3 below are still required.
 cd WY
@@ -55,22 +58,27 @@ cd WY
 python -m venv .venv
 .venv\Scripts\activate        # Windows (Linux/macOS: source .venv/bin/activate)
 pip install -r requirements.txt
-# openbabel is not in requirements.txt (its pip build often fails on platforms without
-# a compiler toolchain): the app starts fine without it — only the receptor conversion
-# in molecular docking needs it (lazy import). Install later if needed:
-# conda install -c conda-forge openbabel    (or: pip install openbabel)
+# Receptor conversion additionally needs the obabel command line (invoked as a
+# subprocess, not the Python bindings): install the official Open Babel installer on
+# Windows, or openbabel via apt/dnf on Linux, or `conda install -c conda-forge openbabel`;
+# make sure obabel is on PATH, or point OBABEL_DIR in API.env to its folder
 
 # 2. Configure API.env (identical for conda and pip: keys are runtime config, not part
 #    of any environment)
 Copy API.env.example to API.env (keep the template so future updates still arrive),
 edit it and fill in DisGeNET_API_KEY
 
-# 3. Install AutoDock Vina (conda-forge has no win-64 build; pick per platform)
+# 3. Install AutoDock Vina and Open Babel (conda-forge has no win-64 vina build; obabel
+#    is needed for receptor conversion)
 Windows: download vina_1.2.7_win.exe (optionally together with vina_split_1.2.7_win.exe) 
 #          from https://github.com/ccsb-scripps/AutoDock-Vina/releases into any folder,
 #          then point VINA_DIR in API.env to that folder (or add it to PATH);
 #          vina_split is optional — the app falls back to a Python splitter.
+#          For Open Babel, grab the Windows installer (includes obabel.exe) from
+#          https://openbabel.org/ and let it add itself to PATH; otherwise point
+#          OBABEL_DIR in API.env to its folder.
 Linux/macOS: conda install -c conda-forge vina   # installs vina and vina_split    
+#          obabel: conda install -c conda-forge openbabel (or install openbabel via apt/dnf)
 
 # 4. Launch
 streamlit run App.py
@@ -184,7 +192,7 @@ npap --help              # the entry script lands in the env's Scripts\ (Windows
 
 | File | Purpose |
 |---|---|
-| `WY/API.env` | Secrets and executable paths (`DisGeNET_API_KEY`, `VINA_DIR`, `CLI_RESULTS_DIR`); not committed to git |
+| `WY/API.env` | Secrets and executable paths (`DisGeNET_API_KEY`, `VINA_DIR`, `OBABEL_DIR`, `CLI_RESULTS_DIR`); not committed to git |
 | `WY/config.py` | Data source URLs, rate limits/retries, circuit-breaker cooldown ladders, cache TTL, target filter thresholds, STRING version and download concurrency |
 
 > Change behavior in `WY/config.py`, put secrets in `WY/API.env`: `WY/API.env` only holds
@@ -252,9 +260,10 @@ Data Management page, which ensures the background interactome has been download
   (default 6) in `WY/config.py` to speed things up — the official site throttles per
   connection, so more segments scale nearly linearly; or stick to a version the mirror
   already carries.
-- **Molecular docking can't find Vina?** Make sure `vina` is on PATH or the `VINA_DIR` environment
-  variable exists, or point `VINA_DIR` in `WY/API.env` to the directory containing Vina
-  (a full path to the executable also works).
+- **Molecular docking can't find Vina / obabel?** Make sure the executable is on PATH, or
+  point `VINA_DIR` / `OBABEL_DIR` in `WY/API.env` to the corresponding directory (a full
+  path to the executable also works). The `obabel` used for receptor conversion comes from
+  Open Babel — install steps in Quick Start step 3.
 - **CLI results not where you expected?** Without `--out`, the output location priority is:
   the `--out` argument > `CLI_RESULTS_DIR` (in `WY/API.env` or an environment variable of the
   same name) > the `results` folder in the current directory; `--out` still overrides for a
