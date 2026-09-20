@@ -369,7 +369,7 @@ NUM_MODES = 9               # 输出结合模式数量（--num_modes）
 DOCKING_CPU = 0             # 并行 CPU 核数（--cpu）,0 表示自动用全部核心
 DOCKING_TIMEOUT = 600       # 单次对接超时(秒),超时视为失败
 OBABEL_TIMEOUT = 120        # 单次 obabel 转换超时(秒),超时视为失败
-DOCKING_SEED = 0            # vina 随机种子（--seed），固定可复现
+DOCKING_SEED = 0            # vina 随机种子（--seed）
 PUBCHEM_BUSY_RETRIES = 2    # PubChem 503 繁忙自动重试次数(瞬时抖动常见,总尝试=次数+1)
 PUBCHEM_BUSY_BACKOFF = 2.0  # 重试退避基数(秒),逐次加倍(2s、4s)
 

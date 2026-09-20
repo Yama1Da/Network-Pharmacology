@@ -1,6 +1,6 @@
 简体中文 | [EN](README_EN.md)
 
-# 网络药理学分析平台（Network Pharmacology Platform）
+# 网络药理学分析平台
 
 基于 Streamlit 的一站式网络药理学分析工具：输入药物与疾病名称，自动完成
 「靶点获取 → 靶点整合 → PPI 网络构建 → 富集分析 → 分子对接」的完整流程。
@@ -43,7 +43,7 @@ cd WY
 python -m venv .venv
 .venv\Scripts\activate        # Windows（Linux/macOS: source .venv/bin/activate）
 pip install -r requirements.txt
-# 受体转换还需要 obabel 命令行（子进程调用，非 Python 绑定）：Windows 装 Open Babel 官方安装包、
+# 受体转换还需要 obabel 命令行（子进程调用，非 Python 绑定）：Windows 去官方网站装 Open Babel 官方安装包、
 # Linux 用 apt/dnf 安装 openbabel，或 conda install -c conda-forge openbabel；
 # 保证 obabel 在 PATH，或在 API.env 里用 OBABEL_DIR 指向其所在目录
 
