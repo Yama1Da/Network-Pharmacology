@@ -5,8 +5,8 @@ WY/Static/log/
 .venv/
 .idea/
 .reasonix/
-.zcodeignore
 **/__pycache__/
 *.egg-info/
 /npap.bat
 /results/
+pyproject.toml
