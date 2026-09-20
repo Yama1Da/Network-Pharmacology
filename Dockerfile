@@ -10,7 +10,7 @@ COPY WY /app/WY
 WORKDIR /app/WY
 USER root
 RUN useradd -m -u 1000 appuser \
-    && chown -R appuser:appuser /app/WY/Static
+    && chown -R appuser:appuser /app/WY
 USER appuser
 
 EXPOSE 8501

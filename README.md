@@ -22,6 +22,8 @@
 
 ## 环境要求
 
+以下要求针对 conda / pip 两种本地方式；用 Docker 部署时，宿主机只需 Docker 与 DisGeNET 密钥（见下方「Docker 部署」）。
+
 - Python >= 3.13, < 3.14（开发基准 3.13.x；依赖钉版尚未提供 3.14 的预编译轮子）
 - [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) 可执行文件（按平台安装方式见「快速开始」第 3 步；在 `WY/API.env`（请将API.env.example重命名为API.env）中指定 `VINA_DIR`，或将其所在目录加入 PATH）
 - [Open Babel](https://openbabel.org/) 的 `obabel` 命令行（分子对接受体转换以子进程调用；按平台安装方式见「快速开始」第 3 步；可指定 `OBABEL_DIR`，或将其所在目录加入 PATH）
@@ -67,6 +69,42 @@ streamlit run App.py
 pip install -e ..        # 在 WY 目录下执行；必须带 -e（可编辑安装）
 npap --help              # 在已激活的环境中任意目录可用
 ```
+
+## Docker 部署（Linux 服务器 / 对外分发）
+
+面向 Linux 服务器部署、对外分发与答辩演示；Windows 科研用户建议用上面的 conda 方式。
+宿主机只需 Docker（含 compose 插件）与 DisGeNET 密钥，无需装 Python、Vina、Open Babel——
+这些全部在镜像内（`vina` / `obabel` 已在 PATH，容器内无需 `VINA_DIR` / `OBABEL_DIR`）。
+
+```bash
+# 1. 准备钥匙：密钥不在镜像里，运行时由 compose 注入
+cp WY/API.env.example API.env    # 编辑填入 DisGeNET_API_KEY（空 key 也能启动，仅 DisGeNET 靶点表为空）
+
+# 2. 准备缓存目录（容器以 uid 1000 运行；须先建好——compose 自动创建的目录属主是 root）
+mkdir -p Static && sudo chown 1000:1000 Static
+
+# 3. 构建并启动（首次构建较慢，镜像约 1.2 GB；之后改代码重建只需秒级到分钟级）
+docker compose up -d --build
+# 浏览器打开 http://<服务器IP>:8501；日志: docker logs -f network-pharmacy
+```
+
+- **密钥模型**：镜像 = 程序，`API.env` = 钥匙。`API.env` 与 `Static` 数据被 `.dockerignore`
+  挡在构建上下文外，不会进镜像；compose 的 `env_file` 在运行时逐行注入容器环境变量。
+- **缓存持久化**：`./Static` 挂载进容器，重建/升级容器缓存不丢。
+- **对外分发**：默认 `docker compose up -d --build` 在本机构建；也可把镜像推到 registry
+  （Docker Hub / 阿里云 ACR 等），把 compose.yaml 里的 `build: .` 注释掉、`image:` 换成
+  registry 路径，对方免构建直接 `docker compose up -d`。弱网环境可用
+  `docker save | gzip` 导出 tar 包离线搬运。
+- **容器内跑 CLI**（镜像内未装 `npap` 全局命令，统一用 `python cli.py` 调用；结果经
+  `--out` 落到挂载目录，宿主机直接可取；批量时把 `pairs.csv` 放进宿主机 `./Static/`，
+  容器内以 `/app/WY/Static/pairs.csv` 引用）：
+
+```bash
+docker compose run --rm app python cli.py analyze --drug aspirin --disease "colorectal cancer" \
+    --out /app/WY/Static/cli-results
+```
+
+- **升级版本**：`git pull && docker compose up -d --build`（依赖未变时只重建代码层，很快）。
 
 ## 使用流程
 
@@ -141,7 +179,7 @@ npap --help              # 入口脚本装进当前环境的 Scripts\（Windows�
   直接用，需把该环境的 `Scripts\`（Windows）或 `bin/`（Linux/macOS）目录加入 PATH。
 - Windows 专属的免安装过渡：复制 `npap.bat.example` 为 `npap.bat`，把所在目录加入 PATH
   即可（含本机路径，与 `API.env` 同类不入库；标准布局零修改可用，conda 等其他布局把其中
-  的 python 路径改成绝对路径）。Linux/macOS 的免安装分发后续由 Docker 提供。
+  的 python 路径改成绝对路径）。Linux/macOS 免装环境可用 Docker 直接跑（见下方「Docker 部署」）。
 - 全局使用建议先在 `API.env` 里配一次 `CLI_RESULTS_DIR`（结果输出目录）：否则不带 `--out`
   时结果会落到**当前目录**的 `results` 目录。
 
@@ -214,6 +252,9 @@ python scripts/build_interactome.py   # 如果不知道背景互作组是否已�
 - **命令行结果没落在预期目录？** 不带 `--out` 时的落点优先级为：`--out` 参数 >
   `CLI_RESULTS_DIR`（`WY/API.env` 或同名系统环境变量）> 当前目录的 `results`；
   `--out` 仍可单次覆盖，无需删除已配置的 `CLI_RESULTS_DIR`。
+- **Docker 起不来或页面打不开？** 先看 `docker compose ps` 与 `docker logs network-pharmacy`
+  定位；远程服务器上浏览器应访问 `http://<服务器IP>:8501` 而非 localhost，
+  并确认防火墙/安全组已放行 8501。
 
 ## 免责声明
 
