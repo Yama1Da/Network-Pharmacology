@@ -24,6 +24,7 @@
 
 - Python >= 3.13, < 3.14（开发基准 3.13.x；依赖钉版尚未提供 3.14 的预编译轮子）
 - [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) 可执行文件（按平台安装方式见「快速开始」第 3 步；在 `WY/API.env`（请将API.env.example重命名为API.env）中指定 `VINA_DIR`，或将其所在目录加入 PATH）
+- [Open Babel](https://openbabel.org/) 的 `obabel` 命令行（分子对接受体转换以子进程调用；按平台安装方式见「快速开始」第 3 步；可指定 `OBABEL_DIR`，或将其所在目录加入 PATH）
 - [DisGeNET](https://www.disgenet.org/) 学术账号 API Key（免费申请）/ 其他级别账号 API Key
 
 ## 快速开始
@@ -31,7 +32,7 @@
 ```bash
 # 1. 安装依赖（二选一）
 
-# 方式 A（推荐）：conda 一条命令建依赖环境（openbabel 由此安装，三平台通用；
+# 方式 A（推荐）：conda 一条命令建依赖环境（obabel 由此安装，三平台通用；
 #               密钥与本机路径不属于环境，仍需下面第 2、3 步配置）
 cd WY
 conda env create -f environment.yml
@@ -42,19 +43,22 @@ cd WY
 python -m venv .venv
 .venv\Scripts\activate        # Windows（Linux/macOS: source .venv/bin/activate）
 pip install -r requirements.txt
-# openbabel 不在 requirements.txt（pip 安装在缺编译环境的平台常失败）：
-# 应用可正常启动，仅分子对接的受体转换需要它（懒加载），届时补装：
-# conda install -c conda-forge openbabel    （或 pip install openbabel）
+# 受体转换还需要 obabel 命令行（子进程调用，非 Python 绑定）：Windows 装 Open Babel 官方安装包、
+# Linux 用 apt/dnf 安装 openbabel，或 conda install -c conda-forge openbabel；
+# 保证 obabel 在 PATH，或在 API.env 里用 OBABEL_DIR 指向其所在目录
 
 # 2. 配置 API.env（conda / pip 两种方式完全相同：密钥是运行时配置，不属于任何环境）
 复制 API.env.example 为 API.env（保留模板便于日后接收更新），编辑并填入 DisGeNET_API_KEY
 
-# 3. 安装 AutoDock Vina（conda-forge 的 vina 无 win-64 构建，按平台二选一）
+# 3. 安装 AutoDock Vina 与 Open Babel（vina 在 conda-forge 无 win-64 构建；obabel 供受体转换）
 Windows：到 https://github.com/ccsb-scripps/AutoDock-Vina/releases 下载
 #          vina_1.2.7_win.exe（可连同 vina_split_1.2.7_win.exe 一起）放入任意目录，
 #          在 API.env 中将 VINA_DIR 指向该目录（或将该目录加入 PATH）；
 #          不装 vina_split 亦可，程序已内置 python 分割兜底。
+#          Open Babel 到 https://openbabel.org/ 下载 Windows 安装包（含 obabel.exe），
+#          勾选加入 PATH 后即可；否则在 API.env 中将 OBABEL_DIR 指向其所在目录。
 Linux/macOS：conda install -c conda-forge vina   # 同时安装 vina 与 vina_split
+#          obabel：conda install -c conda-forge openbabel（或 apt/dnf 安装 openbabel）
 
 # 4. 启动
 streamlit run App.py
@@ -145,7 +149,7 @@ npap --help              # 入口脚本装进当前环境的 Scripts\（Windows�
 
 | 文件 | 用途 |
 |---|---|
-| `WY/API.env` | 密钥与本机路径（`DisGeNET_API_KEY`、`VINA_DIR`、`CLI_RESULTS_DIR`），不入库 |
+| `WY/API.env` | 密钥与本机路径（`DisGeNET_API_KEY`、`VINA_DIR`、`OBABEL_DIR`、`CLI_RESULTS_DIR`），不入库 |
 | `WY/config.py` | 数据源地址、限流/重试、熔断冷却阶梯、缓存 TTL、靶点过滤阈值、STRING 版本与下载并发 |
 
 > 改行为看 `WY/config.py`，填密钥看 `WY/API.env`：`WY/API.env` 只放不提交到 git 的敏感信息
@@ -204,8 +208,9 @@ python scripts/build_interactome.py   # 如果不知道背景互作组是否已�
 - **背景互作组下载慢？** 国内镜像通常只同步最新版本（实测目前仅 v12.0），其它版本会自动
   回退官方下载站（单连接较慢）。可将 `WY/config.py` 的 `INTERACTOME_DOWNLOAD_CONCURRENCY`
   （默认 6）调大提速——官方站按连接限速，多段并行近似线性提速；或先用镜像已同步的版本。
-- **分子对接找不到 Vina？** 确认 `vina` 已加入 PATH 或环境变量存在 `VINA_DIR` ，或在 `WY/API.env` 中将 `VINA_DIR`
-  指向 Vina 所在目录（也可填可执行文件全路径）。
+- **分子对接找不到 Vina / obabel？** 确认可执行文件已加入 PATH，或在 `WY/API.env` 中将
+  `VINA_DIR` / `OBABEL_DIR` 指向相应目录（也可填可执行文件全路径）。受体转换用的 `obabel`
+  来自 Open Babel，安装方式见「快速开始」第 3 步。
 - **命令行结果没落在预期目录？** 不带 `--out` 时的落点优先级为：`--out` 参数 >
   `CLI_RESULTS_DIR`（`WY/API.env` 或同名系统环境变量）> 当前目录的 `results`；
   `--out` 仍可单次覆盖，无需删除已配置的 `CLI_RESULTS_DIR`。

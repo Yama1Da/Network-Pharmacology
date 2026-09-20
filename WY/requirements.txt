@@ -1,12 +1,14 @@
 # ===== 权威 pip 依赖清单（唯一需要手工维护的依赖文件）=====
 # 依赖变更只改本文件；environment.yml 是引用本文件的薄壳，不要在 yml 里直接加 pip 包。
-# openbabel 不在本清单：由 environment.yml 的 conda 层提供
-# （其 pip 安装在缺编译环境的平台上常失败；conda-forge 与 pip版本号不同步，勿互相照抄钉版）。
+# openbabel 不在本清单：受体转换走 obabel 命令行子进程（非 Python 绑定），
+# obabel 可执行文件由 environment.yml 的 conda 层提供，或按平台单独安装（见 README「快速开始」第 3 步）。
 
 # vina 不入任何清单（conda-forge 无 win-64 构建），按平台安装步骤见 README「快速开始」第 3 步。
 
 # 纯 pip 安装的用户：`pip install -r requirements.txt` 后可正常运行，仅分子对接的受体转换
-# 需要 openbabel（懒加载，缺失时报错并提示），届时请自行 `pip install openbabel` 或改用 conda 环境定义。
+# 需要 obabel 命令行（子进程调用，缺失时报错并提示），届时按平台安装 Open Babel
+# （Windows 官方安装包 / `conda install -c conda-forge openbabel` / Linux `apt install openbabel`），
+# 并保证 obabel 在 PATH 或在 API.env 里用 OBABEL_DIR 指向其所在目录。
 streamlit==1.63.0
 pandas==2.3.3
 numpy==2.5.2
@@ -24,4 +26,5 @@ gprofiler-official==1.0.0
 gseapy==1.3.1
 rdkit==2026.3.6
 meeko==0.8.0
+gemmi==0.7.5
 pubchempy==1.0.5

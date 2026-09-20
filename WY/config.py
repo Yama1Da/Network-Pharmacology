@@ -336,16 +336,42 @@ def _find_vina_dir() -> str:
     return ""  # 找不到时,运行对接会报错提示设置 VINA_DIR
 
 
+def _find_obabel_dir() -> str:
+    """探测 Open Babel(obabel)所在目录(跨平台):OBABEL_DIR 优先,其次 PATH。
+
+    OBABEL_DIR 或 PATH 里填目录即可(也可填可执行文件全路径)。
+    """
+    env_dir = os.environ.get("OBABEL_DIR")
+    if env_dir:
+        if os.path.isfile(env_dir):                                   # 填的是可执行文件全路径
+            return os.path.dirname(env_dir)
+        if _find_exe(env_dir, "obabel"):                              # 填的是目录
+            return env_dir
+
+    # obabel 所在目录已加入 PATH
+    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if _find_exe(path_dir.strip().strip('"'), "obabel"):
+            return path_dir.strip().strip('"')
+
+    return ""  # 找不到时,运行转换会报错提示设置 OBABEL_DIR
+
+
 VINA_DIR = _find_vina_dir()
 VINA_EXE = _find_exe(VINA_DIR, "vina", exclude="vina_split")
 VINA_SPLIT_EXE = _find_exe(VINA_DIR, "vina_split")  # 缺失时 docking 自动改用内置拆分
+# 受体转换以子进程调用 obabel 命令行(不依赖其 Python 绑定);都找不到时 OBABEL_EXE 为空串,运行转换时报错提示。
+OBABEL_DIR = _find_obabel_dir()
+OBABEL_EXE = _find_exe(OBABEL_DIR, "obabel")
 
 # 对接算法参数
 EXHAUSTIVENESS = 8          # 搜索深度（越大越充分，耗时越长）
 NUM_MODES = 9               # 输出结合模式数量（--num_modes）
 DOCKING_CPU = 0             # 并行 CPU 核数（--cpu）,0 表示自动用全部核心
 DOCKING_TIMEOUT = 600       # 单次对接超时(秒),超时视为失败
+OBABEL_TIMEOUT = 120        # 单次 obabel 转换超时(秒),超时视为失败
 DOCKING_SEED = 0            # vina 随机种子（--seed），固定可复现
+PUBCHEM_BUSY_RETRIES = 2    # PubChem 503 繁忙自动重试次数(瞬时抖动常见,总尝试=次数+1)
+PUBCHEM_BUSY_BACKOFF = 2.0  # 重试退避基数(秒),逐次加倍(2s、4s)
 
 # 缓存与归档策略
 DOCKING_CACHE_TTL_DAYS = 7  # 加工后的中间文件(受体/配体 pdbqt 等)保留天数,超期自动清理

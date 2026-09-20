@@ -419,6 +419,7 @@ TEXT_EN: dict[str, str] = {
     "dock.fetch_ligand_btn": "Fetch & prepare ligand",
     "dock.fetching_pubchem": "Fetching 3D structure from PubChem and converting to pdbqt…",
     "dock.pubchem_no_compound": "PubChem returned no compound for: {q}. Check the name or enter a CID directly.",
+    "dock.pubchem_unavailable": "PubChem is temporarily unavailable ({exc}). Try again later or enter a CID directly.",
     "dock.cid_try_another": "CID {cid} has no 3D structure. Try another drug.",
     "dock.smiles_placeholder": "e.g. aspirin: CC(=O)Oc1ccccc1C(=O)O",
     "dock.gen_ligand_btn": "Generate & prepare ligand",
