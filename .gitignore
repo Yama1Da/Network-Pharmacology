@@ -18,6 +18,6 @@
 .idea/
 .reasonix/
 __pycache__/
-/results/
+results/
 *.egg-info/
 /npap.bat

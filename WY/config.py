@@ -366,7 +366,7 @@ OBABEL_EXE = _find_exe(OBABEL_DIR, "obabel")
 # 对接算法参数
 EXHAUSTIVENESS = 8          # 搜索深度（越大越充分，耗时越长）
 NUM_MODES = 9               # 输出结合模式数量（--num_modes）
-DOCKING_CPU = 0             # 并行 CPU 核数（--cpu）,0 表示自动用全部核心
+DOCKING_CPU = 4             # 并行 CPU 核数（--cpu）,0 表示自动用全部核心
 DOCKING_TIMEOUT = 600       # 单次对接超时(秒),超时视为失败
 OBABEL_TIMEOUT = 120        # 单次 obabel 转换超时(秒),超时视为失败
 DOCKING_SEED = 0            # vina 随机种子（--seed）

@@ -3,7 +3,8 @@
 # 网络药理学分析平台
 
 基于 Streamlit 的一站式网络药理学分析工具：输入药物与疾病名称，自动完成
-「靶点获取 → 靶点整合 → PPI 网络构建 → 富集分析 → 分子对接」的完整流程。
+「靶点获取 → 靶点整合 → PPI 网络构建 → 富集分析 → 分子对接」的完整流程
+也支持使用CLI批量处理（但不会获取图片）。
 
 
 ## 功能特性
@@ -211,7 +212,7 @@ WY/
 │   ├── widgets.py          #   跨页面复用小组件（文件表、批量操作栏、搜索框等）
 │   └── source_management.py  # 药物/疾病靶点管理页整页渲染
 ├── i18n/                   # 中英文案词典与取词 API
-├── scripts/                # 离线自检脚本（见「开发与自检」）
+├── scripts/                # 离线自检与基准验证脚本（见「开发与自检」）
 └── Static/                 # 运行时产生的缓存与分析结果
 ```
 
@@ -226,6 +227,7 @@ cd WY
 python scripts/selfcheck_docking.py   # 分子对接模块自检
 python scripts/selfcheck_network.py   # 网络算法与富集模块自检
 python scripts/build_interactome.py   # 如果不知道背景互作组是否已下载，可运行此脚本下载
+python scripts/lit_pcba_benchmark.py   # LIT-PCBA 基准验证脚本
 ```
 
 前两个自检脚本均为纯本地运行（外部请求全部打桩），不消耗数据源配额；
@@ -260,3 +262,4 @@ python scripts/build_interactome.py   # 如果不知道背景互作组是否已�
 
 本项目仅供科研用途，分析结果请以官方数据库与实验验证为准。
 使用数据时请遵循各数据源（STRING、DisGeNET、ChEMBL、DGIdb、Open Targets）的引用要求。
+若本项目有任何问题，请联系项目作者.

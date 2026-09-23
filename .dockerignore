@@ -8,5 +8,5 @@ WY/Static/log/
 **/__pycache__/
 *.egg-info/
 /npap.bat
-/results/
+results/
 pyproject.toml

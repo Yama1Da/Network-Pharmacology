@@ -5,6 +5,7 @@
 A one-stop network pharmacology analysis tool built on Streamlit: enter a drug and a disease
 name, and it automatically completes the full workflow of
 "target acquisition → target integration → PPI network construction → enrichment analysis → molecular docking".
+Batch processing via the CLI is also supported (figures are not generated in CLI mode).
 
 ## Features
 
@@ -94,10 +95,11 @@ npap --help              # usable from any directory while the environment is ac
 
 ## Docker Deployment (Linux servers / distribution)
 
-Aimed at Linux server deployment, external distribution, and live demos; Windows researchers
-should prefer the conda route above. The host only needs Docker (with the compose plugin) and a
-DisGeNET key — no Python, Vina, or Open Babel required, since all of them live inside the image
-(`vina` / `obabel` are already on PATH; `VINA_DIR` / `OBABEL_DIR` are not needed in the container).
+Aimed at Linux server deployment, external distribution, and competition-defense demos;
+Windows researchers should prefer the conda route above. The host only needs Docker (with the
+compose plugin) and a DisGeNET key — no Python, Vina, or Open Babel required, since all of
+them live inside the image (`vina` / `obabel` are already on PATH; `VINA_DIR` / `OBABEL_DIR`
+are not needed in the container).
 
 ```bash
 # 1. Prepare the key: secrets are not in the image; compose injects them at runtime
@@ -264,7 +266,7 @@ WY/
 │   ├── widgets.py          #   Reusable cross-page widgets (file tables, batch action bars, search box, etc.)
 │   └── source_management.py  # Full-page rendering of the drug/disease target management pages
 ├── i18n/                   # Chinese/English translation dictionaries and lookup API
-├── scripts/                # Offline self-check scripts (see "Development & Self-Checks")
+├── scripts/                # Offline self-check & benchmark scripts (see "Development & Self-Checks")
 └── Static/                 # Runtime caches and analysis results
 ```
 
@@ -280,6 +282,7 @@ cd WY
 python scripts/selfcheck_docking.py    # molecular docking module self-check
 python scripts/selfcheck_network.py    # network algorithms & enrichment module self-check
 python scripts/build_interactome.py    # download the background interactome if unsure it is already fetched
+python scripts/lit_pcba_benchmark.py   # LIT-PCBA docking-benchmark validation script
 ```
 
 The first two self-check scripts run purely locally (all external requests are stubbed) and
@@ -324,3 +327,4 @@ Data Management page, which ensures the background interactome has been download
 This project is for research purposes only; analysis results should be verified against the
 official databases and experimental validation. When using the data, please follow the citation
 requirements of each data source (STRING, DisGeNET, ChEMBL, DGIdb, Open Targets).
+If you have any questions about this project, please contact the project author.
