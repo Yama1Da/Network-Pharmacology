@@ -301,6 +301,11 @@ def download_pdb(pdb_id: str) -> str:
 # -------------------- 配体链 --------------------
 
 
+class VinaInterrupted(RuntimeError):
+    """vina 进程被控制台 Ctrl+C 终止(Windows rc=0xC000013A,STATUS_CONTROL_C_EXIT):
+    中断信号同时送达子进程,父进程的 KeyboardInterrupt 可能不触发,须按返回码识别并按"中断"处理。"""
+
+
 class PubChemUnavailable(RuntimeError):
     """PubChem 暂不可用:网络故障或服务端错误(503 重试后仍失败),与"查无化合物"区分。"""
 
@@ -759,6 +764,8 @@ def run_vina(
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"vina timed out after {config.DOCKING_TIMEOUT}s")
+    if proc.returncode == 3221225786:  # 0xC000013A:Ctrl+C 经控制台进程组杀死了 vina
+        raise VinaInterrupted(f"vina 被控制台 Ctrl+C 终止(rc={proc.returncode})")
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-500:]
         raise RuntimeError(f"vina failed (rc={proc.returncode}): {tail}")
