@@ -5,6 +5,7 @@
 A one-stop network pharmacology analysis tool built on Streamlit: enter a drug and a disease
 name, and it automatically completes the full workflow of
 "target acquisition → target integration → PPI network construction → enrichment analysis → molecular docking".
+Batch processing via the CLI is also supported (figures are not generated in CLI mode).
 
 ## Features
 
@@ -29,6 +30,9 @@ name, and it automatically completes the full workflow of
   for drug/disease targets
 
 ## Requirements
+
+The requirements below apply to the local conda / pip routes; with Docker deployment, the host
+only needs Docker and a DisGeNET key (see Docker Deployment below).
 
 - Python >= 3.13, < 3.14 (development baseline 3.13.x; the pinned dependencies do not
   ship prebuilt wheels for 3.14 yet)
@@ -88,6 +92,51 @@ streamlit run App.py
 pip install -e ..        # run inside the WY directory; -e (editable) is required
 npap --help              # usable from any directory while the environment is active
 ```
+
+## Docker Deployment (Linux servers / distribution)
+
+Aimed at Linux server deployment, external distribution, and competition-defense demos;
+Windows researchers should prefer the conda route above. The host only needs Docker (with the
+compose plugin) and a DisGeNET key — no Python, Vina, or Open Babel required, since all of
+them live inside the image (`vina` / `obabel` are already on PATH; `VINA_DIR` / `OBABEL_DIR`
+are not needed in the container).
+
+```bash
+# 1. Prepare the key: secrets are not in the image; compose injects them at runtime
+cp WY/API.env.example API.env    # edit and fill in DisGeNET_API_KEY (an empty key still
+                                 # starts the app; only the DisGeNET target table stays empty)
+
+# 2. Prepare the cache directory (the container runs as uid 1000; create it first —
+#    directories auto-created by compose would be root-owned)
+mkdir -p Static && sudo chown 1000:1000 Static
+
+# 3. Build and start (the first build is slow; the image is ~1.2 GB; afterwards
+#    code-only rebuilds take seconds to minutes)
+docker compose up -d --build
+# open http://<server IP>:8501 in a browser; logs: docker logs -f network-pharmacy
+```
+
+- **Key model**: image = program, `API.env` = key. `API.env` and `Static` data are kept out of
+  the build context by `.dockerignore` and never enter the image; compose's `env_file` injects
+  them line by line as container environment variables at runtime.
+- **Cache persistence**: `./Static` is bind-mounted into the container; rebuilding or upgrading
+  the container keeps all caches.
+- **Distribution**: by default `docker compose up -d --build` builds locally; you can also push
+  the image to a registry (Docker Hub / Alibaba Cloud ACR / etc.), comment out `build: .` in
+  compose.yaml, point `image:` at the registry path, and consumers run `docker compose up -d`
+  with no build at all. On slow networks, export offline with `docker save | gzip`.
+- **Run the CLI inside the container** (the `npap` global command is not installed in the
+  image, so call `python cli.py` directly; results land on the host via `--out` under the
+  mounted directory; for batch runs, put `pairs.csv` into `./Static/` on the host and
+  reference it as `/app/WY/Static/pairs.csv` inside the container):
+
+```bash
+docker compose run --rm app python cli.py analyze --drug aspirin --disease "colorectal cancer" \
+    --out /app/WY/Static/cli-results
+```
+
+- **Upgrading**: `git pull && docker compose up -d --build` (when dependencies are unchanged,
+  only the code layer rebuilds — fast).
 
 ## Usage Workflow
 
@@ -183,8 +232,8 @@ npap --help              # the entry script lands in the env's Scripts\ (Windows
 - Windows-only install-free transitional script: copy `npap.bat.example` as `npap.bat` and
   put its folder on PATH (machine-specific paths, kept out of git like `API.env`; the default
   works unmodified for the standard layout, conda and other layouts should replace the python
-  path inside with an absolute one). Install-free distribution for Linux/macOS will come with
-  Docker later.
+  path inside with an absolute one). On Linux/macOS, skip the local environment entirely with
+  Docker (see Docker Deployment below).
 - For global use, set `CLI_RESULTS_DIR` in `API.env` once: without `--out`, results land in
   the `results` folder under the **current directory**.
 
@@ -217,7 +266,7 @@ WY/
 │   ├── widgets.py          #   Reusable cross-page widgets (file tables, batch action bars, search box, etc.)
 │   └── source_management.py  # Full-page rendering of the drug/disease target management pages
 ├── i18n/                   # Chinese/English translation dictionaries and lookup API
-├── scripts/                # Offline self-check scripts (see "Development & Self-Checks")
+├── scripts/                # Offline self-check & benchmark scripts (see "Development & Self-Checks")
 └── Static/                 # Runtime caches and analysis results
 ```
 
@@ -233,6 +282,7 @@ cd WY
 python scripts/selfcheck_docking.py    # molecular docking module self-check
 python scripts/selfcheck_network.py    # network algorithms & enrichment module self-check
 python scripts/build_interactome.py    # download the background interactome if unsure it is already fetched
+python scripts/lit_pcba_benchmark.py   # LIT-PCBA docking-benchmark validation script
 ```
 
 The first two self-check scripts run purely locally (all external requests are stubbed) and
@@ -268,9 +318,13 @@ Data Management page, which ensures the background interactome has been download
   the `--out` argument > `CLI_RESULTS_DIR` (in `WY/API.env` or an environment variable of the
   same name) > the `results` folder in the current directory; `--out` still overrides for a
   single run — no need to remove a configured `CLI_RESULTS_DIR`.
+- **Docker container won't start or the page won't open?** Check `docker compose ps` and
+  `docker logs network-pharmacy` first; on a remote server open `http://<server IP>:8501`
+  (not localhost) and make sure port 8501 is allowed through the firewall/security group.
 
 ## Disclaimer
 
 This project is for research purposes only; analysis results should be verified against the
 official databases and experimental validation. When using the data, please follow the citation
 requirements of each data source (STRING, DisGeNET, ChEMBL, DGIdb, Open Targets).
+If you have any questions about this project, please contact the project author.

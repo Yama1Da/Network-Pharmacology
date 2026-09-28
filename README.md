@@ -1,9 +1,10 @@
 简体中文 | [EN](README_EN.md)
 
-# 网络药理学分析平台（Network Pharmacology Platform）
+# 网络药理学分析平台
 
 基于 Streamlit 的一站式网络药理学分析工具：输入药物与疾病名称，自动完成
-「靶点获取 → 靶点整合 → PPI 网络构建 → 富集分析 → 分子对接」的完整流程。
+「靶点获取 → 靶点整合 → PPI 网络构建 → 富集分析 → 分子对接」的完整流程
+也支持使用CLI批量处理（但不会获取图片）。
 
 
 ## 功能特性
@@ -21,6 +22,8 @@
   中英双语界面、每日滚动日志、靶点/疾病数据管理页面
 
 ## 环境要求
+
+以下要求针对 conda / pip 两种本地方式；用 Docker 部署时，宿主机只需 Docker 与 DisGeNET 密钥（见下方「Docker 部署」）。
 
 - Python >= 3.13, < 3.14（开发基准 3.13.x；依赖钉版尚未提供 3.14 的预编译轮子）
 - [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) 可执行文件（按平台安装方式见「快速开始」第 3 步；在 `WY/API.env`（请将API.env.example重命名为API.env）中指定 `VINA_DIR`，或将其所在目录加入 PATH）
@@ -43,7 +46,7 @@ cd WY
 python -m venv .venv
 .venv\Scripts\activate        # Windows（Linux/macOS: source .venv/bin/activate）
 pip install -r requirements.txt
-# 受体转换还需要 obabel 命令行（子进程调用，非 Python 绑定）：Windows 装 Open Babel 官方安装包、
+# 受体转换还需要 obabel 命令行（子进程调用，非 Python 绑定）：Windows 去官方网站装 Open Babel 官方安装包、
 # Linux 用 apt/dnf 安装 openbabel，或 conda install -c conda-forge openbabel；
 # 保证 obabel 在 PATH，或在 API.env 里用 OBABEL_DIR 指向其所在目录
 
@@ -67,6 +70,42 @@ streamlit run App.py
 pip install -e ..        # 在 WY 目录下执行；必须带 -e（可编辑安装）
 npap --help              # 在已激活的环境中任意目录可用
 ```
+
+## Docker 部署（Linux 服务器 / 对外分发）
+
+面向 Linux 服务器部署、对外分发与答辩演示；Windows 科研用户建议用上面的 conda 方式。
+宿主机只需 Docker（含 compose 插件）与 DisGeNET 密钥，无需装 Python、Vina、Open Babel——
+这些全部在镜像内（`vina` / `obabel` 已在 PATH，容器内无需 `VINA_DIR` / `OBABEL_DIR`）。
+
+```bash
+# 1. 准备钥匙：密钥不在镜像里，运行时由 compose 注入
+cp WY/API.env.example API.env    # 编辑填入 DisGeNET_API_KEY（空 key 也能启动，仅 DisGeNET 靶点表为空）
+
+# 2. 准备缓存目录（容器以 uid 1000 运行；须先建好——compose 自动创建的目录属主是 root）
+mkdir -p Static && sudo chown 1000:1000 Static
+
+# 3. 构建并启动（首次构建较慢，镜像约 1.2 GB；之后改代码重建只需秒级到分钟级）
+docker compose up -d --build
+# 浏览器打开 http://<服务器IP>:8501；日志: docker logs -f network-pharmacy
+```
+
+- **密钥模型**：镜像 = 程序，`API.env` = 钥匙。`API.env` 与 `Static` 数据被 `.dockerignore`
+  挡在构建上下文外，不会进镜像；compose 的 `env_file` 在运行时逐行注入容器环境变量。
+- **缓存持久化**：`./Static` 挂载进容器，重建/升级容器缓存不丢。
+- **对外分发**：默认 `docker compose up -d --build` 在本机构建；也可把镜像推到 registry
+  （Docker Hub / 阿里云 ACR 等），把 compose.yaml 里的 `build: .` 注释掉、`image:` 换成
+  registry 路径，对方免构建直接 `docker compose up -d`。弱网环境可用
+  `docker save | gzip` 导出 tar 包离线搬运。
+- **容器内跑 CLI**（镜像内未装 `npap` 全局命令，统一用 `python cli.py` 调用；结果经
+  `--out` 落到挂载目录，宿主机直接可取；批量时把 `pairs.csv` 放进宿主机 `./Static/`，
+  容器内以 `/app/WY/Static/pairs.csv` 引用）：
+
+```bash
+docker compose run --rm app python cli.py analyze --drug aspirin --disease "colorectal cancer" \
+    --out /app/WY/Static/cli-results
+```
+
+- **升级版本**：`git pull && docker compose up -d --build`（依赖未变时只重建代码层，很快）。
 
 ## 使用流程
 
@@ -141,7 +180,7 @@ npap --help              # 入口脚本装进当前环境的 Scripts\（Windows�
   直接用，需把该环境的 `Scripts\`（Windows）或 `bin/`（Linux/macOS）目录加入 PATH。
 - Windows 专属的免安装过渡：复制 `npap.bat.example` 为 `npap.bat`，把所在目录加入 PATH
   即可（含本机路径，与 `API.env` 同类不入库；标准布局零修改可用，conda 等其他布局把其中
-  的 python 路径改成绝对路径）。Linux/macOS 的免安装分发后续由 Docker 提供。
+  的 python 路径改成绝对路径）。Linux/macOS 免装环境可用 Docker 直接跑（见下方「Docker 部署」）。
 - 全局使用建议先在 `API.env` 里配一次 `CLI_RESULTS_DIR`（结果输出目录）：否则不带 `--out`
   时结果会落到**当前目录**的 `results` 目录。
 
@@ -173,7 +212,7 @@ WY/
 │   ├── widgets.py          #   跨页面复用小组件（文件表、批量操作栏、搜索框等）
 │   └── source_management.py  # 药物/疾病靶点管理页整页渲染
 ├── i18n/                   # 中英文案词典与取词 API
-├── scripts/                # 离线自检脚本（见「开发与自检」）
+├── scripts/                # 离线自检与基准验证脚本（见「开发与自检」）
 └── Static/                 # 运行时产生的缓存与分析结果
 ```
 
@@ -188,6 +227,7 @@ cd WY
 python scripts/selfcheck_docking.py   # 分子对接模块自检
 python scripts/selfcheck_network.py   # 网络算法与富集模块自检
 python scripts/build_interactome.py   # 如果不知道背景互作组是否已下载，可运行此脚本下载
+python scripts/lit_pcba_benchmark.py   # LIT-PCBA 基准验证脚本
 ```
 
 前两个自检脚本均为纯本地运行（外部请求全部打桩），不消耗数据源配额；
@@ -214,8 +254,12 @@ python scripts/build_interactome.py   # 如果不知道背景互作组是否已�
 - **命令行结果没落在预期目录？** 不带 `--out` 时的落点优先级为：`--out` 参数 >
   `CLI_RESULTS_DIR`（`WY/API.env` 或同名系统环境变量）> 当前目录的 `results`；
   `--out` 仍可单次覆盖，无需删除已配置的 `CLI_RESULTS_DIR`。
+- **Docker 起不来或页面打不开？** 先看 `docker compose ps` 与 `docker logs network-pharmacy`
+  定位；远程服务器上浏览器应访问 `http://<服务器IP>:8501` 而非 localhost，
+  并确认防火墙/安全组已放行 8501。
 
 ## 免责声明
 
 本项目仅供科研用途，分析结果请以官方数据库与实验验证为准。
 使用数据时请遵循各数据源（STRING、DisGeNET、ChEMBL、DGIdb、Open Targets）的引用要求。
+若本项目有任何问题，请联系项目作者.

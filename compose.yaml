@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    image: network-pharmacy:latest
+
+    container_name: network-pharmacy
+    restart: unless-stopped          # 服务器开机自启 / 崩溃自动拉起；演示机可删
+    ports:
+      - "8501:8501"
+    env_file:
+      - ./API.env                    # 逐行变容器环境变量（须先完成上面第 1 步）
+    volumes:
+      - ./Static:/app/WY/Static      # 缓存与日志持久化到宿主机，重建容器不丢缓存

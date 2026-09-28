@@ -14,9 +14,7 @@ name: npy
 channels:
   - conda-forge
 dependencies:
-  - python>=3.13,<3.14   # 钉 3.13 系列(与 .venv 一致)；3.14 待全栈实测通过后再放开
-  # conda 层只放 pip 装不稳/需编译的包；版本交由求解器选择（conda-forge 与 pip 版本号不同步，勿照抄 pip 钉版；
-  # 如需跨平台严格一致，可在 CI 三平台矩阵验证后补钉版本号）
+  - python>=3.13,<3.14
   - openbabel
   - pip
   - pip:
