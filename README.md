@@ -128,9 +128,8 @@ docker compose run --rm app python cli.py analyze --drug aspirin --disease "colo
 
 ## 命令行批量分析（CLI）
 
-`WY/cli.py` 是 core 之上的薄封装：与网页共享全部缓存与设置（网页跑过的对 CLI 秒回；
-网页齿轮改过的阈值 CLI 自动沿用），面向「湿实验 + 文献对照」的批量出表。
-不绘图、不对接——论文用图走网页端（图均可下载），CLI 保持纯数据输出。
+`WY/cli.py` 是 core 之上的薄封装：与网页共享全部缓存与设置（网页跑过的对 CLI 秒回，网页齿轮改过的阈值 CLI 自动沿用）
+面向批量出表，不绘图、不对接——论文用图走网页端，CLI 保持纯数据输出。
 
 ```bash
 cd WY
@@ -212,7 +211,7 @@ WY/
 │   ├── widgets.py          #   跨页面复用小组件（文件表、批量操作栏、搜索框等）
 │   └── source_management.py  # 药物/疾病靶点管理页整页渲染
 ├── i18n/                   # 中英文案词典与取词 API
-├── scripts/                # 离线自检与基准验证脚本（见「开发与自检」）
+├── scripts/                # 离线自检与基准验证脚本
 └── Static/                 # 运行时产生的缓存与分析结果
 ```
 

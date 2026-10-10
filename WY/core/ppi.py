@@ -686,7 +686,7 @@ def save_ppi_results(
     cyto_fig: "matplotlib.figure.Figure | None" = None,
 ) -> dict:
     """把一次 PPI 分析的全部结果保存到结果目录下的 <prefix>_data 文件夹(prefix 为文件名前缀,如 aspirin_cancer),返回各文件的保存路径(含目录路径)。
-    保存前会删除同 prefix 的旧文件夹(含历史结果),同一药物+疾病组合只保留最新一次分析,不会越积越多;节点表含 is_hub 列(算出 MCC 时含 mcc 列),其余为边表、交互式网络、GraphML、静态图矢量版、STRING/Cytoscape 风格网络图及各富集/核心靶点/通路网络图表。
+    保存前会删除同 prefix 的旧文件夹(含历史结果),同一药物+疾病组合只保留最新一次分析,不会越积越多;节点表含 is_hub 列(算出 MCC 时含 mcc 列),其余为边表、交互式网络、GraphML、静态图(PNG 300 dpi + SVG 矢量)、STRING/Cytoscape 风格网络图及各富集/核心靶点/通路网络图表。
     传入富集结果表/图时才保存对应的富集文件,不传则跳过。"""
     import glob
     import shutil
@@ -716,14 +716,13 @@ def save_ppi_results(
         "edges": os.path.join(subdir, f"{prefix}_edges.csv"),
         "html": os.path.join(subdir, f"{prefix}_network.html"),
         "graphml": os.path.join(subdir, f"{prefix}_graph.graphml"),
-        "svg": os.path.join(subdir, f"{prefix}_network.svg"),
     }
     nodes_df.to_csv(paths["nodes"], index=False, encoding="utf-8-sig")
     edges_df.to_csv(paths["edges"], index=False, encoding="utf-8-sig")
     with open(paths["html"], "w", encoding="utf-8") as f:
         f.write(html_content)
     nx.write_graphml(graph, paths["graphml"])
-    static_fig.savefig(paths["svg"], format="svg", bbox_inches="tight")
+    paths["png"], paths["svg"] = _save_fig_pair(static_fig, subdir, prefix, "network")
 
     if enrichment_df is not None and not enrichment_df.empty:
         paths["enrichment_csv"] = os.path.join(subdir, f"{prefix}_enrichment.csv")
@@ -753,10 +752,11 @@ def save_ppi_results(
 
 def _save_fig_pair(fig: "matplotlib.figure.Figure", subdir: str,
                    prefix: str, stem: str) -> tuple[str, str]:
-    """把图保存为 <prefix>_<stem>.png + .svg 一对,返回 (png 路径, svg 路径)。"""
+    """把图保存为 <prefix>_<stem>.png + .svg 一对,返回 (png 路径, svg 路径)。
+    PNG 固定 300 dpi,满足期刊对位图的分辨率要求;SVG 为矢量,缩放无损。"""
     png = os.path.join(subdir, f"{prefix}_{stem}.png")
     svg = os.path.join(subdir, f"{prefix}_{stem}.svg")
-    fig.savefig(png, format="png", bbox_inches="tight")
+    fig.savefig(png, format="png", dpi=300, bbox_inches="tight")
     fig.savefig(svg, format="svg", bbox_inches="tight")
     return png, svg
 
@@ -798,11 +798,27 @@ def save_gsea_results(
     disease_df: pd.DataFrame | None = None,
 ) -> dict:
     """把 GSEA prerank 结果追加保存到既有分析目录(<prefix>_data):包括药物靶点排秩结果({prefix}_gsea_drug.csv)
-    和疾病靶点排秩结果({prefix}_gsea_disease.csv)。约定同前:空表不落盘。"""
-    return _save_optional_csvs(directory, "GSEA results", (
+    和疾病靶点排秩结果({prefix}_gsea_disease.csv),以及各侧的 NES 条形图({prefix}_gsea_{side}.png/.svg)。
+    条形图只画与页面展示一致的 FDR 筛后 top-N,该侧筛后为空则不画也不落盘——无图即无文件,
+    ZIP 与下载按钮自动缺省;CSV 始终是完整计算结果。约定同前:空表不落盘。"""
+    import config
+    from .enrichment import render_gsea_plot
+
+    paths = _save_optional_csvs(directory, "GSEA results", (
         ("gsea_drug_csv", f"{prefix}_gsea_drug.csv", drug_df),
         ("gsea_disease_csv", f"{prefix}_gsea_disease.csv", disease_df),
     ))
+    for side, df in (("drug", drug_df), ("disease", disease_df)):
+        if df is None or df.empty or "fdr_q_value" not in df.columns:
+            continue
+        screened = df[df["fdr_q_value"] < config.GSEA_FDR_SCREEN]
+        fig = render_gsea_plot(screened) if not screened.empty else None
+        if fig is None:
+            continue
+        png, svg = _save_fig_pair(fig, directory, prefix, f"gsea_{side}")
+        paths[f"gsea_{side}_png"] = png
+        paths[f"gsea_{side}_svg"] = svg
+    return paths
 
 
 def save_rwr_results(

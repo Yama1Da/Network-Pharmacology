@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 
 import config
-from core.files import make_ppi_zip
+from core.files import make_fig_zip, make_ppi_zip
 from core.targets import get_common_targets, get_disease_targets_merged, get_drug_targets_merged
 from ui.widgets import back_button, download_button, download_file_button, hide_sidebar
 from i18n import t
@@ -946,6 +946,16 @@ def _render_gsea(ppi: dict, input_mode: str, drug_name: str, disease_name: str,
                             gsea_df.to_csv(index=False).encode("utf-8-sig"),
                             f"{prefix}_gsea_{gsea_side}.csv", "text/csv",
                         )
+                        # 该侧显著通路条形图已随报告构建落盘时,提供 PNG+SVG 小包下载;
+                        # 筛后无显著(未落盘)则按钮不出现
+                        fig_png = saved.get(f"gsea_{gsea_side}_png")
+                        fig_svg = saved.get(f"gsea_{gsea_side}_svg")
+                        if fig_png and fig_svg:
+                            download_button(
+                                f"net.dl_gsea_fig_{gsea_side}",
+                                make_fig_zip(fig_png, fig_svg),
+                                f"{prefix}_gsea_{gsea_side}.zip", "application/zip",
+                            )
 
 
 def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
@@ -1045,7 +1055,8 @@ def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
 
 def _render_downloads(metrics_df, edges_df, html_content: str, saved: dict, prefix: str) -> None:
     """下载区:先收集全部可用下载项,再按 3 列网格逐行铺满——
-    条件产物(富集/核心靶点/靶点-通路图)缺失时不会留下空洞。"""
+    条件产物(各风格图/富集/GSEA 图)缺失时不会留下空洞。
+    图类一图一钮:PNG(300 dpi)+SVG 打成小包一次带走(总 ZIP 仍是散文件)。"""
     with st.expander(t("net.download_expander")):
         items: list[tuple[str, object, str, str]] = [
             ("net.dl_nodes", metrics_df.to_csv(index=False).encode("utf-8-sig"),
@@ -1056,41 +1067,46 @@ def _render_downloads(metrics_df, edges_df, html_content: str, saved: dict, pref
              f"{prefix}_network.html", "text/html"),
             ("net.dl_graphml", saved["graphml"], f"{prefix}_graph.graphml",
              "application/xml"),
-            ("net.dl_svg", saved["svg"], f"{prefix}_network.svg", "image/svg+xml"),
         ]
         if "enrichment_csv" in saved:
             items.append(("net.dl_enrich_csv", saved["enrichment_csv"],
                           f"{prefix}_enrichment.csv", "text/csv"))
-        if "enrichment_bar_png" in saved:
-            items.append(("net.dl_enrich_bar", saved["enrichment_bar_png"],
-                          f"{prefix}_enrichment_bar.png", "image/png"))
-        if "enrichment_dot_png" in saved:
-            items.append(("net.dl_bubble", saved["enrichment_dot_png"],
-                          f"{prefix}_enrichment_dot.png", "image/png"))
-        if "core_png" in saved:
-            items.append(("net.dl_core_png", saved["core_png"],
-                          f"{prefix}_core_targets.png", "image/png"))
-        if "dtp_png" in saved:
-            items.append(("net.dl_dtp_png", saved["dtp_png"],
-                          f"{prefix}_enrichment_network.png", "image/png"))
+        if "png" in saved and "svg" in saved:
+            items.append(("net.dl_static_fig", make_fig_zip(saved["png"], saved["svg"]),
+                          f"{prefix}_network.zip", "application/zip"))
         if "string_png" in saved:
-            items.append(("net.dl_string_png", saved["string_png"],
-                          f"{prefix}_network_string.png", "image/png"))
-        if "string_svg" in saved:
-            items.append(("net.dl_string_svg", saved["string_svg"],
-                          f"{prefix}_network_string.svg", "image/svg+xml"))
+            items.append(("net.dl_string_fig", make_fig_zip(saved["string_png"], saved["string_svg"]),
+                          f"{prefix}_network_string.zip", "application/zip"))
         if "cyto_png" in saved:
-            items.append(("net.dl_cyto_png", saved["cyto_png"],
-                          f"{prefix}_network_cytoscape.png", "image/png"))
-        if "cyto_svg" in saved:
-            items.append(("net.dl_cyto_svg", saved["cyto_svg"],
-                          f"{prefix}_network_cytoscape.svg", "image/svg+xml"))
+            items.append(("net.dl_cyto_fig", make_fig_zip(saved["cyto_png"], saved["cyto_svg"]),
+                          f"{prefix}_network_cytoscape.zip", "application/zip"))
+        if "core_png" in saved:
+            items.append(("net.dl_core_fig", make_fig_zip(saved["core_png"], saved["core_svg"]),
+                          f"{prefix}_core_targets.zip", "application/zip"))
+        if "dtp_png" in saved:
+            items.append(("net.dl_dtp_fig", make_fig_zip(saved["dtp_png"], saved["dtp_svg"]),
+                          f"{prefix}_enrichment_network.zip", "application/zip"))
+        if "enrichment_bar_png" in saved:
+            items.append(("net.dl_enrich_bar",
+                          make_fig_zip(saved["enrichment_bar_png"], saved["enrichment_bar_svg"]),
+                          f"{prefix}_enrichment_bar.zip", "application/zip"))
+        if "enrichment_dot_png" in saved:
+            items.append(("net.dl_bubble",
+                          make_fig_zip(saved["enrichment_dot_png"], saved["enrichment_dot_svg"]),
+                          f"{prefix}_enrichment_dot.zip", "application/zip"))
+        for side in ("drug", "disease"):
+            fig_png, fig_svg = saved.get(f"gsea_{side}_png"), saved.get(f"gsea_{side}_svg")
+            if fig_png and fig_svg:
+                items.append((f"net.dl_gsea_fig_{side}", make_fig_zip(fig_png, fig_svg),
+                              f"{prefix}_gsea_{side}.zip", "application/zip"))
         items.append(("net.dl_zip", make_ppi_zip(saved),
                       f"{prefix}_results.zip", "application/zip"))
 
         for start in range(0, len(items), 3):
-            cols = st.columns(3)
-            for col, (label_key, data, file_name, mime) in zip(cols, items[start:start + 3]):
+            chunk = items[start:start + 3]
+            # 末行不足 3 个时按实际数量分列:按钮拉宽占满整行,不留缺角
+            cols = st.columns(len(chunk))
+            for col, (label_key, data, file_name, mime) in zip(cols, chunk):
                 with col:
                     if isinstance(data, (bytes, bytearray)):
                         download_button(label_key, data, file_name, mime)
@@ -1155,7 +1171,7 @@ if ppi is not None:
         else:
             st.dataframe(hub_df, width="stretch", hide_index=True)
 
-        # ---------- 网络图展示:下拉切换,默认交互式 ----------
+        # ---------- 网络图展示:下拉切换,默认 Cytoscape 风格静态图(交互式 HTML 加载慢) ----------
         # 四种图(交互/静态/STRING/Cytoscape)无论当前选中哪个都已在 save_ppi_results 阶段落盘,
         # 这里只控制"看哪张";渲染失败的风格图不出现在选项里,不阻塞其余选项。
         views: dict[str, tuple[str, str | None]] = {
@@ -1169,15 +1185,17 @@ if ppi is not None:
             available.append("string")
         if ppi.get("cyto_fig") is not None:
             available.append("cytoscape")
-        # 上次选中的图这次不存在(旧结果/渲染失败)时清掉,让选择框回到默认交互式
+        # 上次选中的图这次不存在(旧结果/渲染失败)时清掉,让选择框回到默认风格
         # key 绑定报告实例(id 每次新分析都不同;旧 ppi 被替换前一直存活,id 不会复用):
         # 直接复用固定 key 时,streamlit 前端控件不会跟随服务端 pop 重置,仍显示用户
-        # 上次选的旧选项,与服务端实际渲染的默认交互式图脱节;换 key 即换新控件,彻底同步。
+        # 上次选的旧选项,与服务端实际渲染的默认风格图脱节;换 key 即换新控件,彻底同步。
         view_key = f"ppi_view::{id(ppi)}"
         if st.session_state.get(view_key) not in available:
             st.session_state.pop(view_key, None)
         st.subheader(t("net.view_subheader"))
-        view = st.selectbox(t("net.view_label"), available, index=0,
+        default_view = "cytoscape" if "cytoscape" in available else "interactive"
+        view = st.selectbox(t("net.view_label"), available,
+                            index=available.index(default_view),
                             format_func=lambda v: views[v][0], key=view_key)
         view_caption = views[view][1]
         if view_caption:
