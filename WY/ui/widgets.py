@@ -11,7 +11,7 @@ from collections.abc import Callable
 import streamlit as st
 
 from i18n import t
-from core.files import make_dirs_zip, make_ppi_zip
+from core.files import make_dir_zip, make_dirs_zip, make_ppi_zip
 from core.text_utils import load_name_map
 
 # ---------- 界面公共组件 ----------
@@ -50,6 +50,71 @@ def hide_sidebar(extra_css: str = "") -> None:
 """, unsafe_allow_html=True)
 
 
+# ---------- 两段式 busy 状态机:长任务按钮防连点与防中断 ----------
+# 模式(首个实现在 ui.source_management 的批量更新,各长任务页统一走这套 helper):
+#   点击轮:按钮以与上一轮相同的 disabled 状态绘制、被点击 → enter_busy() 置位 busy
+#   (需要向任务轮传参时,以 pending 携带)并立刻 st.rerun;
+#   任务轮:页面按钮以 disabled=True 绘制——前端不再产生新的点击事件,任务不会
+#   被新交互中断;读到 busy 即执行任务(任务门槛是 busy 本身,pending 只是可选
+#   载荷,不参与门槛判断),结束调 finish_busy() 复位,存完结果后 st.rerun()
+#   让按钮恢复可用,结果经会话键跨轮传递展示。
+#   任务仍可能被"置位前已在途的点击"打断(RerunException 在最近一次 st 调用处
+#   触发):finally 里 finish_busy(completed=False) 复位后,下一轮渲染即恢复
+#   正常页面(附"任务被中断"提示),不会卡死在禁用态;若在途点击恰是任务按钮
+#   本身(连点),下一轮会带着 busy 再次执行,与旧行为"重跑一次"一致。
+# 注意:disabled 参数不参与本项目 Streamlit 1.63 的控件身份哈希
+# (compute_and_register_element_id 只哈希 key 与影响取值的参数),翻转 disabled
+# 不会丢已选值;但保守起见,仍只对按钮类控件与输入控件翻 disabled,
+# 复选框等勾选态不翻(与 source_management 现状一致)。
+
+def _busy_pending_key(key: str) -> str:
+    return f"{key}_pending"
+
+
+def is_busy(key: str) -> bool:
+    """读取长任务的 busy 标志(见上方"两段式 busy 状态机"说明)。"""
+    return bool(st.session_state.get(key))
+
+
+def enter_busy(key: str, pending=None) -> None:
+    """点击轮:置位 busy(可选写入待办载荷)并立刻重渲染;内部 st.rerun,本函数不返回。"""
+    st.session_state[key] = True
+    if pending is not None:
+        st.session_state[_busy_pending_key(key)] = pending
+    st.rerun()
+
+
+def busy_pending(key: str):
+    """任务轮:读取点击轮经 enter_busy(pending=...) 携带的载荷;无载荷返回 None。
+
+    busy 置位却读不到载荷(代码升级前的旧会话残留、异常残留)时,自动复位 busy
+    并重渲染,防止页面所有按钮永久卡在禁用态。
+    """
+    if st.session_state.get(key) and st.session_state.get(_busy_pending_key(key)) is None:
+        st.session_state[key] = False
+        st.rerun()
+    return st.session_state.get(_busy_pending_key(key))
+
+
+def finish_busy(key: str, *, completed: bool) -> None:
+    """任务轮收尾:复位 busy、清待办标记。不负责重渲染,调用方存完结果后自行 st.rerun()。
+
+    completed 仅在任务轮完整走完自己的收尾(成功入库,或失败信息已入库)时传 True;
+    未捕获异常经 finally 走到这里时传 False,此时记下"被中断"标记,下一轮由
+    show_busy_notice 提示用户任务未完成。
+    """
+    st.session_state[key] = False
+    st.session_state.pop(_busy_pending_key(key), None)
+    if not completed:
+        st.session_state[f"{key}_interrupted"] = True
+
+
+def show_busy_notice(key: str) -> None:
+    """显示"上一次任务未完成"提示(若有);放在页面导航按钮之后、内容区之前。"""
+    if st.session_state.pop(f"{key}_interrupted", None):
+        st.warning(t("common.task_interrupted"))
+
+
 def back_button(label_key: str = "common.back_main", *, key: str = "back_btn",
                 target: str = "App.py", disabled: bool = False) -> None:
     """"返回"按钮:点击后切到 target 页面;页面自行把它放进列布局。
@@ -79,6 +144,87 @@ def download_file_button(label_key: str, path: str, file_name: str, mime: str) -
         return
     with open(path, "rb") as f:
         download_button(label_key, f.read(), file_name, mime)
+
+
+# ---------- 目录/选中项 ZIP 的进程内缓存 ----------
+# st.download_button 的 data 必须在渲染轮给出,过去每轮 rerun(翻页、搜索、
+# 甚至下载按钮自己的点击轮)都会重新读盘打包:列表页每行一个目录 ZIP,
+# 一次渲染就是十次打包。以 (打包方式, 打包范围内各文件的 (名字, mtime_ns, size))
+# 为键缓存字节:任一文件内容一变键即变,不会把旧包发给用户;缓存有条数与
+# 单包大小上限,超大包不缓存(重新打包一次的代价可接受,避免常驻内存失控)。
+# 注意缓存键必须按实际打包范围逐文件取 stat:目录自身的 mtime 不反映内部
+# 文件的原地改写,拿它作键会在分析结果重写后给出旧包。
+
+_zip_cache: dict[tuple, bytes] = {}
+_zip_cache_lock = threading.Lock()
+_ZIP_CACHE_MAX_ENTRIES = 4
+_ZIP_CACHE_MAX_ENTRY_BYTES = 64 * 1024 * 1024
+
+
+def _file_stat(path: str) -> tuple:
+    try:
+        info = os.stat(path)
+        return (info.st_mtime_ns, info.st_size)
+    except OSError:
+        return (-1, -1)  # 路径消失:打包函数会自行跳过,键仍保持稳定
+
+
+def _file_stats(entries: dict) -> tuple:
+    """{名字: 路径} → (名字, (mtime_ns, size), ...) 元组(平铺文件集合用)。"""
+    return tuple((name, _file_stat(path)) for name, path in entries.items())
+
+
+def _dir_stats(directory: str) -> tuple:
+    """目录内顶层文件的 (名字, (mtime_ns, size)) 清单,与 make_dir_zip 的打包范围一致。"""
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return ()
+    return tuple((n, _file_stat(os.path.join(directory, n)))
+                 for n in names if os.path.isfile(os.path.join(directory, n)))
+
+
+def _tree_stats(directory: str) -> tuple:
+    """目录内全部文件的 (相对路径, (mtime_ns, size)) 清单,与 make_dirs_zip 的递归打包范围一致。"""
+    items = []
+    for root, _, files in os.walk(directory):
+        for fn in files:
+            fp = os.path.join(root, fn)
+            items.append((os.path.relpath(fp, directory), _file_stat(fp)))
+    return tuple(sorted(items))
+
+
+def _cached_zip(cache_key: tuple, produce: Callable[[], bytes]) -> bytes:
+    with _zip_cache_lock:
+        data = _zip_cache.get(cache_key)
+    if data is not None:
+        return data
+    data = produce()
+    if len(data) <= _ZIP_CACHE_MAX_ENTRY_BYTES:
+        with _zip_cache_lock:
+            _zip_cache[cache_key] = data
+            while len(_zip_cache) > _ZIP_CACHE_MAX_ENTRIES:
+                _zip_cache.pop(next(iter(_zip_cache)))
+    return data
+
+
+def cached_dir_zip(directory: str) -> bytes:
+    """make_dir_zip 的缓存版:单目录打包,列表页每行一个下载钮时避免每轮重打。"""
+    return _cached_zip(("dir", directory, _dir_stats(directory)),
+                       lambda: make_dir_zip(directory))
+
+
+def cached_dirs_zip(dir_paths: dict) -> bytes:
+    """make_dirs_zip 的缓存版:多目录递归打包(批量下载选中)。"""
+    return _cached_zip(("dirs", tuple(sorted(dir_paths.items())),
+                        tuple((n, _tree_stats(p)) for n, p in sorted(dir_paths.items()))),
+                       lambda: make_dirs_zip(dir_paths))
+
+
+def cached_ppi_zip(file_paths: dict) -> bytes:
+    """make_ppi_zip 的缓存版:一次分析的结果文件集打包(批量下载选中)。"""
+    return _cached_zip(("ppi", _file_stats(file_paths)),
+                       lambda: make_ppi_zip(file_paths))
 
 
 # ---------- 多选小件(文件表与目录表共用) ----------
@@ -472,10 +618,11 @@ def render_file_action_bar(ns: str, base_dir: str | None, *, zip_name: str,
                          disabled=disabled or not selected, width="stretch"):
                 update_clicked = selected
     with col_dl:
+        # ZIP 按内容 stat 作缓存键:连点下载/翻页/搜索引发的每轮重渲染不再重复打包
         if dirs:
-            data = make_dirs_zip({n: resolve(n) for n in selected}) if selected else b""
+            data = cached_dirs_zip({n: resolve(n) for n in selected}) if selected else b""
         else:
-            data = make_ppi_zip({n: resolve(n) for n in selected}) if selected else b""
+            data = cached_ppi_zip({n: resolve(n) for n in selected}) if selected else b""
         st.download_button(t("common.download_selected"), data=data,
                            file_name=zip_name, mime="application/zip",
                            key=f"{ns}_dl_btn",

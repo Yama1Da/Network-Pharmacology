@@ -6,6 +6,7 @@ TEXT_ZH: dict[str, str] = {
     "common.no": "否",
     "common.download": "下载",
     "common.back_main": "← 返回主页",
+    "common.task_interrupted": "上一次任务在运行中被新操作中断，未完成；如需结果请重新点击执行。",
     "common.col_directory": "**目录**",
     "common.col_modified": "**修改时间**",
     "common.col_download": "**下载**",
@@ -82,6 +83,7 @@ TEXT_ZH: dict[str, str] = {
     "app.no_common_data": "（药物与疾病没有交集靶点）",
     "app.success_done": "✅ 分析完成",
     "app.info_hint": "💡 在上方输入药物与疾病名称，然后点击「分析」",
+    "app.analysis_fail": "分析因意外错误中断，本次未生成结果。完整错误信息已写入日志文件（Static/log 目录），可重试，或将日志文件提供给开发者排查。",
     # ---- Logs.py ----
     "logs.page_title": "日志",
     "logs.title": "📜 日志",

@@ -14,8 +14,9 @@ from core.files import list_cache_files
 from core.management import (_mgmt_file_path, refresh_cache_file,
                              update_all_cache_files)
 from ui.widgets import (CSS_BTN_DOWNLOAD, CSS_BTN_UPDATE, CSS_HIDE_IDLE_PROGRESS,
-                        back_button, hide_sidebar, render_file_action_bar,
-                        render_file_table, show_file_op_result)
+                        back_button, busy_pending, enter_busy, finish_busy,
+                        hide_sidebar, is_busy, render_file_action_bar,
+                        render_file_table, show_busy_notice, show_file_op_result)
 
 # refresh_cache_file 结果 Message 里的"未配置 API 密钥"标记:
 # fetch_source 返回 "failed:no_api_key",core 原样并入 Message,见 core.management
@@ -65,7 +66,8 @@ def render_source_management_page(
     st.set_page_config(page_title=t(f"{ns}_mgmt.page_title"), layout="wide")
 
     # 批量任务运行期间 busy=True:所有按钮禁用,防止点击排队到任务结束后再次触发
-    busy = bool(st.session_state.get(f"{ns}_busy"))
+    # (两段式 busy 状态机的完整说明见 ui.widgets)
+    busy = is_busy(f"{ns}_busy")
 
     # 隐藏侧边栏,全屏显示页面;行内 Update 按钮紫底、Download 按钮绿底、批量删除按钮红底
     hide_sidebar(CSS_BTN_UPDATE + "\n" + CSS_BTN_DOWNLOAD + "\n" + CSS_HIDE_IDLE_PROGRESS + f"""
@@ -95,6 +97,9 @@ def render_source_management_page(
     # 批量删除结果(删除在确认弹窗内完成,跨 rerun 传回页面顶部)
     show_file_op_result(f"{ns}_files")
 
+    # 上一次批量任务被在途点击打断时给出提示(见 ui.widgets 两段式 busy 状态机)
+    show_busy_notice(f"{ns}_busy")
+
     col_back, col_update = st.columns([1, 1])
     with col_back:
         back_button(disabled=busy)
@@ -103,12 +108,9 @@ def render_source_management_page(
                                        disabled=busy)
 
     if all_update_clicked:
-        # 两段式:点击轮只置位并立刻重渲染(本轮按钮的 disabled 与上一轮相同,widget
-        # 身份不变,点击值不会丢);下一轮 busy=True,全部按钮以禁用态绘制后再执行任务。
-        # 不能在按钮自身当轮变 disabled——参数变化会改变 widget 身份,点击值会丢失。
-        st.session_state[f"{ns}_busy"] = True
-        st.session_state[f"{ns}_pending_update"] = "all"
-        st.rerun()
+        # 两段式:点击轮只置位并立刻重渲染(本轮按钮的 disabled 与上一轮相同),
+        # 下一轮 busy=True,全部按钮以禁用态绘制后再执行任务。
+        enter_busy(f"{ns}_busy", pending="all")
 
     st.divider()
 
@@ -172,17 +174,16 @@ def render_source_management_page(
         path_of=lambda n: _mgmt_file_path(n, spec),
         update_label=t("common.update_selected"), disabled=busy)
     if batch_update:
-        # 两段式点击轮:置位 busy 与待办清单后立刻重渲染,禁用轮再执行(见上方说明)
-        st.session_state[f"{ns}_busy"] = True
-        st.session_state[f"{ns}_pending_update"] = batch_update
-        st.rerun()
+        # 两段式点击轮:置位 busy 与待办清单后立刻重渲染,禁用轮再执行(见 ui.widgets)
+        enter_busy(f"{ns}_busy", pending=batch_update)
 
     # 批量执行轮(busy=True):本轮所有按钮已按禁用态渲染,跑完复位并重渲染展示结果。
-    # pending_update 为 "all"(全部更新)或选中文件名清单(更新选中);
+    # 待办为 "all"(全部更新)或选中文件名清单(更新选中);
     # 选中更新复用 update_all_cache_files 的并发抓取(filenames 限定选中清单)。
-    pending_update = st.session_state.get(f"{ns}_pending_update")
+    pending_update = busy_pending(f"{ns}_busy")
     if busy and pending_update is not None:
         is_all = pending_update == "all"
+        completed = False
         try:
             # 进度条本体已由插槽每轮常驻在搜索框下方,这里只做原地更新;
             # 文件列表为空没走插槽时,兜底就地创建(此时必然在页面底部)
@@ -192,9 +193,9 @@ def render_source_management_page(
                 cache_hours=cache_hours_all if is_all else cache_hours_single,
                 filenames=None if is_all else pending_update,
                 on_progress=lambda frac, text: bar.progress(frac, text=text))
+            completed = True
         finally:
-            st.session_state[f"{ns}_busy"] = False
-            st.session_state.pop(f"{ns}_pending_update", None)
+            finish_busy(f"{ns}_busy", completed=completed)
         st.session_state[f"{ns}_batch_results"] = results
         st.rerun()  # 复位 busy 后重渲染:按钮恢复可用,结果由下方 pop 展示
     batch_results = st.session_state.pop(f"{ns}_batch_results", None)

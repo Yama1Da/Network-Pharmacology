@@ -6,6 +6,7 @@ TEXT_EN: dict[str, str] = {
     "common.no": "No",
     "common.download": "Download",
     "common.back_main": "← Back to Main",
+    "common.task_interrupted": "The previous task was interrupted by another interaction and did not finish. Click again to re-run it.",
     "common.col_directory": "**Directory**",
     "common.col_modified": "**Modified time**",
     "common.col_download": "**Download**",
@@ -83,6 +84,7 @@ TEXT_EN: dict[str, str] = {
     "app.no_common_data": "(No common targets between drug and disease)",
     "app.success_done": "✅ Analysis complete",
     "app.info_hint": "💡 Enter drug and disease names above and click Analyze",
+    "app.analysis_fail": "The analysis was interrupted by an unexpected error and no result was produced. Full details were written to the log file (Static/log) — please retry, or report it with the log file attached.",
     # ---- Logs.py ----
     "logs.page_title": "Logs",
     "logs.title": "📜 Logs",

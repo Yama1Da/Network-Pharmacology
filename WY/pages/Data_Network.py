@@ -7,7 +7,9 @@ import streamlit as st
 import config
 from core.files import make_fig_zip, make_ppi_zip
 from core.targets import get_common_targets, get_disease_targets_merged, get_drug_targets_merged
-from ui.widgets import back_button, download_button, download_file_button, hide_sidebar
+from ui.widgets import (back_button, download_button,
+                        download_file_button, enter_busy, finish_busy, hide_sidebar,
+                        is_busy, show_busy_notice)
 from i18n import t
 from core.network_algorithms import (
     detect_louvain_modules,
@@ -64,12 +66,19 @@ hide_sidebar("""
 st.title(t("net.title"))
 st.caption(t("net.caption"))
 
+# Build Report(busy)运行期间禁用页面交互:防止新点击/参数变动把分钟级分析中断丢弃
+# (两段式 busy 状态机见 ui.widgets;disabled 不影响控件取值,翻转安全)
+net_busy = is_busy("net_build_busy")
+
 col_back, col_mgmt = st.columns([1, 1])
 with col_back:
-    back_button()
+    back_button(disabled=net_busy)
 with col_mgmt:
-    if st.button(t("net.data_mgmt"), key="data_mgmt_btn"):
+    if st.button(t("net.data_mgmt"), key="data_mgmt_btn", disabled=net_busy):
         st.switch_page("pages/Data_Management.py")
+
+# 上一次分析被在途点击打断时给出提示(busy 复位后的下一轮才能看到,不能门在 busy 上)
+show_busy_notice("net_build_busy")
 
 st.divider()
 
@@ -79,6 +88,7 @@ input_mode = st.radio(
     ["names", "genes"],
     format_func=lambda v: t("net.mode_names") if v == "names" else t("net.mode_genes"),
     horizontal=True,
+    disabled=net_busy,
 )
 
 col_input, col_params = st.columns([2, 1])
@@ -86,9 +96,11 @@ with col_input:
     if input_mode == "names":
         col_drug, col_dis = st.columns(2)
         with col_drug:
-            drug_name = st.text_input(t("net.drug_label"), value="metformin")
+            drug_name = st.text_input(t("net.drug_label"), value="metformin",
+                                      disabled=net_busy)
         with col_dis:
-            disease_name = st.text_input(t("net.disease_label"), value="Type 2 diabetes mellitus")
+            disease_name = st.text_input(t("net.disease_label"), value="Type 2 diabetes mellitus",
+                                         disabled=net_busy)
         gene_text = ""
     else:
         drug_name, disease_name = "", ""
@@ -96,32 +108,45 @@ with col_input:
             t("net.gene_text_label"),
             placeholder="TP53\nBRCA1\nEGFR",
             height=140,
+            disabled=net_busy,
         )
 
 with col_params:
     # 物种固定为人类:疾病靶点数据源(Open Targets/DisGeNET)只有人类数据,
     # 药物靶点与富集库亦以人类为准;多物种支持待接入相应疾病数据源后再议。
-    score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
+    score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05,
+                      disabled=net_busy)
     # 发起分析的位置常驻显示数据版本:切版本后不忘当前用的是哪版 STRING 数据
     st.caption(t("net.string_ver_caption", ver=config.STRING_VERSION))
     network_type = st.selectbox(
         t("net.network_type"), ("full", "physical"),
         format_func=lambda v: (t("net.network_type_full") if v == "full"
                                else t("net.network_type_physical")),
-        help=t("net.network_type_help"))
+        help=t("net.network_type_help"),
+        disabled=net_busy)
     rwr_expand = st.number_input(
         t("net.rwr_expand"), 0, 100, config.RWR_EXPAND_TOP_N, 1,
-        help=t("net.rwr_expand_help"))
+        help=t("net.rwr_expand_help"), disabled=net_busy)
     hub_top_n = st.number_input(
         t("net.hub_top_n"), 5, 20, config.HUB_TOP_N, 1,
-        help=t("net.hub_top_n_help", factor=config.HUB_SMALL_NET_FACTOR))
+        help=t("net.hub_top_n_help", factor=config.HUB_SMALL_NET_FACTOR),
+        disabled=net_busy)
     hub_method = st.selectbox(
         t("net.hub_method"), ("degree", "mcc"),
         index=0 if config.HUB_METHOD == "degree" else 1,
         format_func=lambda v: t("net.hub_method_degree") if v == "degree" else t("net.hub_method_mcc"),
-        help=t("net.hub_method_help"))
+        help=t("net.hub_method_help"),
+        disabled=net_busy)
 
-run_btn = st.button(t("net.build_report"), key="run_btn", type="primary", width="stretch")
+run_btn = st.button(t("net.build_report"), key="run_btn", type="primary",
+                    width="stretch", disabled=net_busy)
+
+# ---------- 点击轮:校验输入后置位 busy,任务轮再执行(两段式,见 ui.widgets) ----------
+if run_btn and not net_busy:
+    if input_mode == "names" and (not drug_name.strip() or not disease_name.strip()):
+        st.warning(t("net.warn_missing"))
+    else:
+        enter_busy("net_build_busy")
 
 
 # ---------- 分析执行 ----------
@@ -628,49 +653,58 @@ current_params = (
     hub_method,
 )
 
-if run_btn:
-    if input_mode == "names" and (not drug_name.strip() or not disease_name.strip()):
-        st.warning(t("net.warn_missing"))
-    else:
+# ---------- 任务轮(busy):跑完入库后复位 busy 重渲染,结果展示区只读会话 ----------
+if net_busy:
+    completed = False
+    try:
         # 进度面板:names 模式 8 个阶段,genes 模式无 GSEA 与网络检验
         steps = ["targets", "string", "graph", "enrichment",
                  *(["gsea", "network"] if input_mode == "names" else []),
                  "modules", "save"]
-        try:
-            ppi_result = _run_ppi_analysis(
-                input_mode,
-                drug_name.strip(),
-                disease_name.strip(),
-                gene_text.strip(),
-                score,
-                network_type=network_type,
-                rwr_expand=int(rwr_expand),
-                hub_top_n=int(hub_top_n),
-                hub_method=hub_method,
-                progress=_ReportProgress(steps),
-            )
-        except Exception:
-            # 面向用户只提示友好信息;完整堆栈经 logging.exception 写入日志文件供排查
-            logging.exception("PPI analysis failed")
-            st.error(t("net.analysis_fail"))
-        else:
-            st.session_state.ppi = ppi_result
-            # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
-            st.session_state.ppi_gsea = {
-                side: {**info, "ppi_params": ppi_result["params"]}
-                for side, info in ppi_result.get("gsea", {}).items()
-            }
-            # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
-            mods_auto = ppi_result.get("modules")
-            st.session_state.ppi_modules = (
-                {**mods_auto, "ppi_params": ppi_result["params"]}
-                if mods_auto is not None else None
-            )
-            # 新报告生成后,网络图视图选择回到默认交互式:视图选择框的 key 绑定报告实例
-            # (见下方显示段),这里清掉旧报告的键,避免会话内键随分析次数无限累积
-            for _k in [k for k in st.session_state if str(k).startswith("ppi_view::")]:
-                st.session_state.pop(_k, None)
-            st.rerun()
+        ppi_result = _run_ppi_analysis(
+            input_mode,
+            drug_name.strip(),
+            disease_name.strip(),
+            gene_text.strip(),
+            score,
+            network_type=network_type,
+            rwr_expand=int(rwr_expand),
+            hub_top_n=int(hub_top_n),
+            hub_method=hub_method,
+            progress=_ReportProgress(steps),
+        )
+    except Exception:
+        # 面向用户只提示友好信息;完整堆栈经 logging.exception 写入日志文件供排查
+        logging.exception("PPI analysis failed")
+        st.session_state["net_build_error"] = t("net.analysis_fail")
+        completed = True  # 失败信息已入库,按已完成收尾(不显示"被中断")
+    else:
+        st.session_state.ppi = ppi_result
+        # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
+        st.session_state.ppi_gsea = {
+            side: {**info, "ppi_params": ppi_result["params"]}
+            for side, info in ppi_result.get("gsea", {}).items()
+        }
+        # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
+        mods_auto = ppi_result.get("modules")
+        st.session_state.ppi_modules = (
+            {**mods_auto, "ppi_params": ppi_result["params"]}
+            if mods_auto is not None else None
+        )
+        # 新报告生成后,网络图视图选择回到默认交互式:视图选择框的 key 绑定报告实例
+        # (见下方显示段),这里清掉旧报告的键,避免会话内键随分析次数无限累积
+        for _k in [k for k in st.session_state if str(k).startswith("ppi_view::")]:
+            st.session_state.pop(_k, None)
+        st.session_state.pop("net_build_error", None)
+        completed = True
+    finally:
+        finish_busy("net_build_busy", completed=completed)
+    st.rerun()
+
+# 上一次分析失败的友好提示(成功轮已清掉该键)
+net_error = st.session_state.pop("net_build_error", None)
+if net_error:
+    st.error(net_error)
 
 # ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
 ppi = st.session_state.ppi
@@ -874,7 +908,7 @@ def _render_gsea(ppi: dict, input_mode: str, drug_name: str, disease_name: str,
                                                  "normalize_empty"))
             run_clicked = st.button(
                 t("net.gsea_run"), key="gsea_run_btn", width="stretch",
-                disabled=gsea_done or params_stale,
+                disabled=gsea_done or params_stale or net_busy,
                 help=(t("net.params_changed") if params_stale
                       else t("net.gsea_done_hint") if gsea_done else None),
             )
@@ -968,7 +1002,8 @@ def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
                      top_n=config.LOUVAIN_MAX_ENRICH_MODULES))
         st.session_state.setdefault("ppi_modules", None)
 
-        if st.button(t("net.modules_run"), key="modules_run_btn", width="stretch"):
+        if st.button(t("net.modules_run"), key="modules_run_btn", width="stretch",
+                     disabled=net_busy):
             if params_stale:
                 # 防呆：主分析参数已变，图与旧结果不对应，先重跑主分析
                 st.warning(t("net.params_changed"))

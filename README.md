@@ -124,7 +124,11 @@ docker compose run --rm app python cli.py analyze --drug aspirin --disease "colo
    （如靶点过滤阈值）与 STRING 数据版本（官方发布新版本后，在设置里输入版本号并重建
    背景网络即可，无需更新程序），设置变更后整合缓存自动失效重建。
 
-所有中间结果自动缓存（默认 7 天，见 `WY/config.py`），重复分析秒级返回。（由于DGIdb 不定期更新，所以设置缓存 7 天以上。）
+所有中间结果自动缓存（见 `WY/config.py`），重复分析秒级返回。四个靶点数据库（ChEMBL / DGIdb /
+Open Targets / DisGeNET）的拉取缓存统一 60 天：四库上游发版间隔约一个季度到两年半（Open Targets
+每季度、ChEMBL 约 7 个月一版、DISGENET 约 1~2 个季度、DGIdb 主版本约 2.5 年），60 天不会错过
+新版本，又把重复请求（尤其 DisGeNET 的 API 配额）压到最低；整合表、PPI、富集等分析缓存默认
+7 天。需要立即刷新时在管理页点「更新」即可强制重新联网拉取。
 
 ## 命令行批量分析（CLI）
 
@@ -185,10 +189,10 @@ npap --help              # 入口脚本装进当前环境的 Scripts\（Windows�
 
 ## 配置说明
 
-| 文件 | 用途 |
-|---|---|
-| `WY/API.env` | 密钥与本机路径（`DisGeNET_API_KEY`、`VINA_DIR`、`OBABEL_DIR`、`CLI_RESULTS_DIR`），不入库 |
-| `WY/config.py` | 数据源地址、限流/重试、熔断冷却阶梯、缓存 TTL、靶点过滤阈值、STRING 版本与下载并发 |
+| 文件           | 用途                                                                                      |
+|----------------|-------------------------------------------------------------------------------------------|
+| `WY/API.env`   | 密钥与本机路径（`DisGeNET_API_KEY`、`VINA_DIR`、`OBABEL_DIR`、`CLI_RESULTS_DIR`），不入库 |
+| `WY/config.py` | 数据源地址、限流/重试、熔断冷却阶梯、缓存 TTL、靶点过滤阈值、STRING 版本与下载并发        |
 
 > 改行为看 `WY/config.py`，填密钥看 `WY/API.env`：`WY/API.env` 只放不提交到 git 的敏感信息
 > 与本机路径，其余请求控制、缓存有效期、靶点降噪过滤阈值集中在 `WY/config.py`。
