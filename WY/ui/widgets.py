@@ -133,9 +133,15 @@ def csv_download_button(file_path: str, file_name: str, *, key: str,
                            mime="text/csv", key=key, disabled=disabled)
 
 
-def download_button(label_key: str, data, file_name: str, mime: str) -> None:
-    """通宽下载按钮:label 经 i18n 翻译,data 为内存字节/DataFrame 内容等。"""
-    st.download_button(t(label_key), data, file_name, mime, width="stretch")
+def download_button(label_key: str, data, file_name: str, mime: str,
+                    *, key: str | None = None) -> None:
+    """通宽下载按钮:label 经 i18n 翻译,data 为内存字节/DataFrame 内容等。
+
+    key 仅在同类产物会在同页渲染两份时需要(如 GSEA 图包同时出现在结果展开区
+    与下载区):不传时 Streamlit 按全部参数哈希生成元素 ID,两份参数完全相同的
+    按钮会触发 StreamlitDuplicateElementId 并截断其后的整页渲染。
+    """
+    st.download_button(t(label_key), data, file_name, mime, width="stretch", key=key)
 
 
 def download_file_button(label_key: str, path: str, file_name: str, mime: str) -> None:

@@ -49,6 +49,12 @@ from core.ppi import (
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
+# RWR 扩展靶点数上限 100;组件不设 max,任何超限输入都落到下方中文警告并钳制,
+# 否则 Streamlit 前端会对超出 max 的输入弹内置英文报错(经 i18n 无法翻译)。
+RWR_EXPAND_MAX = 100
+# Hub 数量合法区间;控件同样不设 max,超限输入由下方中文警告钳制(组件 min=1 仅挡负数/0)。
+HUB_TOP_N_MIN, HUB_TOP_N_MAX = 5, 20
+
 # ---------- 隐藏侧边栏全屏显示;Run 按钮(#167A9C)、Data Management 按钮(#6347A1)配色 ----------
 hide_sidebar("""
     .st-key-run_btn button {
@@ -125,12 +131,19 @@ with col_params:
         help=t("net.network_type_help"),
         disabled=net_busy)
     rwr_expand = st.number_input(
-        t("net.rwr_expand"), 0, 100, config.RWR_EXPAND_TOP_N, 1,
+        t("net.rwr_expand"), 0, None, config.RWR_EXPAND_TOP_N, 1,
         help=t("net.rwr_expand_help"), disabled=net_busy)
+    if rwr_expand > RWR_EXPAND_MAX:
+        st.warning(t("net.rwr_expand_clamp", n=rwr_expand))
+        rwr_expand = RWR_EXPAND_MAX
     hub_top_n = st.number_input(
-        t("net.hub_top_n"), 5, 20, config.HUB_TOP_N, 1,
+        t("net.hub_top_n"), 1, None, config.HUB_TOP_N, 1,
         help=t("net.hub_top_n_help", factor=config.HUB_SMALL_NET_FACTOR),
         disabled=net_busy)
+    if not (HUB_TOP_N_MIN <= hub_top_n <= HUB_TOP_N_MAX):
+        clamped = min(max(hub_top_n, HUB_TOP_N_MIN), HUB_TOP_N_MAX)
+        st.warning(t("net.hub_top_n_clamp", n=hub_top_n, m=clamped))
+        hub_top_n = clamped
     hub_method = st.selectbox(
         t("net.hub_method"), ("degree", "mcc"),
         index=0 if config.HUB_METHOD == "degree" else 1,
@@ -985,10 +998,13 @@ def _render_gsea(ppi: dict, input_mode: str, drug_name: str, disease_name: str,
                         fig_png = saved.get(f"gsea_{gsea_side}_png")
                         fig_svg = saved.get(f"gsea_{gsea_side}_svg")
                         if fig_png and fig_svg:
+                            # key 与下载区同名按钮区分:两侧图包参数完全相同,
+                            # 不加 key 会因元素 ID 冲突截断下载区的渲染(切侧必现报错)
                             download_button(
                                 f"net.dl_gsea_fig_{gsea_side}",
                                 make_fig_zip(fig_png, fig_svg),
                                 f"{prefix}_gsea_{gsea_side}.zip", "application/zip",
+                                key=f"gsea_fig_btn_{gsea_side}",
                             )
 
 
