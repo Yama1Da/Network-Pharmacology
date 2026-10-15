@@ -163,9 +163,14 @@ docker compose run --rm app python cli.py analyze --drug aspirin --disease "colo
    Settings and rebuild the background network — no program update needed).
    Changing settings automatically invalidates the integrated caches and rebuilds them.
 
-All intermediate results are cached automatically (7 days by default, see `WY/config.py`),
-so repeated analyses return in seconds. (The 7-day default exists because DGIdb updates
-irregularly.)
+All intermediate results are cached automatically (see `WY/config.py`), so repeated analyses
+return in seconds. Target pulls from the four databases (ChEMBL / DGIdb / Open Targets /
+DisGeNET) share a unified 60-day cache: the upstream release cycles range from about a quarter
+to ~2.5 years (Open Targets releases quarterly, ChEMBL roughly every 7 months, DISGENET every
+1~2 quarters, DGIdb major versions ~2.5 years apart), so 60 days never misses a new release
+while keeping repeated requests — notably DisGeNET's metered API quota — to a minimum.
+Integrated tables, PPI, enrichment and other analysis caches default to 7 days. For an
+immediate refresh, hit "Update" on a management page to force a fresh download.
 
 ## Command-Line Batch Analysis (CLI)
 
@@ -239,9 +244,9 @@ npap --help              # the entry script lands in the env's Scripts\ (Windows
 
 ## Configuration
 
-| File | Purpose |
-|---|---|
-| `WY/API.env` | Secrets and executable paths (`DisGeNET_API_KEY`, `VINA_DIR`, `OBABEL_DIR`, `CLI_RESULTS_DIR`); not committed to git |
+| File           | Purpose                                                                                                                                               |
+|----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `WY/API.env`   | Secrets and executable paths (`DisGeNET_API_KEY`, `VINA_DIR`, `OBABEL_DIR`, `CLI_RESULTS_DIR`); not committed to git                                  |
 | `WY/config.py` | Data source URLs, rate limits/retries, circuit-breaker cooldown ladders, cache TTL, target filter thresholds, STRING version and download concurrency |
 
 > Change behavior in `WY/config.py`, put secrets in `WY/API.env`: `WY/API.env` only holds

@@ -61,9 +61,10 @@ ENRICHR_PROBE_TIMEOUT_SECONDS = 15
 # 缓存有效期(秒):PPI/富集/邻近度/RWR 等分析缓存超过该时长即过期,过期只挡复用不删文件。
 # 上游源多为月/年级 release,取 7 天减少重复请求;需要立即刷新走管理页"更新"(入口清缓存)。
 CACHE_TTL_SECONDS = 7 * 86400
-# 数据源 HTTP 响应缓存有效期(小时):DGIdb/Open Targets/DisGeNET 共用,ChEMBL 默认沿用。
-# 上游为月/年级 release,取 7 天减少重复下载;强制更新走管理页"更新"(入口先清缓存)。
-HTTP_CACHE_TTL_HOURS = 168
+# 数据源 HTTP 响应缓存有效期(小时):四库(ChEMBL/DGIdb/Open Targets/DisGeNET)统一 60 天。
+# 60天远短于任一库的发版周期,到期重拉不会错过新数据,又可以把重复请求压到最低;
+# 追新走管理页"更新"(入口先清缓存,强制重新联网)。
+HTTP_CACHE_TTL_HOURS = 60 * 24
 # RCSB 结构搜索的缓存有效期(小时),覆盖全局 HTTP 缓存值:新结构会持续发布,取 4 天折中;
 # 结构元数据(GraphQL)条目发布后不可变,沿用全局值即可。
 RCSB_SEARCH_CACHE_TTL_HOURS = 96

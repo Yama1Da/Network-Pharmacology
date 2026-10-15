@@ -414,15 +414,20 @@ def _links_to_edges(links_df: pd.DataFrame, id2sym: dict, confidence: int) -> pd
 
 def _write_edges_auto(df: pd.DataFrame, stem: str) -> str:
     """把边表保存到磁盘,返回实际文件路径。优先 parquet;失败时回退 CSV——
-    纯文本没有反序列化执行风险,不再像旧版那样回退 pickle(本地缓存一旦被篡改即任意代码执行)。"""
+    纯文本没有反序列化执行风险,不再像旧版那样回退 pickle(本地缓存一旦被篡改即任意代码执行)。
+    先写 .tmp 再原子替换:构建中途被 Stop/中断不会留下半截边表顶替旧缓存。"""
     try:
         path = stem + ".parquet"
-        df.to_parquet(path, index=False)
+        tmp = path + ".tmp"
+        df.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
         return path
     except Exception:
         logging.exception("Parquet write failed — falling back to CSV")
         path = stem + ".csv"
-        df.to_csv(path, index=False, encoding="utf-8-sig")
+        tmp = path + ".tmp"
+        df.to_csv(tmp, index=False, encoding="utf-8-sig")
+        os.replace(tmp, path)
         return path
 
 
@@ -497,7 +502,10 @@ def build_interactome(species: str = "Human",
     report("writing", None)
     edges_path = _write_edges_auto(edges, stem)
     deg_path = stem + "_degrees.csv"
-    degree_df.to_csv(deg_path, index=False, encoding="utf-8-sig")
+    # 原子写:度表与边表同属三件套,中断不能留半截文件顶替旧缓存
+    deg_tmp = deg_path + ".tmp"
+    degree_df.to_csv(deg_tmp, index=False, encoding="utf-8-sig")
+    os.replace(deg_tmp, deg_path)
 
     meta = {
         "species": species,

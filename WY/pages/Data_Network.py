@@ -5,9 +5,11 @@ import pandas as pd
 import streamlit as st
 
 import config
-from core.files import make_ppi_zip
+from core.files import make_fig_zip, make_ppi_zip
 from core.targets import get_common_targets, get_disease_targets_merged, get_drug_targets_merged
-from ui.widgets import back_button, download_button, download_file_button, hide_sidebar
+from ui.widgets import (back_button, download_button,
+                        download_file_button, enter_busy, finish_busy, hide_sidebar,
+                        is_busy, show_busy_notice)
 from i18n import t
 from core.network_algorithms import (
     detect_louvain_modules,
@@ -47,6 +49,12 @@ from core.ppi import (
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")
 
+# RWR 扩展靶点数上限 100;组件不设 max,任何超限输入都落到下方中文警告并钳制,
+# 否则 Streamlit 前端会对超出 max 的输入弹内置英文报错(经 i18n 无法翻译)。
+RWR_EXPAND_MAX = 100
+# Hub 数量合法区间;控件同样不设 max,超限输入由下方中文警告钳制(组件 min=1 仅挡负数/0)。
+HUB_TOP_N_MIN, HUB_TOP_N_MAX = 5, 20
+
 # ---------- 隐藏侧边栏全屏显示;Run 按钮(#167A9C)、Data Management 按钮(#6347A1)配色 ----------
 hide_sidebar("""
     .st-key-run_btn button {
@@ -64,12 +72,19 @@ hide_sidebar("""
 st.title(t("net.title"))
 st.caption(t("net.caption"))
 
+# Build Report(busy)运行期间禁用页面交互:防止新点击/参数变动把分钟级分析中断丢弃
+# (两段式 busy 状态机见 ui.widgets;disabled 不影响控件取值,翻转安全)
+net_busy = is_busy("net_build_busy")
+
 col_back, col_mgmt = st.columns([1, 1])
 with col_back:
-    back_button()
+    back_button(disabled=net_busy)
 with col_mgmt:
-    if st.button(t("net.data_mgmt"), key="data_mgmt_btn"):
+    if st.button(t("net.data_mgmt"), key="data_mgmt_btn", disabled=net_busy):
         st.switch_page("pages/Data_Management.py")
+
+# 上一次分析被在途点击打断时给出提示(busy 复位后的下一轮才能看到,不能门在 busy 上)
+show_busy_notice("net_build_busy")
 
 st.divider()
 
@@ -79,6 +94,7 @@ input_mode = st.radio(
     ["names", "genes"],
     format_func=lambda v: t("net.mode_names") if v == "names" else t("net.mode_genes"),
     horizontal=True,
+    disabled=net_busy,
 )
 
 col_input, col_params = st.columns([2, 1])
@@ -86,9 +102,11 @@ with col_input:
     if input_mode == "names":
         col_drug, col_dis = st.columns(2)
         with col_drug:
-            drug_name = st.text_input(t("net.drug_label"), value="metformin")
+            drug_name = st.text_input(t("net.drug_label"), value="metformin",
+                                      disabled=net_busy)
         with col_dis:
-            disease_name = st.text_input(t("net.disease_label"), value="Type 2 diabetes mellitus")
+            disease_name = st.text_input(t("net.disease_label"), value="Type 2 diabetes mellitus",
+                                         disabled=net_busy)
         gene_text = ""
     else:
         drug_name, disease_name = "", ""
@@ -96,32 +114,52 @@ with col_input:
             t("net.gene_text_label"),
             placeholder="TP53\nBRCA1\nEGFR",
             height=140,
+            disabled=net_busy,
         )
 
 with col_params:
     # 物种固定为人类:疾病靶点数据源(Open Targets/DisGeNET)只有人类数据,
     # 药物靶点与富集库亦以人类为准;多物种支持待接入相应疾病数据源后再议。
-    score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05)
+    score = st.slider(t("net.confidence"), 0.1, 0.9, config.PPI_CONFIDENCE, 0.05,
+                      disabled=net_busy)
     # 发起分析的位置常驻显示数据版本:切版本后不忘当前用的是哪版 STRING 数据
     st.caption(t("net.string_ver_caption", ver=config.STRING_VERSION))
     network_type = st.selectbox(
         t("net.network_type"), ("full", "physical"),
         format_func=lambda v: (t("net.network_type_full") if v == "full"
                                else t("net.network_type_physical")),
-        help=t("net.network_type_help"))
+        help=t("net.network_type_help"),
+        disabled=net_busy)
     rwr_expand = st.number_input(
-        t("net.rwr_expand"), 0, 100, config.RWR_EXPAND_TOP_N, 1,
-        help=t("net.rwr_expand_help"))
+        t("net.rwr_expand"), 0, None, config.RWR_EXPAND_TOP_N, 1,
+        help=t("net.rwr_expand_help"), disabled=net_busy)
+    if rwr_expand > RWR_EXPAND_MAX:
+        st.warning(t("net.rwr_expand_clamp", n=rwr_expand))
+        rwr_expand = RWR_EXPAND_MAX
     hub_top_n = st.number_input(
-        t("net.hub_top_n"), 5, 20, config.HUB_TOP_N, 1,
-        help=t("net.hub_top_n_help", factor=config.HUB_SMALL_NET_FACTOR))
+        t("net.hub_top_n"), 1, None, config.HUB_TOP_N, 1,
+        help=t("net.hub_top_n_help", factor=config.HUB_SMALL_NET_FACTOR),
+        disabled=net_busy)
+    if not (HUB_TOP_N_MIN <= hub_top_n <= HUB_TOP_N_MAX):
+        clamped = min(max(hub_top_n, HUB_TOP_N_MIN), HUB_TOP_N_MAX)
+        st.warning(t("net.hub_top_n_clamp", n=hub_top_n, m=clamped))
+        hub_top_n = clamped
     hub_method = st.selectbox(
         t("net.hub_method"), ("degree", "mcc"),
         index=0 if config.HUB_METHOD == "degree" else 1,
         format_func=lambda v: t("net.hub_method_degree") if v == "degree" else t("net.hub_method_mcc"),
-        help=t("net.hub_method_help"))
+        help=t("net.hub_method_help"),
+        disabled=net_busy)
 
-run_btn = st.button(t("net.build_report"), key="run_btn", type="primary", width="stretch")
+run_btn = st.button(t("net.build_report"), key="run_btn", type="primary",
+                    width="stretch", disabled=net_busy)
+
+# ---------- 点击轮:校验输入后置位 busy,任务轮再执行(两段式,见 ui.widgets) ----------
+if run_btn and not net_busy:
+    if input_mode == "names" and (not drug_name.strip() or not disease_name.strip()):
+        st.warning(t("net.warn_missing"))
+    else:
+        enter_busy("net_build_busy")
 
 
 # ---------- 分析执行 ----------
@@ -628,49 +666,58 @@ current_params = (
     hub_method,
 )
 
-if run_btn:
-    if input_mode == "names" and (not drug_name.strip() or not disease_name.strip()):
-        st.warning(t("net.warn_missing"))
-    else:
+# ---------- 任务轮(busy):跑完入库后复位 busy 重渲染,结果展示区只读会话 ----------
+if net_busy:
+    completed = False
+    try:
         # 进度面板:names 模式 8 个阶段,genes 模式无 GSEA 与网络检验
         steps = ["targets", "string", "graph", "enrichment",
                  *(["gsea", "network"] if input_mode == "names" else []),
                  "modules", "save"]
-        try:
-            ppi_result = _run_ppi_analysis(
-                input_mode,
-                drug_name.strip(),
-                disease_name.strip(),
-                gene_text.strip(),
-                score,
-                network_type=network_type,
-                rwr_expand=int(rwr_expand),
-                hub_top_n=int(hub_top_n),
-                hub_method=hub_method,
-                progress=_ReportProgress(steps),
-            )
-        except Exception:
-            # 面向用户只提示友好信息;完整堆栈经 logging.exception 写入日志文件供排查
-            logging.exception("PPI analysis failed")
-            st.error(t("net.analysis_fail"))
-        else:
-            st.session_state.ppi = ppi_result
-            # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
-            st.session_state.ppi_gsea = {
-                side: {**info, "ppi_params": ppi_result["params"]}
-                for side, info in ppi_result.get("gsea", {}).items()
-            }
-            # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
-            mods_auto = ppi_result.get("modules")
-            st.session_state.ppi_modules = (
-                {**mods_auto, "ppi_params": ppi_result["params"]}
-                if mods_auto is not None else None
-            )
-            # 新报告生成后,网络图视图选择回到默认交互式:视图选择框的 key 绑定报告实例
-            # (见下方显示段),这里清掉旧报告的键,避免会话内键随分析次数无限累积
-            for _k in [k for k in st.session_state if str(k).startswith("ppi_view::")]:
-                st.session_state.pop(_k, None)
-            st.rerun()
+        ppi_result = _run_ppi_analysis(
+            input_mode,
+            drug_name.strip(),
+            disease_name.strip(),
+            gene_text.strip(),
+            score,
+            network_type=network_type,
+            rwr_expand=int(rwr_expand),
+            hub_top_n=int(hub_top_n),
+            hub_method=hub_method,
+            progress=_ReportProgress(steps),
+        )
+    except Exception:
+        # 面向用户只提示友好信息;完整堆栈经 logging.exception 写入日志文件供排查
+        logging.exception("PPI analysis failed")
+        st.session_state["net_build_error"] = t("net.analysis_fail")
+        completed = True  # 失败信息已入库,按已完成收尾(不显示"被中断")
+    else:
+        st.session_state.ppi = ppi_result
+        # Build Report 已自动跑完药物/疾病两侧 GSEA，直接作为下方交互区的初始结果
+        st.session_state.ppi_gsea = {
+            side: {**info, "ppi_params": ppi_result["params"]}
+            for side, info in ppi_result.get("gsea", {}).items()
+        }
+        # Build Report 已自动跑完模块检测，作为交互区初始结果；失败时可在交互区手动重跑
+        mods_auto = ppi_result.get("modules")
+        st.session_state.ppi_modules = (
+            {**mods_auto, "ppi_params": ppi_result["params"]}
+            if mods_auto is not None else None
+        )
+        # 新报告生成后,网络图视图选择回到默认交互式:视图选择框的 key 绑定报告实例
+        # (见下方显示段),这里清掉旧报告的键,避免会话内键随分析次数无限累积
+        for _k in [k for k in st.session_state if str(k).startswith("ppi_view::")]:
+            st.session_state.pop(_k, None)
+        st.session_state.pop("net_build_error", None)
+        completed = True
+    finally:
+        finish_busy("net_build_busy", completed=completed)
+    st.rerun()
+
+# 上一次分析失败的友好提示(成功轮已清掉该键)
+net_error = st.session_state.pop("net_build_error", None)
+if net_error:
+    st.error(net_error)
 
 # ---------- 结果展示（直接读取暂存结果，不重新分析） ----------
 ppi = st.session_state.ppi
@@ -874,7 +921,7 @@ def _render_gsea(ppi: dict, input_mode: str, drug_name: str, disease_name: str,
                                                  "normalize_empty"))
             run_clicked = st.button(
                 t("net.gsea_run"), key="gsea_run_btn", width="stretch",
-                disabled=gsea_done or params_stale,
+                disabled=gsea_done or params_stale or net_busy,
                 help=(t("net.params_changed") if params_stale
                       else t("net.gsea_done_hint") if gsea_done else None),
             )
@@ -946,6 +993,19 @@ def _render_gsea(ppi: dict, input_mode: str, drug_name: str, disease_name: str,
                             gsea_df.to_csv(index=False).encode("utf-8-sig"),
                             f"{prefix}_gsea_{gsea_side}.csv", "text/csv",
                         )
+                        # 该侧显著通路条形图已随报告构建落盘时,提供 PNG+SVG 小包下载;
+                        # 筛后无显著(未落盘)则按钮不出现
+                        fig_png = saved.get(f"gsea_{gsea_side}_png")
+                        fig_svg = saved.get(f"gsea_{gsea_side}_svg")
+                        if fig_png and fig_svg:
+                            # key 与下载区同名按钮区分:两侧图包参数完全相同,
+                            # 不加 key 会因元素 ID 冲突截断下载区的渲染(切侧必现报错)
+                            download_button(
+                                f"net.dl_gsea_fig_{gsea_side}",
+                                make_fig_zip(fig_png, fig_svg),
+                                f"{prefix}_gsea_{gsea_side}.zip", "application/zip",
+                                key=f"gsea_fig_btn_{gsea_side}",
+                            )
 
 
 def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
@@ -958,7 +1018,8 @@ def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
                      top_n=config.LOUVAIN_MAX_ENRICH_MODULES))
         st.session_state.setdefault("ppi_modules", None)
 
-        if st.button(t("net.modules_run"), key="modules_run_btn", width="stretch"):
+        if st.button(t("net.modules_run"), key="modules_run_btn", width="stretch",
+                     disabled=net_busy):
             if params_stale:
                 # 防呆：主分析参数已变，图与旧结果不对应，先重跑主分析
                 st.warning(t("net.params_changed"))
@@ -1045,7 +1106,8 @@ def _render_modules(ppi: dict, graph, metrics_df, prefix: str, saved: dict,
 
 def _render_downloads(metrics_df, edges_df, html_content: str, saved: dict, prefix: str) -> None:
     """下载区:先收集全部可用下载项,再按 3 列网格逐行铺满——
-    条件产物(富集/核心靶点/靶点-通路图)缺失时不会留下空洞。"""
+    条件产物(各风格图/富集/GSEA 图)缺失时不会留下空洞。
+    图类一图一钮:PNG(300 dpi)+SVG 打成小包一次带走(总 ZIP 仍是散文件)。"""
     with st.expander(t("net.download_expander")):
         items: list[tuple[str, object, str, str]] = [
             ("net.dl_nodes", metrics_df.to_csv(index=False).encode("utf-8-sig"),
@@ -1056,41 +1118,46 @@ def _render_downloads(metrics_df, edges_df, html_content: str, saved: dict, pref
              f"{prefix}_network.html", "text/html"),
             ("net.dl_graphml", saved["graphml"], f"{prefix}_graph.graphml",
              "application/xml"),
-            ("net.dl_svg", saved["svg"], f"{prefix}_network.svg", "image/svg+xml"),
         ]
         if "enrichment_csv" in saved:
             items.append(("net.dl_enrich_csv", saved["enrichment_csv"],
                           f"{prefix}_enrichment.csv", "text/csv"))
-        if "enrichment_bar_png" in saved:
-            items.append(("net.dl_enrich_bar", saved["enrichment_bar_png"],
-                          f"{prefix}_enrichment_bar.png", "image/png"))
-        if "enrichment_dot_png" in saved:
-            items.append(("net.dl_bubble", saved["enrichment_dot_png"],
-                          f"{prefix}_enrichment_dot.png", "image/png"))
-        if "core_png" in saved:
-            items.append(("net.dl_core_png", saved["core_png"],
-                          f"{prefix}_core_targets.png", "image/png"))
-        if "dtp_png" in saved:
-            items.append(("net.dl_dtp_png", saved["dtp_png"],
-                          f"{prefix}_enrichment_network.png", "image/png"))
+        if "png" in saved and "svg" in saved:
+            items.append(("net.dl_static_fig", make_fig_zip(saved["png"], saved["svg"]),
+                          f"{prefix}_network.zip", "application/zip"))
         if "string_png" in saved:
-            items.append(("net.dl_string_png", saved["string_png"],
-                          f"{prefix}_network_string.png", "image/png"))
-        if "string_svg" in saved:
-            items.append(("net.dl_string_svg", saved["string_svg"],
-                          f"{prefix}_network_string.svg", "image/svg+xml"))
+            items.append(("net.dl_string_fig", make_fig_zip(saved["string_png"], saved["string_svg"]),
+                          f"{prefix}_network_string.zip", "application/zip"))
         if "cyto_png" in saved:
-            items.append(("net.dl_cyto_png", saved["cyto_png"],
-                          f"{prefix}_network_cytoscape.png", "image/png"))
-        if "cyto_svg" in saved:
-            items.append(("net.dl_cyto_svg", saved["cyto_svg"],
-                          f"{prefix}_network_cytoscape.svg", "image/svg+xml"))
+            items.append(("net.dl_cyto_fig", make_fig_zip(saved["cyto_png"], saved["cyto_svg"]),
+                          f"{prefix}_network_cytoscape.zip", "application/zip"))
+        if "core_png" in saved:
+            items.append(("net.dl_core_fig", make_fig_zip(saved["core_png"], saved["core_svg"]),
+                          f"{prefix}_core_targets.zip", "application/zip"))
+        if "dtp_png" in saved:
+            items.append(("net.dl_dtp_fig", make_fig_zip(saved["dtp_png"], saved["dtp_svg"]),
+                          f"{prefix}_enrichment_network.zip", "application/zip"))
+        if "enrichment_bar_png" in saved:
+            items.append(("net.dl_enrich_bar",
+                          make_fig_zip(saved["enrichment_bar_png"], saved["enrichment_bar_svg"]),
+                          f"{prefix}_enrichment_bar.zip", "application/zip"))
+        if "enrichment_dot_png" in saved:
+            items.append(("net.dl_bubble",
+                          make_fig_zip(saved["enrichment_dot_png"], saved["enrichment_dot_svg"]),
+                          f"{prefix}_enrichment_dot.zip", "application/zip"))
+        for side in ("drug", "disease"):
+            fig_png, fig_svg = saved.get(f"gsea_{side}_png"), saved.get(f"gsea_{side}_svg")
+            if fig_png and fig_svg:
+                items.append((f"net.dl_gsea_fig_{side}", make_fig_zip(fig_png, fig_svg),
+                              f"{prefix}_gsea_{side}.zip", "application/zip"))
         items.append(("net.dl_zip", make_ppi_zip(saved),
                       f"{prefix}_results.zip", "application/zip"))
 
         for start in range(0, len(items), 3):
-            cols = st.columns(3)
-            for col, (label_key, data, file_name, mime) in zip(cols, items[start:start + 3]):
+            chunk = items[start:start + 3]
+            # 末行不足 3 个时按实际数量分列:按钮拉宽占满整行,不留缺角
+            cols = st.columns(len(chunk))
+            for col, (label_key, data, file_name, mime) in zip(cols, chunk):
                 with col:
                     if isinstance(data, (bytes, bytearray)):
                         download_button(label_key, data, file_name, mime)
@@ -1155,7 +1222,7 @@ if ppi is not None:
         else:
             st.dataframe(hub_df, width="stretch", hide_index=True)
 
-        # ---------- 网络图展示:下拉切换,默认交互式 ----------
+        # ---------- 网络图展示:下拉切换,默认 Cytoscape 风格静态图(交互式 HTML 加载慢) ----------
         # 四种图(交互/静态/STRING/Cytoscape)无论当前选中哪个都已在 save_ppi_results 阶段落盘,
         # 这里只控制"看哪张";渲染失败的风格图不出现在选项里,不阻塞其余选项。
         views: dict[str, tuple[str, str | None]] = {
@@ -1169,15 +1236,17 @@ if ppi is not None:
             available.append("string")
         if ppi.get("cyto_fig") is not None:
             available.append("cytoscape")
-        # 上次选中的图这次不存在(旧结果/渲染失败)时清掉,让选择框回到默认交互式
+        # 上次选中的图这次不存在(旧结果/渲染失败)时清掉,让选择框回到默认风格
         # key 绑定报告实例(id 每次新分析都不同;旧 ppi 被替换前一直存活,id 不会复用):
         # 直接复用固定 key 时,streamlit 前端控件不会跟随服务端 pop 重置,仍显示用户
-        # 上次选的旧选项,与服务端实际渲染的默认交互式图脱节;换 key 即换新控件,彻底同步。
+        # 上次选的旧选项,与服务端实际渲染的默认风格图脱节;换 key 即换新控件,彻底同步。
         view_key = f"ppi_view::{id(ppi)}"
         if st.session_state.get(view_key) not in available:
             st.session_state.pop(view_key, None)
         st.subheader(t("net.view_subheader"))
-        view = st.selectbox(t("net.view_label"), available, index=0,
+        default_view = "cytoscape" if "cytoscape" in available else "interactive"
+        view = st.selectbox(t("net.view_label"), available,
+                            index=available.index(default_view),
                             format_func=lambda v: views[v][0], key=view_key)
         view_caption = views[view][1]
         if view_caption:
