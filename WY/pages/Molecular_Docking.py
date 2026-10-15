@@ -728,7 +728,15 @@ if dock.get("genes"):
     elif cand.empty:
         st.warning(t("dock.no_human_struct", gene=gene))
     else:
-        st.dataframe(cand, hide_index=True, use_container_width=True)
+        # 防呆标注列(AGT 三重撞名事故的防再犯措施):仅核酸/含核酸条目就地提示,标题列供人工核对
+        flag_notes = {"dna_only": t("dock.rec_note_dna_only"),
+                      "has_nucleic": t("dock.rec_note_has_nucleic")}
+        disp = cand.copy()
+        flags = cand["flag"] if "flag" in cand.columns else []
+        disp["note"] = [flag_notes.get(str(f), "") for f in flags]
+        st.dataframe(disp[["pdb_id", "resolution", "method", "title", "source", "note"]],
+                     hide_index=True, use_container_width=True)
+        st.caption(t("dock.rec_hint"))
         # 换基因后新候选列表不含残留的旧 PDB id,先校验再渲染,避免 selectbox 抛异常
         if st.session_state.get("pdb_sel") not in [str(x) for x in cand["pdb_id"].tolist()]:
             st.session_state.pop("pdb_sel", None)
@@ -742,24 +750,32 @@ if dock.get("genes"):
             for _k in ("pose_sel", "conclusion",
                        "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
                 st.session_state.pop(_k, None)
-        if st.button(t("dock.dl_receptor_btn"), key="prep_rec"):
-            with st.spinner(t("dock.dl_pdb_spinner")):
-                try:
-                    if pdb_id.startswith("AFDB:"):
-                        # 通过该基因对应的 UniProt 条目获取 AlphaFold 预测模型
-                        pdb_path, af_acc = fetch_alphafold_receptor(
-                            gene, taxon=int(config.SPECIES_MAP["Human"]["ncbi_taxon"]))
-                        dock["pdb_id"] = f"AFDB:{af_acc}"
-                        dock["receptor_source"] = "alphafold"
-                    else:
-                        pdb_path = download_pdb(pdb_id)
-                        dock["pdb_id"] = pdb_id
-                        dock["receptor_source"] = "experiment"
-                    dock["pdb_path"] = pdb_path
-                    dock["rec_pdbqt"] = prepare_receptor_pdbqt(pdb_path)
-                    dock.pop("result", None)
-                except Exception as exc:
-                    st.error(t("dock.receptor_failed", exc=exc))
+        # 选中条目的组分校验:纯核酸结构不含蛋白,不能作为对接受体——基因符号撞名的典型陷阱,直接阻断
+        sel_rows = cand[cand["pdb_id"] == pdb_id]
+        sel_flag = str(sel_rows.iloc[0].get("flag") or "") if not sel_rows.empty else ""
+        if sel_flag == "dna_only":
+            st.error(t("dock.rec_blocked_dna", pdb=pdb_id))
+        else:
+            if sel_flag == "has_nucleic":
+                st.warning(t("dock.rec_warn_nucleic", pdb=pdb_id))
+            if st.button(t("dock.dl_receptor_btn"), key="prep_rec"):
+                with st.spinner(t("dock.dl_pdb_spinner")):
+                    try:
+                        if pdb_id.startswith("AFDB:"):
+                            # 通过该基因对应的 UniProt 条目获取 AlphaFold 预测模型
+                            pdb_path, af_acc = fetch_alphafold_receptor(
+                                gene, taxon=int(config.SPECIES_MAP["Human"]["ncbi_taxon"]))
+                            dock["pdb_id"] = f"AFDB:{af_acc}"
+                            dock["receptor_source"] = "alphafold"
+                        else:
+                            pdb_path = download_pdb(pdb_id)
+                            dock["pdb_id"] = pdb_id
+                            dock["receptor_source"] = "experiment"
+                        dock["pdb_path"] = pdb_path
+                        dock["rec_pdbqt"] = prepare_receptor_pdbqt(pdb_path)
+                        dock.pop("result", None)
+                    except Exception as exc:
+                        st.error(t("dock.receptor_failed", exc=exc))
         if dock.get("receptor_source") == "alphafold" and dock.get("rec_pdbqt"):
             # 使用预测结构的提示(只要用的是 AF 受体就持续显示)
             st.warning(t("dock.af_disclaimer",
