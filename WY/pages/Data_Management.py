@@ -3,12 +3,16 @@ import time
 import streamlit as st
 
 import config
-from core.files import list_download_dirs, make_dir_zip
+from core.files import list_download_dirs
 from ui.widgets import (
     CSS_HIDE_IDLE_PROGRESS,
     back_button,
+    cached_dir_zip,
     collect_selected,
+    enter_busy,
+    finish_busy,
     hide_sidebar,
+    is_busy,
     page_slice,
     render_file_action_bar,
     render_pager,
@@ -16,6 +20,7 @@ from ui.widgets import (
     render_select_all_checkbox,
     search_hit,
     search_input,
+    show_busy_notice,
     show_file_op_result,
 )
 from i18n import t
@@ -47,9 +52,16 @@ hide_sidebar(CSS_HIDE_IDLE_PROGRESS + """
 st.title(t("data_mgmt.title"))
 st.caption(t("data_mgmt.caption"))
 
+# 互作网络构建(busy)运行期间禁用导航与下载:防止新点击把分钟级的下载构建中断丢弃
+# (两段式 busy 状态机见 ui.widgets)
+itx_busy = is_busy("itx_build_busy")
+
 col_back, _ = st.columns([1, 4])
 with col_back:
-    back_button("data_mgmt.back", target="pages/Data_Network.py")
+    back_button("data_mgmt.back", target="pages/Data_Network.py", disabled=itx_busy)
+
+# 上一次构建被在途点击打断时给出提示(busy 复位后的下一轮才能看到,不能门在 busy 上)
+show_busy_notice("itx_build_busy")
 
 st.divider()
 
@@ -88,7 +100,13 @@ else:
 # (机制与修复说明见 ui.source_management / ui.widgets.CSS_HIDE_IDLE_PROGRESS)。
 itx_bar = st.progress(0.0, text="")
 
-if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", width="stretch"):
+build_clicked = st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary",
+                          width="stretch", disabled=itx_busy)
+# 点击轮:置位 busy 并立刻重渲染,任务轮再执行(两段式,见 ui.widgets)
+if build_clicked and not itx_busy:
+    enter_busy("itx_build_busy")
+
+if itx_busy:
     progress = itx_bar.progress(0.0, text=t("data_mgmt.itx_stage_processing"))
     t0 = time.time()
 
@@ -97,15 +115,16 @@ if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", 
         if stage == "fallback":
             st.warning(t("data_mgmt.itx_fallback_notice", detail=detail))
             return
-        # 把构建阶段名翻译成当前语言,显示在进度条上
+        # 把构建阶段名翻译成当前语言,显示在进度条上;文件已在本地的场景译成"本地已缓存"。
+        # 模板含 {detail} 占位符的(下载类)做填充;不含的(fallback/mirror_skip 类,
+        # 模板以"·"结尾)沿用拼接,把来源主机名缀在后面
+        detail_txt = t("data_mgmt.itx_cached") if detail == "cached" else detail
         base = t(f"data_mgmt.itx_stage_{stage}")
-        if detail == "cached":
-            detail_txt = t("data_mgmt.itx_cached")
-        else:
-            detail_txt = detail
-        text = f"{base} {detail_txt}".strip()
+        text = (base.format(detail=detail_txt) if "{detail}" in base
+                else f"{base} {detail_txt}".strip())
         progress.progress(min(max(float(fraction or 0.0), 0.0), 1.0), text=text)
 
+    completed = False
     try:
         meta_new = build_interactome(progress_cb=_on_progress)
         # 新版本构建成功后清理其它版本/置信度组合的三件套(齿轮确认弹窗已告知该清理;
@@ -113,8 +132,12 @@ if st.button(t("data_mgmt.itx_build_btn"), key="itx_build_btn", type="primary", 
         cleaned = clean_old_version_caches("Human")
         st.session_state.itx_build_result = (
             "ok", meta_new["n_nodes"], meta_new["n_edges"], time.time() - t0, cleaned)
+        completed = True
     except Exception as exc:
         st.session_state.itx_build_result = ("fail", str(exc), None, None)
+        completed = True  # 失败信息已入库,按已完成收尾(不显示"被中断")
+    finally:
+        finish_busy("itx_build_busy", completed=completed)
     st.rerun()
 
 st.divider()
@@ -155,10 +178,11 @@ else:
             with col_btn:
                 st.download_button(
                     t("common.download"),
-                    make_dir_zip(dir_path),
+                    cached_dir_zip(dir_path),  # 缓存版打包:每轮重渲染不再重复读盘压缩
                     f"{row['Directory']}.zip",
                     "application/zip",
                     key=f"dl_{row['Directory']}",
+                    disabled=itx_busy,
                     width="stretch",
                 )
 
@@ -167,4 +191,4 @@ else:
     # 批量操作:下载选中(各目录打成一个 ZIP)/删除选中(确认弹窗)
     collect_selected("data_dirs", all_dirs)
     render_file_action_bar("data_dirs", config.DOWNLOADS_DIR, zip_name="Data_files.zip",
-                                 dirs=True)
+                           dirs=True, disabled=itx_busy)

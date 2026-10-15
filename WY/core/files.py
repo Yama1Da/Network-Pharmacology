@@ -81,6 +81,16 @@ def make_ppi_zip(file_paths: dict) -> bytes:
     return _zip_bytes(write)
 
 
+def make_fig_zip(png_path: str, svg_path: str) -> bytes:
+    """把一张图的 PNG + SVG 两个文件打包为小 zip,供下载面板"一图一钮"同时带走位图与矢量版
+    （Streamlit 一个按钮只能携带一个文件）。"""
+    def write(zf):
+        for path in (png_path, svg_path):
+            if path and os.path.exists(path):
+                zf.write(path, arcname=os.path.basename(path))
+    return _zip_bytes(write)
+
+
 def make_dir_zip(directory: str) -> bytes:
     """把某个目录下的全部文件打包为 zip,供管理页按目录整体下载;目录不存在或为空时返回空 zip。"""
     def write(zf):

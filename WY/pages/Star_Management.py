@@ -5,9 +5,9 @@ from datetime import datetime
 import streamlit as st
 
 import config
-from core.files import make_dir_zip
 from ui.widgets import (
     back_button,
+    cached_dir_zip,
     collect_selected,
     hide_sidebar,
     page_slice,
@@ -112,7 +112,7 @@ else:
         col_a.write(name)
         col_b.write(created)
         with col_c:
-            st.download_button("⬇️", data=make_dir_zip(path),
+            st.download_button("⬇️", data=cached_dir_zip(path),  # 缓存版打包:每轮重渲染不再重复压缩
                                file_name=name + ".zip", mime="application/zip",
                                key=f"star_dl_{name}")
         with col_d:

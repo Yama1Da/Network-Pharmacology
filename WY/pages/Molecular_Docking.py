@@ -8,10 +8,11 @@ import pandas as pd
 import streamlit as st
 
 import config
-from core.files import list_cache_files, list_download_dirs, make_dir_zip
+from core.files import list_cache_files, list_download_dirs
 from core.management import enrichment_display_name, humanize_analysis_label
 from core.text_utils import load_name_map, safe_name
-from ui.widgets import back_button, hide_sidebar
+from ui.widgets import (back_button, cached_dir_zip, enter_busy,
+                        finish_busy, hide_sidebar, is_busy, show_busy_notice)
 from i18n import t
 from core.docking import (
     PubChemUnavailable,
@@ -59,12 +60,19 @@ hide_sidebar("""
 st.title(t("dock.title"))
 st.caption(t("dock.caption"))
 
+# Vina 对接(busy)运行期间禁用导航:对接段内没有任何 st 调用,在途点击会挂到
+# 任务结束后才生效、丢掉结果展示(两段式 busy 状态机见 ui.widgets)
+dock_busy = is_busy("dock_run_busy")
+
 col_back, col_star = st.columns([1, 1])
 with col_back:
-    back_button()
+    back_button(disabled=dock_busy)
 with col_star:
-    if st.button(t("dock.star_mgmt"), key="star_mgmt_btn"):
+    if st.button(t("dock.star_mgmt"), key="star_mgmt_btn", disabled=dock_busy):
         st.switch_page("pages/Star_Management.py")
+
+# 上一次对接被在途点击打断时给出提示(busy 复位后的下一轮才能看到,不能门在 busy 上)
+show_busy_notice("dock_run_busy")
 
 st.divider()
 
@@ -887,23 +895,43 @@ st.subheader(t("dock.step5"))
 if dock.get("rec_pdbqt") and dock.get("lig_pdbqt") and dock.get("box"):
     st.caption(t("dock.current_params", e=config.EXHAUSTIVENESS, m=config.NUM_MODES,
                  c=config.DOCKING_CPU, s=config.DOCKING_SEED, timeout=config.DOCKING_TIMEOUT))
-    if st.button(t("dock.run_dock_btn"), key="run_dock"):
-        with st.spinner(t("dock.vina_spinner")):
-            try:
+    # 点击轮:置位 busy 并立刻重渲染,任务轮再执行(两段式,见 ui.widgets)。
+    # busy 轮里按钮以禁用态绘制,且执行分支以 busy 为准而非按钮点击值,
+    # 因此连点不会再像旧实现那样让 vina 顺序跑两遍、结果相互覆盖。
+    run_dock_clicked = st.button(t("dock.run_dock_btn"), key="run_dock",
+                                 disabled=dock_busy)
+    if run_dock_clicked and not dock_busy:
+        enter_busy("dock_run_busy")
+
+    if dock_busy:
+        completed = False
+        try:
+            with st.spinner(t("dock.vina_spinner")):
                 out_pdbqt = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                          f"vina_out_{datetime.now():%Y%m%d_%H%M%S}.pdbqt")
                 proc = run_vina(dock["rec_pdbqt"], dock["lig_pdbqt"], dock["box"],
                                       out_path=out_pdbqt)
                 poses = split_vina(out_pdbqt, out_dir=os.path.dirname(out_pdbqt))
                 scores = parse_vina_scores(out_pdbqt)
-                dock["result"] = {"proc": proc, "out": out_pdbqt, "poses": poses, "scores": scores}
-                # 新一轮对接:清掉上一轮残留的构象选择、结论与归档状态
-                st.session_state.pop("pose_sel", None)
-                st.session_state.pop("conclusion", None)
-                dock.pop("result_dir", None)
-                dock.pop("starred", None)
-            except Exception as exc:
-                st.error(t("dock.dock_failed", exc=exc))
+            dock["result"] = {"proc": proc, "out": out_pdbqt, "poses": poses, "scores": scores}
+            # 新一轮对接:清掉上一轮残留的构象选择、结论与归档状态
+            st.session_state.pop("pose_sel", None)
+            st.session_state.pop("conclusion", None)
+            dock.pop("result_dir", None)
+            dock.pop("starred", None)
+            st.session_state.pop("dock_run_error", None)
+            completed = True
+        except Exception as exc:
+            st.session_state["dock_run_error"] = str(exc)
+            completed = True  # 失败信息已入库,按已完成收尾(不显示"被中断")
+        finally:
+            finish_busy("dock_run_busy", completed=completed)
+        st.rerun()
+
+    # 上一次对接失败的友好提示(成功轮已清掉该键)
+    dock_error = st.session_state.pop("dock_run_error", None)
+    if dock_error:
+        st.error(t("dock.dock_failed", exc=dock_error))
 
     if dock.get("result"):
         res = dock["result"]
@@ -979,7 +1007,7 @@ if dock.get("result"):
         if dock.get("result_dir"):
             st.write(t("dock.result_dir", dir=dock["result_dir"]))
             st.download_button(t("dock.dl_all_zip"),
-                               data=make_dir_zip(dock["result_dir"]),
+                               data=cached_dir_zip(dock["result_dir"]),
                                file_name=os.path.basename(dock["result_dir"]) + ".zip",
                                mime="application/zip", key="dl_zip")
 

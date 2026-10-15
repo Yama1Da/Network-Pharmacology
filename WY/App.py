@@ -1,9 +1,13 @@
+import logging
+
 import pandas as pd
 import streamlit as st
 import config
 from core.logging_setup import setup_logging
 from core.management import purge_merged_cache, save_ui_settings
 from core.targets import get_targets_concurrent
+from ui.widgets import (busy_pending, enter_busy, finish_busy, is_busy,
+                        show_busy_notice)
 import i18n
 from i18n import DEFAULT_LANG, t, get_lang
 import matplotlib.pyplot as plt
@@ -450,8 +454,12 @@ st.markdown(f'<div class="title-area"><h1>{t("app.title")}</h1><p>{t("app.subtit
             unsafe_allow_html=True)
 
 # ---------- Bottom-left gear: opens the settings modal ----------
+# 首页分析(busy)运行期间禁用全部导航入口:防止新点击把正在跑的四库检索中断丢弃
+# (两段式 busy 状态机见 ui.widgets);语言开关虽会触发重跑,一并禁用保持语义一致。
+_analyze_busy = is_busy("home_analyze_busy")
+
 with st.container(key="gear_fab"):
-    if st.button(":material/settings:", key="gear_fab_btn"):
+    if st.button(":material/settings:", key="gear_fab_btn", disabled=_analyze_busy):
         _open_settings_dialog()
 
 # ---------- Language sliding switch + Logs button (fixed top-right) ----------
@@ -463,33 +471,43 @@ with st.container(key="top_right_logs"):
             st.session_state["_lang_switch"] = is_en
             st.session_state["_lang_switch_synced"] = get_lang()
         lang_is_en = st.toggle("Language", key="_lang_switch",
+                               disabled=_analyze_busy,
                                label_visibility="collapsed")
         if lang_is_en != is_en:
             st.session_state["lang"] = "en" if lang_is_en else "zh"
             st.session_state["_lang_switch_synced"] = get_lang()
             st.rerun()
-    if st.button(t("app.logs_btn"), key="logs_btn"):
+    if st.button(t("app.logs_btn"), key="logs_btn", disabled=_analyze_busy):
         st.switch_page("pages/Logs.py")
 
 # ---------- Management buttons (fixed top-left, open full-screen pages) ----------
 with st.container(key="top_left_buttons"):
     # 下拉菜单:跳转到四个信息管理页面。
     with st.popover(t("app.popover_source"), key="source_mgmt_popover"):
-        if st.button(t("app.btn_drug_mgmt"), key="drug_mgmt_btn", width="stretch"):
+        if st.button(t("app.btn_drug_mgmt"), key="drug_mgmt_btn", width="stretch",
+                     disabled=_analyze_busy):
             st.switch_page("pages/Drug_Target_Information_Management.py")
-        if st.button(t("app.btn_disease_mgmt"), key="disease_mgmt_btn", width="stretch"):
+        if st.button(t("app.btn_disease_mgmt"), key="disease_mgmt_btn", width="stretch",
+                     disabled=_analyze_busy):
             st.switch_page("pages/Disease_Target_Information_Management.py")
-        if st.button(t("app.btn_ppi_info"), key="ppi_info_btn", width="stretch"):
+        if st.button(t("app.btn_ppi_info"), key="ppi_info_btn", width="stretch",
+                     disabled=_analyze_busy):
             st.switch_page("pages/PPI_Information.py")
-        if st.button(t("app.btn_enrichment_info"), key="enrichment_info_btn", width="stretch"):
+        if st.button(t("app.btn_enrichment_info"), key="enrichment_info_btn", width="stretch",
+                     disabled=_analyze_busy):
             st.switch_page("pages/Enrichment_Information.py")
     # 下拉菜单:主分析(PPI/富集)与分子对接入口。
     with st.popover(t("app.popover_docking"), key="docking_mgmt_popover"):
-        if st.button(t("app.btn_data_network"), key="data_network_btn", width="stretch"):
+        if st.button(t("app.btn_data_network"), key="data_network_btn", width="stretch",
+                     disabled=_analyze_busy):
             st.switch_page("pages/Data_Network.py")
-        if st.button(t("app.btn_molecular_docking"), key="molecular_docking_btn", width="stretch"):
+        if st.button(t("app.btn_molecular_docking"), key="molecular_docking_btn", width="stretch",
+                     disabled=_analyze_busy):
             st.session_state["_docking_entry"] = True  # 通知对接页:从入口进入并重置状态
             st.switch_page("pages/Molecular_Docking.py")
+
+# 上一次分析被在途点击打断时给出提示(busy 复位后的下一轮才能看到,不能门在 busy 上)
+show_busy_notice("home_analyze_busy")
 
 st.divider()
 
@@ -497,17 +515,20 @@ st.divider()
 col_drug, col_disease = st.columns(2)
 with col_drug:
     drug_name = st.text_input(t("app.drug_label"), value="metformin",
-                               label_visibility="collapsed",
-                               placeholder=t("app.drug_placeholder"))
+                              disabled=_analyze_busy,
+                              label_visibility="collapsed",
+                              placeholder=t("app.drug_placeholder"))
 with col_disease:
     disease_name = st.text_input(t("app.disease_label"), value="Type 2 diabetes mellitus",
-                                  label_visibility="collapsed",
-                                  placeholder=t("app.disease_placeholder"))
+                                 disabled=_analyze_busy,
+                                 label_visibility="collapsed",
+                                 placeholder=t("app.disease_placeholder"))
 
-analyze_btn = st.button(t("app.analyze_btn"), type="primary", width="stretch")
+analyze_btn = st.button(t("app.analyze_btn"), type="primary", width="stretch",
+                        disabled=_analyze_busy)
 
-# ---------- Results ----------
-if analyze_btn:
+# ---------- 点击轮:校验输入后置位 busy,任务轮再执行(两段式,见 ui.widgets) ----------
+if analyze_btn and not _analyze_busy:
     errors = []
     if not drug_name.strip():
         errors.append(t("app.err_drug"))
@@ -517,7 +538,17 @@ if analyze_btn:
     if errors:
         st.warning(t("app.warn_missing", fields=t("app.and_join").join(errors)))
     else:
-        with st.spinner(t("app.spinner_query", drug=drug_name, disease=disease_name)):
+        # 输入快照经 pending 载荷带入任务轮:任务以点击时的名字为准,
+        # 不受任务期间输入框变动影响
+        enter_busy("home_analyze_busy",
+                   pending=(drug_name.strip(), disease_name.strip()))
+
+# ---------- 任务轮(busy):四库并发检索,结果入会话后复位 busy 重渲染 ----------
+if _analyze_busy:
+    in_drug, in_disease = busy_pending("home_analyze_busy")
+    completed = False
+    try:
+        with st.spinner(t("app.spinner_query", drug=in_drug, disease=in_disease)):
             # 四路数据库并发请求(ChEMBL/DGIdb/OpenTargets/DisGeNET);每路写各自的来源 CSV,
             # merged 表由主线程最后写出,并发不会写错文件;进度条随各路完成逐格推进
             progress = st.progress(0.0, text=t("app.progress_prepare"))
@@ -533,105 +564,133 @@ if analyze_btn:
                            pending=waiting or t("app.progress_done_word")))
 
             drug_df, disease_df, failed_sources = get_targets_concurrent(
-                drug_name, disease_name, progress_cb=_on_fetch_progress)
+                in_drug, in_disease, progress_cb=_on_fetch_progress)
             progress.empty()
-            # 从表格取出基因符号列表,供韦恩图和统计使用
-            drug_targets = drug_df["approvedSymbol"].tolist() if not drug_df.empty else []
-            disease_targets = disease_df["approvedSymbol"].tolist() if not disease_df.empty else []
 
-        if failed_sources:
-            # 单路失败时结果可能不完整:此时该侧 merged 缓存不会被写入,重试只补拉失败源。
-            # DisGeNET 空表若系未配置密钥所致,换成指明原因的专用提示,避免误判为网络故障
-            if "disgenet" in failed_sources and not config.DisGeNET_API_KEY:
-                st.warning(t("app.warn_disgenet_key_missing"))
-                other_failed = [key for key in failed_sources if key != "disgenet"]
-            else:
-                other_failed = failed_sources
-            if other_failed:
-                st.warning(t("app.warn_source_failed",
-                             sources=t("app.and_join").join(
-                                 t(f"source.{key}") for key in other_failed)))
+        st.session_state["home_analyze_result"] = {
+            "drug": in_drug, "disease": in_disease,
+            "drug_df": drug_df, "disease_df": disease_df,
+            "failed_sources": list(failed_sources),
+        }
+        st.session_state.pop("home_analyze_error", None)
+        completed = True
+    except Exception:
+        # 面向用户只提示友好信息;完整堆栈经 logging.exception 写入日志文件供排查
+        logging.exception("Home analysis failed")
+        st.session_state["home_analyze_error"] = t("app.analysis_fail")
+        completed = True  # 失败信息已入库,按已完成收尾(不显示"被中断")
+    finally:
+        finish_busy("home_analyze_busy", completed=completed)
+    st.rerun()
 
-        st.markdown('<div class="result-card">', unsafe_allow_html=True)
+# ---------- Results(直接读取暂存结果,页面刷新/切语言不再丢) ----------
+home_error = st.session_state.pop("home_analyze_error", None)
+if home_error:
+    st.error(home_error)
 
-        drug_set = set(drug_targets)
-        disease_set = set(disease_targets)
+result = st.session_state.get("home_analyze_result")
+if result:
+    drug_name = result["drug"]
+    disease_name = result["disease"]
+    drug_df = result["drug_df"]
+    disease_df = result["disease_df"]
+    failed_sources = result["failed_sources"]
 
-        col_a, col_b, col_c = st.columns([1, 1, 1])
-        col_a.metric(t("app.metric_drug"), drug_name)
-        col_b.metric(t("app.metric_targets"), len(drug_set))
-        col_c.metric(t("app.metric_disease_targets"), len(disease_set))
+    # 从表格取出基因符号列表,供韦恩图和统计使用
+    drug_targets = drug_df["approvedSymbol"].tolist() if not drug_df.empty else []
+    disease_targets = disease_df["approvedSymbol"].tolist() if not disease_df.empty else []
 
-        common = drug_set & disease_set
+    if failed_sources:
+        # 单路失败时结果可能不完整:此时该侧 merged 缓存不会被写入,重试只补拉失败源。
+        # DisGeNET 空表若系未配置密钥所致,换成指明原因的专用提示,避免误判为网络故障
+        if "disgenet" in failed_sources and not config.DisGeNET_API_KEY:
+            st.warning(t("app.warn_disgenet_key_missing"))
+            other_failed = [key for key in failed_sources if key != "disgenet"]
+        else:
+            other_failed = failed_sources
+        if other_failed:
+            st.warning(t("app.warn_source_failed",
+                         sources=t("app.and_join").join(
+                             t(f"source.{key}") for key in other_failed)))
 
-        st.metric(t("app.metric_common"), len(common))
+    drug_set = set(drug_targets)
+    disease_set = set(disease_targets)
 
-        # ----- Venn diagram -----
-        fig, ax = plt.subplots(figsize=(6, 4))
-        # 图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。
-        v = venn2(
-            subsets=(len(drug_set - disease_set),
-                     len(disease_set - drug_set),
-                     len(common)),
-            set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
-            ax=ax,
-        )
-        if v and v.get_label_by_id("11"):
-            v.get_label_by_id("11").set_fontsize(12)# 设置交集区域字号
-        ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
-        st.pyplot(fig)
+    col_a, col_b, col_c = st.columns([1, 1, 1])
+    col_a.metric(t("app.metric_drug"), drug_name)
+    col_b.metric(t("app.metric_targets"), len(drug_set))
+    col_c.metric(t("app.metric_disease_targets"), len(disease_set))
 
-        with st.expander(t("app.expander_targets"), expanded=False):
-            # ----- 药物靶点表 -----
-            st.markdown(t("app.drug_targets_md", name=drug_name, count=len(drug_set)))
-            if not drug_df.empty:
-                st.dataframe(
-                    drug_df.sort_values(["source_count", "score_pchembl"],
-                                        ascending=False, na_position="last"),
-                    width="stretch",
-                )
-            else:
-                st.write(t("app.no_drug_data"))
+    common = drug_set & disease_set
 
-            st.divider()
+    st.metric(t("app.metric_common"), len(common))
 
-            # ----- 疾病靶点表 -----
-            st.markdown(t("app.disease_targets_md", name=disease_name, count=len(disease_set)))
-            if not disease_df.empty:
-                st.dataframe(
-                    disease_df.sort_values(["source_count", "score_ot"],
-                                           ascending=False, na_position="last"),
-                    width="stretch",
-                )
-            else:
-                st.write(t("app.no_disease_data"))
+    # ----- Venn diagram -----
+    fig, ax = plt.subplots(figsize=(6, 4))
+    # 图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。
+    v = venn2(
+        subsets=(len(drug_set - disease_set),
+                 len(disease_set - drug_set),
+                 len(common)),
+        set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
+        ax=ax,
+    )
+    if v and v.get_label_by_id("11"):
+        v.get_label_by_id("11").set_fontsize(12)# 设置交集区域字号
+    ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
+    st.pyplot(fig)
 
-            st.divider()
+    with st.expander(t("app.expander_targets"), expanded=False):
+        # ----- 药物靶点表 -----
+        st.markdown(t("app.drug_targets_md", name=drug_name, count=len(drug_set)))
+        if not drug_df.empty:
+            st.dataframe(
+                drug_df.sort_values(["source_count", "score_pchembl"],
+                                    ascending=False, na_position="last"),
+                width="stretch",
+            )
+        else:
+            st.write(t("app.no_drug_data"))
 
-            # ----- 交集靶点表 -----
-            st.markdown(t("app.common_targets_md", drug=drug_name, disease=disease_name,
-                          count=len(common)))
-            if common:
-                # 合并两侧信息：每个交集基因保留药物侧和疾病侧的数据库来源与分数
-                common_df = pd.merge(
-                    drug_df.drop(columns=["source_count"]),
-                    disease_df.drop(columns=["source_count"]),
-                    on="approvedSymbol", how="inner",
-                )
-                # 两侧共 4 个数据库，支持的数据库越多排序越靠前
-                common_df["source_total"] = common_df[
-                    ["source_chmbl", "source_dgidb", "source_ot", "source_disgenet"]
-                ].sum(axis=1)
-                st.dataframe(
-                    common_df.sort_values(["source_total", "score_pchembl", "score_ot"],
-                                          ascending=False, na_position="last"),
-                    width="stretch",
-                )
-            else:
-                st.write(t("app.no_common_data"))
+        st.divider()
 
-        st.markdown('</div>', unsafe_allow_html=True)
+        # ----- 疾病靶点表 -----
+        st.markdown(t("app.disease_targets_md", name=disease_name, count=len(disease_set)))
+        if not disease_df.empty:
+            st.dataframe(
+                disease_df.sort_values(["source_count", "score_ot"],
+                                       ascending=False, na_position="last"),
+                width="stretch",
+            )
+        else:
+            st.write(t("app.no_disease_data"))
 
-        st.success(t("app.success_done"))
+        st.divider()
+
+        # ----- 交集靶点表 -----
+        st.markdown(t("app.common_targets_md", drug=drug_name, disease=disease_name,
+                      count=len(common)))
+        if common:
+            # 合并两侧信息：每个交集基因保留药物侧和疾病侧的数据库来源与分数
+            common_df = pd.merge(
+                drug_df.drop(columns=["source_count"]),
+                disease_df.drop(columns=["source_count"]),
+                on="approvedSymbol", how="inner",
+            )
+            # 两侧共 4 个数据库，支持的数据库越多排序越靠前
+            common_df["source_total"] = common_df[
+                ["source_chmbl", "source_dgidb", "source_ot", "source_disgenet"]
+            ].sum(axis=1)
+            st.dataframe(
+                common_df.sort_values(["source_total", "score_pchembl", "score_ot"],
+                                      ascending=False, na_position="last"),
+                width="stretch",
+            )
+        else:
+            st.write(t("app.no_common_data"))
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.success(t("app.success_done"))
 else:
     st.info(t("app.info_hint"))
