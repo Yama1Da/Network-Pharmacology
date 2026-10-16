@@ -448,10 +448,35 @@ query ($ids: [String!]!) {
     rcsb_id
     exptl { method }
     struct { title }
-    rcsb_entry_info { resolution_combined }
+    rcsb_entry_info {
+      resolution_combined
+      polymer_entity_count_protein
+      polymer_entity_count_DNA
+      polymer_entity_count_RNA
+    }
   }
 }
 """
+
+
+def composition_flag(n_protein, n_dna, n_rna) -> str:
+    """按聚合物组分给受体检索结果加防呆标注(2026-10-15 AGT 三重撞名事故的防再犯措施)。
+
+    基因符号全文检索会混入撞名条目,其中最危险的是不含任何蛋白质的纯核酸结构
+    (如事故中的 2MMQ)。返回值:"dna_only"(无蛋白,不能作蛋白对接受体)、
+    "has_nucleic"(蛋白+核酸复合物,受体清洗不剥离核酸原子,警示)、""(正常或组分未知)。
+    某项计数缺失(旧条目无该字段)时按保守策略处理:不因未知而阻断,已知含核酸即警示。
+    """
+
+    def _i(v):
+        return int(v) if isinstance(v, (int, float)) else 0
+
+    has_nucl = _i(n_dna) + _i(n_rna) > 0
+    if not has_nucl:
+        return ""
+    if n_protein == 0:
+        return "dna_only"
+    return "has_nucleic"
 
 
 def _rcsb_search_entry_ids(gene_symbol: str, max_hits: int) -> list[str]:
@@ -512,12 +537,17 @@ def _rcsb_graphql_entries(entry_ids: list[str]) -> dict[str, dict]:
             eid = e and e.get("rcsb_id")
             if not eid:
                 continue
-            res = (e.get("rcsb_entry_info") or {}).get("resolution_combined")
+            info = e.get("rcsb_entry_info") or {}
+            res = info.get("resolution_combined")
             res = res[0] if isinstance(res, list) and res else res
             out[eid] = {
                 "resolution": res,
                 "method": ", ".join(m.get("method", "") for m in e.get("exptl") or []),
                 "title": (e.get("struct") or {}).get("title", "") or "",
+                # 聚合物组分计数:供 composition_flag 做防呆标注(缺失字段按未知处理)
+                "n_protein": info.get("polymer_entity_count_protein"),
+                "n_dna": info.get("polymer_entity_count_DNA"),
+                "n_rna": info.get("polymer_entity_count_RNA"),
             }
     return out
 
@@ -553,7 +583,7 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
     import config
 
     uniq = sorted({g.strip().upper() for g in genes if g and g.strip()})
-    empty = pd.DataFrame(columns=["pdb_id", "resolution", "method", "title", "source"])
+    empty = pd.DataFrame(columns=["pdb_id", "resolution", "method", "title", "source", "flag"])
     results: dict[str, pd.DataFrame] = {g: empty.copy() for g in uniq}
     if not uniq:
         return results
@@ -590,13 +620,16 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
         if progress_cb:
             progress_cb(0.7 + (idx + 1) / max(len(gql_chunks), 1) * 0.3)
 
-    # 3) 按基因组装结果表(与旧版字段完全一致;个别 entry 元数据缺失按缺信息展示)
+    # 3) 按基因组装结果表(与旧版字段完全一致,新增 flag 防呆标注列;个别 entry 元数据缺失按缺信息展示)
     for g, ids in gene_ids.items():
         rows = [{"pdb_id": eid,
                  "resolution": meta.get(eid, {}).get("resolution"),
                  "method": meta.get(eid, {}).get("method", ""),
                  "title": meta.get(eid, {}).get("title", ""),
-                 "source": "experiment"}
+                 "source": "experiment",
+                 "flag": composition_flag(meta.get(eid, {}).get("n_protein"),
+                                          meta.get(eid, {}).get("n_dna"),
+                                          meta.get(eid, {}).get("n_rna"))}
                 for eid in ids]
         if rows:
             results[g] = pd.DataFrame(rows)
@@ -614,6 +647,7 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
                         "method": f"AlphaFold predicted ({config.ALPHAFOLD_MODEL_VERSION})",
                         "title": f"AlphaFold {config.ALPHAFOLD_MODEL_VERSION} monomer model for {g}",
                         "source": "alphafold",
+                        "flag": "",
                     }])
             except Exception:
                 # 预测结构查询失败不影响空表正常返回

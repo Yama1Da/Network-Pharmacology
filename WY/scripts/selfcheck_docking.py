@@ -155,6 +155,29 @@ def t_candidates_search_failure_friendly_error():
         assert results["TP53"].empty and results["EGFR"].empty
 
 
+def t_receptor_composition_flag():
+    """受体检索防呆标注(AGT 三重撞名事故的防再犯措施):纯核酸→阻断级,蛋白-核酸复合物→警示级。"""
+    f = dock.composition_flag
+    assert f(0, 2, 0) == "dna_only"          # 事故同款:纯 DNA 双链
+    assert f(0, 0, 1) == "dna_only"          # 纯 RNA 同理阻断
+    assert f(1, 1, 0) == "has_nucleic"       # 蛋白-DNA 复合物:警示不阻断
+    assert f(3, None, None) == ""            # 正常蛋白结构
+    assert f(1, 0, 0) == ""                  # 无核酸
+    assert f(None, None, None) == ""         # 计数全缺失(旧条目):按未知,不拦截
+    assert f(None, 2, 0) == "has_nucleic"    # 蛋白数未知但确含核酸:保守警示
+    # 组装链:批量结果表的 flag 列由元数据计数生成
+    with patch_attr(dock, "_rcsb_search_entry_ids", lambda gene, max_hits: ["2MMQ", "2WXW"]),             patch_attr(dock, "_rcsb_graphql_entries", lambda ids: {
+                "2MMQ": {"resolution": None, "method": "SOLUTION NMR", "title": "AGT FAPY duplex",
+                         "n_protein": 0, "n_dna": 2, "n_rna": 0},
+                "2WXW": {"resolution": 3.3, "method": "X-RAY DIFFRACTION",
+                         "title": "Crystal structure of human angiotensinogen",
+                         "n_protein": 1, "n_dna": 0, "n_rna": 0},
+            }):
+        df = dock.fetch_receptor_pdb_candidates("AGT")
+        assert df.set_index("pdb_id").loc["2MMQ", "flag"] == "dna_only", df
+        assert df.set_index("pdb_id").loc["2WXW", "flag"] == "", df
+
+
 def t_throttle_spacing():
     """对同一网站的请求有最小时间间隔;未配置的请求不限速;并发调用也正确排队。"""
     orig = config.HOST_MIN_REQUEST_INTERVAL
@@ -423,6 +446,7 @@ def main():
         ("uniprot network failure not cached", t_uniprot_network_failure_not_cached),
         ("alphafold pdb skip-if-exists", t_af_pdb_skip_existing),
         ("candidates AF fallback row", t_candidates_af_fallback_row),
+        ("receptor composition flag", t_receptor_composition_flag),
         ("candidates search failure friendly error", t_candidates_search_failure_friendly_error),
         ("interactive 3D html embed", t_interactive_3d_html),
         ("pocket residues cutoff param", t_residues_near_ligand_cutoff),
