@@ -83,6 +83,9 @@ if st.session_state.pop("_docking_entry", False):
                "lig_query", "lig_smiles", "drug_name", "disease_name",
                "use_struct", "pose_sel", "conclusion", "manual_genes"):
         st.session_state.pop(_k, None)
+    # PDB 下拉的控件 key 按基因动态命名,逐一清除
+    for _k in [k for k in st.session_state if k.startswith("pdb_sel_")]:
+        st.session_state.pop(_k, None)
 
 st.session_state.setdefault("docking", {})
 dock = st.session_state["docking"]
@@ -140,6 +143,9 @@ def _reset_docking_downstream() -> None:
     for _k in ("gene_sel", "pdb_sel", "pose_sel", "conclusion",
                "drug_name", "disease_name", "lig_query",
                "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
+        st.session_state.pop(_k, None)
+    # PDB 下拉的控件 key 按基因动态命名,逐一清除
+    for _k in [k for k in st.session_state if k.startswith("pdb_sel_")]:
         st.session_state.pop(_k, None)
 
 
@@ -710,6 +716,10 @@ if dock.get("genes"):
         for _k in ("rec_pdbqt", "pdb_path", "pdb_id", "box", "result",
                    "result_dir", "starred", "receptor_source"):
             dock.pop(_k, None)
+        dock.pop("pdb_sel", None)
+        # PDB 选择不随基因继承:同一条结构可同时出现在多个基因的候选列表里,
+        # 不清掉会承接旧基因的选中项而不是默认选新基因的第一个结构
+        st.session_state.pop(f"pdb_sel_{gene}", None)
         for _k in ("pose_sel", "conclusion",
                    "cx_x", "cx_y", "cx_z", "sx_x", "sx_y", "sx_z"):
             st.session_state.pop(_k, None)
@@ -737,10 +747,13 @@ if dock.get("genes"):
         st.dataframe(disp[["pdb_id", "resolution", "method", "title", "source", "note"]],
                      hide_index=True, use_container_width=True)
         st.caption(t("dock.rec_hint"))
-        # 换基因后新候选列表不含残留的旧 PDB id,先校验再渲染,避免 selectbox 抛异常
-        if st.session_state.get("pdb_sel") not in [str(x) for x in cand["pdb_id"].tolist()]:
-            st.session_state.pop("pdb_sel", None)
-        pdb_id = st.selectbox(t("dock.sel_pdb"), cand["pdb_id"].tolist(), key="pdb_sel")
+        # 控件 key 随基因变化:换基因后是全新控件,前端一定按新列表默认选第一条;
+        # 仅 del session_state 复位同 key 控件时,前端可能仍显示旧基因的选中项(与服务端值失同步)
+        pdb_sel_key = f"pdb_sel_{gene}"
+        # 残留值不在新候选列表里(重跑结构批量检查等)会让 selectbox 抛异常,先校验
+        if st.session_state.get(pdb_sel_key) not in [str(x) for x in cand["pdb_id"].tolist()]:
+            st.session_state.pop(pdb_sel_key, None)
+        pdb_id = st.selectbox(t("dock.sel_pdb"), cand["pdb_id"].tolist(), key=pdb_sel_key)
         # 更换 PDB 结构后,作废旧受体和后续步骤的旧结果,以及派生的控件会话键
         if dock.get("pdb_sel") != pdb_id:
             dock["pdb_sel"] = pdb_id
