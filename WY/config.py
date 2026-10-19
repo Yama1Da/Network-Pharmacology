@@ -498,3 +498,24 @@ INTERACTOME_CONFIDENCE = int(PPI_CONFIDENCE * 1000)
 # (STRING 版本化子域名把 v12.0 写作 version-12-0),与下载路径/背景互作组保持同版本;
 # 运行时齿轮面板切换版本亦需同步重算此值
 STRING_BASE_URL = f"https://version-{STRING_VERSION[1:].replace('.', '-')}.string-db.org/api/json"
+
+
+# ======== GEO / ML 筛选(GEO与ML共识筛选模块,实施方案 §5) ========
+# E-utilities 官方限流:无 key 3 次/秒,注册免费 NCBI_API_KEY 后 10 次/秒;
+# key 放 API.env(可选,缺失自动按无 key 模式限速,功能不受影响)
+NCBI_API_KEY = os.getenv("NCBI_API_KEY", "").strip()
+NCBI_EUTILS_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+GEO_SEARCH_CACHE_TTL_HOURS = 24      # 检索结果短期缓存(每天都有新数据集入库)
+GEO_SERIES_CACHE_SUBDIR = "geo_series"  # series matrix 永久缓存子目录(GEO 归档不可变)
+GEO_DOWNLOAD_TIMEOUT = 600           # 文件下载超时(秒):跨境波动大,实测 1.5MB 可达 119s
+GEO_DOWNLOAD_RETRIES = 3             # 下载失败重试次数(间隔见下),gzip 损坏视为失败重试
+GEO_DOWNLOAD_RETRY_DELAY = 5         # 重试间隔(秒)
+ML_SCREENING_VERSION = 1             # 算法/权重变更时 +1,旧结果自动失效(仿 TARGET_FILTER_VERSION)
+ML_MIN_SAMPLES_PER_GROUP = 3         # 每组样本低于此数直接报错,不降级硬跑
+ML_SEED = 0                          # 全模块固定随机种子,可复现
+ML_BOOTSTRAP_ROUNDS = 100            # bootstrap 稳定性重采样轮次(M2)
+ML_CV_FOLDS = 5                      # 交叉验证折数(M2)
+ML_SHORTLIST_TOP_K = 20              # shortlist 截断(M2)
+ML_DEG_PREFILTER_TOP_N = 2000        # 进 ML 前按 FDR 截断的候选基因数(性能前提,M2)
+# NCBI 限流注册:按是否配 key 取对应间隔(方案:不新建限流器,并入现有节流表)
+HOST_MIN_REQUEST_INTERVAL["NCBI_EUTILS"] = 0.10 if NCBI_API_KEY else 0.34
