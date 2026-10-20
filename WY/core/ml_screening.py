@@ -109,7 +109,8 @@ def _boruta_confirm(X, y, seed, iterations):
     for j in range(n_feat):
         shadow[:, j] = rng.permutation(Xs[:, j])
     both = np.hstack([Xs, shadow])
-    cols = list(X.columns) + [f"__shadow_{j}" for j in range(n_feat)]
+    # 列名统一转字符串:原始列若为整数会与影子字符串列名混合,sklearn 拒绝(审核 BUG-8)
+    cols = [str(c) for c in X.columns] + [f"__shadow_{j}" for j in range(n_feat)]
     hits = np.zeros(n_feat, dtype=int)
     for it in range(iterations):
         imp = _rf_gain(pd.DataFrame(both, columns=cols), y, seed + it)  # 每轮变 seed:相同数据+相同 seed 会产出相同分数,影子检验退化为全有/全无(审核 BUG-5)

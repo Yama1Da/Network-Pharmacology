@@ -136,7 +136,9 @@ def cmd_screen(args) -> int:
     print("[5/6] DEG 预过滤 + ML 共识(六算法 × 三验证)…")
     deg_top, leak_note = deg_prefilter(deg, top_n=args.prefilter_top)
     genes = deg_top["gene"].tolist()
-    X = matrix.T[genes]  # 转置为样本×基因
+    # 只取有标签的样本(丢弃的中间分级样本不在标签中,全样本矩阵会 KeyError,审核 BUG-7)
+    labeled = list(labels[labels == 1].index) + list(labels[labels == 0].index)
+    X = matrix[labeled].T[genes]  # 转置为样本×基因(仅已标记样本)
     res = run_ml_screening(X, labels.loc[X.index], bootstrap_rounds=args.bootstrap_rounds)
     m = res["meta"]
     print(f"    ML 输入: {m['n_samples']}样本 × {m['n_genes']}基因 | "
