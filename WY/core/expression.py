@@ -27,32 +27,54 @@ def _config():
 
 
 def looks_symbol_level(index_values) -> bool:
-    """行标识是否已是基因符号级:不含 Affy 探针后缀、非纯数字,且多数形如符号。"""
+    """行标识是否已是基因符号级。
+
+    排除四类常见探针/非符号标识(全面审核 BUG-1 修复):
+    - Affy 探针: 以 _at 结尾(如 1007_s_at)
+    - Ensembl ID: ENSG/ENSMUSG 等前缀
+    - Illumina 探针: ILMN_ 前缀
+    - Agilent 探针: A_XX_P 前缀(如 A_23_P123456)
+    """
     strs = [str(x) for x in index_values[:200]]
-    probe_like = sum(1 for s in strs if s.endswith(_PROBE_SUFFIX))
+    if not strs:
+        return False
+    # 探针/非符号模式匹配
+    probe_patterns = (
+        _PROBE_SUFFIX,           # Affy _at
+        "ENSG", "ENSMUSG", "ENSRNOG",  # Ensembl
+        "ILMN_",                 # Illumina
+        "A_",                    # Agilent (A_23_P...)
+    )
+    probe_like = sum(1 for s in strs
+                     if any(s.startswith(p) or s.endswith(p)
+                            for p in probe_patterns))
     digit_like = sum(1 for s in strs if s.replace(".", "").isdigit())
     alpha_like = sum(1 for s in strs if any(c.isalpha() for c in s))
-    return probe_like / max(len(strs), 1) < 0.05 and digit_like / max(len(strs), 1) < 0.5 \
-        and alpha_like / max(len(strs), 1) > 0.8
+    return (probe_like / len(strs) < 0.05
+            and digit_like / len(strs) < 0.5
+            and alpha_like / len(strs) > 0.8)
 
 
 def preprocess(matrix: pd.DataFrame, force_log: bool | None = None,
                ) -> tuple[pd.DataFrame, str]:
     """log2 变换决策,返回(处理后的矩阵, 实际采用的分支说明)。
 
-    启发式:含负值 → 已是归一化/log 后数据,不再变换;否则 95 分位 > 100
-    视为线性尺度,做 log2(x+1);其余视为已 log。force_log True/False 可覆盖
-    (summary 记录实际分支,保证可追溯)。
+    启发式(全面审核 BUG-3 修复:尺度判定优先于负值):
+    1. 95 分位 > 100 → 线性尺度,做 log2(x+1)(即使含负值也先做,
+       因为负值可能来自背景校正而非已 log);
+    2. 含负值且分位不高 → 已归一化数据(如 z-score),不再变换;
+    3. 其余(分位不高、无负值)→ 视为已 log。
+    force_log True/False 可覆盖(summary 记录实际分支,保证可追溯)。
     """
     num = matrix.select_dtypes(include=[np.number])
     if force_log is True:
         out, branch = np.log2(num.clip(lower=0) + 1), "log2(手动指定)"
     elif force_log is False:
         out, branch = num, "不变换(手动指定)"
-    elif (num < 0).any().any():
-        out, branch = num, "不变换(检测到负值,判定为已归一化)"
     elif float(num.quantile(0.95).quantile(0.95)) > 100:
         out, branch = np.log2(num.clip(lower=0) + 1), "log2(x+1)(启发式:线性尺度)"
+    elif (num < 0).any().any():
+        out, branch = num, "不变换(负值且非大尺度,判定为已归一化)"
     else:
         out, branch = num, "不变换(启发式:判定为已 log)"
     return out, branch
@@ -221,5 +243,6 @@ def differential_expression(matrix: pd.DataFrame, labels: pd.Series) -> pd.DataF
         "p": pvals,
     })[valid].reset_index(drop=True)
     res["FDR"] = benjamini_hochberg(res["p"].to_numpy())
-    res["direction"] = np.where(res["log2FC"] > 0, "up", "down")
+    res["direction"] = np.where(res["log2FC"] > 0, "up",
+                                np.where(res["log2FC"] < 0, "down", "flat"))
     return res.sort_values("p").reset_index(drop=True)

@@ -519,3 +519,6 @@ ML_SHORTLIST_TOP_K = 20              # shortlist 截断(M2)
 ML_DEG_PREFILTER_TOP_N = 2000        # 进 ML 前按 FDR 截断的候选基因数(性能前提,M2)
 # NCBI 限流注册:按是否配 key 取对应间隔(方案:不新建限流器,并入现有节流表)
 HOST_MIN_REQUEST_INTERVAL["NCBI_EUTILS"] = 0.10 if NCBI_API_KEY else 0.34
+
+ML_CONSENSUS_RANK_W = 0.5             # 共识打分权重:平均秩分(方案:权重写死 config,杜绝调出来)
+ML_CONSENSUS_FREQ_W = 0.5             # 共识打分权重:bootstrap 选中频率

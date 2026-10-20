@@ -1,12 +1,14 @@
 """GEO 表达谱与 ML 共识筛选的命令行入口(实施方案 §6,仿 lit_pcba_benchmark.py 先例)。
 
-M1 范围:geo(数据集检索)/ deg(下载→解析→分组→预处理→DEG)两个子命令;
-M2 将新增 screen 子命令(在 deg 产物之上叠加六算法共识与 shortlist)。
+M1:geo(数据集检索)/ deg(下载→解析→分组→预处理→DEG)两个子命令;
+M2:screen 子命令(在 deg 产物之上叠加六算法共识与 shortlist)。
 
 用法(在 WY 目录下):
     python scripts/geo_ml_screen.py geo --disease "type 2 diabetes" --limit 20
     python scripts/geo_ml_screen.py deg --gse GSE63067 --case-pattern "steatosis" --control-pattern "healthy"
     python scripts/geo_ml_screen.py deg --gse GSE63067            # 不带分组:仅打印分组字段总览
+    python scripts/geo_ml_screen.py screen --gse GSE63067 --case-pattern "steatosis" --control-pattern "healthy"
+        --ranked-csv "path/to/rwr_output.csv" --top-k 20
 """
 
 import argparse
@@ -14,6 +16,7 @@ import json
 import os
 import sys
 import time
+import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -99,6 +102,93 @@ def cmd_deg(args) -> int:
     return 0
 
 
+def cmd_screen(args) -> int:
+    """M2 全链:下载→解析→分组→预处理→映射→DEG→预过滤→六算法共识→shortlist/funnel。"""
+    from core.ml_screening import (
+        build_shortlist, deg_prefilter, run_ml_screening,
+        write_consensus_curve_png, write_roc_png,
+    )
+
+    # 抑制小样本 LinearSVC 偶发收敛警告(不影响结果,代码内已处理)
+    warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+
+    print(f"[1/6] 获取 {args.gse} …")
+    ds = fetch_geo_dataset(args.gse, force_refresh=args.force_refresh)
+    if ds.issues:
+        raise RuntimeError(f"{args.gse}: " + ";".join(ds.issues))
+    print(f"    样本 {len(ds.samples)} | 矩阵 {ds.table.shape} | 平台 {ds.gpl}")
+
+    print("[2/6] 分组 …")
+    labels = assign_groups(ds, args.case_pattern, args.control_pattern)
+    n_case, n_ctrl = int((labels == 1).sum()), int((labels == 0).sum())
+    print(f"    case={n_case} control={n_ctrl} 丢弃={len(ds.samples)-len(labels)}")
+
+    print("[3/6] 预处理与映射 …")
+    matrix, log_branch = preprocess(ds.table, force_log=args.force_log)
+    matrix = map_probe_to_symbol(matrix, ds.gpl)
+    print(f"    log2 决策: {log_branch} | 基因数 {len(matrix)}")
+
+    print("[4/6] 差异表达 …")
+    deg = differential_expression(matrix, labels)
+    sig_n = int((deg["FDR"] < 0.05).sum())
+    print(f"    FDR<0.05: {sig_n} | 全部基因 {len(deg)}")
+
+    print("[5/6] DEG 预过滤 + ML 共识(六算法 × 三验证)…")
+    deg_top, leak_note = deg_prefilter(deg, top_n=args.prefilter_top)
+    genes = deg_top["gene"].tolist()
+    X = matrix.T[genes]  # 转置为样本×基因
+    res = run_ml_screening(X, labels.loc[X.index], bootstrap_rounds=args.bootstrap_rounds)
+    m = res["meta"]
+    print(f"    ML 输入: {m['n_samples']}样本 × {m['n_genes']}基因 | "
+          f"{m['cv_mode']} AUC={m['cv_auc']} | 算法一致性={m['algo_spearman_mean']} | "
+          f"耗时 {m['elapsed_s']}s")
+
+    print("[6/6] shortlist 与漏斗 …")
+    ranked_csvs = {}
+    for rc in (args.ranked_csv or []):
+        name = os.path.splitext(os.path.basename(rc))[0]
+        ranked_csvs[name] = rc
+    # top_k 解析(build_shortlist 和出图共用同一个值)
+    top_k_resolved = args.top_k if args.top_k is not None else config.ML_SHORTLIST_TOP_K
+    sl, funnel = build_shortlist(res["consensus"], deg, ranked_csvs, top_k=top_k_resolved)
+    n_hit = int(sl["in_shortlist"].sum())
+    print(f"    shortlist: {n_hit} 个全证据交集基因")
+
+    out_dir = _results_dir(args.out, args.gse)
+    # 落盘:共识分/shortlist/漏斗/DEG/图/summary
+    res["consensus"].to_csv(os.path.join(out_dir, "ml_consensus_scores.csv"),
+                            index_label="gene", encoding="utf-8-sig")
+    sl.to_csv(os.path.join(out_dir, "shortlist.csv"), index=False, encoding="utf-8-sig")
+    funnel.to_csv(os.path.join(out_dir, "funnel.csv"), index=False, encoding="utf-8-sig")
+    deg.to_csv(os.path.join(out_dir, "deg_results.csv"), index=False, encoding="utf-8-sig")
+    tag = f"{args.gse}_{m['cv_mode']}"
+    write_roc_png(os.path.join(out_dir, f"ml_roc_{tag}.png"),
+                  res["roc"]["y_true"], res["roc"]["scores"], args.gse)
+    write_consensus_curve_png(os.path.join(out_dir, "consensus_curve.png"),
+                              res["consensus"], top_k_resolved)
+    summary = {
+        "module": "geo-ml-screen", "ml_version": config.ML_SCREENING_VERSION,
+        "gse": ds.gse, "gpl": ds.gpl, "n_samples": len(ds.samples),
+        "groups": {"case": n_case, "control": n_ctrl,
+                   "case_pattern": args.case_pattern,
+                   "control_pattern": args.control_pattern},
+        "preprocess": log_branch,
+        "deg_significant_fdr05": sig_n,
+        "deg_prefilter": {"top_n": args.prefilter_top if args.prefilter_top is not None
+                          else config.ML_DEG_PREFILTER_TOP_N, "leak_note": leak_note},
+        "ml_meta": m,
+        "ranked_csvs": {n: {"path": p, "mtime": os.path.getmtime(p),
+                            "size": os.path.getsize(p)}
+                        for n, p in ranked_csvs.items()},
+        "shortlist_count": n_hit,
+        "args": {k: v for k, v in vars(args).items() if k != "func"},
+    }
+    with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=1)
+    print(f"    产物: {out_dir}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="GEO 表达谱与 ML 共识筛选(M1:geo/deg;M2 增加 screen)")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -118,6 +208,24 @@ def main() -> int:
     p_deg.add_argument("--force-refresh", action="store_true", help="跳过缓存重新下载")
     p_deg.add_argument("--out", help="结果根目录(默认 CLI_RESULTS_DIR 或 ./results)")
     p_deg.set_defaults(func=cmd_deg)
+
+    p_scr = sub.add_parser("screen", help="全链:DEG + 六算法共识 + shortlist(M2)")
+    p_scr.add_argument("--gse", required=True, help="GSE 编号")
+    p_scr.add_argument("--case-pattern", required=True, help="病例组正则")
+    p_scr.add_argument("--control-pattern", required=True, help="对照组正则")
+    p_scr.add_argument("--ranked-csv", action="append",
+                       help="平台排序 CSV(可多次传入,如 --ranked-csv rwr.csv)")
+    p_scr.add_argument("--top-k", type=int, default=None,
+                       help="shortlist 截断(默认 config.ML_SHORTLIST_TOP_K=20)")
+    p_scr.add_argument("--prefilter-top", type=int, default=None,
+                       help="DEG 预过滤基因数(默认 config.ML_DEG_PREFILTER_TOP_N=2000)")
+    p_scr.add_argument("--bootstrap-rounds", type=int, default=None,
+                       help="bootstrap 轮次(默认 config.ML_BOOTSTRAP_ROUNDS=100;冒烟可 10)")
+    p_scr.add_argument("--force-log", dest="force_log", default=None, type=str,
+                       choices=["true", "false"], help="覆盖 log2 启发式")
+    p_scr.add_argument("--force-refresh", action="store_true")
+    p_scr.add_argument("--out", help="结果根目录")
+    p_scr.set_defaults(func=cmd_screen)
 
     args = ap.parse_args()
     if getattr(args, "force_log", None) is not None:

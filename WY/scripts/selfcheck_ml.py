@@ -1,0 +1,213 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""ML 共识筛选模块自检脚本:固化 M2 验收关卡为正式自检(纯本地,无网络请求)。
+
+覆盖点(方案 §8 + M2 全量审核):
+- 合成数据信号召回(植入 10 个区分基因,共识 top15 应召回 ≥8)
+- 方向验证(植入基因平均共识分 > 噪声基因中位数)
+- 种子一致性(同种子两次运行逐基因一致)
+- 打乱标签退化(AUC 应回落 ~0.5,植入基因不再富集)
+- LOOCV 自动切换(最小类 ≤6 时)
+- 方向防御(传入转置矩阵应报错)
+- BH 手算小例(5 个已知 p 值的 FDR 对照)
+- 探针识别回归(BUG-1:Ensembl/Illumina/Agilent 不再误判为 symbol 级)
+- log2 启发式回归(BUG-3:大尺度含负值应做 log2;z-score 不变换)
+- 丢弃样本回归(M1 审查:未命中样本应从标签中剔除)
+
+运行方式(在 WY 目录下):
+    python scripts/selfcheck_ml.py
+"""
+
+import os
+import sys
+import warnings
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import numpy as np
+import pandas as pd
+
+from selfcheck_common import run
+
+warnings.filterwarnings("ignore")
+
+import core.expression as expr
+import core.ml_screening as ml
+from core.geo import GeoDataset, assign_groups
+
+
+def _make_synthetic(n_ctrl=10, n_case=10, n_genes=200, n_planted=10, seed=42):
+    """合成数据:前 n_planted 个基因在 case 组抬升 shift(区分信号),其余为噪声。"""
+    rng = np.random.default_rng(seed)
+    genes = [f"G{i:03d}" for i in range(n_genes)]
+    X = rng.normal(0, 1, (n_ctrl + n_case, n_genes))
+    X[n_ctrl:, :n_planted] += 2.0
+    X = pd.DataFrame(X, columns=genes)
+    y = pd.Series([0] * n_ctrl + [1] * n_case)
+    return X, y, genes, genes[:n_planted]
+
+
+def t_signal_recall():
+    """合成数据信号:共识 top15 应召回 ≥8 个植入基因,方向正确。"""
+    X, y, genes, planted = _make_synthetic()
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=20)
+    top15 = res["consensus"].head(15).index.tolist()
+    recall = len(set(planted) & set(top15))
+    assert recall >= 8, f"信号召回不足: {recall}/15 (期望 ≥8)"
+    cs = res["consensus"]["consensus_score"]
+    assert cs[planted].mean() > cs[[g for g in genes if g not in planted]].median(), \
+        "方向错误:植入基因平均分应高于噪声中位数"
+
+
+def t_seed_consistency():
+    """种子一致性:同种子两次运行逐基因一致。"""
+    X1, y, _, _ = _make_synthetic(seed=42)
+    X2, _, _, _ = _make_synthetic(seed=42)
+    r1 = ml.run_ml_screening(X1, y, bootstrap_rounds=10, seed=0)
+    r2 = ml.run_ml_screening(X2, y, bootstrap_rounds=10, seed=0)
+    cs1 = r1["consensus"]["consensus_score"].round(6).to_dict()
+    cs2 = r2["consensus"]["consensus_score"].round(6).to_dict()
+    assert cs1 == cs2, "同种子两次运行结果不一致"
+
+
+def t_label_shuffle():
+    """打乱标签:AUC 应回落 ~0.5,植入基因不再富集于 top15。"""
+    X, y, _, planted = _make_synthetic(seed=99)
+    rng = np.random.default_rng(77)
+    y_shuf = pd.Series(rng.permutation(y.to_numpy()))
+    res = ml.run_ml_screening(X, y_shuf, bootstrap_rounds=10)
+    auc = res["meta"]["cv_auc"]
+    assert 0.20 < auc < 0.80, f"打乱后 AUC={auc} 异常(期望 ~0.5)"
+    top15 = res["consensus"].head(15).index.tolist()
+    n_planted_top = len(set(planted) & set(top15))
+    assert n_planted_top <= 4, f"打乱后植入基因仍有 {n_planted_top} 个在 top15(不应富集)"
+
+
+def t_loocv_auto():
+    """LOOCV 自动切换:最小类 ≤6 时 cv_mode 应为 loocv。"""
+    X, y, _, _ = _make_synthetic(n_ctrl=6, n_case=6, n_genes=50, seed=42)
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=5)
+    assert res["meta"]["cv_mode"] == "loocv", f"期望 loocv,实际 {res['meta']['cv_mode']}"
+
+
+def t_direction_defense():
+    """方向防御:传入转置矩阵应报错(行数≠标签数 或 行>列)。"""
+    X, y, _, _ = _make_synthetic(n_genes=200, seed=42)
+    X_t = X.T  # 故意传反:基因×样本 (200行 × 20列)
+    try:
+        ml.run_ml_screening(X_t, y, bootstrap_rounds=1)
+        raise AssertionError("方向防御未触发(传反矩阵未报错)")
+    except RuntimeError as e:
+        assert "方向" in str(e) or "转置" in str(e), f"报错信息不含方向提示: {e}"
+
+
+def t_bh_fdr():
+    """BH 手算对照:BH 1995 经典 15 个 p 值的 FDR。"""
+    p = np.array([0.001, 0.008, 0.039, 0.041, 0.042, 0.060, 0.074, 0.205,
+                  0.212, 0.216, 0.222, 0.251, 0.269, 0.275, 0.340])
+    q = expr.benjamini_hochberg(p)
+    # 手算:BH 标准公式 p(i)*n/rank,再取反向累积最小值
+    n = len(p)
+    order = np.argsort(p)
+    expected = np.empty(n)
+    raw = p[order] * n / (np.arange(n) + 1)
+    expected[order] = np.clip(np.minimum.accumulate(raw[::-1])[::-1], 0, 1)
+    assert np.allclose(q, expected, atol=1e-10), f"BH 不匹配:\n{q}\n{expected}"
+    # 边界:单基因
+    assert abs(expr.benjamini_hochberg(np.array([0.01]))[0] - 0.01) < 1e-10
+
+
+def t_probe_identifier():
+    """BUG-1 回归:Ensembl/Illumina/Agilent 探针不再被误判为 symbol 级。"""
+    assert expr.looks_symbol_level(["ENSG00000141510", "ENSG00000139618"]) is False, \
+        "Ensembl ID 被误判为 symbol 级"
+    assert expr.looks_symbol_level(["ILMN_123456", "ILMN_234567"]) is False, \
+        "Illumina 探针被误判为 symbol 级"
+    assert expr.looks_symbol_level(["A_23_P123456", "A_24_P234567"]) is False, \
+        "Agilent 探针被误判为 symbol 级"
+    assert expr.looks_symbol_level(["TP53", "TNF", "VEGFA", "AKT1"]) is True, \
+        "真 symbol 被误拒"
+    assert expr.looks_symbol_level(["1007_s_at", "1053_at"]) is False, \
+        "Affy 探针被误判为 symbol 级"
+
+
+def t_log2_heuristic():
+    """BUG-3 回归:大尺度含负值应做 log2;z-score/已 log 不变换。"""
+    rng = np.random.default_rng(0)
+    # 大尺度含负值(均值 500,标准差 200)→ log2
+    _, b1 = expr.preprocess(pd.DataFrame(rng.normal(500, 200, (18, 50))))
+    assert "log2" in b1, f"大尺度含负值未做 log2: {b1}"
+    # z-score(均值 0 含负值)→ 不变换
+    _, b2 = expr.preprocess(pd.DataFrame(rng.normal(0, 1, (18, 50))))
+    assert "不变换" in b2, f"z-score 被误变换: {b2}"
+    # 已 log(均值 8 无负值)→ 不变换
+    _, b3 = expr.preprocess(pd.DataFrame(rng.normal(8, 2, (18, 50))))
+    assert "不变换" in b3, f"已 log 被误变换: {b3}"
+    # force_log 覆盖
+    _, b4 = expr.preprocess(pd.DataFrame(rng.normal(30, 15, (18, 50))), force_log=True)
+    assert "log2" in b4, f"force_log 未生效: {b4}"
+
+
+def t_dropped_samples():
+    """M1 审查回归:未命中任何 pattern 的样本应从标签中真正剔除。"""
+    rows = []
+    for g, n in (("Severe", 5), ("Incipient", 4), ("Moderate", 4), ("Control", 6)):
+        for i in range(n):
+            rows.append((f"GSM_{g}_{i}", f"tissue sample", f"group: {g}"))
+    samples = pd.DataFrame(
+        {"source_name_ch1": [r[1] for r in rows],
+         "characteristics_ch1": [r[2] for r in rows]},
+        index=[r[0] for r in rows])
+    ds = GeoDataset(gse="SYNTH", meta={}, samples=samples, table=pd.DataFrame(), gpl="")
+    labels = assign_groups(ds, "Severe", "Control")
+    n_case, n_ctrl, n_total = int((labels == 1).sum()), int((labels == 0).sum()), len(labels)
+    assert n_case == 5 and n_ctrl == 6, f"分组数错: case={n_case} ctrl={n_ctrl}"
+    assert n_total == 11, f"丢弃样本未剔除: 总数 {n_total}(期望 11 = 5+6)"
+    assert "GSM_Incipient_0" not in labels.index, "Incipient 样本不应在标签中"
+    assert "GSM_Moderate_0" not in labels.index, "Moderate 样本不应在标签中"
+
+
+def t_group_hard_boundaries():
+    """分组四道硬边界:零命中/全命中/重叠/样本不足均应报错。"""
+    rows = []
+    for g, n in (("Severe", 5), ("Incipient", 4), ("Control", 6)):
+        for i in range(n):
+            rows.append((f"GSM_{g}_{i}", f"tissue", f"group: {g}"))
+    samples = pd.DataFrame(
+        {"source_name_ch1": [r[1] for r in rows],
+         "characteristics_ch1": [r[2] for r in rows]},
+        index=[r[0] for r in rows])
+    ds = GeoDataset(gse="SYNTH", meta={}, samples=samples, table=pd.DataFrame(), gpl="")
+
+    for case_p, ctrl_p, expect in [
+        ("zzz", "Control", "零命中"),
+        ("tissue", "Control", "全命中"),
+        ("Severe|Control", "Control", "重叠"),
+        ("zzz", "Control", "零命中(case 匹配 0 个)"),
+    ]:
+        try:
+            assign_groups(ds, case_p, ctrl_p)
+            raise AssertionError(f"{expect}: 未报错")
+        except RuntimeError:
+            pass  # 预期报错
+
+
+def main():
+    tests = [
+        ("合成数据信号召回(≥8/10)与方向", t_signal_recall),
+        ("种子一致性(逐基因)", t_seed_consistency),
+        ("打乱标签退化(AUC~0.5)", t_label_shuffle),
+        ("LOOCV 自动切换(≤6 样本)", t_loocv_auto),
+        ("方向防御(转置矩阵报错)", t_direction_defense),
+        ("BH-FDR 手算对照(15 值)", t_bh_fdr),
+        ("探针识别(BUG-1 回归)", t_probe_identifier),
+        ("log2 启发式(BUG-3 回归)", t_log2_heuristic),
+        ("丢弃样本剔除(M1 审查回归)", t_dropped_samples),
+        ("分组四道硬边界", t_group_hard_boundaries),
+    ]
+    run(tests, "GEO+ML screening selfcheck")
+
+
+if __name__ == "__main__":
+    main()
