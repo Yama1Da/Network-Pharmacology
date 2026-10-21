@@ -1,10 +1,13 @@
 """GEO 表达谱与 ML 共识筛选页面(M4,模块收官 GUI)。
 
 四区布局(方案 §M4):
-① 输入区:疾病名检索 GEO 数据集(或直接输入 GSE 编号)
-② 配置区:分组正则 + 平台排序 CSV 多选 + top-K/预过滤/bootstrap 参数
+① 输入区:疾病名检索 GEO 数据集 / 直接输入 GSE 编号 / 本地矩阵直跑(方案 §6)
+② 配置区:分组正则 + 平台排序 CSV 多选(按 analysis_meta.json 元数据展示与过滤,
+   只列排序表 *_query_genes.csv)+ top-K/预过滤/bootstrap 参数
 ③ 运行区:一键执行(DEG → ML 共识 → shortlist),产物经共用管线落盘
-   results/mlscreen/<GSE>_<时间戳>/,与 CLI(geo_ml_screen.py)产物同源互通
+   Static/data/downloads/GEOresult/<GSE>_<时间戳>/,与 PPI(_data)/对接(MDresult)
+   同属 Web 端产物区;CLI 默认仍落 results/mlscreen(方案 §6),历史列表双根同扫;
+   GEO 下载失败降级用旧缓存时,显示黄色警告条 + 强制更新按钮(失效场景②)
 ④ 结果区:共识表/ROC/shortlist 下载/历史结果列表(读各次 summary.json,
    含陈旧检测:算法版本升级或排序 CSV 重跑即提示建议重算,方案失效场景③)
 
@@ -18,6 +21,7 @@ import warnings
 import streamlit as st
 
 import config
+from core.geo import fetch_geo_dataset
 from core.ml_pipeline import default_results_root, run_screen_chain, stale_reasons
 from i18n import t
 from ui.widgets import back_button, hide_sidebar
@@ -43,7 +47,8 @@ ss.setdefault("eml_busy", False)
 # ---------- ① 输入区 ----------
 st.subheader(t("eml.step1"))
 
-tab_search, tab_direct = st.tabs([t("eml.tab_search"), t("eml.tab_direct")])
+tab_search, tab_direct, tab_local = st.tabs(
+    [t("eml.tab_search"), t("eml.tab_direct"), t("eml.tab_local")])
 
 with tab_search:
     col_d, col_l = st.columns([3, 1])
@@ -74,6 +79,18 @@ with tab_search:
 with tab_direct:
     st.caption(t("eml.direct_hint"))
 
+with tab_local:
+    st.caption(t("eml.local_hint"))
+    col_le, col_ll = st.columns(2)
+    with col_le:
+        expr_path = st.text_input(t("eml.local_expr"), key="eml_local_expr",
+                                  placeholder=r"D:\data\GSE12345_expr.csv")
+    with col_ll:
+        labels_path = st.text_input(t("eml.local_labels"), key="eml_local_labels",
+                                    placeholder=r"D:\data\labels.csv")
+    case_label = st.text_input(t("eml.local_case"), key="eml_local_case",
+                               placeholder=t("eml.local_case_ph"))
+
 # 数据集选择(检索结果点选或直填)
 selected_gse = st.text_input(
     t("eml.select_gse"),
@@ -83,6 +100,12 @@ selected_gse = st.text_input(
 if selected_gse.strip():
     ss.eml["selected_gse"] = selected_gse.strip().upper()
     st.info(t("eml.gse_confirmed", gse=selected_gse.strip().upper()))
+
+# 数据源判定:本地矩阵(两路都填)与 GSE 二选一(方案 §6,与管线防呆一致)
+use_local = bool(expr_path.strip()) and bool(labels_path.strip())
+local_partial = bool(expr_path.strip()) != bool(labels_path.strip())
+has_gse = bool(selected_gse.strip())
+source_conflict = use_local and has_gse
 
 st.divider()
 
@@ -123,7 +146,10 @@ if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview",
 col_rank, col_param = st.columns([2, 1])
 with col_rank:
     st.markdown(t("eml.ranked_csv_title"))
-    # 自动发现 downloads 下的 *_query_genes.csv 和 *_nodes.csv
+    # 自动发现 downloads 下各 PPI 结果目录的排序 CSV。只收 *_query_genes.csv
+    # (gene/source/rwr_score 排序表)——nodes/edges 是网络结构表,混入会被当
+    # 排序用(语义错误);按 analysis_meta.json 元数据展示与过滤(药/病、分析
+    # 时间、STRING 版本),不用文件名猜(方案 §M4)
     ranked_files = []
     dl_dir = config.DOWNLOADS_DIR
     if os.path.isdir(dl_dir):
@@ -131,41 +157,70 @@ with col_rank:
             dpath = os.path.join(dl_dir, d)
             if not os.path.isdir(dpath) or not d.endswith("_data"):
                 continue
+            meta = {}
+            meta_path = os.path.join(dpath, "analysis_meta.json")
+            if os.path.isfile(meta_path):
+                try:
+                    with open(meta_path, encoding="utf-8") as _mf:
+                        meta = json.load(_mf)
+                except Exception:
+                    meta = {}
             for f in sorted(os.listdir(dpath)):
-                if f.endswith("_query_genes.csv") or f.endswith("_nodes.csv"):
-                    ranked_files.append({
-                        "label": f"{d}/{f}",
-                        "path": os.path.join(dpath, f),
-                    })
+                if not f.endswith("_query_genes.csv"):
+                    continue
+                title = " · ".join(x for x in (
+                    d[:-len("_data")],
+                    str(meta.get("analyzed_at") or ""),
+                    f"STRING {meta['string_version']}" if meta.get("string_version") else "",
+                ) if x)
+                ranked_files.append({"label": title, "path": os.path.join(dpath, f),
+                                     "drug": str(meta.get("drug", "")),
+                                     "disease": str(meta.get("disease", ""))})
     if ranked_files:
-        selected_files = st.multiselect(
-            t("eml.ranked_csv_select"),
-            options=[rf["label"] for rf in ranked_files],
-            key="eml_ranked")
-        ss.eml["ranked_paths"] = [
-            rf["path"] for rf in ranked_files if rf["label"] in selected_files]
+        _fd, _fdis = st.columns(2)
+        with _fd:
+            f_drug = st.text_input(t("eml.filter_drug"), key="eml_ranked_drug").strip().lower()
+        with _fdis:
+            f_disease = st.text_input(t("eml.filter_disease"), key="eml_ranked_disease").strip().lower()
+        shown = [rf for rf in ranked_files
+                 if (not f_drug or f_drug in rf["drug"].lower())
+                 and (not f_disease or f_disease in rf["disease"].lower())]
+        if shown:
+            selected_files = st.multiselect(
+                t("eml.ranked_csv_select"),
+                options=[rf["label"] for rf in shown],
+                key="eml_ranked")
+            ss.eml["ranked_paths"] = [
+                rf["path"] for rf in shown if rf["label"] in selected_files]
+        else:
+            st.caption(t("eml.no_ranked_match"))
     else:
         st.caption(t("eml.no_ranked_csv"))
 
 with col_param:
     top_k = st.number_input(t("eml.topk_label"), min_value=5, max_value=100,
                             value=config.ML_SHORTLIST_TOP_K, key="eml_topk")
-    # GUI 默认值小于 CLI:网页交互场景下 2000 基因 + 20 轮会让 ML 段跑数十分钟
-    # (SVM-RFE 对特征数近平方级;实测 2000×20 轮 >3 分钟未完成,500×10 轮约 1-2 分钟)
+    # 默认随 config(500 基因 × 30 轮,页面/CLI 统一口径):本机实测 500×30 ML 段约 2 分钟
+    # (LOOCV 小样本数据集约 2.5 分钟);SVM-RFE 对特征数近平方级,调大候选池会显著变慢
     prefilter_n = st.number_input(
         t("eml.prefilter_label"), min_value=50, max_value=5000,
-        value=500, key="eml_prefilter")
+        value=config.ML_DEG_PREFILTER_TOP_N, key="eml_prefilter")
     bootstrap_n = st.number_input(
         t("eml.bootstrap_label"), min_value=5, max_value=200,
-        value=10, key="eml_bootstrap")
+        value=config.ML_BOOTSTRAP_ROUNDS, key="eml_bootstrap")
     st.caption(t("eml.perf_hint"))
 
 st.divider()
 
 # ---------- ③ 运行区 ----------
 st.subheader(t("eml.step3"))
-can_run = bool(selected_gse.strip() and case_pat.strip() and ctrl_pat.strip())
-if not can_run:
+can_run = ((has_gse and case_pat.strip() and ctrl_pat.strip()) or use_local) \
+    and not source_conflict
+if source_conflict:
+    st.error(t("eml.source_conflict"))
+elif local_partial:
+    st.warning(t("eml.local_missing"))
+elif not can_run:
     st.info(t("eml.fill_required"))
 if ss.eml_busy:
     st.caption(t("eml.busy_hint"))
@@ -194,12 +249,21 @@ if st.button(t("eml.run_btn"), key="eml_run", type="primary",
             try:
                 ranked_csvs = {os.path.splitext(os.path.basename(p))[0]: p
                                for p in ss.eml.get("ranked_paths", [])}
-                res = run_screen_chain(
-                    gse=selected_gse.strip().upper(),
-                    case_pattern=case_pat.strip(), control_pattern=ctrl_pat.strip(),
-                    prefilter_top=int(prefilter_n), bootstrap_rounds=int(bootstrap_n),
-                    ranked_csvs=ranked_csvs, top_k=int(top_k),
-                    progress=_on_progress)
+                common = dict(prefilter_top=int(prefilter_n),
+                              bootstrap_rounds=int(bootstrap_n),
+                              ranked_csvs=ranked_csvs, top_k=int(top_k),
+                              out_base=config.GEO_RESULT_DIR,
+                              out_subdir=None,
+                              progress=_on_progress)
+                if use_local:
+                    res = run_screen_chain(
+                        expr=expr_path.strip(), labels=labels_path.strip(),
+                        case_label=case_label.strip() or None, **common)
+                else:
+                    res = run_screen_chain(
+                        gse=selected_gse.strip().upper(),
+                        case_pattern=case_pat.strip(),
+                        control_pattern=ctrl_pat.strip(), **common)
                 ss.eml["result"] = {
                     "consensus": res["consensus"],
                     "shortlist": res["shortlist"],
@@ -207,18 +271,42 @@ if st.button(t("eml.run_btn"), key="eml_run", type="primary",
                     "deg": res["deg"],
                     "meta": res["meta"],
                     "roc": res["roc"],
-                    "gse": selected_gse.strip(),
+                    "gse": res["gse"] or res["tag"],
                     "out_dir": res["out_dir"],
                     "elapsed": res["summary"]["elapsed_total_s"],
                 }
                 st.success(t("eml.run_success",
-                             gse=selected_gse.strip(),
+                             gse=res["gse"] or res["tag"],
                              elapsed=res["summary"]["elapsed_total_s"]))
                 st.caption(t("eml.saved_to", dir=res["out_dir"]))
+                # 降级标记入会话(方案失效场景②):强制更新按钮必须渲染在运行按钮
+                # 块之外 —— 块内按钮在本次 run 结束后不再重建,点击会被 Streamlit
+                # 静默丢弃(审查 BUG-12)
+                if res["summary"].get("geo_cache_fallback"):
+                    ss.eml["geo_fallback"] = {
+                        "gse": selected_gse.strip().upper(),
+                        "date": res["summary"].get("geo_cache_date", "")}
+                else:
+                    ss.eml.pop("geo_fallback", None)
             except Exception as exc:
                 st.error(t("eml.run_failed", exc=exc))
     finally:
         ss.eml_busy = False
+
+# ---------- GEO 下载降级提示(方案失效场景②) ----------
+# 常驻渲染:强制更新按钮任何时候可点(点击触发重跑,本块会重新执行,点击不会丢)
+if ss.eml.get("geo_fallback"):
+    _fb = ss.eml["geo_fallback"]
+    st.warning(t("eml.cache_fallback", date=_fb["date"]))
+    if st.button(t("eml.force_redownload"), key="eml_force_dl",
+                 disabled=ss.eml_busy):
+        with st.spinner(t("eml.loading")):
+            try:
+                fetch_geo_dataset(_fb["gse"], force_refresh=True)
+                ss.eml.pop("geo_fallback", None)
+                st.success(t("eml.force_dl_ok"))
+            except Exception as exc:
+                st.error(t("eml.run_failed", exc=exc))
 
 st.divider()
 
@@ -300,24 +388,37 @@ st.divider()
 # ---------- 历史结果列表(方案 §M4 ④:读各次 summary.json;陈旧检测=失效场景③) ----------
 st.subheader(t("eml.history_title"))
 
-_history_root = os.path.join(default_results_root(), "mlscreen")
+# 双根同扫:页面新产物在 downloads/GEOresult,CLI 产物在 results/mlscreen,都不丢
+_history_roots = [
+    ("GEOresult", config.GEO_RESULT_DIR),
+    ("mlscreen", os.path.join(default_results_root(), "mlscreen")),
+]
 _entries = []
-if os.path.isdir(_history_root):
-    for _d in sorted(os.listdir(_history_root), reverse=True):
-        _spath = os.path.join(_history_root, _d, "summary.json")
-        if os.path.isfile(_spath):
-            try:
-                with open(_spath, encoding="utf-8") as _f:
-                    _entries.append({"dir": _d, "summary": json.load(_f)})
-            except Exception:
-                continue  # 损坏的 summary 不挡其余历史
+_seen_labels = set()
+for _root_tag, _root in _history_roots:
+    if not os.path.isdir(_root):
+        continue
+    for _d in sorted(os.listdir(_root), reverse=True):
+        _spath = os.path.join(_root, _d, "summary.json")
+        if not os.path.isfile(_spath):
+            continue
+        try:
+            with open(_spath, encoding="utf-8") as _f:
+                _summary = json.load(_f)
+        except Exception:
+            continue  # 损坏的 summary 不挡其余历史
+        _label = _d if _d not in _seen_labels else f"{_d}·{_root_tag}"
+        _seen_labels.add(_label)
+        _entries.append({"label": _label, "dir": _d, "root": _root,
+                         "summary": _summary})
 
 if not _entries:
     st.caption(t("eml.history_empty"))
 else:
     _sel = st.selectbox(t("eml.history_select"),
-                        options=[e["dir"] for e in _entries], key="eml_history")
-    _s = next(e["summary"] for e in _entries if e["dir"] == _sel)
+                        options=[e["label"] for e in _entries], key="eml_history")
+    _entry = next(e for e in _entries if e["label"] == _sel)
+    _s = _entry["summary"]
     _m = _s.get("ml_meta") or {}
     _reasons = stale_reasons(_s)
     if _reasons:
@@ -338,7 +439,8 @@ else:
                _m.get("cv_auc") if _m.get("cv_auc") is not None else "N/A")
     _c4.metric(t("eml.metric_shortlist"), _s.get("shortlist_count", "?"))
     _c5.metric(t("eml.metric_version"), f"v{_s.get('ml_version', '?')}")
-    st.caption(f"{t('eml.history_files')}: {os.path.join(_history_root, _sel)}")
+    st.caption(f"{t('eml.history_files')}: "
+               f"{os.path.join(_entry['root'], _entry['dir'])}")
 
 st.divider()
 st.caption(t("eml.footer"))

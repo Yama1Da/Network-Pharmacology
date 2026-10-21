@@ -392,10 +392,12 @@ def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_cont
                            core_fig, dtp_fig, gsea_drug_df, gsea_disease_df,
                            string_fig, cyto_fig,
                            expansion_df, rwr_results, proximity_result, modules_data,
+                           drug_name: str = "", disease_name: str = "",
                            progress=None) -> tuple[dict, dict | None]:
     """Step 5/5.5:全部结果保存到下载目录(同名分析旧目录会被替换,不会堆积)。
 
     模块文件必须在主目录重建后落盘,否则会被 save_ppi_results 的旧目录清理删掉。
+    drug_name/disease_name 写入 analysis_meta.json,供 ML 筛选页按元数据发现排序 CSV。
     返回 (saved 路径字典, modules_result)。"""
     def _prog(step: str | None = None, state: str | None = None,
               fraction: float | None = None) -> None:
@@ -415,6 +417,7 @@ def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_cont
         target_pathway_fig=dtp_fig,
         string_fig=string_fig,
         cyto_fig=cyto_fig,
+        drug=drug_name, disease=disease_name,
     )
     # GSEA 结果 CSV 保存进分析目录（空结果不保存），打包下载时自动包含
     gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
@@ -616,6 +619,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         string_fig=string_fig, cyto_fig=cyto_fig,
         expansion_df=expansion_df, rwr_results=rwr_results,
         proximity_result=proximity_result, modules_data=modules_data,
+        drug_name=drug_name, disease_name=disease_name,
         progress=progress)
 
     return {

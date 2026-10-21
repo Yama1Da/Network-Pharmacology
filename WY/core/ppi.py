@@ -684,10 +684,13 @@ def save_ppi_results(
     target_pathway_fig: "matplotlib.figure.Figure | None" = None,
     string_fig: "matplotlib.figure.Figure | None" = None,
     cyto_fig: "matplotlib.figure.Figure | None" = None,
+    drug: str | None = None,
+    disease: str | None = None,
 ) -> dict:
     """把一次 PPI 分析的全部结果保存到结果目录下的 <prefix>_data 文件夹(prefix 为文件名前缀,如 aspirin_cancer),返回各文件的保存路径(含目录路径)。
     保存前会删除同 prefix 的旧文件夹(含历史结果),同一药物+疾病组合只保留最新一次分析,不会越积越多;节点表含 is_hub 列(算出 MCC 时含 mcc 列),其余为边表、交互式网络、GraphML、静态图(PNG 300 dpi + SVG 矢量)、STRING/Cytoscape 风格网络图及各富集/核心靶点/通路网络图表。
-    传入富集结果表/图时才保存对应的富集文件,不传则跳过。"""
+    传入富集结果表/图时才保存对应的富集文件,不传则跳过。
+    传入 drug/disease 时写入 analysis_meta.json,供下游按元数据匹配(方案 §M4,不用文件名猜)。"""
     import glob
     import shutil
     import networkx as nx
@@ -705,11 +708,17 @@ def save_ppi_results(
     # STRING 版本(切版本后对比/复现的依据);结果目录每次分析整体重建,本文件随之刷新
     from datetime import datetime
 
-    save_json_file(os.path.join(subdir, "analysis_meta.json"), {
+    meta = {
         "string_version": config.STRING_VERSION,
         "interactome_confidence": int(config.INTERACTOME_CONFIDENCE),
         "analyzed_at": datetime.now().isoformat(timespec="seconds"),
-    }, indent=2, sort_keys=True)
+    }
+    if drug and str(drug).strip():
+        meta["drug"] = str(drug).strip()
+    if disease and str(disease).strip():
+        meta["disease"] = str(disease).strip()
+    save_json_file(os.path.join(subdir, "analysis_meta.json"), meta,
+                   indent=2, sort_keys=True)
 
     paths = {
         "nodes": os.path.join(subdir, f"{prefix}_nodes.csv"),

@@ -237,6 +237,21 @@ def t_pipeline_roundtrip():
             f"本地矩阵 evidence_scope 应为未标注,实际 {res['shortlist']['evidence_scope'].iloc[0]}"
         assert summary["evidence_scope"] == "未标注(本地矩阵)", "summary 未记录 evidence_scope"
         assert stale_reasons(summary) == [], "刚生成的新结果不应判陈旧"
+        # 定位注释行(方案 §11):首行 "#" 注释必须能被干净跳过,不得混成脏数据行
+        sl_path = os.path.join(out_dir, "shortlist.csv")
+        with open(sl_path, encoding="utf-8-sig") as f:
+            assert f.readline().startswith("#"), "shortlist.csv 缺首行定位注释"
+        sl_back = pd.read_csv(sl_path, comment="#", encoding="utf-8-sig")
+        assert list(sl_back.columns)[:2] == ["gene", "evidence_scope"], \
+            f"注释行被读成脏数据(表头异常): {list(sl_back.columns)[:3]}"
+        assert len(sl_back) == 10, f"注释行被计成数据行(期望 10 行,实际 {len(sl_back)})"
+        # 漏斗基因明细(方案 §4.3):dropped_genes 列存在,且末层计数与 shortlist 一致
+        fn_back = pd.read_csv(os.path.join(out_dir, "funnel.csv"))
+        assert "dropped_genes" in fn_back.columns, "funnel 缺 dropped_genes 明细列"
+        assert int(fn_back.iloc[-1]["n"]) == int(res["shortlist"]["in_shortlist"].sum()), \
+            "漏斗末层计数与 shortlist 交集数不一致"
+        assert "bootstrap_rounds_done" in summary["ml_meta"], \
+            "ml_meta 未记录实际完成轮数"
         # 排序 CSV 被重跑(内容/mtime/size 变化)应触发 ranked_changed
         pd.DataFrame({"gene": genes[:25], "score": rng.random(25)}).to_csv(prox_p, index=False)
         reasons = stale_reasons(summary)
@@ -264,6 +279,35 @@ def t_sample_source_label():
         "同时命中时细胞系应优先"
 
 
+def t_bootstrap_denominator():
+    """分母回归(2026-10 审查修复):失败轮不计入分母,成功轮必选基因频率应为 1.0。"""
+    X, y, genes, _ = _make_synthetic(n_ctrl=6, n_case=6, n_genes=30, seed=1)
+    orig = ml._select_all
+    calls = {"n": 0}
+
+    def fake_select(Xr, yr, seed, boruta_iter=5):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise RuntimeError("模拟选择器失败")
+        # 确定性重要性 = 列序:每个成功轮都选中末 k 个基因
+        return {alg: pd.Series(np.arange(len(Xr.columns), dtype=float), index=Xr.columns)
+                for alg in ("lasso", "enet", "ridge", "rf_boruta", "svm_rfe", "xgboost")}
+
+    ml._select_all = fake_select
+    try:
+        freq, n_done = ml.bootstrap_stability(X, y, rounds=10, seed=0)
+    finally:
+        ml._select_all = orig
+    assert n_done == 8, f"成功轮数应为 8(10 轮 - 2 次失败),实际 {n_done}"
+    k = ml._top_k(30)
+    assert k == 10, f"_top_k(30) 应为 10,实际 {k}"
+    always = genes[-k:]  # 末 k 个基因在每个成功轮都被选中
+    got = freq.loc[always].to_numpy()
+    assert (got == 1.0).all(), \
+        f"成功轮必选基因频率应为 1.0(分母=成功轮数),实际最大 {got.max()}"
+    assert (freq.to_numpy() <= 1.0).all(), "频率超出 [0,1]"
+
+
 def main():
     tests = [
         ("合成数据信号召回(≥8/10)与方向", t_signal_recall),
@@ -278,6 +322,7 @@ def main():
         ("分组四道硬边界", t_group_hard_boundaries),
         ("共用管线全链落盘与陈旧判定(M4)", t_pipeline_roundtrip),
         ("样本来源标注(细胞系/组织/未标注)", t_sample_source_label),
+        ("bootstrap 分母(失败轮不计)", t_bootstrap_denominator),
     ]
     run(tests, "GEO+ML screening selfcheck")
 

@@ -177,7 +177,10 @@ def _select_all(X, y, seed, boruta_iter=_BORUTA_ITER_FULL):
 def bootstrap_stability(X, y, rounds, seed):
     """分层 bootstrap 重采样(逐类有放回);每轮重做特征选择,记录各算法前 K 命中频率。
 
-    返回 DataFrame(index=gene, columns=六算法):选中频率 ∈ [0,1]。
+    返回 (DataFrame(index=gene, columns=六算法), n_done):
+    频率 ∈ [0,1],分母为**成功完成选择的轮数** n_done 而非总轮数 —— 失败/退化
+    轮若计入分母会把所有基因的选中频率系统性压低(2026-10 审查修复);
+    n_done < rounds 时留 warning 日志,并由调用方写入 summary(ml_meta)。
     """
     rng = np.random.default_rng(seed)
     y_arr = np.asarray(y)
@@ -186,6 +189,7 @@ def bootstrap_stability(X, y, rounds, seed):
     k = _top_k(n_feat)
     freq = {alg: np.zeros(n_feat) for alg in
             ("lasso", "enet", "ridge", "rf_boruta", "svm_rfe", "xgboost")}
+    n_done = 0
     for r in range(rounds):
         idx = []
         for cls in classes:
@@ -205,9 +209,12 @@ def bootstrap_stability(X, y, rounds, seed):
             top = set(imp.sort_values(ascending=False).head(k).index)
             pos = [X.columns.get_loc(g) for g in top]
             freq[alg][pos] += 1
-    n_ok = max(1, rounds)
-    return pd.DataFrame({alg: freq[alg] / n_ok for alg in freq},
-                        index=X.columns)
+        n_done += 1
+    if n_done < rounds:
+        logging.warning("bootstrap: %d/%d 轮失败被跳过,频率分母按成功轮数 %d 计",
+                        rounds - n_done, rounds, n_done)
+    return (pd.DataFrame({alg: freq[alg] / max(1, n_done) for alg in freq},
+                         index=X.columns), n_done)
 
 
 def crossval_roc(X, y, seed):
@@ -287,7 +294,7 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
 
     imps = _select_all(X, y, seed)
     rank_scores = {alg: _rank_score(imp) for alg, imp in imps.items()}
-    freq = bootstrap_stability(X, y, rounds, seed)
+    freq, n_boot_done = bootstrap_stability(X, y, rounds, seed)
     auc, y_true, scores, cv_mode = crossval_roc(X, y, seed)
 
     genes = list(X.columns)
@@ -316,7 +323,8 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
     meta = {
         "n_samples": int(len(y)), "n_genes": int(X.shape[1]),
         "n_case": int(np.asarray(y).sum()), "n_control": int(len(y) - int(np.asarray(y).sum())),
-        "bootstrap_rounds": int(rounds), "cv_mode": cv_mode,
+        "bootstrap_rounds": int(rounds), "bootstrap_rounds_done": int(n_boot_done),
+        "cv_mode": cv_mode,
         "cv_auc": None if np.isnan(auc) else round(auc, 4),  # NaN → null(合法 JSON,审核 BUG-6)
         "seed": seed, "top_k_rule": _top_k(X.shape[1]),
         "consensus_weights": {"rank": config.ML_CONSENSUS_RANK_W,
@@ -377,6 +385,8 @@ def build_shortlist(consensus: pd.DataFrame, deg: pd.DataFrame,
     evidence_scope:样本来源标注(细胞系/组织,承 geo.sample_source_label 检索
     启发式,方案 §4.3 列清单)——湿实验全为细胞模型,组织数据的证据迁移有折扣,
     排优先级时需可见;None → 「未标注」(本地矩阵等无数据集元数据的来源)。
+    funnel 含 dropped_genes 列:每层被筛掉的基因名(共识序,分号分隔),
+    供"交集为 0/极小"时逐层排查与答辩追溯;首层截断除外(明细在共识全表)。
     """
     config = _config()
     top_k = config.ML_SHORTLIST_TOP_K if top_k is None else top_k
@@ -406,19 +416,32 @@ def build_shortlist(consensus: pd.DataFrame, deg: pd.DataFrame,
     hit_cols = ["in_deg_sig"] + [f"in_{n}" for n in ranked]
     sl["evidence_count"] = sl[hit_cols].sum(axis=1)
 
+    # 每层漏掉谁可追溯(方案 §4.3):漏斗只记数字无法排查"交集为何 0/极小"
+    # (DEG 卡太严?平台排序 CSV 基因命名对不上?),按共识序记录每层被筛掉的基因名;
+    # 首层截断外的基因量大且本就有全表,指向 ml_consensus_scores.csv 不在此罗列
+    cur_genes = list(sl["gene"])
     funnel_rows = [
-        {"stage": "ML 共识 top%d" % top_k, "n": len(sl), "note": "共识分降序截取"},
-        {"stage": "∩ DEG 显著", "n": int(sl["in_deg_sig"].sum()), "note": deg_arm},
+        {"stage": "ML 共识 top%d" % top_k, "n": len(cur_genes),
+         "note": "共识分降序截断(截断外明细见 ml_consensus_scores.csv 全表)",
+         "dropped_genes": ""},
     ]
+    kept = [g for g in cur_genes if g in pool]
+    funnel_rows.append({"stage": "∩ DEG 显著", "n": len(kept), "note": deg_arm,
+                        "dropped_genes": "; ".join(g for g in cur_genes if g not in pool)})
+    cur_genes = kept
     final_mask = sl["in_deg_sig"].astype(bool)
     for name in ranked:
-        n_hit = int(sl[f"in_{name}"].sum())
-        funnel_rows.append({"stage": f"∩ 平台排序({name})", "n": n_hit,
-                            "note": f"平台文件基因数 {len(ranked[name])}"})
+        rk_genes = set(ranked[name]["gene"])
+        kept = [g for g in cur_genes if g in rk_genes]
+        funnel_rows.append({"stage": f"∩ 平台排序({name})", "n": len(kept),
+                            "note": f"平台文件基因数 {len(rk_genes)}",
+                            "dropped_genes": "; ".join(g for g in cur_genes
+                                                       if g not in rk_genes)})
         final_mask &= sl[f"in_{name}"].astype(bool)
+        cur_genes = kept
     sl["in_shortlist"] = final_mask
-    funnel_rows.append({"stage": "shortlist(全部证据交集)", "n": int(final_mask.sum()),
-                        "note": "湿实验优先级候选"})
+    funnel_rows.append({"stage": "shortlist(全部证据交集)", "n": len(cur_genes),
+                        "note": "湿实验优先级候选", "dropped_genes": ""})
     funnel = pd.DataFrame(funnel_rows)
     return sl.reset_index(drop=True), funnel
 

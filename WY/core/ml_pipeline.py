@@ -22,6 +22,15 @@ import pandas as pd
 # 全链七阶段键(progress 回调的 stage 取值;CLI 进度编号分母也取自它)
 STAGES = ("fetch", "group", "preprocess", "deg", "ml", "shortlist", "save")
 
+# shortlist.csv 首行定位注释(方案 §11"表头带定位注释行"):CSV 会单独流传,
+# 离开 docstring 与 summary.json 后须自带定位声明,防被误读为交叉验证/预测结论。
+# 行首 "#" 是刻意选择:pd.read_csv(comment="#") 可干净跳过(见 selfcheck 回归),
+# Excel 打开仅多一行说明,不会混入数据
+SHORTLIST_POSITIONING_NOTE = (
+    "定位:湿实验优先级证据(多算法共识特征筛选),非交叉验证结论、非预测金标准;"
+    "生成参数与算法版本见同目录 summary.json;机器读取本表请用 skiprows=1 或 comment='#'"
+)
+
 
 def default_results_root() -> str:
     """结果根目录:CLI_RESULTS_DIR > <项目 WY>/results。
@@ -148,15 +157,18 @@ def run_screen_chain(*, gse: str | None = None,
                      ranked_csvs: dict[str, str] | None = None,
                      top_k: int | None = None,
                      out_base: str | None = None,
+                     out_subdir: str | None = "mlscreen",
                      progress=None) -> dict:
     """执行 screen 全链并落盘,返回内存产物供 CLI/页面呈现。
 
     返回 dict:consensus/shortlist/funnel/deg(DataFrame)、meta/roc(ML 产物)、
     gse/gpl/tag/out_dir/summary(已写入的 summary.json 内容)、log_branch/leak_note。
 
-    out_base:结果根目录(None → default_results_root);产物目录为
-    <out_base>/mlscreen/<tag>_<时间戳>/,在全部计算成功后才创建(失败语义:
-    不部分落盘,summary.json 最后写入)。
+    out_base:结果根目录(None → default_results_root);out_subdir:CLI 用默认
+    "mlscreen"(方案 §6 的 results/mlscreen 布局),页面传 None 使产物直接落
+    <out_base>(GEOresult)根下,与 MDresult 平级。产物目录为
+    <out_base>[/<out_subdir>]/<tag>_<时间戳>/,在全部计算成功后才创建
+    (失败语义:不部分落盘,summary.json 最后写入)。
     """
     import config
     from .expression import differential_expression, map_probe_to_symbol, preprocess
@@ -200,6 +212,9 @@ def run_screen_chain(*, gse: str | None = None,
         tag = gse_id
         matrix_raw = ds.table
         _report(None, f"样本 {len(ds.samples)} | 矩阵 {ds.table.shape} | 平台 {ds.gpl}")
+        if ds.cache_fallback:
+            _report(None, f"警告: GEO 文件下载失败,已沿用本地旧缓存(缓存日期 "
+                          f"{ds.cache_date});CLI 可加 --force-refresh 强制重下")
 
     # 样本来源标注(承检索启发式,方案 §4.3 shortlist 的 evidence_scope 列;
     # geo 分支取数据集标题/摘要判定,本地矩阵无数据集元数据 → 未标注)
@@ -250,12 +265,18 @@ def run_screen_chain(*, gse: str | None = None,
     _report(None, f"shortlist: {n_hit} 个全证据交集基因")
 
     base = out_base or default_results_root()
-    out_dir = os.path.join(base, "mlscreen", f"{tag}_{time.strftime('%Y%m%d_%H%M%S')}")
+    # out_subdir 语义见 docstring:CLI 落 results/mlscreen,页面直落 GEOresult 根
+    out_parent = os.path.join(base, out_subdir) if out_subdir else base
+    out_dir = os.path.join(out_parent, f"{tag}_{time.strftime('%Y%m%d_%H%M%S')}")
     _report("save", f"落盘 → {out_dir}")
     os.makedirs(out_dir, exist_ok=True)
     res["consensus"].to_csv(os.path.join(out_dir, "ml_consensus_scores.csv"),
                             index_label="gene", encoding="utf-8-sig")
-    sl.to_csv(os.path.join(out_dir, "shortlist.csv"), index=False, encoding="utf-8-sig")
+    # shortlist.csv 带首行定位注释(方案 §11;读取方式见 SHORTLIST_POSITIONING_NOTE)
+    with open(os.path.join(out_dir, "shortlist.csv"), "w",
+              encoding="utf-8-sig", newline="") as f:
+        f.write(f"# {SHORTLIST_POSITIONING_NOTE}\n")
+        sl.to_csv(f, index=False)
     funnel.to_csv(os.path.join(out_dir, "funnel.csv"), index=False, encoding="utf-8-sig")
     deg.to_csv(os.path.join(out_dir, "deg_results.csv"), index=False, encoding="utf-8-sig")
     from .ml_screening import write_consensus_curve_png, write_roc_png
@@ -280,6 +301,8 @@ def run_screen_chain(*, gse: str | None = None,
                         for n, p in ranked.items()},
         "shortlist_count": n_hit,
         "evidence_scope": evidence_scope,
+        "geo_cache_fallback": bool(getattr(ds, "cache_fallback", False)),
+        "geo_cache_date": getattr(ds, "cache_date", "") or "",
         "elapsed_total_s": round(time.time() - t0, 1),
         "args": {"gse": gse_id, "expr": expr, "labels": labels,
                  "case_label": case_label, "case_pattern": case_pattern,

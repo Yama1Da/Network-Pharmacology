@@ -14,6 +14,7 @@ GEOparse,采用 requests 下载(重试 + gzip 完整性校验 + 永久缓存)+ �
 """
 
 import csv
+import glob
 import gzip
 import io
 import logging
@@ -87,6 +88,10 @@ class GeoDataset:
     table: pd.DataFrame
     gpl: str = ""
     issues: list = field(default_factory=list)
+    # 本次文件为「下载耗尽后降级沿用的旧缓存」时置 True(方案失效场景②):
+    # 降级不能只进日志,CLI/页面据此向用户打旧数据警告
+    cache_fallback: bool = False
+    cache_date: str = ""   # series matrix 文件的最后修改时间(降级警告中展示)
 
 
 # ---------------- 检索(E-utilities,限流并入现有节流表) ----------------
@@ -187,29 +192,79 @@ def _gzip_intact(path: str) -> bool:
         return False
 
 
+def _read_lock_pid(lock: str) -> int | None:
+    """读锁文件里记录的持有者 PID;空锁(旧版/写 PID 前被杀)返回 None。"""
+    try:
+        with open(lock, "r", encoding="ascii", errors="ignore") as f:
+            content = f.read().strip()
+        return int(content) if content else None
+    except (OSError, ValueError):
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """进程是否存活(Windows 走 OpenProcess 探测,Linux 走 kill 0;判不了按存活算)。"""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # PermissionError 等无权限情形:进程存在
+
+
 def acquire_download_lock(dest: str) -> bool:
-    """同文件并发下载互斥(O_EXCL 锁文件),返回是否拿到下载权。
+    """同文件并发下载互斥(O_EXCL 锁文件,内含持有者 PID),返回是否拿到下载权。
 
     页面运行中重复点击、或 CLI 与页面同时跑同一数据集时,只允许一个写入者
-    (两个线程交错写同一 .part 会产出坏文件)。后到者等锁,期间发现成品文件
-    已完整即返回 False(调用方直接用缓存,不再下载);锁陈旧(超过全部重试
-    窗口,如上次运行被强杀没来得及清理)则警告并接管。
+    (两个线程交错写同一 .part 会产出坏文件)。接管判定按序:
+    ① 成品文件已完整 → 直接用缓存(返回 False),顺手清掉遗留锁;
+    ② 持有者进程已死(运行被强杀/崩溃的典型遗留)→ 立即接管;
+    ③ PID 不可读(旧版空锁)或进程仍在但锁龄超过全部重试窗口 → 兜底接管
+      (兜底窗口必须覆盖最慢的正常下载,故为 超时×重试+余量)。
     """
     config = _config()
     lock = dest + ".lock"
     stale_after = config.GEO_DOWNLOAD_TIMEOUT * config.GEO_DOWNLOAD_RETRIES + 60
+    waits = 0
     while True:
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii"))
             os.close(fd)
             return True
         except FileExistsError:
             if os.path.isfile(dest) and _gzip_intact(dest):
+                release_download_lock(dest)
                 return False
-            if time.time() - os.path.getmtime(lock) > stale_after:
-                logging.warning("下载锁陈旧(疑似上次运行被中断遗留),接管下载: %s", lock)
-                return True
-            logging.info("同文件下载进行中,等待锁释放: %s", lock)
+            holder_pid = _read_lock_pid(lock)
+            reason = None
+            if holder_pid is not None and not _pid_alive(holder_pid):
+                reason = f"持有者 PID {holder_pid} 已不存在(上次运行被强杀/崩溃)"
+            elif time.time() - os.path.getmtime(lock) > stale_after:
+                reason = f"锁龄超过兜底窗口 {int(stale_after)}s"
+            if reason:
+                logging.warning("下载锁接管(%s): %s", reason, lock)
+                try:
+                    os.remove(lock)
+                except OSError:
+                    pass
+                continue
+            waits += 1
+            if waits % 15 == 1:  # 2s 轮询,30s 记一条,避免日志刷屏
+                logging.info("同文件下载进行中(持有者 PID %s),等待锁释放: %s",
+                             holder_pid if holder_pid is not None else "未知", lock)
             time.sleep(2)
 
 
@@ -220,34 +275,143 @@ def release_download_lock(dest: str) -> None:
         pass
 
 
-def _download_with_retry(url: str, dest: str) -> None:
-    """下载到 .part 再原子替换,不留半截文件;Content-Length 与 gzip 双重校验。"""
+def _probe_range_support(url: str) -> int | None:
+    """探测目标是否支持 Range 分段下载:返回文件总字节数;不支持返回 None。
+
+    先 HEAD 看 Accept-Ranges;HEAD 不给准信再用 1 字节 Range GET 复探
+    (看 206 与 Content-Range 总长)。两个探测请求都极小,不占实质带宽。
+    """
+    try:
+        r = requests.head(url, timeout=(30, 30), headers=_NCBI_HEADERS,
+                          allow_redirects=True)
+        total = int(r.headers.get("content-length", 0) or 0)
+        if r.ok and r.headers.get("accept-ranges", "").lower() == "bytes" and total:
+            return total
+    except requests.RequestException:
+        pass
+    try:
+        r = requests.get(url, timeout=(30, 30),
+                         headers=dict(_NCBI_HEADERS, Range="bytes=0-0"),
+                         stream=True)
+        try:
+            if r.status_code == 206:
+                cr = r.headers.get("content-range", "")  # 形如 bytes 0-0/8471521
+                total = int(cr.rsplit("/", 1)[-1]) if "/" in cr else 0
+                if total:
+                    return total
+        finally:
+            r.close()
+    except (requests.RequestException, ValueError):
+        pass
+    return None
+
+
+def _fetch_segment(url: str, start: int, end: int, seg_path: str,
+                   connect_timeout: int, read_timeout: int) -> None:
+    """下载单个分段到 seg_path(断点续传:从段文件当前大小接着要)。
+
+    读超时即断流判定:连续 read_timeout 秒无任何字节到达则抛异常,
+    该段从已写入处续传,不动其他段。
+    """
+    have = os.path.getsize(seg_path) if os.path.isfile(seg_path) else 0
+    want = end - start + 1
+    if have >= want:
+        return
+    headers = dict(_NCBI_HEADERS, Range=f"bytes={start + have}-{end}")
+    with requests.get(url, headers=headers,
+                      timeout=(connect_timeout, read_timeout), stream=True) as r:
+        if r.status_code == 200 and have > 0:
+            have = 0  # 服务端无视 Range 发来全量:本段从头重写
+        elif r.status_code != 206:
+            r.raise_for_status()
+        with open(seg_path, "ab" if have else "wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 18):
+                f.write(chunk)
+
+
+def _download_one_pass(url: str, dest: str, config) -> None:
+    """一轮完整下载:支持 Range 的大文件分段并发,否则单流;产物落 dest。"""
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    total = _probe_range_support(url)
+    n_conn = max(1, int(getattr(config, "GEO_DOWNLOAD_CONCURRENCY", 4)))
+    stall = int(getattr(config, "GEO_DOWNLOAD_STALL_TIMEOUT", 90))
+    part = dest + ".part"
+
+    if total is None or total < n_conn * (1 << 20):
+        # 不支持分段或文件太小:单流直下
+        got = 0
+        with requests.get(url, timeout=(30, stall),
+                          headers=_NCBI_HEADERS, stream=True) as r:
+            r.raise_for_status()
+            expected = int(r.headers.get("content-length", 0) or 0)
+            with open(part, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 20):
+                    f.write(chunk)
+                    got += len(chunk)
+        if expected and got != expected:
+            raise OSError(f"size mismatch: got {got}, expected {expected}")
+    else:
+        # 均匀切段;段文件名编码布局(连接数×总长×段号):改并发数或换文件后
+        # 旧布局段文件自动作废 —— 若复用旧段,`have >= want` 会把字节范围错位
+        # 的段误判为已完成,拼装总数对不上且重试永远修不好(审查 BUG-13)
+        seg_paths = [f"{dest}.p{n_conn}x{total}.{i}" for i in range(n_conn)]
+        bounds = []
+        step = total // n_conn
+        for i in range(n_conn):
+            start = i * step
+            end = (total - 1) if i == n_conn - 1 else (start + step - 1)
+            bounds.append((start, end, seg_paths[i]))
+        with ThreadPoolExecutor(max_workers=n_conn) as pool:
+            futures = [pool.submit(_fetch_segment, url, s, e, sp, 30, stall)
+                       for s, e, sp in bounds]
+            for fut in futures:
+                fut.result()  # 任一段异常上抛 → 外层重试,已完成的段保留
+        got_total = sum(os.path.getsize(sp) for sp in seg_paths)
+        if got_total != total:
+            raise OSError(f"segments total mismatch: {got_total}, expected {total}")
+        with open(part, "wb") as out:
+            for sp in seg_paths:
+                with open(sp, "rb") as f:
+                    shutil.copyfileobj(f, out, 1 << 20)
+        # 成品已替换,清掉本布局段文件与历史遗留的其他布局段/.part 残留
+        for leftover in glob.glob(glob.escape(dest) + ".p*"):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+
+    if not _gzip_intact(part):
+        raise OSError("gzip integrity check failed (truncated or corrupt)")
+    os.replace(part, dest)  # 原子替换:要么完整新文件,要么保留旧缓存
+
+
+def download_geo_file(url: str, dest: str) -> bool:
+    """GEO 文件下载统一入口(series matrix 与 GPL 注释共用):
+    并发锁 + 分段并发 + 断点续传 + 双重校验。
+
+    锁防同文件并发写坏 .part;分段并发把跨境对 NCBI 单连接的限速聚合起来
+    (方案 §4.1 原定"不做下载并发",实测单连接被压到个位数 KB/s、8.5MB 爬
+    16 分钟后修订;E-utilities 的 3 req/s 限流只约束检索接口,不约束文件服
+    务器,单文件 4 连接在 NCBI 容忍范围内)。每段独立落盘,断流 90s 即判,
+    重试只补缺段;耗尽后本地有旧缓存则降级沿用。
+
+    返回 True=本次拿到新文件(或并发另一请求已完成下载);False=重试耗尽后
+    降级沿用了本地旧缓存 —— 调用方必须向用户暴露该情况(方案失效场景②),
+    不得静默。
+    """
     config = _config()
     if not acquire_download_lock(dest):
         logging.info("并发的同文件下载已完成,直接使用缓存: %s", dest)
-        return
+        return True
     last_exc: Exception | None = None
     try:
         for attempt in range(1, config.GEO_DOWNLOAD_RETRIES + 1):
             try:
-                got = 0
-                with requests.get(url, timeout=config.GEO_DOWNLOAD_TIMEOUT,
-                                  headers=_NCBI_HEADERS, stream=True) as r:
-                    r.raise_for_status()
-                    expected = int(r.headers.get("content-length", 0) or 0)
-                    part = dest + ".part"
-                    with open(part, "wb") as f:
-                        for chunk in r.iter_content(chunk_size=1 << 20):
-                            f.write(chunk)
-                            got += len(chunk)
-                if expected and got != expected:
-                    raise OSError(f"size mismatch: got {got}, expected {expected}")
-                if not _gzip_intact(part):
-                    raise OSError("gzip integrity check failed (truncated or corrupt)")
-                os.replace(part, dest)  # 原子替换:要么完整新文件,要么保留旧缓存
-                logging.info("GEO download OK: %s (%d bytes, attempt %d)",
-                             url, got, attempt)
-                return
+                _download_one_pass(url, dest, config)
+                logging.info("GEO download OK: %s", url)
+                return True
             except Exception as exc:
                 last_exc = exc
                 logging.exception("GEO download failed (attempt %d/%d): %s",
@@ -256,7 +420,7 @@ def _download_with_retry(url: str, dest: str) -> None:
                     time.sleep(config.GEO_DOWNLOAD_RETRY_DELAY)
         if os.path.isfile(dest) and _gzip_intact(dest):
             logging.warning("下载耗尽,降级使用本地旧缓存: %s", dest)
-            return
+            return False
         raise RuntimeError(
             f"GEO 文件下载失败({config.GEO_DOWNLOAD_RETRIES} 次重试后): {url}。"
             f"可选出路:① 稍后重试(跨境带宽波动大);② 用浏览器手动下载该文件后"
@@ -265,15 +429,15 @@ def _download_with_retry(url: str, dest: str) -> None:
         release_download_lock(dest)
 
 
-def fetch_geo_series_matrix(gse: str, force_refresh: bool = False) -> str:
-    """下载并永久缓存 series matrix,返回本地文件路径(归档不可变,存在即命中)。"""
+def fetch_geo_series_matrix(gse: str, force_refresh: bool = False) -> tuple[str, bool]:
+    """下载并永久缓存 series matrix,返回(本地路径, 是否降级沿用了旧缓存)。"""
     gse = gse.strip().upper()
     path = _geo_cache_path(gse)
     if os.path.isfile(path) and not force_refresh and _gzip_intact(path):
         logging.info("GEO series matrix 缓存命中: %s", path)
-        return path
-    _download_with_retry(series_matrix_url(gse), path)
-    return path
+        return path, False
+    fell_back = not download_geo_file(series_matrix_url(gse), path)
+    return path, fell_back
 
 
 # ---------------- 自解析(第 0 步验证的备选路线,现为正式路线) ----------------
@@ -376,9 +540,18 @@ def parse_series_matrix(path: str) -> GeoDataset:
 
 
 def fetch_geo_dataset(gse: str, force_refresh: bool = False) -> GeoDataset:
-    """下载(或命中缓存)+ 解析,一步到位。"""
-    path = fetch_geo_series_matrix(gse, force_refresh=force_refresh)
-    return parse_series_matrix(path)
+    """下载(或命中缓存)+ 解析,一步到位。
+
+    下载耗尽降级沿用旧缓存时,在产物上打 cache_fallback 标并记缓存日期
+    (方案失效场景②:CLI 打印警告、页面显示黄色警告条 + 强制更新按钮)。
+    """
+    path, fell_back = fetch_geo_series_matrix(gse, force_refresh=force_refresh)
+    ds = parse_series_matrix(path)
+    if fell_back:
+        ds.cache_fallback = True
+        ds.cache_date = time.strftime("%Y-%m-%d %H:%M",
+                                      time.localtime(os.path.getmtime(path)))
+    return ds
 
 
 # ---------------- 分组辅助(「全模块最脏环节」的人工决策支持) ----------------

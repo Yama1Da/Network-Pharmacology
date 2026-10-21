@@ -47,7 +47,7 @@ def cmd_geo(args) -> int:
     df = search_geo_datasets(args.disease, organism=args.organism, limit=args.limit)
     if df.empty:
         print(f"未检索到匹配数据集(疾病={args.disease!r},物种={args.organism!r})。"
-              "可尝试换同义词/英文全名,或放宽检索词。")
+              "可尝试换同义词/更通用的疾病名,或放宽检索词。")
         return 0
     with pd.option_context("display.max_colwidth", 60, "display.width", 200):
         print(df.to_string(index=False))
@@ -66,6 +66,9 @@ def cmd_deg(args) -> int:
                            + " —— 请换数据集(元数据型提交无表达矩阵)")
     print(f"    样本 {len(ds.samples)} | 矩阵 {ds.table.shape[0]}x{ds.table.shape[1]} "
           f"| 平台 {ds.gpl}")
+    if ds.cache_fallback:
+        print(f"    [警告] GEO 文件下载耗尽,已沿用本地旧缓存(缓存日期 {ds.cache_date});"
+              f"以下结果基于旧数据,可加 --force-refresh 强制重下")
 
     overview = group_fields_overview(ds)
     if not args.case_pattern or not args.control_pattern:
@@ -149,7 +152,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_geo = sub.add_parser("geo", help="按疾病检索 GEO 表达谱数据集")
-    p_geo.add_argument("--disease", required=True, help="疾病名(英文检索效果更好)")
+    p_geo.add_argument("--disease", required=True, help="输入疾病名")
     p_geo.add_argument("--organism", default="Homo sapiens")
     p_geo.add_argument("--limit", type=int, default=20)
     p_geo.set_defaults(func=cmd_geo)
@@ -178,9 +181,9 @@ def main() -> int:
     p_scr.add_argument("--top-k", type=int, default=None,
                        help="shortlist 截断(默认 config.ML_SHORTLIST_TOP_K=20)")
     p_scr.add_argument("--prefilter-top", type=int, default=None,
-                       help="DEG 预过滤基因数(默认 config.ML_DEG_PREFILTER_TOP_N=2000)")
+                       help="DEG 预过滤基因数(默认 config.ML_DEG_PREFILTER_TOP_N=500)")
     p_scr.add_argument("--bootstrap-rounds", type=int, default=None,
-                       help="bootstrap 轮次(默认 config.ML_BOOTSTRAP_ROUNDS=100;冒烟可 10)")
+                       help="bootstrap 轮次(默认 config.ML_BOOTSTRAP_ROUNDS=30)")
     p_scr.add_argument("--force-log", dest="force_log", default=None, type=str,
                        choices=["true", "false"], help="覆盖 log2 启发式")
     p_scr.add_argument("--force-refresh", action="store_true")
