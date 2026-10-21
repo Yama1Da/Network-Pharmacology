@@ -3,17 +3,22 @@
 四区布局(方案 §M4):
 ① 输入区:疾病名检索 GEO 数据集(或直接输入 GSE 编号)
 ② 配置区:分组正则 + 平台排序 CSV 多选 + top-K/预过滤/bootstrap 参数
-③ 运行区:一键执行(DEG → ML 共识 → shortlist)
-④ 结果区:共识表/ROC/shortlist 下载/历史结果
+③ 运行区:一键执行(DEG → ML 共识 → shortlist),产物经共用管线落盘
+   results/mlscreen/<GSE>_<时间戳>/,与 CLI(geo_ml_screen.py)产物同源互通
+④ 结果区:共识表/ROC/shortlist 下载/历史结果列表(读各次 summary.json,
+   含陈旧检测:算法版本升级或排序 CSV 重跑即提示建议重算,方案失效场景③)
 
-本页面不新增能力、只换交互形态,底层调用与 CLI(geo_ml_screen.py)完全同一套 core 模块。
+本页面不新增能力、只换交互形态:全链流程在 core/ml_pipeline.run_screen_chain,
+CLI 与页面共用同一套编排,防止两处漂移。
 """
+import json
 import os
 import warnings
 
 import streamlit as st
 
 import config
+from core.ml_pipeline import default_results_root, run_screen_chain, stale_reasons
 from i18n import t
 from ui.widgets import back_button, hide_sidebar
 
@@ -159,65 +164,47 @@ if not can_run:
 
 if st.button(t("eml.run_btn"), key="eml_run", type="primary",
              disabled=not can_run):
-    from core.geo import fetch_geo_dataset, assign_groups
-    from core.expression import preprocess, map_probe_to_symbol, differential_expression
-    from core.ml_screening import deg_prefilter, run_ml_screening, build_shortlist
-    import time
+    # 进度回调:管线发七阶段键,页面按 i18n 映射展示;补充信息行(message 为中文)
+    # 不直显,避免与界面语言冲突
+    _progress_map = {
+        "fetch": t("eml.progress_fetch"),
+        "group": t("eml.progress_group"),
+        "preprocess": t("eml.progress_preprocess"),
+        "deg": t("eml.progress_deg"),
+        "ml": t("eml.progress_ml"),
+        "shortlist": t("eml.progress_shortlist"),
+        "save": t("eml.progress_save"),
+    }
 
-    warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
-    t_start = time.time()
+    def _on_progress(stage, _message):
+        if stage in _progress_map:
+            st.markdown(_progress_map[stage])
 
     with st.spinner(t("eml.running")):
         try:
-            # Step 1: 获取数据集
-            st.markdown(t("eml.progress_fetch"))
-            ds = fetch_geo_dataset(selected_gse.strip())
-            if ds.issues:
-                raise RuntimeError("; ".join(ds.issues))
-
-            # Step 2: 分组
-            st.markdown(t("eml.progress_group"))
-            labels = assign_groups(ds, case_pat.strip(), ctrl_pat.strip())
-
-            # Step 3: 预处理+映射+DEG
-            st.markdown(t("eml.progress_deg"))
-            matrix, log_branch = preprocess(ds.table)
-            matrix = map_probe_to_symbol(matrix, ds.gpl)
-            deg = differential_expression(matrix, labels)
-
-            # Step 4: 预过滤+ML
-            st.markdown(t("eml.progress_ml"))
-            deg_top, leak_note = deg_prefilter(deg, top_n=int(prefilter_n))
-            genes = deg_top["gene"].tolist()
-            labeled = list(labels[labels == 1].index) + list(labels[labels == 0].index)
-            X = matrix[labeled].T[genes]
-            res = run_ml_screening(X, labels.loc[X.index],
-                                   bootstrap_rounds=int(bootstrap_n))
-
-            # Step 5: shortlist
-            st.markdown(t("eml.progress_shortlist"))
-            ranked_csvs = {}
-            for path in ss.eml.get("ranked_paths", []):
-                name = os.path.splitext(os.path.basename(path))[0]  # 用文件名(去后缀)作列名前缀
-                ranked_csvs[name] = path
-            sl, funnel = build_shortlist(res["consensus"], deg, ranked_csvs,
-                                         top_k=int(top_k))
-
-            # 保存结果到会话
+            ranked_csvs = {os.path.splitext(os.path.basename(p))[0]: p
+                           for p in ss.eml.get("ranked_paths", [])}
+            res = run_screen_chain(
+                gse=selected_gse.strip().upper(),
+                case_pattern=case_pat.strip(), control_pattern=ctrl_pat.strip(),
+                prefilter_top=int(prefilter_n), bootstrap_rounds=int(bootstrap_n),
+                ranked_csvs=ranked_csvs, top_k=int(top_k),
+                progress=_on_progress)
             ss.eml["result"] = {
                 "consensus": res["consensus"],
-                "shortlist": sl,
-                "funnel": funnel,
-                "deg": deg,
+                "shortlist": res["shortlist"],
+                "funnel": res["funnel"],
+                "deg": res["deg"],
                 "meta": res["meta"],
                 "roc": res["roc"],
                 "gse": selected_gse.strip(),
-                "elapsed": round(time.time() - t_start, 1),
-                "log_branch": log_branch,
+                "out_dir": res["out_dir"],
+                "elapsed": res["summary"]["elapsed_total_s"],
             }
             st.success(t("eml.run_success",
                          gse=selected_gse.strip(),
-                         elapsed=round(time.time() - t_start, 1)))
+                         elapsed=res["summary"]["elapsed_total_s"]))
+            st.caption(t("eml.saved_to", dir=res["out_dir"]))
         except Exception as exc:
             st.error(t("eml.run_failed", exc=exc))
 
@@ -295,6 +282,51 @@ else:
             data=r["deg"].to_csv(index=False).encode("utf-8-sig"),
             file_name=f"deg_{r['gse']}.csv",
             mime="text/csv", key="eml_dl_deg")
+
+st.divider()
+
+# ---------- 历史结果列表(方案 §M4 ④:读各次 summary.json;陈旧检测=失效场景③) ----------
+st.subheader(t("eml.history_title"))
+
+_history_root = os.path.join(default_results_root(), "mlscreen")
+_entries = []
+if os.path.isdir(_history_root):
+    for _d in sorted(os.listdir(_history_root), reverse=True):
+        _spath = os.path.join(_history_root, _d, "summary.json")
+        if os.path.isfile(_spath):
+            try:
+                with open(_spath, encoding="utf-8") as _f:
+                    _entries.append({"dir": _d, "summary": json.load(_f)})
+            except Exception:
+                continue  # 损坏的 summary 不挡其余历史
+
+if not _entries:
+    st.caption(t("eml.history_empty"))
+else:
+    _sel = st.selectbox(t("eml.history_select"),
+                        options=[e["dir"] for e in _entries], key="eml_history")
+    _s = next(e["summary"] for e in _entries if e["dir"] == _sel)
+    _m = _s.get("ml_meta") or {}
+    _reasons = stale_reasons(_s)
+    if _reasons:
+        _msgs = []
+        for _r in _reasons:
+            if _r["type"] == "version":
+                _msgs.append(t("eml.stale_version", old=_r.get("old"), new=_r.get("new")))
+            elif _r["type"] == "ranked_changed":
+                _msgs.append(t("eml.stale_ranked", name=_r["name"]))
+            else:
+                _msgs.append(t("eml.stale_ranked_missing", name=_r["name"]))
+        st.warning(f"{t('eml.stale_title')}: " + "; ".join(_msgs))
+    _c1, _c2, _c3, _c4, _c5 = st.columns(5)
+    _c1.metric(t("eml.metric_run"), _s.get("gse")
+               or os.path.basename(str(_s.get("expr") or "?")))
+    _c2.metric(t("eml.metric_samples"), _s.get("n_samples", "?"))
+    _c3.metric(t("eml.metric_auc"),
+               _m.get("cv_auc") if _m.get("cv_auc") is not None else "N/A")
+    _c4.metric(t("eml.metric_shortlist"), _s.get("shortlist_count", "?"))
+    _c5.metric(t("eml.metric_version"), f"v{_s.get('ml_version', '?')}")
+    st.caption(f"{t('eml.history_files')}: {os.path.join(_history_root, _sel)}")
 
 st.divider()
 st.caption(t("eml.footer"))

@@ -97,6 +97,7 @@ def search_geo_datasets(disease: str, organism: str = "Homo sapiens",
         max_retries=3, timeout=60, label=f"NCBI esearch ({disease})",
         throttle_key="NCBI_EUTILS", headers=_NCBI_HEADERS,
         raise_on_exhausted=True, use_cache=True,
+        cache_ttl_hours=config.GEO_SEARCH_CACHE_TTL_HOURS,
     )
     uids = list(resp.json().get("esearchresult", {}).get("idlist", []))
     if not uids:
@@ -109,6 +110,7 @@ def search_geo_datasets(disease: str, organism: str = "Homo sapiens",
         max_retries=3, timeout=60, label=f"NCBI esummary ({disease})",
         throttle_key="NCBI_EUTILS", headers=_NCBI_HEADERS,
         raise_on_exhausted=True, use_cache=True,
+        cache_ttl_hours=config.GEO_SEARCH_CACHE_TTL_HOURS,
     )
     result = resp.json().get("result", {})
     out = []

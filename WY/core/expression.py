@@ -157,8 +157,7 @@ def map_probe_to_symbol(matrix: pd.DataFrame, gpl: str) -> pd.DataFrame:
             if platform_table:
                 import csv
                 import io
-                parts = next(csv.reader(io.StringIO(line.rstrip("\
-")),
+                parts = next(csv.reader(io.StringIO(line.rstrip("\r\n")),
                                         delimiter="\t", quotechar='"'))
                 if header is None:
                     header = parts

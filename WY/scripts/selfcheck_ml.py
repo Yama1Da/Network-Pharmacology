@@ -13,6 +13,7 @@
 - 探针识别回归(BUG-1:Ensembl/Illumina/Agilent 不再误判为 symbol 级)
 - log2 启发式回归(BUG-3:大尺度含负值应做 log2;z-score 不变换)
 - 丢弃样本回归(M1 审查:未命中样本应从标签中剔除)
+- 共用管线回归(M4:本地矩阵全链落盘产物齐全 + summary 陈旧判定)
 
 运行方式(在 WY 目录下):
     python scripts/selfcheck_ml.py
@@ -193,6 +194,58 @@ def t_group_hard_boundaries():
             pass  # 预期报错
 
 
+def t_pipeline_roundtrip():
+    """共用管线(方案 §M4):本地矩阵全链 → 落盘产物齐全 → summary 可读 → 陈旧判定。"""
+    import json
+    import shutil
+    import tempfile
+
+    import config
+    from core.ml_pipeline import run_screen_chain, stale_reasons
+
+    tmp = tempfile.mkdtemp(prefix="selfcheck_ml_pipe_")
+    try:
+        rng = np.random.default_rng(3)
+        genes = [f"G{i:03d}" for i in range(40)]
+        cols = [f"S{i:02d}" for i in range(12)]
+        X = rng.normal(0, 1, (40, 12))
+        X[:6, 6:] += 1.5  # 前 6 个基因在 case(S06..S11) 抬升
+        expr_p = os.path.join(tmp, "expr.csv")
+        pd.DataFrame(X, index=genes, columns=cols).to_csv(expr_p, encoding="utf-8-sig")
+        lab_p = os.path.join(tmp, "labels.csv")
+        pd.DataFrame({"sample_id": cols,
+                      "group": ["control"] * 6 + ["disease"] * 6}).to_csv(lab_p, index=False)
+        prox_p = os.path.join(tmp, "prox.csv")
+        pd.DataFrame({"gene": genes[:20], "score": rng.random(20)}).to_csv(prox_p, index=False)
+
+        res = run_screen_chain(expr=expr_p, labels=lab_p, bootstrap_rounds=5,
+                               prefilter_top=30, ranked_csvs={"prox": prox_p},
+                               top_k=10, out_base=tmp)
+        out_dir = res["out_dir"]
+        for fname in ("ml_consensus_scores.csv", "shortlist.csv", "funnel.csv",
+                      "deg_results.csv", "summary.json"):
+            assert os.path.isfile(os.path.join(out_dir, fname)), f"缺产物 {fname}"
+        assert any(f.startswith("ml_roc_") and f.endswith(".png")
+                   for f in os.listdir(out_dir)), "缺 ROC 图"
+        with open(os.path.join(out_dir, "summary.json"), encoding="utf-8") as f:
+            summary = json.load(f)
+        assert summary["source"] == "local-expr", "source 标注错误"
+        assert summary["ml_version"] == config.ML_SCREENING_VERSION, "算法版本未记录"
+        assert summary["groups"]["case"] == 6 and summary["groups"]["control"] == 6
+        assert stale_reasons(summary) == [], "刚生成的新结果不应判陈旧"
+        # 排序 CSV 被重跑(内容/mtime/size 变化)应触发 ranked_changed
+        pd.DataFrame({"gene": genes[:25], "score": rng.random(25)}).to_csv(prox_p, index=False)
+        reasons = stale_reasons(summary)
+        assert any(r["type"] == "ranked_changed" for r in reasons), \
+            f"排序更新未触发陈旧: {reasons}"
+        # 算法版本不一致应触发 version
+        summary["ml_version"] = 0
+        assert any(r["type"] == "version" for r in stale_reasons(summary)), \
+            "版本不一致未触发陈旧"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     tests = [
         ("合成数据信号召回(≥8/10)与方向", t_signal_recall),
@@ -205,6 +258,7 @@ def main():
         ("log2 启发式(BUG-3 回归)", t_log2_heuristic),
         ("丢弃样本剔除(M1 审查回归)", t_dropped_samples),
         ("分组四道硬边界", t_group_hard_boundaries),
+        ("共用管线全链落盘与陈旧判定(M4)", t_pipeline_roundtrip),
     ]
     run(tests, "GEO+ML screening selfcheck")
 
