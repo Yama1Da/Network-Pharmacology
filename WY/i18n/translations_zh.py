@@ -63,6 +63,7 @@ TEXT_ZH: dict[str, str] = {
     "eml.perf_hint": "提示:基因池与轮次越大耗时越长(500 基因 / 10 轮约 1–2 分钟);需更高精度可调大,但 ML 段会明显变慢。",
     "eml.step3": "Step 3 · 运行分析",
     "eml.fill_required": "请先填写 GSE 编号和分组正则。",
+    "eml.busy_hint": "分析运行中:运行/总览按钮已临时禁用,请勿重复点击(并发下载同一数据集会互相等待)。",
     "eml.run_btn": "🚀 开始分析",
     "eml.running": "正在运行全链(下载→分组→DEG→ML 共识→shortlist)…",
     "eml.progress_fetch": "① 获取/解析数据集…",

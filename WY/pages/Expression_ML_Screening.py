@@ -38,6 +38,7 @@ st.divider()
 # ---------- 会话状态 ----------
 ss = st.session_state
 ss.setdefault("eml", {})
+ss.setdefault("eml_busy", False)
 
 # ---------- ① 输入区 ----------
 st.subheader(t("eml.step1"))
@@ -96,22 +97,27 @@ with col_ctrl:
     ctrl_pat = st.text_input(t("eml.ctrl_pattern"), key="eml_ctrl",
                              placeholder="healthy")
 
-# 分组总览按钮
-if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview"):
-    with st.spinner(t("eml.loading")):
-        try:
-            from core.geo import fetch_geo_dataset, group_fields_overview
-            ds = fetch_geo_dataset(selected_gse.strip())
-            ss.eml["dataset"] = ds
-            if ds.issues:
-                st.warning(t("eml.dataset_issues", issues="; ".join(ds.issues)))
-            else:
-                overview = group_fields_overview(ds)
-                st.markdown(t("eml.overview_title"))
-                st.dataframe(overview, use_container_width=True, hide_index=True)
-                st.caption(t("eml.overview_hint"))
-        except Exception as exc:
-            st.error(t("eml.overview_failed", exc=exc))
+# 分组总览按钮(运行中禁用:重复触发会对同一数据集并发下载,文件锁只能保正确、不能省时间)
+if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview",
+                                      disabled=ss.eml_busy):
+    ss.eml_busy = True
+    try:
+        with st.spinner(t("eml.loading")):
+            try:
+                from core.geo import fetch_geo_dataset, group_fields_overview
+                ds = fetch_geo_dataset(selected_gse.strip())
+                ss.eml["dataset"] = ds
+                if ds.issues:
+                    st.warning(t("eml.dataset_issues", issues="; ".join(ds.issues)))
+                else:
+                    overview = group_fields_overview(ds)
+                    st.markdown(t("eml.overview_title"))
+                    st.dataframe(overview, use_container_width=True, hide_index=True)
+                    st.caption(t("eml.overview_hint"))
+            except Exception as exc:
+                st.error(t("eml.overview_failed", exc=exc))
+    finally:
+        ss.eml_busy = False
 
 # 平台排序 CSV 自动发现
 col_rank, col_param = st.columns([2, 1])
@@ -161,9 +167,12 @@ st.subheader(t("eml.step3"))
 can_run = bool(selected_gse.strip() and case_pat.strip() and ctrl_pat.strip())
 if not can_run:
     st.info(t("eml.fill_required"))
+if ss.eml_busy:
+    st.caption(t("eml.busy_hint"))
 
 if st.button(t("eml.run_btn"), key="eml_run", type="primary",
-             disabled=not can_run):
+             disabled=(not can_run) or ss.eml_busy):
+    ss.eml_busy = True
     # 进度回调:管线发七阶段键,页面按 i18n 映射展示;补充信息行(message 为中文)
     # 不直显,避免与界面语言冲突
     _progress_map = {
@@ -180,33 +189,36 @@ if st.button(t("eml.run_btn"), key="eml_run", type="primary",
         if stage in _progress_map:
             st.markdown(_progress_map[stage])
 
-    with st.spinner(t("eml.running")):
-        try:
-            ranked_csvs = {os.path.splitext(os.path.basename(p))[0]: p
-                           for p in ss.eml.get("ranked_paths", [])}
-            res = run_screen_chain(
-                gse=selected_gse.strip().upper(),
-                case_pattern=case_pat.strip(), control_pattern=ctrl_pat.strip(),
-                prefilter_top=int(prefilter_n), bootstrap_rounds=int(bootstrap_n),
-                ranked_csvs=ranked_csvs, top_k=int(top_k),
-                progress=_on_progress)
-            ss.eml["result"] = {
-                "consensus": res["consensus"],
-                "shortlist": res["shortlist"],
-                "funnel": res["funnel"],
-                "deg": res["deg"],
-                "meta": res["meta"],
-                "roc": res["roc"],
-                "gse": selected_gse.strip(),
-                "out_dir": res["out_dir"],
-                "elapsed": res["summary"]["elapsed_total_s"],
-            }
-            st.success(t("eml.run_success",
-                         gse=selected_gse.strip(),
-                         elapsed=res["summary"]["elapsed_total_s"]))
-            st.caption(t("eml.saved_to", dir=res["out_dir"]))
-        except Exception as exc:
-            st.error(t("eml.run_failed", exc=exc))
+    try:
+        with st.spinner(t("eml.running")):
+            try:
+                ranked_csvs = {os.path.splitext(os.path.basename(p))[0]: p
+                               for p in ss.eml.get("ranked_paths", [])}
+                res = run_screen_chain(
+                    gse=selected_gse.strip().upper(),
+                    case_pattern=case_pat.strip(), control_pattern=ctrl_pat.strip(),
+                    prefilter_top=int(prefilter_n), bootstrap_rounds=int(bootstrap_n),
+                    ranked_csvs=ranked_csvs, top_k=int(top_k),
+                    progress=_on_progress)
+                ss.eml["result"] = {
+                    "consensus": res["consensus"],
+                    "shortlist": res["shortlist"],
+                    "funnel": res["funnel"],
+                    "deg": res["deg"],
+                    "meta": res["meta"],
+                    "roc": res["roc"],
+                    "gse": selected_gse.strip(),
+                    "out_dir": res["out_dir"],
+                    "elapsed": res["summary"]["elapsed_total_s"],
+                }
+                st.success(t("eml.run_success",
+                             gse=selected_gse.strip(),
+                             elapsed=res["summary"]["elapsed_total_s"]))
+                st.caption(t("eml.saved_to", dir=res["out_dir"]))
+            except Exception as exc:
+                st.error(t("eml.run_failed", exc=exc))
+    finally:
+        ss.eml_busy = False
 
 st.divider()
 

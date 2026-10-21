@@ -30,6 +30,28 @@ _EXPRESSION_FILTERS = (
     '("expression profiling by array"[Filter] OR '
     '"expression profiling by high throughput sequencing"[Filter])'
 )
+# 样本来源启发式关键词(方案 §4.1「样本来源」标注):本平台湿实验全为细胞模型,
+# 组织来源数据的表达证据迁移有折扣,检索表与 shortlist(evidence_scope)共用同一判定
+_CELL_LINE_KEYWORDS = (
+    "cell line", "cell lines", "cells in vitro", "hepg2", "hela",
+    "hek293", "a549", "sh-sy5y", "raw 264", "bv2")
+_TISSUE_KEYWORDS = (
+    "tissue", "biopsy", "biopsies", "plasma", "serum", "whole blood",
+    "pbmc", "peripheral blood", "patient", "patients")
+
+
+def sample_source_label(*texts: str) -> str:
+    """标题/摘要 → 样本来源三值标注:细胞系/组织/未标注(关键词启发式,非保证)。
+
+    检索表(possible_cellline 列)与 screen 链(shortlist 的 evidence_scope 列,
+    方案 §4.3)共用此判定,保证两处口径一致;同时命中时细胞系优先。
+    """
+    text = " ".join(str(t) for t in texts if t).lower()
+    if any(k in text for k in _CELL_LINE_KEYWORDS):
+        return "细胞系"
+    if any(k in text for k in _TISSUE_KEYWORDS):
+        return "组织"
+    return "未标注"
 
 
 def _config():
@@ -74,9 +96,13 @@ def search_geo_datasets(disease: str, organism: str = "Homo sapiens",
                         limit: int = 20) -> pd.DataFrame:
     """按疾病名检索 GEO 表达谱数据集,返回候选表供人工选型(不替用户做主)。
 
-    列:gse/title/n_samples/platform/possible_cellline(启发式标注)/link。
-    「可能为细胞系」由标题/摘要关键词启发式判定:本平台湿实验为细胞模型,
-    组织来源数据的表达证据迁移有折扣,检索阶段即需可见。
+    列:gse/title/n_samples/platform/type(芯片/测序)/symbol_level(行标识粒度
+    提示,启发式)/possible_cellline(启发式标注)/link。
+    - type/symbol_level 来自 esummary 的 gdstype:探针级数据集首跑要多下 GPL
+      注释表(+几分钟),检索阶段标出让用户建议优先选「多为基因级」(方案 §2);
+    - possible_cellline 由标题/摘要关键词启发式判定(sample_source_label,
+      与 shortlist 的 evidence_scope 同一判定):本平台湿实验为细胞模型,
+      组织来源数据的表达证据迁移有折扣,检索阶段即需可见。
     """
     import config
     from .http_client import request_with_retry
@@ -84,8 +110,9 @@ def search_geo_datasets(disease: str, organism: str = "Homo sapiens",
     disease = disease.strip()
     term = (f'"{disease}" AND "{organism}"[Organism] AND gse[ETYP] '
             f"AND {_EXPRESSION_FILTERS}")
-    empty = pd.DataFrame(columns=["gse", "title", "n_samples",
-                                  "platform", "possible_cellline", "link"])
+    empty = pd.DataFrame(columns=["gse", "title", "n_samples", "platform",
+                                  "type", "symbol_level", "possible_cellline",
+                                  "link"])
     uids: list[str] = []
     params_base = {"db": "gds", "retmode": "json"}
     if config.NCBI_API_KEY:
@@ -116,17 +143,24 @@ def search_geo_datasets(disease: str, organism: str = "Homo sapiens",
     out = []
     for uid in result.get("uids", []):
         d = result.get(uid, {})
-        text = " ".join(str(d.get(k, "")) for k in ("title", "summary"))
-        cell_flag = any(k in text.lower() for k in (
-            "cell line", "cell lines", "cells in vitro", "hepg2", "hela",
-            "hek293", "a549", "sh-sy5y", "raw 264", "bv2"))
         gse = d.get("accession", "")
+        gdstype = str(d.get("gdstype", "") or "")
+        low = gdstype.lower()
+        if "sequencing" in low:
+            type_short, sym_hint = "测序", "多为基因级"
+        elif "array" in low:
+            type_short, sym_hint = "芯片", "多为探针级"
+        else:
+            type_short, sym_hint = (gdstype[:24] or "未知"), "未知"
         out.append({
             "gse": gse,
             "title": d.get("title", ""),
             "n_samples": d.get("n_samples", ""),
             "platform": d.get("gpl", ""),
-            "possible_cellline": "是" if cell_flag else "",
+            "type": type_short,
+            "symbol_level": sym_hint,
+            "possible_cellline": "是" if sample_source_label(
+                d.get("title", ""), d.get("summary", "")) == "细胞系" else "",
             "link": f"https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc={gse}",
         })
     return pd.DataFrame(out) if out else empty
@@ -153,43 +187,82 @@ def _gzip_intact(path: str) -> bool:
         return False
 
 
+def acquire_download_lock(dest: str) -> bool:
+    """同文件并发下载互斥(O_EXCL 锁文件),返回是否拿到下载权。
+
+    页面运行中重复点击、或 CLI 与页面同时跑同一数据集时,只允许一个写入者
+    (两个线程交错写同一 .part 会产出坏文件)。后到者等锁,期间发现成品文件
+    已完整即返回 False(调用方直接用缓存,不再下载);锁陈旧(超过全部重试
+    窗口,如上次运行被强杀没来得及清理)则警告并接管。
+    """
+    config = _config()
+    lock = dest + ".lock"
+    stale_after = config.GEO_DOWNLOAD_TIMEOUT * config.GEO_DOWNLOAD_RETRIES + 60
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            if os.path.isfile(dest) and _gzip_intact(dest):
+                return False
+            if time.time() - os.path.getmtime(lock) > stale_after:
+                logging.warning("下载锁陈旧(疑似上次运行被中断遗留),接管下载: %s", lock)
+                return True
+            logging.info("同文件下载进行中,等待锁释放: %s", lock)
+            time.sleep(2)
+
+
+def release_download_lock(dest: str) -> None:
+    try:
+        os.remove(dest + ".lock")
+    except OSError:
+        pass
+
+
 def _download_with_retry(url: str, dest: str) -> None:
     """下载到 .part 再原子替换,不留半截文件;Content-Length 与 gzip 双重校验。"""
     config = _config()
-    last_exc: Exception | None = None
-    for attempt in range(1, config.GEO_DOWNLOAD_RETRIES + 1):
-        try:
-            got = 0
-            with requests.get(url, timeout=config.GEO_DOWNLOAD_TIMEOUT,
-                              headers=_NCBI_HEADERS, stream=True) as r:
-                r.raise_for_status()
-                expected = int(r.headers.get("content-length", 0) or 0)
-                part = dest + ".part"
-                with open(part, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1 << 20):
-                        f.write(chunk)
-                        got += len(chunk)
-            if expected and got != expected:
-                raise OSError(f"size mismatch: got {got}, expected {expected}")
-            if not _gzip_intact(part):
-                raise OSError("gzip integrity check failed (truncated or corrupt)")
-            os.replace(part, dest)  # 原子替换:要么完整新文件,要么保留旧缓存
-            logging.info("GEO download OK: %s (%d bytes, attempt %d)",
-                         url, got, attempt)
-            return
-        except Exception as exc:
-            last_exc = exc
-            logging.exception("GEO download failed (attempt %d/%d): %s",
-                              attempt, config.GEO_DOWNLOAD_RETRIES, url)
-            if attempt < config.GEO_DOWNLOAD_RETRIES:
-                time.sleep(config.GEO_DOWNLOAD_RETRY_DELAY)
-    if os.path.isfile(dest) and _gzip_intact(dest):
-        logging.warning("下载耗尽,降级使用本地旧缓存: %s", dest)
+    if not acquire_download_lock(dest):
+        logging.info("并发的同文件下载已完成,直接使用缓存: %s", dest)
         return
-    raise RuntimeError(
-        f"GEO 文件下载失败({config.GEO_DOWNLOAD_RETRIES} 次重试后): {url}。"
-        f"可选出路:① 稍后重试(跨境带宽波动大);② 用浏览器手动下载该文件后"
-        f"放到 {dest};③ 换一个规模更小的数据集。最后错误:{last_exc}")
+    last_exc: Exception | None = None
+    try:
+        for attempt in range(1, config.GEO_DOWNLOAD_RETRIES + 1):
+            try:
+                got = 0
+                with requests.get(url, timeout=config.GEO_DOWNLOAD_TIMEOUT,
+                                  headers=_NCBI_HEADERS, stream=True) as r:
+                    r.raise_for_status()
+                    expected = int(r.headers.get("content-length", 0) or 0)
+                    part = dest + ".part"
+                    with open(part, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1 << 20):
+                            f.write(chunk)
+                            got += len(chunk)
+                if expected and got != expected:
+                    raise OSError(f"size mismatch: got {got}, expected {expected}")
+                if not _gzip_intact(part):
+                    raise OSError("gzip integrity check failed (truncated or corrupt)")
+                os.replace(part, dest)  # 原子替换:要么完整新文件,要么保留旧缓存
+                logging.info("GEO download OK: %s (%d bytes, attempt %d)",
+                             url, got, attempt)
+                return
+            except Exception as exc:
+                last_exc = exc
+                logging.exception("GEO download failed (attempt %d/%d): %s",
+                                  attempt, config.GEO_DOWNLOAD_RETRIES, url)
+                if attempt < config.GEO_DOWNLOAD_RETRIES:
+                    time.sleep(config.GEO_DOWNLOAD_RETRY_DELAY)
+        if os.path.isfile(dest) and _gzip_intact(dest):
+            logging.warning("下载耗尽,降级使用本地旧缓存: %s", dest)
+            return
+        raise RuntimeError(
+            f"GEO 文件下载失败({config.GEO_DOWNLOAD_RETRIES} 次重试后): {url}。"
+            f"可选出路:① 稍后重试(跨境带宽波动大);② 用浏览器手动下载该文件后"
+            f"放到 {dest};③ 换一个规模更小的数据集。最后错误:{last_exc}")
+    finally:
+        release_download_lock(dest)
 
 
 def fetch_geo_series_matrix(gse: str, force_refresh: bool = False) -> str:

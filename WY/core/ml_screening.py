@@ -368,11 +368,15 @@ def _read_ranked_csv(path: str) -> pd.DataFrame:
 
 
 def build_shortlist(consensus: pd.DataFrame, deg: pd.DataFrame,
-                    ranked_csvs: dict[str, str], top_k: int | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+                    ranked_csvs: dict[str, str], top_k: int | None = None,
+                    evidence_scope: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """共识 ∩ DEG 显著 ∩ 平台排序 → shortlist + 收缩漏斗。
 
     DEG 无显著基因时回退到预过滤池(分支记录在 funnel);
-    ranked_csvs 为空时输出两列降级版(方案 §2 边界)。
+    ranked_csvs 为空时输出两列降级版(方案 §2 边界);
+    evidence_scope:样本来源标注(细胞系/组织,承 geo.sample_source_label 检索
+    启发式,方案 §4.3 列清单)——湿实验全为细胞模型,组织数据的证据迁移有折扣,
+    排优先级时需可见;None → 「未标注」(本地矩阵等无数据集元数据的来源)。
     """
     config = _config()
     top_k = config.ML_SHORTLIST_TOP_K if top_k is None else top_k
@@ -387,6 +391,7 @@ def build_shortlist(consensus: pd.DataFrame, deg: pd.DataFrame,
 
     sl = consensus.head(top_k).copy()
     sl.insert(0, "gene", sl.index)
+    sl.insert(1, "evidence_scope", evidence_scope or "未标注")
     sl["in_deg_sig"] = sl["gene"].isin(pool)
     deg_cols = deg.set_index("gene")[["log2FC", "FDR", "direction"]]
     sl = sl.join(deg_cols, on="gene")

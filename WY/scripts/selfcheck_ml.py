@@ -232,6 +232,10 @@ def t_pipeline_roundtrip():
         assert summary["source"] == "local-expr", "source 标注错误"
         assert summary["ml_version"] == config.ML_SCREENING_VERSION, "算法版本未记录"
         assert summary["groups"]["case"] == 6 and summary["groups"]["control"] == 6
+        assert "evidence_scope" in res["shortlist"].columns, "shortlist 缺 evidence_scope 列"
+        assert res["shortlist"]["evidence_scope"].iloc[0] == "未标注(本地矩阵)", \
+            f"本地矩阵 evidence_scope 应为未标注,实际 {res['shortlist']['evidence_scope'].iloc[0]}"
+        assert summary["evidence_scope"] == "未标注(本地矩阵)", "summary 未记录 evidence_scope"
         assert stale_reasons(summary) == [], "刚生成的新结果不应判陈旧"
         # 排序 CSV 被重跑(内容/mtime/size 变化)应触发 ranked_changed
         pd.DataFrame({"gene": genes[:25], "score": rng.random(25)}).to_csv(prox_p, index=False)
@@ -244,6 +248,20 @@ def t_pipeline_roundtrip():
             "版本不一致未触发陈旧"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def t_sample_source_label():
+    """样本来源启发式(方案 §4.1/§4.3):检索表 possible_cellline 与 shortlist
+    evidence_scope 共用 sample_source_label,三值口径 + 细胞系优先。"""
+    from core.geo import sample_source_label
+    assert sample_source_label("HEPG2 cell line", "hepatic cells in vitro") == "细胞系", \
+        "细胞系关键词未命中"
+    assert sample_source_label("liver tissue biopsy", "patients") == "组织", \
+        "组织关键词未命中"
+    assert sample_source_label("", "a randomized double-blind trial") == "未标注", \
+        "无关键词应判未标注"
+    assert sample_source_label("cell line and tissue samples", "") == "细胞系", \
+        "同时命中时细胞系应优先"
 
 
 def main():
@@ -259,6 +277,7 @@ def main():
         ("丢弃样本剔除(M1 审查回归)", t_dropped_samples),
         ("分组四道硬边界", t_group_hard_boundaries),
         ("共用管线全链落盘与陈旧判定(M4)", t_pipeline_roundtrip),
+        ("样本来源标注(细胞系/组织/未标注)", t_sample_source_label),
     ]
     run(tests, "GEO+ML screening selfcheck")
 

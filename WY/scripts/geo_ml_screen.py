@@ -51,8 +51,10 @@ def cmd_geo(args) -> int:
         return 0
     with pd.option_context("display.max_colwidth", 60, "display.width", 200):
         print(df.to_string(index=False))
-    print("\n提示:请核对「标题」列确认数据集内容;possible_cellline=表示可能为细胞系实验"
-          "(组织与细胞模型的表达证据迁移性不同)。选定后用 deg 子命令跑该 GSE。")
+    print("\n提示:type=数据类型(芯片/测序);symbol_level=行标识粒度提示(启发式,非保证,"
+          "探针级数据集首跑要多下 GPL 注释表,建议优先选「多为基因级」);"
+          "possible_cellline=表示可能为细胞系实验(组织与细胞模型的表达证据迁移性不同)。"
+          "选定后用 deg 子命令跑该 GSE。")
     return 0
 
 

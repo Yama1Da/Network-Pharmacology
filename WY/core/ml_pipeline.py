@@ -160,7 +160,7 @@ def run_screen_chain(*, gse: str | None = None,
     """
     import config
     from .expression import differential_expression, map_probe_to_symbol, preprocess
-    from .geo import assign_groups, fetch_geo_dataset
+    from .geo import assign_groups, fetch_geo_dataset, sample_source_label
     from .ml_screening import build_shortlist, deg_prefilter, run_ml_screening
 
     def _report(stage: str | None, message: str) -> None:
@@ -198,7 +198,17 @@ def run_screen_chain(*, gse: str | None = None,
             raise RuntimeError(f"{gse_id}: " + ";".join(ds.issues))
         gpl_id = ds.gpl
         tag = gse_id
+        matrix_raw = ds.table
         _report(None, f"样本 {len(ds.samples)} | 矩阵 {ds.table.shape} | 平台 {ds.gpl}")
+
+    # 样本来源标注(承检索启发式,方案 §4.3 shortlist 的 evidence_scope 列;
+    # geo 分支取数据集标题/摘要判定,本地矩阵无数据集元数据 → 未标注)
+    if ds is not None:
+        evidence_scope = sample_source_label(ds.meta.get("Series_title", ""),
+                                             ds.meta.get("Series_summary", ""))
+        _report(None, f"样本来源(启发式): {evidence_scope}")
+    else:
+        evidence_scope = "未标注(本地矩阵)"
 
     _report("group", "分组" if ds is not None else "分组(labels 文件,硬边界已校验)")
     if ds is not None:
@@ -234,7 +244,8 @@ def run_screen_chain(*, gse: str | None = None,
     _report("shortlist", "shortlist 与漏斗")
     ranked = ranked_csvs or {}
     resolved_top_k = top_k if top_k is not None else config.ML_SHORTLIST_TOP_K
-    sl, funnel = build_shortlist(res["consensus"], deg, ranked, top_k=resolved_top_k)
+    sl, funnel = build_shortlist(res["consensus"], deg, ranked, top_k=resolved_top_k,
+                                 evidence_scope=evidence_scope)
     n_hit = int(sl["in_shortlist"].sum())
     _report(None, f"shortlist: {n_hit} 个全证据交集基因")
 
@@ -268,6 +279,7 @@ def run_screen_chain(*, gse: str | None = None,
                             "size": os.path.getsize(p)}
                         for n, p in ranked.items()},
         "shortlist_count": n_hit,
+        "evidence_scope": evidence_scope,
         "elapsed_total_s": round(time.time() - t0, 1),
         "args": {"gse": gse_id, "expr": expr, "labels": labels,
                  "case_label": case_label, "case_pattern": case_pattern,

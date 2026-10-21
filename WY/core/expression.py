@@ -98,36 +98,43 @@ def _gpl_annot_url(gpl: str) -> str:
 
 def _fetch_gpl_annotation(gpl: str) -> str:
     """下载 GPL 注释表(GEO 平台基因注释,含 ID ↔ Gene symbol 列),永久缓存。"""
+    from .geo import acquire_download_lock, release_download_lock
+
     path = _gpl_annot_path(gpl)
     if os.path.isfile(path):
         return path
     config = _config()
     url = _gpl_annot_url(gpl)
+    if not acquire_download_lock(path):
+        return path  # 并发的同文件下载已完成,直接用缓存
     last: Exception | None = None
-    for attempt in range(1, config.GEO_DOWNLOAD_RETRIES + 1):
-        try:
-            r = requests.get(url, timeout=config.GEO_DOWNLOAD_TIMEOUT,
-                             headers=_GPL_HEADERS)
-            r.raise_for_status()
-            if not r.content[:2] == b"\x1f\x8b":
-                raise OSError("非 gzip 内容(该平台可能无 annot 文件)")
-            part = path + ".part"
-            with open(part, "wb") as f:
-                f.write(r.content)
-            os.replace(part, path)
-            logging.info("GPL annotation downloaded: %s", url)
-            return path
-        except Exception as exc:
-            last = exc
-            logging.exception("GPL annotation download failed (attempt %d): %s",
-                              attempt, url)
-            if attempt < config.GEO_DOWNLOAD_RETRIES:
-                import time
-                time.sleep(config.GEO_DOWNLOAD_RETRY_DELAY)
-    raise RuntimeError(
-        f"GPL 注释下载失败: {url}。该平台可能不提供 annot 文件 —— "
-        "请换用 symbol 级数据集,或在 GEO 页面确认平台注释后手动放置注释文件到 "
-        f"{path}。最后错误:{last}")
+    try:
+        for attempt in range(1, config.GEO_DOWNLOAD_RETRIES + 1):
+            try:
+                r = requests.get(url, timeout=config.GEO_DOWNLOAD_TIMEOUT,
+                                 headers=_GPL_HEADERS)
+                r.raise_for_status()
+                if not r.content[:2] == b"\x1f\x8b":
+                    raise OSError("非 gzip 内容(该平台可能无 annot 文件)")
+                part = path + ".part"
+                with open(part, "wb") as f:
+                    f.write(r.content)
+                os.replace(part, path)
+                logging.info("GPL annotation downloaded: %s", url)
+                return path
+            except Exception as exc:
+                last = exc
+                logging.exception("GPL annotation download failed (attempt %d): %s",
+                                  attempt, url)
+                if attempt < config.GEO_DOWNLOAD_RETRIES:
+                    import time
+                    time.sleep(config.GEO_DOWNLOAD_RETRY_DELAY)
+        raise RuntimeError(
+            f"GPL 注释下载失败: {url}。该平台可能不提供 annot 文件 —— "
+            "请换用 symbol 级数据集,或在 GEO 页面确认平台注释后手动放置注释文件到 "
+            f"{path}。最后错误:{last}")
+    finally:
+        release_download_lock(path)
 
 
 def map_probe_to_symbol(matrix: pd.DataFrame, gpl: str) -> pd.DataFrame:

@@ -63,6 +63,7 @@ TEXT_EN: dict[str, str] = {
     "eml.perf_hint": "Note: larger gene pool and more rounds take longer (500 genes / 10 rounds ≈ 1-2 min); increase for higher precision but ML stage slows notably.",
     "eml.step3": "Step 3 · Run Analysis",
     "eml.fill_required": "Please fill in GSE accession and group regexes first.",
+    "eml.busy_hint": "Analysis in progress: Run/Overview buttons are temporarily disabled — do not click repeatedly (concurrent downloads of the same dataset wait on each other).",
     "eml.run_btn": "🚀 Run analysis",
     "eml.running": "Running full chain (download → grouping → DEG → ML consensus → shortlist)…",
     "eml.progress_fetch": "① Fetching/parsing dataset…",
