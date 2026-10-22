@@ -308,6 +308,56 @@ def t_bootstrap_denominator():
     assert (freq.to_numpy() <= 1.0).all(), "频率超出 [0,1]"
 
 
+def t_list_analyzed_pairs():
+    """疾病下拉数据源(M4 输入区):meta 精确 + 旧结果前缀反解 + rwr 后缀剥离 + manual 跳过。"""
+    import json
+    import shutil
+    import tempfile
+
+    import config
+    from core.ppi import list_analyzed_pairs
+
+    tmp = tempfile.mkdtemp(prefix="selfcheck_pairs_")
+    orig_dl = config.DOWNLOADS_DIR
+    config.DOWNLOADS_DIR = tmp
+    try:
+        # 新结果: meta 带 drug/disease(精确)
+        d1 = os.path.join(tmp, "aspirin_cancer_data")
+        os.makedirs(d1)
+        with open(os.path.join(d1, "analysis_meta.json"), "w", encoding="utf-8") as f:
+            json.dump({"drug": "Aspirin", "disease": "Cancer", "string_version": "12.0",
+                       "analyzed_at": "2026-10-21T10:00:00"}, f)
+        # 旧结果: meta 无药病对 → 从前缀反解(下划线还原为空格)
+        d2 = os.path.join(tmp, "metformin_type_2_diabetes_data")
+        os.makedirs(d2)
+        # 旧结果带 rwr 变体后缀: disease 保留原样、base_disease 剥离
+        d3 = os.path.join(tmp, "aspirin_cancer_rwr50_data")
+        os.makedirs(d3)
+        # manual 目录(手动基因输入,无药病对)与散文件应被跳过
+        os.makedirs(os.path.join(tmp, "manual_data"))
+        open(os.path.join(tmp, "loose.txt"), "w").close()
+
+        pairs = list_analyzed_pairs()
+        by_dir = {os.path.basename(p["directory"]): p for p in pairs}
+        assert set(by_dir) == {"aspirin_cancer_data", "metformin_type_2_diabetes_data",
+                               "aspirin_cancer_rwr50_data"}, \
+            f"目录筛选错误: {sorted(by_dir)}"
+        assert by_dir["aspirin_cancer_data"]["disease"] == "Cancer"
+        assert by_dir["aspirin_cancer_data"]["base_disease"] == "Cancer"
+        assert by_dir["aspirin_cancer_data"]["string_version"] == "12.0"
+        assert by_dir["aspirin_cancer_data"]["source"] == "meta"
+        assert by_dir["metformin_type_2_diabetes_data"]["disease"] == "type 2 diabetes", \
+            "前缀反解未还原空格"
+        assert by_dir["metformin_type_2_diabetes_data"]["base_disease"] == "type 2 diabetes"
+        assert by_dir["metformin_type_2_diabetes_data"]["source"] == "prefix"
+        assert by_dir["aspirin_cancer_rwr50_data"]["disease"] == "cancer rwr50"
+        assert by_dir["aspirin_cancer_rwr50_data"]["base_disease"] == "cancer", \
+            "rwr 变体后缀未剥离"
+    finally:
+        config.DOWNLOADS_DIR = orig_dl
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     tests = [
         ("合成数据信号召回(≥8/10)与方向", t_signal_recall),
@@ -323,6 +373,7 @@ def main():
         ("共用管线全链落盘与陈旧判定(M4)", t_pipeline_roundtrip),
         ("样本来源标注(细胞系/组织/未标注)", t_sample_source_label),
         ("bootstrap 分母(失败轮不计)", t_bootstrap_denominator),
+        ("疾病下拉数据源(已分析药病对发现)", t_list_analyzed_pairs),
     ]
     run(tests, "GEO+ML screening selfcheck")
 

@@ -670,6 +670,76 @@ def render_cytoscape_style_plot(graph: "nx.Graph", metrics_df: pd.DataFrame) -> 
     return fig
 
 
+def base_disease_of(name: str) -> str:
+    """剥掉历史实验变体后缀得到干净疾病名(rwrNN,不区分大小写)。
+
+    旧分析曾把 RWR 参数变体标签拼进疾病名输入框以隔离结果目录
+    (如 "gastric cancer rwr72"),下拉选疾病/检索 GEO 时应使用剥掉后缀的
+    干净名,变体差异只体现在结果目录与其中的排序 CSV 上。
+    """
+    import re
+    return re.sub(r"\s*rwr\s*\d+\s*$", "", str(name), flags=re.IGNORECASE).strip()
+
+
+def list_analyzed_pairs() -> list[dict]:
+    """列出本机已跑过的 PPI 分析(即 App 页面分析过的药病对),目录名倒序。
+
+    数据源:downloads 下各 <prefix>_data/analysis_meta.json 的 drug/disease 键
+    (2026-10 起的分析必带,精确);更早的旧结果无此二键,退回从目录名前缀反解
+    —— prefix 由 f"{drug}_{disease}" 经 re.sub 把非单词字符压成 _ 而来,反解为
+    best-effort:首个 _ 前作药名、其余作病名、_ 还原为空格。"manual" 目录是
+    手动基因输入模式,无药病对,跳过。
+
+    base_disease 为剥掉 rwrNN 变体后缀的干净疾病名(ML 页疾病下拉的选项来源);
+    disease 保留原样(含变体后缀,供区分实验批次)。string_version 供排序 CSV
+    发现处展示。供 ML 筛选页构建疾病下拉与排序文件上下文匹配(方案 §M4)。
+    返回 [{drug, disease, base_disease, string_version, analyzed_at,
+           source: "meta"|"prefix", directory}]。
+    """
+    import json
+
+    import config
+    out: list[dict] = []
+    dl = config.DOWNLOADS_DIR
+    if not os.path.isdir(dl):
+        return out
+    for d in sorted(os.listdir(dl), reverse=True):
+        dpath = os.path.join(dl, d)
+        if not os.path.isdir(dpath) or not d.endswith("_data"):
+            continue
+        prefix = d[:-len("_data")]
+        if prefix == "manual":
+            continue
+        meta = {}
+        meta_path = os.path.join(dpath, "analysis_meta.json")
+        if os.path.isfile(meta_path):
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
+            except Exception:
+                meta = {}
+        analyzed_at = str(meta.get("analyzed_at", ""))
+        if meta.get("disease"):
+            disease = str(meta["disease"])
+            out.append({"drug": str(meta.get("drug", "")),
+                        "disease": disease,
+                        "base_disease": base_disease_of(disease),
+                        "string_version": str(meta.get("string_version", "")),
+                        "analyzed_at": analyzed_at, "source": "meta",
+                        "directory": dpath})
+        else:
+            head, sep, tail = prefix.partition("_")
+            if not sep or not tail:
+                continue
+            disease = tail.replace("_", " ")
+            out.append({"drug": head, "disease": disease,
+                        "base_disease": base_disease_of(disease),
+                        "string_version": str(meta.get("string_version", "")),
+                        "analyzed_at": analyzed_at, "source": "prefix",
+                        "directory": dpath})
+    return out
+
+
 def save_ppi_results(
     graph: "nx.Graph",
     static_fig: "matplotlib.figure.Figure",

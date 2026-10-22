@@ -23,6 +23,7 @@ import streamlit as st
 import config
 from core.geo import fetch_geo_dataset
 from core.ml_pipeline import default_results_root, run_screen_chain, stale_reasons
+from core.ppi import base_disease_of, list_analyzed_pairs
 from i18n import t
 from ui.widgets import back_button, hide_sidebar
 
@@ -51,10 +52,28 @@ tab_search, tab_direct, tab_local = st.tabs(
     [t("eml.tab_search"), t("eml.tab_direct"), t("eml.tab_local")])
 
 with tab_search:
+    # 疾病名优先从本机 App 分析记录取(用户跑过靶点的疾病):下拉列出干净的
+    # 基准疾病名(剥掉 rwrNN 变体后缀),accept_new_options 仍允许手输新名称;
+    # 无记录时退回文本框直接输入
+    _pairs = list_analyzed_pairs()
+    _seen: set = set()
+    disease_options = []
+    for _p in _pairs:
+        _key = _p["base_disease"].strip().lower()
+        if _key and _key not in _seen:
+            _seen.add(_key)
+            disease_options.append(_p["base_disease"].strip())
     col_d, col_l = st.columns([3, 1])
     with col_d:
-        disease = st.text_input(t("eml.disease_label"), key="eml_disease",
-                                placeholder=t("eml.disease_ph"))
+        if disease_options:
+            disease = st.selectbox(t("eml.disease_label"), options=disease_options,
+                                   index=None, accept_new_options=True,
+                                   key="eml_disease_sel") or ""
+            st.caption(t("eml.analyzed_hint", n=len(disease_options)))
+        else:
+            disease = st.text_input(t("eml.disease_label"), key="eml_disease_txt",
+                                    placeholder=t("eml.disease_ph"))
+            st.caption(t("eml.analyzed_empty"))
     with col_l:
         limit = st.number_input(t("eml.limit_label"), min_value=5, max_value=50,
                                 value=15, key="eml_limit")
@@ -91,15 +110,23 @@ with tab_local:
     case_label = st.text_input(t("eml.local_case"), key="eml_local_case",
                                placeholder=t("eml.local_case_ph"))
 
-# 数据集选择(检索结果点选或直填)
-selected_gse = st.text_input(
-    t("eml.select_gse"),
-    value=ss.eml.get("selected_gse", ""),
-    key="eml_selected_gse",
-    placeholder="GSE63067")
-if selected_gse.strip():
-    ss.eml["selected_gse"] = selected_gse.strip().upper()
-    st.info(t("eml.gse_confirmed", gse=selected_gse.strip().upper()))
+# 数据集选择:检索后有结果 → 下拉点选(accept_new_options 仍可直填其他编号);
+# 未检索 → 文本框直填(tab_direct 路径)
+_srch = ss.eml.get("search_results")
+_gse_opts = []
+if _srch is not None and not _srch.empty and "gse" in _srch.columns:
+    _gse_opts = [str(g).strip() for g in _srch["gse"].tolist() if str(g).strip()]
+if _gse_opts:
+    _sel = st.selectbox(t("eml.select_gse"), options=_gse_opts, index=None,
+                        accept_new_options=True, key="eml_selected_gse_sel",
+                        placeholder="GSE63067")
+    selected_gse = (_sel or "").strip().upper()
+else:
+    selected_gse = st.text_input(t("eml.select_gse"), key="eml_selected_gse",
+                                 placeholder="GSE63067").strip().upper()
+if selected_gse:
+    ss.eml["selected_gse"] = selected_gse
+    st.info(t("eml.gse_confirmed", gse=selected_gse))
 
 # 数据源判定:本地矩阵(两路都填)与 GSE 二选一(方案 §6,与管线防呆一致)
 use_local = bool(expr_path.strip()) and bool(labels_path.strip())
@@ -146,45 +173,40 @@ if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview",
 col_rank, col_param = st.columns([2, 1])
 with col_rank:
     st.markdown(t("eml.ranked_csv_title"))
-    # 自动发现 downloads 下各 PPI 结果目录的排序 CSV。只收 *_query_genes.csv
-    # (gene/source/rwr_score 排序表)——nodes/edges 是网络结构表,混入会被当
-    # 排序用(语义错误);按 analysis_meta.json 元数据展示与过滤(药/病、分析
-    # 时间、STRING 版本),不用文件名猜(方案 §M4)
+    # 自动发现:与疾病下拉同源(list_analyzed_pairs),只收排序表 *_query_genes.csv
+    # (nodes/edges 是网络结构表,混入会被当排序用,语义错误)。列表跟随上方选定
+    # 的疾病自动限定 —— rwr 等参数变体的排序以文件维度并列展示,跨疾病的排序
+    # 不再出现,从源头排除"把别的疾病的排序勾进交集"的可能(方案 §M4 按元数据
+    # 匹配,不用文件名猜)
     ranked_files = []
-    dl_dir = config.DOWNLOADS_DIR
-    if os.path.isdir(dl_dir):
-        for d in sorted(os.listdir(dl_dir), reverse=True):
-            dpath = os.path.join(dl_dir, d)
-            if not os.path.isdir(dpath) or not d.endswith("_data"):
+    for _rec in list_analyzed_pairs():
+        try:
+            _dir_files = os.listdir(_rec["directory"])
+        except OSError:
+            continue
+        for f in sorted(_dir_files):
+            if not f.endswith("_query_genes.csv"):
                 continue
-            meta = {}
-            meta_path = os.path.join(dpath, "analysis_meta.json")
-            if os.path.isfile(meta_path):
-                try:
-                    with open(meta_path, encoding="utf-8") as _mf:
-                        meta = json.load(_mf)
-                except Exception:
-                    meta = {}
-            for f in sorted(os.listdir(dpath)):
-                if not f.endswith("_query_genes.csv"):
-                    continue
-                title = " · ".join(x for x in (
-                    d[:-len("_data")],
-                    str(meta.get("analyzed_at") or ""),
-                    f"STRING {meta['string_version']}" if meta.get("string_version") else "",
-                ) if x)
-                ranked_files.append({"label": title, "path": os.path.join(dpath, f),
-                                     "drug": str(meta.get("drug", "")),
-                                     "disease": str(meta.get("disease", ""))})
+            title = " · ".join(x for x in (
+                os.path.basename(_rec["directory"])[:-len("_data")],
+                _rec["analyzed_at"][:19],
+                f"STRING {_rec['string_version']}" if _rec["string_version"] else "",
+            ) if x)
+            ranked_files.append({"label": title,
+                                 "path": os.path.join(_rec["directory"], f),
+                                 "drug": _rec["drug"],
+                                 "base_disease": _rec["base_disease"]})
+    # 当前疾病上下文(下拉或手输,同样剥掉可能手输的 rwrNN 后缀);为空则展示全部。
+    # 匹配只允许"用户输的更泛 → 命中更具体的记录"(如输 cancer 带出 gastric cancer),
+    # 不做反向:选 gastric cancer 不能把泛癌 cancer 的排序带进交集(疾病混淆)
+    _ctx = base_disease_of(disease).lower() if disease.strip() else ""
     if ranked_files:
-        _fd, _fdis = st.columns(2)
-        with _fd:
-            f_drug = st.text_input(t("eml.filter_drug"), key="eml_ranked_drug").strip().lower()
-        with _fdis:
-            f_disease = st.text_input(t("eml.filter_disease"), key="eml_ranked_disease").strip().lower()
+        f_drug = st.text_input(t("eml.filter_drug"), key="eml_ranked_drug").strip().lower()
         shown = [rf for rf in ranked_files
-                 if (not f_drug or f_drug in rf["drug"].lower())
-                 and (not f_disease or f_disease in rf["disease"].lower())]
+                 if (not _ctx
+                     or _ctx == rf["base_disease"].lower()
+                     or _ctx in rf["base_disease"].lower())
+                 and (not f_drug or f_drug in rf["drug"].lower())]
         if shown:
             selected_files = st.multiselect(
                 t("eml.ranked_csv_select"),
@@ -193,7 +215,7 @@ with col_rank:
             ss.eml["ranked_paths"] = [
                 rf["path"] for rf in shown if rf["label"] in selected_files]
         else:
-            st.caption(t("eml.no_ranked_match"))
+            st.caption(t("eml.no_ranked_for_disease"))
     else:
         st.caption(t("eml.no_ranked_csv"))
 
