@@ -15,8 +15,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from selfcheck_common import (_tmp_uniprot_cache, patch_attr, run,
-                              silence_streamlit_bare_mode_warnings)
+from selfcheck_common import _tmp_uniprot_cache, patch_attr, run
 
 import requests
 
@@ -354,19 +353,9 @@ def t_ui_settings_roundtrip():
 
 
 def t_docking_result_prefix():
-    """归档前缀消毒:空段剔除(不出现 unnamed)、路径穿越/分隔符净化、正常名与主分析页命名对齐。"""
-    import streamlit as _st
-
-    # 裸脚本导入页面模块会触发 streamlit bare-mode 警告,统一压掉保持输出干净
-    silence_streamlit_bare_mode_warnings()
-    # 页面模块导入期会顺手清理过期缓存,先置位跳过,避免测试触碰真实缓存目录
-    _st.session_state["_docking_cache_cleaned"] = True
-    pages_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pages")
-    if pages_dir not in sys.path:
-        sys.path.insert(0, pages_dir)
-    import Molecular_Docking as md
-
-    f = md._docking_result_prefix
+    """归档前缀消毒:空段剔除(不出现 unnamed)、路径穿越/分隔符净化、正常名与主分析页命名对齐。
+    (该函数已下沉 core.docking,直接测 core,不再经页面模块。)"""
+    f = dock.docking_result_prefix
     # 正常名:与主分析页(Data_Network)的前缀命名规则一致
     assert f("metformin", "Type 2 diabetes mellitus", "EGFR") == \
         "metformin_Type_2_diabetes_mellitus_EGFR"

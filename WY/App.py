@@ -267,7 +267,8 @@ st.markdown("""
     .st-key-ppi_info_btn button,
     .st-key-enrichment_info_btn button,
     .st-key-data_network_btn button,
-    .st-key-molecular_docking_btn button {
+    .st-key-molecular_docking_btn button,
+    .st-key-expression_ml_btn button {
         background-color: #F0F0F0;
         color: #333333;
         border: 1px solid #D0D0D0;
@@ -278,7 +279,8 @@ st.markdown("""
     .st-key-ppi_info_btn button:hover,
     .st-key-enrichment_info_btn button:hover,
     .st-key-data_network_btn button:hover,
-    .st-key-molecular_docking_btn button:hover {
+    .st-key-molecular_docking_btn button:hover,
+    .st-key-expression_ml_btn button:hover {
         background-color: #B8B8B8;
         color: #000000;
         border-color: #888888;
@@ -470,7 +472,10 @@ with st.container(key="top_right_logs"):
         if st.session_state.get("_lang_switch_synced") != get_lang():
             st.session_state["_lang_switch"] = is_en
             st.session_state["_lang_switch_synced"] = get_lang()
-        lang_is_en = st.toggle("Language", key="_lang_switch",
+        # value=is_en:从子页面返回本页时,Streamlit 会丢弃 toggle 的 widget 状态,
+        # 控件以默认值 False(中文轨道)重建,再经下方 diff 把英文用户改写成中文;
+        # value 只在本页 session 无该控件状态时生效,状态丢失重建时按当前语言兜底。
+        lang_is_en = st.toggle("Language", value=is_en, key="_lang_switch",
                                disabled=_analyze_busy,
                                label_visibility="collapsed")
         if lang_is_en != is_en:
@@ -496,7 +501,7 @@ with st.container(key="top_left_buttons"):
         if st.button(t("app.btn_enrichment_info"), key="enrichment_info_btn", width="stretch",
                      disabled=_analyze_busy):
             st.switch_page("pages/Enrichment_Information.py")
-    # 下拉菜单:主分析(PPI/富集)与分子对接入口。
+    # 下拉菜单:主分析(PPI/富集)、分子对接与表达谱 ML 筛选入口。
     with st.popover(t("app.popover_docking"), key="docking_mgmt_popover"):
         if st.button(t("app.btn_data_network"), key="data_network_btn", width="stretch",
                      disabled=_analyze_busy):
@@ -505,6 +510,9 @@ with st.container(key="top_left_buttons"):
                      disabled=_analyze_busy):
             st.session_state["_docking_entry"] = True  # 通知对接页:从入口进入并重置状态
             st.switch_page("pages/Molecular_Docking.py")
+        if st.button(t("app.btn_expression_ml"), key="expression_ml_btn", width="stretch",
+                     disabled=_analyze_busy):
+            st.switch_page("pages/Expression_ML_Screening.py")
 
 # 上一次分析被在途点击打断时给出提示(busy 复位后的下一轮才能看到,不能门在 busy 上)
 show_busy_notice("home_analyze_busy")

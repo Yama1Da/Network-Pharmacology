@@ -14,6 +14,7 @@ import pandas as pd
 import requests
 
 from .caching import load_json_file, save_json_file, save_text_atomic
+from .text_utils import load_name_map, safe_name
 from i18n import t
 
 # PDB 结构中的水分子残基名,不参与结合位点定位与共晶配体识别
@@ -279,6 +280,21 @@ def interactions_near_ligand(receptor_pdb: str, ligand_pdbqt: str) -> list[dict]
     out.sort(key=lambda it: (rank[it["kind"]], it["dist"], it["chain"],
                              _resi_num(it["resi"]), it["resi"]))
     return out
+
+
+def interactions_table(interactions: list[dict]) -> pd.DataFrame:
+    """把相互作用原子对列表转成展示表格(类型本地化,残基带链号),列顺序固定。"""
+    kind_label = {"hbond": t("dock.inter_hbond"), "salt": t("dock.inter_salt"),
+                  "hydro": t("dock.inter_hydro")}
+    rows = [{
+        t("dock.inter_col_kind"): kind_label.get(it["kind"], it["kind"]),
+        t("dock.inter_col_residue"): (it["chain"] + "/" if it["chain"] else "")
+                                     + f'{it["resn"]}{it["resi"]}',
+        t("dock.inter_col_res_atom"): it["res_atom"],
+        t("dock.inter_col_lig_atom"): it["lig_atom"],
+        t("dock.inter_col_dist"): it["dist"],
+    } for it in interactions]
+    return pd.DataFrame(rows)
 
 
 def download_pdb(pdb_id: str) -> str:
@@ -1004,6 +1020,92 @@ def clean_docking_cache(ttl_days: int | None = None) -> int:
     if removed:
         logging.info("Docking cache cleaned: %d files removed", removed)
     return removed
+
+
+def docking_result_prefix(drug: str, disease: str, gene: str) -> str:
+    """归档结果目录名前缀:三段各自过 safe_name 消毒,防止用户输入中的路径分隔符等
+    特殊字符进入文件路径;空段必须先剔除再消毒(safe_name 对空串返回 "unnamed",
+    直接套会凭空出现 unnamed 段),全空回退 "docking"。safe_name 只用于目录命名,
+    meta 等人读字段仍用原始输入。"""
+    parts = []
+    for seg in (drug, disease, gene):
+        seg = (seg or "").strip()
+        if seg:
+            parts.append(safe_name(seg))
+    return "_".join(parts) or "docking"
+
+
+def split_result_prefix(prefix: str) -> tuple[str, str]:
+    """把结果目录名/富集缓存名前缀拆回 (药物名, 疾病名)。
+
+    前缀是 f"{safe(drug)}_{safe(disease)}" 拼接,而药物名自身可能含空格
+    (如 "Salicylic acid" → "Salicylic_acid"),简单 split("_", 1) 会把药物名截断,
+    导致后续用半截名字去 PubChem 取错配体、归档前缀张冠李戴。
+    这里借 name_map(safe 名 → 原始名,各数据源抓取时都有记录)贪心匹配:
+    从最长的药物名前缀试起,药物与疾病两段都能还原才采用;识别不出时退回旧拆法。
+    """
+    name_map = load_name_map()
+    parts = prefix.split("_")
+    for i in range(len(parts) - 1, 0, -1):
+        drug = name_map.get("_".join(parts[:i]))
+        disease = name_map.get("_".join(parts[i:]))
+        if drug and disease:
+            return str(drug), str(disease)
+    parts = prefix.split("_", 1)
+    return (parts[0], parts[1] if len(parts) > 1 else "")
+
+
+def save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, box: dict,
+                        out_pdbqt: str, scores: pd.DataFrame, conclusion: str,
+                        receptor_source: str = "experiment",
+                        pose_mode: int | None = None) -> str:
+    """归档本次对接成果:打分表、所选构象和参数信息存入结果文件夹,并清理旧版本。
+    pose_mode 提供时归档用户选定的 pose,未提供(默认)归档打分最佳的构象。"""
+    import config
+
+    gene = safe_name(gene)  # 清理基因名中的非法字符,再用于文件命名
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    result_dir = os.path.join(config.MD_RESULT_DIR, f"{prefix}_{ts}")
+    os.makedirs(result_dir, exist_ok=True)
+
+    # 打分表和结论
+    summary = scores.copy()
+    summary["conclusion"] = conclusion
+    summary_path = os.path.join(result_dir, f"summary_{ts}.csv")
+    summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
+
+    # 归档构象:选定了 pose 就按选择归档,否则按亲和力排序取最佳;
+    # 选择值不在打分表里时回退最佳,保证归档必有构象
+    best_mode = int(summary.iloc[0]["mode"])
+    save_mode = best_mode
+    if pose_mode is not None and int(pose_mode) in set(summary["mode"].tolist()):
+        save_mode = int(pose_mode)
+    best_path = os.path.join(result_dir, f"best_{gene}_{ts}.pdbqt")
+    extract_model(out_pdbqt, save_mode, best_path)
+
+    # 参数信息(药物、靶点、对接盒、打分等),便于日后复查
+    write_docking_metadata(os.path.join(result_dir, f"meta_{ts}.txt"), {
+        "drug": prefix.split("_")[0] if "_" in prefix else prefix,
+        "disease": prefix.split("_", 1)[1] if "_" in prefix else "",
+        "gene": gene,
+        "pdb_id": pdb_id,
+        "receptor_source": receptor_source,
+        "cid": cid or "",
+        "box_center": str(box["center"]),
+        "box_size": str(box["size"]),
+        "exhaustiveness": config.EXHAUSTIVENESS,
+        "num_modes": config.NUM_MODES,
+        "seed": config.DOCKING_SEED,
+        "best_mode": save_mode,
+        "best_affinity": float(
+            summary.loc[summary["mode"] == save_mode, "affinity"].iloc[0]),
+        "conclusion": conclusion,
+    })
+
+    # 同名结果只保留最近几版,并清理过期中间文件
+    prune_docking_results(result_dir)
+    clean_docking_cache()
+    return result_dir
 
 
 # -------------------- AlphaFold 预测结构兜底 --------------------
