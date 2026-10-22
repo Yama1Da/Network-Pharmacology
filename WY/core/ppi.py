@@ -11,7 +11,7 @@ import requests
 from .caching import (clean_expired_cache_files, is_cache_fresh, open_csv_cache,
                       read_cache_key, save_csv_cache, save_json_file)
 from .http_client import request_with_retry
-from .text_utils import safe_name
+from .text_utils import genes_from_dataframe, safe_name
 
 
 def _string_post(endpoint: str, params: dict) -> requests.Response | None:
@@ -670,6 +670,119 @@ def render_cytoscape_style_plot(graph: "nx.Graph", metrics_df: pd.DataFrame) -> 
     return fig
 
 
+def build_main_figures(graph, metrics_df, edges_df, hub_method: str, mcc_map: dict):
+    """渲染 pyvis 交互图、静态图、STRING/Cytoscape 风格图与核心靶点图
+    (pyplot 全局状态非线程安全,调用方须在单线程内完成本函数)。
+
+    MCC 得分缺失时在此补算,并入 metrics_df(随节点 CSV 落盘);核心靶点图与两张风格图
+    失败只跳过自身。返回 (html_content, static_fig, mcc_map, hub_df, core_fig,
+    core_genes, string_fig, cyto_fig)。
+    """
+    import config
+
+    html_content = render_pyvis_html(graph, metrics_df)
+    static_fig = render_static_plot(graph, metrics_df)
+    string_fig = cyto_fig = None
+    try:
+        string_fig = render_string_style_plot(graph, metrics_df, edges_df)
+    except Exception:
+        logging.exception("STRING-style figure failed — skipped")
+    try:
+        cyto_fig = render_cytoscape_style_plot(graph, metrics_df)
+    except Exception:
+        logging.exception("Cytoscape-style figure failed — skipped")
+    if not mcc_map:
+        try:
+            mcc_map = compute_mcc_scores(graph)
+        except Exception:
+            logging.exception("MCC computation failed — core target figure skipped")
+    hub_df = metrics_df[metrics_df["is_hub"]]  # 默认值:MCC 失败时 hub 表不带 mcc 列
+    if mcc_map:
+        metrics_df["mcc"] = metrics_df["gene"].map(mcc_map)
+        hub_df = metrics_df[metrics_df["is_hub"]]  # 重取让 Hub 表带上 mcc 列
+    core_fig = None
+    core_genes: list[str] = []
+    if mcc_map:
+        core_genes = pick_top_mcc_genes(metrics_df, mcc_map, config.MCC_TOP_N)
+        if core_genes:
+            try:
+                core_fig = render_core_target_plot(graph, core_genes, mcc_map)
+            except Exception:
+                logging.exception("Core target figure failed — skipped")
+    return (html_content, static_fig, mcc_map, hub_df, core_fig, core_genes,
+            string_fig, cyto_fig)
+
+
+def base_disease_of(name: str) -> str:
+    """剥掉历史实验变体后缀得到干净疾病名(rwrNN,不区分大小写)。
+
+    旧分析曾把 RWR 参数变体标签拼进疾病名输入框以隔离结果目录
+    (如 "gastric cancer rwr72"),下拉选疾病/检索 GEO 时应使用剥掉后缀的
+    干净名,变体差异只体现在结果目录与其中的排序 CSV 上。
+    """
+    import re
+    return re.sub(r"\s*rwr\s*\d+\s*$", "", str(name), flags=re.IGNORECASE).strip()
+
+
+def list_analyzed_pairs() -> list[dict]:
+    """列出本机已跑过的 PPI 分析(即 App 页面分析过的药病对),目录名倒序。
+
+    数据源:downloads 下各 <prefix>_data/analysis_meta.json 的 drug/disease 键
+    (2026-10 起的分析必带,精确);更早的旧结果无此二键,退回从目录名前缀反解
+    —— prefix 由 f"{drug}_{disease}" 经 re.sub 把非单词字符压成 _ 而来,反解为
+    best-effort:首个 _ 前作药名、其余作病名、_ 还原为空格。"manual" 目录是
+    手动基因输入模式,无药病对,跳过。
+
+    base_disease 为剥掉 rwrNN 变体后缀的干净疾病名(ML 页疾病下拉的选项来源);
+    disease 保留原样(含变体后缀,供区分实验批次)。string_version 供排序 CSV
+    发现处展示。供 ML 筛选页构建疾病下拉与排序文件上下文匹配(方案 §M4)。
+    返回 [{drug, disease, base_disease, string_version, analyzed_at,
+           source: "meta"|"prefix", directory}]。
+    """
+    import json
+
+    import config
+    out: list[dict] = []
+    dl = config.DOWNLOADS_DIR
+    if not os.path.isdir(dl):
+        return out
+    for d in sorted(os.listdir(dl), reverse=True):
+        dpath = os.path.join(dl, d)
+        if not os.path.isdir(dpath) or not d.endswith("_data"):
+            continue
+        prefix = d[:-len("_data")]
+        if prefix == "manual":
+            continue
+        meta = {}
+        meta_path = os.path.join(dpath, "analysis_meta.json")
+        if os.path.isfile(meta_path):
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    meta = json.load(f)
+            except Exception:
+                meta = {}
+        analyzed_at = str(meta.get("analyzed_at", ""))
+        if meta.get("disease"):
+            disease = str(meta["disease"])
+            out.append({"drug": str(meta.get("drug", "")),
+                        "disease": disease,
+                        "base_disease": base_disease_of(disease),
+                        "string_version": str(meta.get("string_version", "")),
+                        "analyzed_at": analyzed_at, "source": "meta",
+                        "directory": dpath})
+        else:
+            head, sep, tail = prefix.partition("_")
+            if not sep or not tail:
+                continue
+            disease = tail.replace("_", " ")
+            out.append({"drug": head, "disease": disease,
+                        "base_disease": base_disease_of(disease),
+                        "string_version": str(meta.get("string_version", "")),
+                        "analyzed_at": analyzed_at, "source": "prefix",
+                        "directory": dpath})
+    return out
+
+
 def save_ppi_results(
     graph: "nx.Graph",
     static_fig: "matplotlib.figure.Figure",
@@ -684,10 +797,13 @@ def save_ppi_results(
     target_pathway_fig: "matplotlib.figure.Figure | None" = None,
     string_fig: "matplotlib.figure.Figure | None" = None,
     cyto_fig: "matplotlib.figure.Figure | None" = None,
+    drug: str | None = None,
+    disease: str | None = None,
 ) -> dict:
     """把一次 PPI 分析的全部结果保存到结果目录下的 <prefix>_data 文件夹(prefix 为文件名前缀,如 aspirin_cancer),返回各文件的保存路径(含目录路径)。
     保存前会删除同 prefix 的旧文件夹(含历史结果),同一药物+疾病组合只保留最新一次分析,不会越积越多;节点表含 is_hub 列(算出 MCC 时含 mcc 列),其余为边表、交互式网络、GraphML、静态图(PNG 300 dpi + SVG 矢量)、STRING/Cytoscape 风格网络图及各富集/核心靶点/通路网络图表。
-    传入富集结果表/图时才保存对应的富集文件,不传则跳过。"""
+    传入富集结果表/图时才保存对应的富集文件,不传则跳过。
+    传入 drug/disease 时写入 analysis_meta.json,供下游按元数据匹配(方案 §M4,不用文件名猜)。"""
     import glob
     import shutil
     import networkx as nx
@@ -705,11 +821,17 @@ def save_ppi_results(
     # STRING 版本(切版本后对比/复现的依据);结果目录每次分析整体重建,本文件随之刷新
     from datetime import datetime
 
-    save_json_file(os.path.join(subdir, "analysis_meta.json"), {
+    meta = {
         "string_version": config.STRING_VERSION,
         "interactome_confidence": int(config.INTERACTOME_CONFIDENCE),
         "analyzed_at": datetime.now().isoformat(timespec="seconds"),
-    }, indent=2, sort_keys=True)
+    }
+    if drug and str(drug).strip():
+        meta["drug"] = str(drug).strip()
+    if disease and str(disease).strip():
+        meta["disease"] = str(disease).strip()
+    save_json_file(os.path.join(subdir, "analysis_meta.json"), meta,
+                   indent=2, sort_keys=True)
 
     paths = {
         "nodes": os.path.join(subdir, f"{prefix}_nodes.csv"),
@@ -789,6 +911,45 @@ def save_module_results(
         ("modules_csv", f"{prefix}_modules.csv", summary_df),
         ("module_enrichment_csv", f"{prefix}_module_enrichment.csv", enrichment_df),
     ))
+
+
+def save_module_computation(directory: str, prefix: str, computed: dict) -> dict:
+    """模块计算结果落盘并附上保存路径(自动流程与交互区手动重跑共用);
+    空结果不保存。保存到分析目录后,打包下载（ZIP）会自动包含模块文件。"""
+    mod_saved = save_module_results(directory, prefix,
+                                    computed["summary_df"], computed["long_df"])
+    return {**computed, "saved_paths": mod_saved}
+
+
+def read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
+    """读取指定的 PPI 结果目录,返回 HUB 基因集合与富集验证基因集合;
+    对应文件缺失时返回空集合。历史版本产出的 nodes 表可能缺 is_hub/gene 列
+    (downloads 目录跨版本留存),缺列或读不了时按空集合处理,不让调用方崩溃。"""
+    import config
+
+    base = os.path.join(config.DOWNLOADS_DIR, dir_name)
+    prefix = dir_name[:-5] if dir_name.endswith("_data") else dir_name
+    hub: set[str] = set()
+    nodes_path = os.path.join(base, f"{prefix}_nodes.csv")
+    if os.path.exists(nodes_path):
+        try:
+            nodes = pd.read_csv(nodes_path, encoding="utf-8-sig", comment="#")
+            if {"is_hub", "gene"}.issubset(nodes.columns):
+                hub = set(nodes.loc[nodes["is_hub"].fillna(False), "gene"]
+                          .dropna().astype(str).str.upper())
+            else:
+                logging.warning("nodes file lacks is_hub/gene columns, hub list "
+                                "skipped: %s", nodes_path)
+        except Exception:
+            logging.exception("Failed to read nodes file: %s", nodes_path)
+    enr: set[str] = set()
+    enr_path = os.path.join(base, f"{prefix}_enrichment.csv")
+    if os.path.exists(enr_path):
+        try:
+            enr = genes_from_dataframe(pd.read_csv(enr_path, encoding="utf-8-sig", comment="#"))
+        except Exception:
+            logging.exception("Failed to read enrichment file: %s", enr_path)
+    return hub, enr
 
 
 def save_gsea_results(

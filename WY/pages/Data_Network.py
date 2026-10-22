@@ -12,8 +12,7 @@ from ui.widgets import (back_button, download_button,
                         is_busy, show_busy_notice)
 from i18n import t
 from core.network_algorithms import (
-    detect_louvain_modules,
-    enrich_modules,
+    compute_module_analysis,
     run_proximity_cached,
     run_rwr_cached,
 )
@@ -28,19 +27,15 @@ from core.enrichment import (
     run_enrichment,
 )
 from core.ppi import (
+    build_main_figures,
     build_ppi_graph,
     compute_mcc_scores,
     compute_ppi_metrics,
     fetch_string_ppi,
     mark_hub_genes,
-    pick_top_mcc_genes,
-    render_core_target_plot,
-    render_cytoscape_style_plot,
     render_pyvis_html,
-    render_static_plot,
-    render_string_style_plot,
     save_gsea_results,
-    save_module_results,
+    save_module_computation,
     save_ppi_results,
     save_proximity_results,
     save_query_genes,
@@ -196,58 +191,10 @@ class _ReportProgress:
         self._bar.progress(min(max(fraction, 0.0), 1.0))
 
 
-def _compute_modules_data(graph, organism, label_prefix: str = "") -> dict:
-    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）；
-    label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。"""
-    modules = detect_louvain_modules(
-        graph,
-        resolution=config.LOUVAIN_RESOLUTION,
-        seed=config.LOUVAIN_SEED,
-    )
-    summary_df = pd.DataFrame([
-        {
-            "module_id": m["module_id"],
-            "size": m["size"],
-            "avg_degree": m["avg_degree"],
-            "genes_preview": ", ".join(m["genes"][:8]) + ("…" if m["size"] > 8 else ""),
-        }
-        for m in modules if m["size"] >= 2
-    ])
-    # 仅多基因模块参与着色；单点模块节点渲染为浅灰
-    module_map = {
-        gene: m["module_id"]
-        for m in modules if m["size"] >= 2
-        for gene in m["genes"]
-    }
-    long_df, failures, no_sig = enrich_modules(
-        modules,
-        organism=organism,
-        min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
-        top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
-        label_prefix=label_prefix,
-    )
-    return {
-        "modules": modules,
-        "summary_df": summary_df,
-        "module_map": module_map,
-        "long_df": long_df,
-        "failures": failures,
-        "no_sig": no_sig,
-    }
-
-
-def _save_modules_data(directory, prefix, computed: dict) -> dict:
-    """模块计算结果落盘并附上保存路径(自动流程与交互区手动重跑共用)；
-    空结果不保存。保存到分析目录后,打包下载（ZIP）会自动包含模块文件。"""
-    mod_saved = save_module_results(directory, prefix,
-                                    computed["summary_df"], computed["long_df"])
-    return {**computed, "saved_paths": mod_saved}
-
-
 def _compute_ppi_modules(graph, organism, directory, prefix) -> dict:
     """模块检测 + 富集 + 结果落盘（交互区手动重跑入口）。目录须已存在。"""
-    return _save_modules_data(directory, prefix,
-                              _compute_modules_data(graph, organism, label_prefix=prefix))
+    return save_module_computation(directory, prefix,
+                                   compute_module_analysis(graph, organism, label_prefix=prefix))
 
 
 def _gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
@@ -340,51 +287,10 @@ def _modules_task(graph, organism: str, prefix: str):
     """模块检测+富集的纯计算(不落盘):结果目录由 save_ppi_results 重建(会先删除旧目录),
     模块文件必须在主线程保存完主结果后再写,否则会被清掉。失败返回 None,只跳过模块分析。"""
     try:
-        return _compute_modules_data(graph, organism, label_prefix=prefix)
+        return compute_module_analysis(graph, organism, label_prefix=prefix)
     except Exception:
         logging.exception("Module detection step failed during report build — skipped gracefully")
         return None
-
-
-def _render_main_figures(graph, metrics_df, edges_df, hub_method: str, mcc_map: dict):
-    """主线程渲染 pyvis 交互图、静态图、STRING/Cytoscape 风格图与核心靶点图
-    (pyplot 全局状态非线程安全,须留在主线程)。
-
-    MCC 得分缺失时在此补算,并入 metrics_df(随节点 CSV 落盘);核心靶点图与两张风格图
-    失败只跳过自身。返回 (html_content, static_fig, mcc_map, hub_df, core_fig,
-    core_genes, string_fig, cyto_fig)。
-    """
-    html_content = render_pyvis_html(graph, metrics_df)
-    static_fig = render_static_plot(graph, metrics_df)
-    string_fig = cyto_fig = None
-    try:
-        string_fig = render_string_style_plot(graph, metrics_df, edges_df)
-    except Exception:
-        logging.exception("STRING-style figure failed — skipped")
-    try:
-        cyto_fig = render_cytoscape_style_plot(graph, metrics_df)
-    except Exception:
-        logging.exception("Cytoscape-style figure failed — skipped")
-    if not mcc_map:
-        try:
-            mcc_map = compute_mcc_scores(graph)
-        except Exception:
-            logging.exception("MCC computation failed — core target figure skipped")
-    hub_df = metrics_df[metrics_df["is_hub"]]  # 默认值:MCC 失败时 hub 表不带 mcc 列
-    if mcc_map:
-        metrics_df["mcc"] = metrics_df["gene"].map(mcc_map)
-        hub_df = metrics_df[metrics_df["is_hub"]]  # 重取让 Hub 表带上 mcc 列
-    core_fig = None
-    core_genes: list[str] = []
-    if mcc_map:
-        core_genes = pick_top_mcc_genes(metrics_df, mcc_map, config.MCC_TOP_N)
-        if core_genes:
-            try:
-                core_fig = render_core_target_plot(graph, core_genes, mcc_map)
-            except Exception:
-                logging.exception("Core target figure failed — skipped")
-    return (html_content, static_fig, mcc_map, hub_df, core_fig, core_genes,
-            string_fig, cyto_fig)
 
 
 def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_content, prefix,
@@ -392,10 +298,12 @@ def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_cont
                            core_fig, dtp_fig, gsea_drug_df, gsea_disease_df,
                            string_fig, cyto_fig,
                            expansion_df, rwr_results, proximity_result, modules_data,
+                           drug_name: str = "", disease_name: str = "",
                            progress=None) -> tuple[dict, dict | None]:
     """Step 5/5.5:全部结果保存到下载目录(同名分析旧目录会被替换,不会堆积)。
 
     模块文件必须在主目录重建后落盘,否则会被 save_ppi_results 的旧目录清理删掉。
+    drug_name/disease_name 写入 analysis_meta.json,供 ML 筛选页按元数据发现排序 CSV。
     返回 (saved 路径字典, modules_result)。"""
     def _prog(step: str | None = None, state: str | None = None,
               fraction: float | None = None) -> None:
@@ -415,6 +323,7 @@ def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_cont
         target_pathway_fig=dtp_fig,
         string_fig=string_fig,
         cyto_fig=cyto_fig,
+        drug=drug_name, disease=disease_name,
     )
     # GSEA 结果 CSV 保存进分析目录（空结果不保存），打包下载时自动包含
     gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
@@ -452,7 +361,7 @@ def _save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_cont
     modules_result: dict | None = None
     if modules_data is not None:
         try:
-            modules_result = _save_modules_data(saved["directory"], prefix, modules_data)
+            modules_result = save_module_computation(saved["directory"], prefix, modules_data)
             saved.update(modules_result["saved_paths"])
         except Exception:
             logging.exception("Module detection step failed during report build — skipped gracefully")
@@ -566,7 +475,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         # MCC(CytoHubba 默认算法)与核心靶点图失败只跳过自身,不影响主报告。
         # hub_method="mcc" 时已在 Hub 筛选阶段算过 MCC,此处直接复用。
         (html_content, static_fig, mcc_map, hub_df, core_fig, core_genes,
-         string_fig, cyto_fig) = _render_main_figures(
+         string_fig, cyto_fig) = build_main_figures(
             graph, metrics_df, edges_df, hub_method, mcc_map)
         _prog(fraction=0.48)
 
@@ -616,6 +525,7 @@ def _run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         string_fig=string_fig, cyto_fig=cyto_fig,
         expansion_df=expansion_df, rwr_results=rwr_results,
         proximity_result=proximity_result, modules_data=modules_data,
+        drug_name=drug_name, disease_name=disease_name,
         progress=progress)
 
     return {

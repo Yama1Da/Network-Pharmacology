@@ -35,8 +35,14 @@ def get_lang() -> str:
 
 
 def t(key: str, **kwargs) -> str:
-    """按键取当前语言文案,缺失时回退英文,再缺失返回键名。"""
+    """按键取当前语言文案,缺失时回退英文,再缺失返回键名并留痕日志
+    (页面上出现裸键名时,日志里能直接定位是哪个键、哪种语言缺失)。"""
     text = TEXT.get(get_lang(), {}).get(key)
     if text is None:
         text = TEXT[DEFAULT_LANG].get(key, key)
+        if text == key:
+            import logging
+            logging.getLogger(__name__).warning(
+                "i18n 缺失键: %s (lang=%s) —— 若为新增词条,重启服务以加载新翻译表",
+                key, get_lang())
     return text.format(**kwargs) if kwargs else text

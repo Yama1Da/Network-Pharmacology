@@ -223,3 +223,14 @@ def invalidate_disease_targets_cache(disease_name: str) -> None:
     with _memo_lock:
         for k in [k for k in _success_memo if k[0] == name]:
             del _success_memo[k]
+
+
+def fetch_disease_targets_refresh(name: str, cache_hours=None) -> tuple[pd.DataFrame, str]:
+    """来源管理页"强制更新"的 OpenTargets 抓取器(refresh_cache_file 约定签名)。
+    先失效该疾病名的进程内 memo:来源文件已被 refresh_cache_file 移到 .bak,
+    失效后本次必然重新联网抓取。旧实现 .clear() 清空全部疾病的缓存,又在
+    批量更新的线程池里并发调用,会把其他会话正在用的疾病缓存一起清掉。
+    返回 (表, 状态):带状态变体,请求失败(failed)与查无疾病(empty)分开上报,
+    不把网络故障误报成 0 靶点。"""
+    invalidate_disease_targets_cache(name)
+    return get_disease_targets_stated(name)

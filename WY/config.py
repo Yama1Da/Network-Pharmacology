@@ -391,6 +391,9 @@ DOCKING_RAW_CACHE_DIR = os.path.join(DOCKING_CACHE_DIR, "raw")
 MD_RESULT_DIR = os.path.join(DOWNLOADS_DIR, "MDresult")
 # 收藏目录:点击 ☆ 收藏的成果复制到此,不会被自动清理
 MD_STAR_DIR = os.path.join(DOWNLOADS_DIR, "star")
+# GEO+ML 筛选成果目录(页面):与 MDresult 同级的 Web 端产物区;
+# CLI 默认仍落 results/mlscreen(方案 §6),页面历史列表同时扫两处
+GEO_RESULT_DIR = os.path.join(DOWNLOADS_DIR, "GEOresult")
 
 # ======== 分子对接数据源 ========
 # 受体蛋白 PDB 结构下载地址({pdb_id} 为 4 位 PDB 编号);配体 SDF 由 PubChem 获取。
@@ -498,3 +501,33 @@ INTERACTOME_CONFIDENCE = int(PPI_CONFIDENCE * 1000)
 # (STRING 版本化子域名把 v12.0 写作 version-12-0),与下载路径/背景互作组保持同版本;
 # 运行时齿轮面板切换版本亦需同步重算此值
 STRING_BASE_URL = f"https://version-{STRING_VERSION[1:].replace('.', '-')}.string-db.org/api/json"
+
+
+# ======== GEO / ML 筛选(GEO与ML共识筛选模块,实施方案 §5) ========
+# E-utilities 官方限流:无 key 3 次/秒,注册免费 NCBI_API_KEY 后 10 次/秒;
+# key 放 API.env(可选,缺失自动按无 key 模式限速,功能不受影响)
+NCBI_API_KEY = os.getenv("NCBI_API_KEY", "").strip()
+NCBI_EUTILS_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+GEO_SEARCH_CACHE_TTL_HOURS = 24      # 检索结果短期缓存(每天都有新数据集入库)
+GEO_SERIES_CACHE_SUBDIR = "geo_series"  # series matrix 永久缓存子目录(GEO 归档不可变)
+GEO_DOWNLOAD_TIMEOUT = 600           # 锁接管兜底窗口基准(超时×重试+60s);下载已改分段续传,无整体超时
+GEO_DOWNLOAD_RETRIES = 3             # 下载失败重试次数(间隔见下),gzip 损坏视为失败重试
+GEO_DOWNLOAD_RETRY_DELAY = 5         # 重试间隔(秒)
+GEO_DOWNLOAD_CONCURRENCY = 4         # 大文件分段并发连接数:跨境对 NCBI 单连接常被压到个位数 KB/s
+                                     # (实测 8.5MB 爬 16 分钟),Range 分段多连接聚合提速;E-utilities 的
+                                     # 3 req/s 限流只约束检索接口不约束文件服务器,4 连接在容忍范围内
+GEO_DOWNLOAD_STALL_TIMEOUT = 90      # 单连接断流判定(秒):连续无任何字节到达即断开该段;重试按段续传
+ML_SCREENING_VERSION = 1             # 算法/权重变更时 +1,旧结果自动失效(仿 TARGET_FILTER_VERSION)
+ML_MIN_SAMPLES_PER_GROUP = 3         # 每组样本低于此数直接报错,不降级硬跑
+ML_SEED = 0                          # 全模块固定随机种子,可复现
+ML_BOOTSTRAP_ROUNDS = 30             # bootstrap 稳定性重采样轮次(2026-10 实测定档:500基因×30轮 ML 段约3.5分钟,页面/CLI 统一)
+ML_CV_FOLDS = 5                      # 交叉验证折数(M2)
+ML_SHORTLIST_TOP_K = 20              # shortlist 截断(M2)
+ML_DEG_PREFILTER_TOP_N = 500         # 进 ML 前按 FDR 截断的候选基因数(性能前提;500 与 30 轮为实测耗时定档,页面/CLI 统一)
+# NCBI 限流注册:按是否配 key 取对应间隔(方案:不新建限流器,并入现有节流表)
+HOST_MIN_REQUEST_INTERVAL["NCBI_EUTILS"] = 0.10 if NCBI_API_KEY else 0.34
+
+ML_CONSENSUS_RANK_W = 0.5             # 共识打分权重:平均秩分(方案:权重写死 config,杜绝调出来)
+ML_CONSENSUS_FREQ_W = 0.5             # 共识打分权重:bootstrap 选中频率
+ML_RESULTS_KEEP_PER_GSE = 6           # 结果保留语义(§10 增补):同 tag 只留最近 6 份,落盘后自动清
+                                      # 理更旧的;跨数据集总量永不自动清(实验记录),治理走结果管理页

@@ -109,3 +109,9 @@ def fetch_drug_targets_dgidb(drug_name: str) -> pd.DataFrame:
     """从 DGIdb 获取药物的相互作用基因；失败或无数据时返回空表。
     分析主流程用本函数；管理页用 fetch_drug_targets_dgidb_stated 区分失败与查无。"""
     return fetch_drug_targets_dgidb_stated(drug_name)[0]
+
+
+def fetch_drug_targets_refresh(name: str, cache_hours=None) -> tuple[pd.DataFrame, str]:
+    """来源管理页"强制更新"的 DGIdb 抓取器(refresh_cache_file 约定签名)。
+    带状态变体:请求失败(failed)与查无相互作用(empty)分开上报,不把网络故障误报成 0 靶点。"""
+    return fetch_drug_targets_dgidb_stated(name)
