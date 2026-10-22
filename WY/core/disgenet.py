@@ -231,3 +231,16 @@ def fetch_disease_targets_disgenet(disease_name: str, need_rows: int | None = No
     except Exception:
         logging.exception("fetch_disease_targets_disgenet failed for '%s'", disease_name)
         return pd.DataFrame()
+
+
+def fetch_disease_targets_refresh(name: str, cache_hours=None) -> tuple[pd.DataFrame, str]:
+    """来源管理页"强制更新"的 DisGeNET 抓取器(refresh_cache_file 约定签名)。
+    密钥缺失是配置错误,不属于"0 靶点":状态带原因缀 failed:no_api_key,
+    经 refresh_cache_file 透传到结果 Message,管理页据此显示"未配置密钥"的专用提示;
+    该源"查无关联"与"请求失败"都返回空表,无法区分,按 0 靶点(empty)处理。"""
+    import config
+
+    if not config.DisGeNET_API_KEY:
+        return pd.DataFrame(), "failed:no_api_key"
+    df = fetch_disease_targets_disgenet(name)
+    return df, ("empty" if df.empty else "ok")

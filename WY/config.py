@@ -529,3 +529,5 @@ HOST_MIN_REQUEST_INTERVAL["NCBI_EUTILS"] = 0.10 if NCBI_API_KEY else 0.34
 
 ML_CONSENSUS_RANK_W = 0.5             # 共识打分权重:平均秩分(方案:权重写死 config,杜绝调出来)
 ML_CONSENSUS_FREQ_W = 0.5             # 共识打分权重:bootstrap 选中频率
+ML_RESULTS_KEEP_PER_GSE = 6           # 结果保留语义(§10 增补):同 tag 只留最近 6 份,落盘后自动清
+                                      # 理更旧的;跨数据集总量永不自动清(实验记录),治理走结果管理页

@@ -358,6 +358,58 @@ def t_list_analyzed_pairs():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def t_results_mgmt():
+    """结果管理数据层(§10 增补):keep-N 只删同 tag 最旧、登记根之外与缺
+    summary 的目录拒删、zip 产出非空。"""
+    import json as _json
+    import shutil
+    import tempfile
+
+    from core import ml_results
+
+    tmp = tempfile.mkdtemp(prefix="selfcheck_ml_mgmt_")
+    try:
+        root = os.path.join(tmp, "mlscreen")
+        os.makedirs(root)
+
+        def _mk(tag, ymd, hms):
+            d = os.path.join(root, f"{tag}_{ymd}_{hms}")
+            os.makedirs(d)
+            with open(os.path.join(d, "summary.json"), "w", encoding="utf-8") as f:
+                _json.dump({"ml_version": 1, "ml_meta": {}, "ranked_csvs": {},
+                            "shortlist_count": 0}, f)
+            with open(os.path.join(d, "data.txt"), "w") as f:
+                f.write("x" * 128)
+            return d
+
+        d_old = _mk("GSE1", "20251231", "235959")
+        _mk("GSE1", "20260101", "000001")
+        d_keep = _mk("GSE1", "20260102", "000002")
+        _mk("GSE1", "20260103", "000003")   # 最新,必保留
+        _mk("GSE2", "20260105", "000000")   # 不同 tag,不参与 GSE1 的清理
+
+        runs = ml_results.list_ml_runs(roots=[root])
+        assert len(runs) == 5 and runs[0]["tag"] == "GSE2", "列表应按时间新→旧"
+
+        removed = ml_results.cleanup_keep_per_gse(keep=3, roots=[root])
+        assert len(removed) == 1, f"应只删 1 个最旧目录,实际 {removed}"
+        assert not os.path.isdir(d_old) and os.path.isdir(d_keep)
+        assert len(ml_results.list_ml_runs(roots=[root])) == 4
+
+        outside = os.path.join(tmp, "outside")
+        os.makedirs(outside)
+        assert ml_results.delete_ml_runs([outside], roots=[root]) == [], "根外路径必须拒删"
+        assert os.path.isdir(outside)
+        junk = os.path.join(root, "junk_dir")
+        os.makedirs(junk)
+        assert ml_results.delete_ml_runs([junk], roots=[root]) == [], "缺 summary 的目录必须拒删"
+        assert os.path.isdir(junk)
+
+        assert len(ml_results.zip_ml_runs([d_keep])) > 100, "zip 产物不应为空"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     tests = [
         ("合成数据信号召回(≥8/10)与方向", t_signal_recall),
@@ -374,6 +426,7 @@ def main():
         ("样本来源标注(细胞系/组织/未标注)", t_sample_source_label),
         ("bootstrap 分母(失败轮不计)", t_bootstrap_denominator),
         ("疾病下拉数据源(已分析药病对发现)", t_list_analyzed_pairs),
+        ("结果管理数据层(keep-N/根外拒删/zip)", t_results_mgmt),
     ]
     run(tests, "GEO+ML screening selfcheck")
 

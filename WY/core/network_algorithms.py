@@ -230,6 +230,48 @@ def enrich_modules(
     return long_df, failures, no_sig
 
 
+def compute_module_analysis(graph, organism, label_prefix: str = "") -> dict:
+    """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）；
+    label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。"""
+    import config
+
+    modules = detect_louvain_modules(
+        graph,
+        resolution=config.LOUVAIN_RESOLUTION,
+        seed=config.LOUVAIN_SEED,
+    )
+    summary_df = pd.DataFrame([
+        {
+            "module_id": m["module_id"],
+            "size": m["size"],
+            "avg_degree": m["avg_degree"],
+            "genes_preview": ", ".join(m["genes"][:8]) + ("…" if m["size"] > 8 else ""),
+        }
+        for m in modules if m["size"] >= 2
+    ])
+    # 仅多基因模块参与着色；单点模块节点渲染为浅灰
+    module_map = {
+        gene: m["module_id"]
+        for m in modules if m["size"] >= 2
+        for gene in m["genes"]
+    }
+    long_df, failures, no_sig = enrich_modules(
+        modules,
+        organism=organism,
+        min_module_size=config.LOUVAIN_MIN_MODULE_SIZE,
+        top_n_modules=config.LOUVAIN_MAX_ENRICH_MODULES,
+        label_prefix=label_prefix,
+    )
+    return {
+        "modules": modules,
+        "summary_df": summary_df,
+        "module_map": module_map,
+        "long_df": long_df,
+        "failures": failures,
+        "no_sig": no_sig,
+    }
+
+
 # ---------- 网络邻近度检验（M3，依赖 core.interactome 的背景互作组） ----------
 # 方法学：Guney et al. 2016（Nat Commun）的 proximity 框架。
 # d_c(A,B) = mean_{b∈B} min_{a∈A} d(a,b)；Z = (d_obs - μ_rand) / σ_rand，

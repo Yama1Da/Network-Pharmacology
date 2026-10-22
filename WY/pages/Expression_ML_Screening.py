@@ -8,13 +8,12 @@
    Static/data/downloads/GEOresult/<GSE>_<时间戳>/,与 PPI(_data)/对接(MDresult)
    同属 Web 端产物区;CLI 默认仍落 results/mlscreen(方案 §6),历史列表双根同扫;
    GEO 下载失败降级用旧缓存时,显示黄色警告条 + 强制更新按钮(失效场景②)
-④ 结果区:共识表/ROC/shortlist 下载/历史结果列表(读各次 summary.json,
-   含陈旧检测:算法版本升级或排序 CSV 重跑即提示建议重算,方案失效场景③)
+④ 结果区:共识表/ROC/shortlist 下载/历史结果(近 3 次,读 summary.json;
+   陈旧检测=失效场景③;治理与批量操作在结果管理页)
 
 本页面不新增能力、只换交互形态:全链流程在 core/ml_pipeline.run_screen_chain,
 CLI 与页面共用同一套编排,防止两处漂移。
 """
-import json
 import os
 import warnings
 
@@ -23,21 +22,31 @@ import streamlit as st
 import config
 from core.expression import assess_expression_dataset, normalize_gpl
 from core.geo import fetch_geo_dataset
-from core.ml_pipeline import default_results_root, run_screen_chain, stale_reasons
+from core.ml_pipeline import run_screen_chain
 from core.ppi import base_disease_of, list_analyzed_pairs
 from i18n import t
 from ui.widgets import back_button, hide_sidebar
 
 st.set_page_config(page_title=t("eml.page_title"), layout="wide")
 
-hide_sidebar()
+# 隐藏侧边栏;「ML 结果管理」入口仿数据网络页「数据管理」:同位(返回键旁)、同配色(#6347A1)
+hide_sidebar("""
+    .st-key-ml_mgmt_btn button {
+        background-color: #6347A1;
+        color: #E0D8F2;
+        border: 1px solid #6347A1;
+    }
+""")
 
 st.title(t("eml.title"))
 st.caption(t("eml.caption"))
 
-col_back, _ = st.columns([1, 4])
+col_back, col_mgmt, _ = st.columns([1, 1, 4])
 with col_back:
     back_button()
+with col_mgmt:
+    if st.button(t("mri.title"), key="ml_mgmt_btn"):
+        st.switch_page("pages/ML_Results_Information.py")
 
 st.divider()
 
@@ -546,62 +555,37 @@ else:
 
 st.divider()
 
-# ---------- 历史结果列表(方案 §M4 ④:读各次 summary.json;陈旧检测=失效场景③) ----------
-st.subheader(t("eml.history_title"))
+# ---------- 历史结果(近 3 次;翻页/搜索/勾选删除/打包下载在结果管理页) ----------
+from core.ml_results import list_ml_runs
 
-# 双根同扫:页面新产物在 downloads/GEOresult,CLI 产物在 results/mlscreen,都不丢
-_history_roots = [
-    ("GEOresult", config.GEO_RESULT_DIR),
-    ("mlscreen", os.path.join(default_results_root(), "mlscreen")),
-]
-_entries = []
-_seen_labels = set()
-for _root_tag, _root in _history_roots:
-    if not os.path.isdir(_root):
-        continue
-    for _d in sorted(os.listdir(_root), reverse=True):
-        _spath = os.path.join(_root, _d, "summary.json")
-        if not os.path.isfile(_spath):
-            continue
-        try:
-            with open(_spath, encoding="utf-8") as _f:
-                _summary = json.load(_f)
-        except Exception:
-            continue  # 损坏的 summary 不挡其余历史
-        _label = _d if _d not in _seen_labels else f"{_d}·{_root_tag}"
-        _seen_labels.add(_label)
-        _entries.append({"label": _label, "dir": _d, "root": _root,
-                         "summary": _summary})
-
-if not _entries:
-    st.caption(t("eml.history_empty"))
+st.subheader(t("eml.hist_recent"))
+_runs = list_ml_runs()[:3]
+if not _runs:
+    st.caption(t("eml.hist_empty"))
 else:
-    _sel = st.selectbox(t("eml.history_select"),
-                        options=[e["label"] for e in _entries], key="eml_history")
-    _entry = next(e for e in _entries if e["label"] == _sel)
-    _s = _entry["summary"]
+    _pick = st.selectbox(t("eml.hist_recent"),
+                         options=[r["name"] for r in _runs],
+                         index=0, key="eml_hist3",
+                         label_visibility="collapsed")
+    _r = next(r for r in _runs if r["name"] == _pick)
+    _s = _r["summary"] or {}
     _m = _s.get("ml_meta") or {}
-    _reasons = stale_reasons(_s)
-    if _reasons:
+    st.caption(t("eml.hist_line",
+                 auc=_m.get("cv_auc") if _m.get("cv_auc") is not None else "N/A",
+                 n=_s.get("n_samples", "?"),
+                 sl=_s.get("shortlist_count", "?"),
+                 ver=_s.get("ml_version", "?")))
+    if _r["stale"]:
         _msgs = []
-        for _r in _reasons:
-            if _r["type"] == "version":
-                _msgs.append(t("eml.stale_version", old=_r.get("old"), new=_r.get("new")))
-            elif _r["type"] == "ranked_changed":
-                _msgs.append(t("eml.stale_ranked", name=_r["name"]))
+        for _rs in _r["stale"]:
+            if _rs["type"] == "version":
+                _msgs.append(t("eml.stale_version", old=_rs.get("old"), new=_rs.get("new")))
+            elif _rs["type"] == "ranked_changed":
+                _msgs.append(t("eml.stale_ranked", name=_rs["name"]))
             else:
-                _msgs.append(t("eml.stale_ranked_missing", name=_r["name"]))
+                _msgs.append(t("eml.stale_ranked_missing", name=_rs["name"]))
         st.warning(f"{t('eml.stale_title')}: " + "; ".join(_msgs))
-    _c1, _c2, _c3, _c4, _c5 = st.columns(5)
-    _c1.metric(t("eml.metric_run"), _s.get("gse")
-               or os.path.basename(str(_s.get("expr") or "?")))
-    _c2.metric(t("eml.metric_samples"), _s.get("n_samples", "?"))
-    _c3.metric(t("eml.metric_auc"),
-               _m.get("cv_auc") if _m.get("cv_auc") is not None else "N/A")
-    _c4.metric(t("eml.metric_shortlist"), _s.get("shortlist_count", "?"))
-    _c5.metric(t("eml.metric_version"), f"v{_s.get('ml_version', '?')}")
-    st.caption(f"{t('eml.history_files')}: "
-               f"{os.path.join(_entry['root'], _entry['dir'])}")
+    st.caption(f"{t('eml.history_files')}: {_r['path']}")
 
 st.divider()
 st.caption(t("eml.footer"))

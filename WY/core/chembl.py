@@ -225,3 +225,14 @@ def fetch_drug_targets_chembl(drug_name: str) -> tuple[pd.DataFrame, str | None]
     except Exception:
         logging.exception("fetch_drug_targets_chembl failed for '%s'", drug_name)
         return pd.DataFrame(), None
+
+
+def fetch_drug_targets_refresh(name: str, cache_hours=None) -> tuple[pd.DataFrame, str]:
+    """来源管理页"强制更新"的 ChEMBL 抓取器(refresh_cache_file 约定签名)。
+    cache_hours 透传给本次抓取的缓存 TTL(管理页区分全部/单文件更新节奏)。
+    返回 (表, 状态):csv 未写出(请求中止/异常)记 failed;查无此药记 empty。"""
+    set_chembl_cache_ttl(cache_hours)
+    df, csv_path = fetch_drug_targets_chembl(name)
+    if csv_path is None:
+        return df, "failed"
+    return df, ("empty" if df.empty else "ok")

@@ -1,6 +1,7 @@
 """靶点汇总：整合药物靶点（ChEMBL+DGIdb）与疾病靶点（Open Targets+DisGeNET），并取交集。"""
 
 import logging
+import os
 
 import pandas as pd
 
@@ -9,7 +10,7 @@ from .chembl import fetch_drug_targets_chembl
 from .disgenet import fetch_disease_targets_disgenet
 from .dgidb import fetch_drug_targets_dgidb
 from .opentargets import get_disease_targets
-from .text_utils import remember_name_mapping
+from .text_utils import remember_name_mapping, safe_name
 
 
 def _max_score_map(df: pd.DataFrame, score_col: str) -> dict[str, float]:
@@ -371,3 +372,25 @@ def get_targets_concurrent(
     return (drug_df if drug_df is not None else pd.DataFrame(),
             disease_df if disease_df is not None else pd.DataFrame(),
             failed)
+
+
+def invalidate_merged_disease_targets(disease_name: str) -> None:
+    """更新疾病来源文件后删除对应 merged 缓存,避免整合结果与来源不一致。
+    传入的是原始疾病名,文件名需走同样的 safe_name 规范化才能对上。"""
+    import config
+
+    path = os.path.join(config.MERGED_CACHE_DIR,
+                        f"{config.MERGED_DISEASE_PREFIX}{safe_name(disease_name)}.csv")
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def invalidate_merged_drug_targets(drug_name: str) -> None:
+    """更新药物来源文件后删除对应 merged 缓存,避免整合结果与来源不一致。
+    传入的是原始药物名,文件名需走同样的 safe_name 规范化才能对上。"""
+    import config
+
+    path = os.path.join(config.MERGED_CACHE_DIR,
+                        f"{config.MERGED_DRUG_PREFIX}{safe_name(drug_name)}.csv")
+    if os.path.exists(path):
+        os.remove(path)

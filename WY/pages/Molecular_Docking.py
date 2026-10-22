@@ -1,4 +1,3 @@
-import logging
 import os
 import re
 import shutil
@@ -10,7 +9,7 @@ import streamlit as st
 import config
 from core.files import list_cache_files, list_download_dirs
 from core.management import enrichment_display_name, humanize_analysis_label
-from core.text_utils import load_name_map, safe_name
+from core.text_utils import genes_from_dataframe, safe_name
 from ui.widgets import (back_button, cached_dir_zip, enter_busy,
                         finish_busy, hide_sidebar, is_busy, show_busy_notice)
 from i18n import t
@@ -19,6 +18,7 @@ from core.docking import (
     clamp_box,
     clean_docking_cache,
     cofactor_hetatm_pdb,
+    docking_result_prefix,
     download_pdb,
     extract_model,
     fetch_alphafold_receptor,
@@ -27,6 +27,7 @@ from core.docking import (
     fetch_receptor_pdb_candidates,
     infer_box_from_cofactor,
     interactions_near_ligand,
+    interactions_table,
     interactive_3d_html,
     parse_hetatm,
     parse_vina_scores,
@@ -38,13 +39,17 @@ from core.docking import (
     residues_near_ligand,
     resolve_cid,
     run_vina,
+    save_docking_result,
     save_interactive_3d_html,
     smiles_to_sdf_3d,
+    split_result_prefix,
     split_vina,
     star_docking_result,
     write_docking_metadata,
 )
-from core.enrichment import migrate_legacy_cache_names, parse_enrichment_filename
+from core.enrichment import (enrichment_filename_label,
+                             migrate_legacy_cache_names,
+                             parse_enrichment_filename)
 
 st.set_page_config(page_title=t("dock.page_title"), layout="wide")
 
@@ -99,37 +104,6 @@ if not st.session_state.get("_docking_cache_cleaned"):
 
 
 # ===== 辅助函数 =====
-
-def _extract_label(file_name: str) -> str:
-    """从富集结果文件名中解析出"药物_疾病"标识,用于命名后续结果。"""
-    info = parse_enrichment_filename(file_name)
-    return info["label"] if info else ""
-
-
-def _parse_genes(raw: str) -> list[str]:
-    """把富集结果里的基因列表字段解析成基因符号列表,兼容列表/空格/逗号等格式,避免同一基因被重复计数。"""
-    raw = (raw or "").strip()
-    if not raw:
-        return []
-    if raw.startswith("[") and raw.endswith("]"):
-        try:
-            import ast
-            items = ast.literal_eval(raw)
-            if isinstance(items, list):
-                return [str(x).strip() for x in items if str(x).strip()]
-        except Exception:
-            pass
-    cleaned = raw.strip("[]").replace("'", "").replace('"', "")
-    return [t.strip() for t in re.split(r"[,;\s]+", cleaned) if t.strip()]
-
-
-def _genes_from_df(df: pd.DataFrame) -> set[str]:
-    """汇总富集表中各条目涉及的全部基因,合并去重后返回。"""
-    genes: set[str] = set()
-    for raw in df.get("genes", pd.Series(dtype=str)).fillna("").astype(str):
-        genes.update(g.upper() for g in _parse_genes(raw))
-    return genes
-
 
 def _reset_docking_downstream() -> None:
     """切换候选基因数据源后,清空配体、受体、对接盒和对接结果,以及由这些数据派生的
@@ -191,119 +165,6 @@ def _fetch_ligand_into_dock(query: str, not_found_key: str, no_3d_key: str,
             dock["lig_auto_done"] = True
         st.error(t("dock.ligand_failed", exc=exc))
         return
-
-
-def _read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
-    """读取所选 PPI 结果目录,返回 HUB 基因集合与富集验证基因集合;
-    对应文件缺失时返回空集合。历史版本产出的 nodes 表可能缺 is_hub/gene 列
-    (downloads 目录跨版本留存),缺列或读不了时按空集合处理,不让页面崩溃。"""
-    base = os.path.join(config.DOWNLOADS_DIR, dir_name)
-    prefix = dir_name[:-5] if dir_name.endswith("_data") else dir_name
-    hub: set[str] = set()
-    nodes_path = os.path.join(base, f"{prefix}_nodes.csv")
-    if os.path.exists(nodes_path):
-        try:
-            nodes = pd.read_csv(nodes_path, encoding="utf-8-sig", comment="#")
-            if {"is_hub", "gene"}.issubset(nodes.columns):
-                hub = set(nodes.loc[nodes["is_hub"].fillna(False), "gene"]
-                          .dropna().astype(str).str.upper())
-            else:
-                logging.warning("nodes file lacks is_hub/gene columns, hub list "
-                                "skipped: %s", nodes_path)
-        except Exception:
-            logging.exception("Failed to read nodes file: %s", nodes_path)
-    enr: set[str] = set()
-    enr_path = os.path.join(base, f"{prefix}_enrichment.csv")
-    if os.path.exists(enr_path):
-        try:
-            enr = _genes_from_df(pd.read_csv(enr_path, encoding="utf-8-sig", comment="#"))
-        except Exception:
-            logging.exception("Failed to read enrichment file: %s", enr_path)
-    return hub, enr
-
-
-def _split_result_prefix(prefix: str) -> tuple[str, str]:
-    """把结果目录名/富集缓存名前缀拆回 (药物名, 疾病名)。
-
-    前缀是 f"{safe(drug)}_{safe(disease)}" 拼接,而药物名自身可能含空格
-    (如 "Salicylic acid" → "Salicylic_acid"),简单 split("_", 1) 会把药物名截断,
-    导致 Step2 用半截名字去 PubChem 取错配体、归档前缀张冠李戴。
-    这里借 name_map(safe 名 → 原始名,各数据源抓取时都有记录)贪心匹配:
-    从最长的药物名前缀试起,药物与疾病两段都能还原才采用;识别不出时退回旧拆法。
-    """
-    name_map = load_name_map()
-    parts = prefix.split("_")
-    for i in range(len(parts) - 1, 0, -1):
-        drug = name_map.get("_".join(parts[:i]))
-        disease = name_map.get("_".join(parts[i:]))
-        if drug and disease:
-            return str(drug), str(disease)
-    parts = prefix.split("_", 1)
-    return (parts[0], parts[1] if len(parts) > 1 else "")
-
-
-def _docking_result_prefix(drug: str, disease: str, gene: str) -> str:
-    """归档结果目录名前缀:三段各自过 safe_name 消毒,防止用户输入中的路径分隔符等
-    特殊字符进入文件路径;空段必须先剔除再消毒(safe_name 对空串返回 "unnamed",
-    直接套会凭空出现 unnamed 段),全空回退 "docking"。safe_name 只用于目录命名,
-    meta 等人读字段仍用原始输入。"""
-    parts = []
-    for seg in (drug, disease, gene):
-        seg = (seg or "").strip()
-        if seg:
-            parts.append(safe_name(seg))
-    return "_".join(parts) or "docking"
-
-
-def _save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, box: dict,
-                         out_pdbqt: str, scores: pd.DataFrame, conclusion: str,
-                         receptor_source: str = "experiment",
-                         pose_mode: int | None = None) -> str:
-    """归档本次对接成果:打分表、所选构象和参数信息存入结果文件夹,并清理旧版本。
-    pose_mode 提供时归档用户在 Step6 选定的 pose,未提供(默认)归档打分最佳的构象。"""
-    gene = safe_name(gene)  # 清理基因名中的非法字符,再用于文件命名
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_dir = os.path.join(config.MD_RESULT_DIR, f"{prefix}_{ts}")
-    os.makedirs(result_dir, exist_ok=True)
-
-    # 打分表和结论
-    summary = scores.copy()
-    summary["conclusion"] = conclusion
-    summary_path = os.path.join(result_dir, f"summary_{ts}.csv")
-    summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
-
-    # 归档构象:页面下拉选了 pose 就按选择归档(与"选择要保存的 pose"文案一致),
-    # 否则按亲和力排序取最佳;选择值不在打分表里时回退最佳,保证归档必有构象
-    best_mode = int(summary.iloc[0]["mode"])
-    save_mode = best_mode
-    if pose_mode is not None and int(pose_mode) in set(summary["mode"].tolist()):
-        save_mode = int(pose_mode)
-    best_path = os.path.join(result_dir, f"best_{gene}_{ts}.pdbqt")
-    extract_model(out_pdbqt, save_mode, best_path)
-
-    # 参数信息(药物、靶点、对接盒、打分等),便于日后复查
-    write_docking_metadata(os.path.join(result_dir, f"meta_{ts}.txt"), {
-        "drug": prefix.split("_")[0] if "_" in prefix else prefix,
-        "disease": prefix.split("_", 1)[1] if "_" in prefix else "",
-        "gene": gene,
-        "pdb_id": pdb_id,
-        "receptor_source": receptor_source,
-        "cid": cid or "",
-        "box_center": str(box["center"]),
-        "box_size": str(box["size"]),
-        "exhaustiveness": config.EXHAUSTIVENESS,
-        "num_modes": config.NUM_MODES,
-        "seed": config.DOCKING_SEED,
-        "best_mode": save_mode,
-        "best_affinity": float(
-            summary.loc[summary["mode"] == save_mode, "affinity"].iloc[0]),
-        "conclusion": conclusion,
-    })
-
-    # 同名结果只保留最近几版,并清理过期中间文件
-    prune_docking_results(result_dir)
-    clean_docking_cache()
-    return result_dir
 
 
 # 相互作用虚线圆柱配色与 3Dmol 视图/导出 HTML 保持一致:蓝=氢键 紫=盐桥 灰=疏水
@@ -406,21 +267,6 @@ def _render_3d(pdb_path: str, pose_pdbqt: str, pocket: list[dict] | None = None,
     st.components.v1.html(html, height=540)
 
 
-def _interactions_table(interactions: list[dict]) -> pd.DataFrame:
-    """把相互作用原子对列表转成展示表格(类型本地化,残基带链号),列顺序固定。"""
-    kind_label = {"hbond": t("dock.inter_hbond"), "salt": t("dock.inter_salt"),
-                  "hydro": t("dock.inter_hydro")}
-    rows = [{
-        t("dock.inter_col_kind"): kind_label.get(it["kind"], it["kind"]),
-        t("dock.inter_col_residue"): (it["chain"] + "/" if it["chain"] else "")
-                                     + f'{it["resn"]}{it["resi"]}',
-        t("dock.inter_col_res_atom"): it["res_atom"],
-        t("dock.inter_col_lig_atom"): it["lig_atom"],
-        t("dock.inter_col_dist"): it["dist"],
-    } for it in interactions]
-    return pd.DataFrame(rows)
-
-
 def _save_3d_html_ui(dock: dict, pdb_path: str, pose_pdbqt: str, pose_sel,
                      pocket: list[dict] | None = None,
                      interactions: list[dict] | None = None,
@@ -519,11 +365,11 @@ def _step1_select_source(dock: dict) -> None:
             # 选定目录后自动读取,无需再点按钮
             if sel_dir and dock.get("ppi_dir") != sel_dir:
                 dock["ppi_dir"] = sel_dir
-                dock["hub_genes"], dock["enrichment_genes"] = _read_ppi_dataset(sel_dir)
+                dock["hub_genes"], dock["enrichment_genes"] = read_ppi_dataset(sel_dir)
                 # 从目录名拆出药物名和疾病名,供 Step 2 自动获取配体
                 prefix = sel_dir[:-5] if sel_dir.endswith("_data") else sel_dir
                 dock["label"] = prefix
-                dock["drug"], dock["disease"] = _split_result_prefix(prefix)
+                dock["drug"], dock["disease"] = split_result_prefix(prefix)
                 _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
     else:
         enr_files = list_cache_files("enrichment", exts=(".csv",))
@@ -549,11 +395,11 @@ def _step1_select_source(dock: dict) -> None:
                 dock["enr_file"] = sel_file
                 df = pd.read_csv(os.path.join(config.ENRICHMENT_CACHE_DIR, sel_file),
                                  encoding="utf-8-sig", comment="#")
-                dock["enrichment_genes"] = sorted(_genes_from_df(df))
+                dock["enrichment_genes"] = sorted(genes_from_dataframe(df))
                 dock["hub_genes"] = []  # 没有 HUB 信息,只按富集基因筛选
-                label = _extract_label(sel_file)
+                label = enrichment_filename_label(sel_file)
                 dock["label"] = label
-                dock["drug"], dock["disease"] = _split_result_prefix(label)
+                dock["drug"], dock["disease"] = split_result_prefix(label)
                 _reset_docking_downstream()  # 数据源变了,清空后面步骤的旧结果
 
 
@@ -997,9 +843,9 @@ if dock.get("result"):
         with col_save:
             if st.button(t("dock.save_btn"), key="save_result"):
                 gene = dock.get("gene", "gene")
-                prefix = _docking_result_prefix(drug, disease, gene)
+                prefix = docking_result_prefix(drug, disease, gene)
                 try:
-                    result_dir = _save_docking_result(
+                    result_dir = save_docking_result(
                         prefix, gene, dock.get("pdb_id", ""), dock.get("cid"),
                         dock["box"], dock["result"]["out"], scores, conclusion,
                         receptor_source=dock.get("receptor_source", "experiment"),
@@ -1096,7 +942,7 @@ if dock.get("result"):
                                + (" …" if len(names) > 40 else ""))
                 if interactions:
                     with st.expander(t("dock.inter_expander", n=len(interactions))):
-                        st.dataframe(_interactions_table(interactions),
+                        st.dataframe(interactions_table(interactions),
                                      use_container_width=True, hide_index=True)
                 else:
                     st.caption(t("dock.inter_none"))

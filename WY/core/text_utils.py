@@ -74,3 +74,32 @@ def safe_round(value, ndigits: int = 4) -> float:
         return round(float(value), ndigits)
     except (TypeError, ValueError):
         return 0.0
+
+
+def parse_genes_text(raw: str) -> list[str]:
+    """把富集结果里的基因列表字段解析成基因符号列表,兼容列表/空格/逗号等格式,避免同一基因被重复计数。"""
+    import re
+
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            import ast
+            items = ast.literal_eval(raw)
+            if isinstance(items, list):
+                return [str(x).strip() for x in items if str(x).strip()]
+        except Exception:
+            pass
+    cleaned = raw.strip("[]").replace("'", "").replace('"', "")
+    return [g.strip() for g in re.split(r"[,;\s]+", cleaned) if g.strip()]
+
+
+def genes_from_dataframe(df) -> set[str]:
+    """汇总富集表中各条目涉及的全部基因,合并去重后返回。"""
+    import pandas as pd
+
+    genes: set[str] = set()
+    for raw in df.get("genes", pd.Series(dtype=str)).fillna("").astype(str):
+        genes.update(g.upper() for g in parse_genes_text(raw))
+    return genes

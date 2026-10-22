@@ -123,6 +123,12 @@ def parse_enrichment_filename(file_name: str) -> dict | None:
     return None
 
 
+def enrichment_filename_label(file_name: str) -> str:
+    """从富集缓存文件名解析"药物_疾病"标识,用于命名后续结果;无法识别命名时返回空串。"""
+    info = parse_enrichment_filename(file_name)
+    return info["label"] if info else ""
+
+
 def migrate_legacy_cache_names() -> int:
     """把旧版带哈希命名的富集缓存改为"数据源_标识"同名覆盖式命名,返回处理(改名/去重)的文件数。
     同一标识多变体时保留最新一份、删除其余,同目标的新格式文件同样参与"最新者胜";幂等,重复调用无副作用。

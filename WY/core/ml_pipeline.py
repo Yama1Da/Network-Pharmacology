@@ -315,6 +315,18 @@ def run_screen_chain(*, gse: str | None = None,
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
 
+    # 写侧自动清理(方案 §10 增补):同 tag 只保留最近 ML_RESULTS_KEEP_PER_GSE 份,
+    # 本次新落盘的必在其中。清理失败不影响本次结果,仅记日志。
+    try:
+        from .ml_results import cleanup_keep_per_gse
+        removed = cleanup_keep_per_gse()
+        if removed:
+            _report(None, f"自动清理: 同数据集保留最近 "
+                          f"{config.ML_RESULTS_KEEP_PER_GSE} 份,已删除 {len(removed)} 个旧结果目录")
+    except Exception:
+        import logging
+        logging.exception("keep-per-gse 结果清理失败(不影响本次结果)")
+
     return {"consensus": res["consensus"], "shortlist": sl, "funnel": funnel,
             "deg": deg, "meta": m, "roc": res["roc"], "roc_png":
             os.path.join(out_dir, f"ml_roc_{tag}_{m['cv_mode']}.png"),
