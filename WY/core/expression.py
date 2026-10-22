@@ -9,6 +9,7 @@
 import gzip
 import logging
 import os
+import time
 
 import numpy as np
 import pandas as pd
@@ -83,15 +84,23 @@ def preprocess(matrix: pd.DataFrame, force_log: bool | None = None,
 # ---------------- 探针 → 基因符号 ----------------
 
 
+def normalize_gpl(gpl: str) -> str:
+    """平台编号规范化:检索元数据里的 gpl 可能不带 GPL 前缀(如 "26963"),
+    统一补成 GPL26963 —— 否则 annot URL 与缓存文件名都会拼错、探测恒 404。"""
+    gpl = gpl.strip().upper()
+    return gpl if gpl.startswith("GPL") else f"GPL{gpl}"
+
+
 def _gpl_annot_path(gpl: str) -> str:
     config = _config()
     d = os.path.join(config.CACHE_DIR, config.GEO_SERIES_CACHE_SUBDIR)
     os.makedirs(d, exist_ok=True)
-    return os.path.join(d, f"{gpl}_annot.gz")
+    return os.path.join(d, f"{normalize_gpl(gpl)}_annot.gz")
 
 
 def _gpl_annot_url(gpl: str) -> str:
     from .geo import _geo_bucket
+    gpl = normalize_gpl(gpl)
     return (f"https://ftp.ncbi.nlm.nih.gov/geo/platforms/{_geo_bucket(gpl)}/{gpl}/"
             f"annot/{gpl}.annot.gz")
 
@@ -121,6 +130,101 @@ def _fetch_gpl_annotation(gpl: str) -> str:
         pass  # 探测失败不阻断:交给 download_geo_file 的重试链路给出网络类报错
     download_geo_file(url, path)
     return path
+
+
+# annot 探测结果短时记忆:10 分钟 TTL,只存确定性结论(见 probe_platform_annot)
+_ANNOT_PROBE_TTL = 600.0
+_ANNOT_PROBE_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def probe_platform_annot(gpl: str) -> str:
+    """探测平台注释文件可用性(选型预检,单次 HEAD,不落盘):
+    返回 "cached"(本地已有)| "ok"(服务器存在)| "missing"(404,GEO 未生成,
+    确定性缺失)| "unknown"(网络原因,开始分析时会经重试链路再判)。
+
+    结果短时记忆(10 分钟 TTL):总览每次点击都会走到这里,对探针级平台反复
+    HEAD 没有意义。只缓存确定性结论,"unknown" 不缓存 —— 网络恢复后可自愈。
+    本地文件存在优先于记忆判断:手动放置注释文件后立即翻转为 "cached"。
+    """
+    gpl = normalize_gpl(gpl)
+    if os.path.isfile(_gpl_annot_path(gpl)):
+        return "cached"
+    cached = _ANNOT_PROBE_CACHE.get(gpl)
+    if cached and time.time() - cached[0] < _ANNOT_PROBE_TTL:
+        return cached[1]
+    try:
+        status = requests.head(_gpl_annot_url(gpl),
+                               timeout=(15, 30), headers=_GPL_HEADERS).status_code
+    except requests.RequestException:
+        return "unknown"
+    if status == 200:
+        result = "ok"
+    elif status == 404:
+        result = "missing"
+    else:
+        return "unknown"
+    _ANNOT_PROBE_CACHE[gpl] = (time.time(), result)
+    return result
+
+
+# 预检的分组字段噪声词:字段名命中即不算候选分组列(年龄/性别等样本属性,非病/对照)
+_GROUP_FIELD_DENY = ("age", "sex", "gender", "date", "batch")
+# 性别取值词表:候选列的取值规约到该词表内即整列剔除(值级判断,覆盖
+# "Sex: male/female"、单字母 "M/F"、中文 "男/女" 等编码 —— 字段名不含
+# sex 字样时也拦得住;性别是样本属性,混进候选会误导用户对它写分组正则)
+_SEX_VALUE_TOKENS = {"m", "f", "male", "female", "man", "woman", "男", "女"}
+
+
+def assess_expression_dataset(ds) -> dict:
+    """数据集可用性预检(实施方案 §4.1/§11:平台注释缺失、无病例对照设计
+    → 选型阶段就排除,而不是下载分组之后才失败)。
+
+    对已解析的 GeoDataset 体检,返回页面可直接消费的字典:
+    matrix_empty  表达矩阵为空(元数据型提交/超级系列)→ 不可用
+    symbol_level  行标识是否基因符号级(True=免平台注释映射)
+    shape / gpl   矩阵形状与平台编号(供展示)
+    annot         平台注释状态(cached/ok/missing/unknown;基因级为 None)
+    group_fields  候选分组字段(取值 2-8 类的注释列,剔除年龄/性别等属性列),
+                  空列表 = 可能没有病例/对照设计(启发式,人工仍需核对标题)
+    n_samples     样本数(页面对照两组下限给软提示)
+    usable        综合判定:矩阵非空 且 (基因级 或 注释可用) 且 有候选分组字段
+    """
+    n = len(ds.samples)
+    if ds.table.empty:
+        return {"matrix_empty": True, "symbol_level": None, "shape": None,
+                "gpl": ds.gpl, "annot": None, "group_fields": [],
+                "n_samples": n, "usable": False}
+
+    symbol = looks_symbol_level(ds.table.index)
+    if symbol:
+        annot = None           # 基因级矩阵免映射,注释文件无关紧要
+    elif ds.gpl:
+        annot = probe_platform_annot(ds.gpl)
+    else:
+        annot = "missing"      # 探针级又无平台信息,映射无从谈起
+
+    group_fields = []
+    for col in ds.samples.columns:
+        if not (col.startswith("characteristics") or col in ("title", "source_name_ch1")):
+            continue
+        if any(k in col.lower() for k in _GROUP_FIELD_DENY):
+            continue
+        uniq = ds.samples[col].astype(str).unique()
+        if not 2 <= len(uniq) <= 8:
+            continue
+        lows = {v.strip().lower() for v in uniq}
+        # 值级性别判断:每个取值取冒号后最后一段词,全部落进性别词表 → 整列剔除
+        # (覆盖 "Sex: male/female"、单字母 "M/F"、中文 "男/女" 等编码)
+        toks = {v.split(":")[-1].strip().split()[-1]
+                for v in lows if v.split(":")[-1].strip().split()}
+        if toks and toks <= _SEX_VALUE_TOKENS:
+            continue
+        group_fields.append(f"{col}: {'/'.join(sorted(map(str, uniq))[:4])}")
+
+    usable = bool(group_fields) and (symbol or annot in ("cached", "ok"))
+    return {"matrix_empty": False, "symbol_level": symbol, "shape": tuple(ds.table.shape),
+            "gpl": ds.gpl, "annot": annot, "group_fields": group_fields,
+            "n_samples": n, "usable": usable}
 
 
 def map_probe_to_symbol(matrix: pd.DataFrame, gpl: str) -> pd.DataFrame:

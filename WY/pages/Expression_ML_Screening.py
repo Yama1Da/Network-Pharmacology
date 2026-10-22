@@ -21,6 +21,7 @@ import warnings
 import streamlit as st
 
 import config
+from core.expression import assess_expression_dataset, normalize_gpl
 from core.geo import fetch_geo_dataset
 from core.ml_pipeline import default_results_root, run_screen_chain, stale_reasons
 from core.ppi import base_disease_of, list_analyzed_pairs
@@ -100,9 +101,22 @@ with tab_search:
                     from core.geo import search_geo_datasets
                     results = search_geo_datasets(disease.strip(), limit=int(limit))
                     ss.eml["search_results"] = results
+                    ss.eml["search_disease"] = disease.strip()  # 结果带检索上下文
+                    # 新检索 = 新候选列表:上一轮的 GSE 选择与全部衍生探测/预检失效,
+                    # 不清的话选择框会残留旧 GSE(甚至已判定不可用的那个)
+                    ss.eml.pop("selected_gse", None)
+                    ss.eml.pop("probe", None)
+                    ss.eml.pop("dataset", None)
+                    for _wk in ("eml_selected_gse_sel", "eml_selected_gse"):
+                        ss.pop(_wk, None)
                 except Exception as exc:
                     st.error(t("eml.search_failed", exc=exc))
     if "search_results" in ss.eml and not ss.eml["search_results"].empty:
+        # 检索结果跨页持久是 session 设计;但当前疾病与检索时不一致(改选/清空,
+        # 或切页回来)要标明来历,避免对着一张对不上号的旧结果表
+        _sd = ss.eml.get("search_disease", "")
+        if disease.strip().lower() != _sd.lower():
+            st.warning(t("eml.search_stale", disease=_sd))
         st.dataframe(ss.eml["search_results"], use_container_width=True,
                      hide_index=True)
         st.caption(t("eml.search_hint"))
@@ -152,20 +166,59 @@ if selected_gse:
                                    "r": probe_series_matrix(selected_gse), "err": ""}
             except Exception as _exc:
                 ss.eml["probe"] = {"gse": selected_gse, "r": None, "err": str(_exc)}
+        # 平台注释预检(方案 §11):检索结果带平台且为芯片型 → HEAD 一次注释文件,
+        # 404 在下载前就亮"不可用"灯。结果随 probe 缓存,每 GSE 每会话只探一次。
+        _sr = ss.eml.get("search_results")
+        if (_sr is not None and not _sr.empty
+                and {"gse", "platform", "type"} <= set(_sr.columns)):
+            _row = _sr[_sr["gse"].astype(str).str.upper() == selected_gse]
+            if len(_row) and str(_row["type"].iloc[0]) == "芯片":
+                _pgpl = str(_row["platform"].iloc[0]).strip()
+                if _pgpl:
+                    from core.expression import probe_platform_annot
+                    ss.eml["probe"]["annot"] = probe_platform_annot(_pgpl)
+                    ss.eml["probe"]["gpl"] = normalize_gpl(_pgpl)
+        # 矩阵已在本地缓存 → 直接解析做权威判定(基因级矩阵不需要注释文件,
+        # 上面基于检索元数据的注释警告对它就是误报 —— GSE281291 即此形态);
+        # 未缓存则不做(预检不该替正式下载),保持条件措辞
+        from core.geo import _geo_cache_path
+        if os.path.isfile(_geo_cache_path(selected_gse)):
+            try:
+                ss.eml["probe"]["assess"] = assess_expression_dataset(
+                    fetch_geo_dataset(selected_gse))
+            except Exception:
+                pass  # 解析失败不阻断预估展示,警告回退到元数据条件版
     _probe = ss.eml.get("probe", {})
     if not expr_path.strip() and _probe.get("gse") == selected_gse:
         _cache_dir = os.path.join(config.CACHE_DIR, config.GEO_SERIES_CACHE_SUBDIR)
         if _probe.get("r"):
             _pr = _probe["r"]
-            _eta = _pr["size_bytes"] / _pr["speed_bps"] if _pr["speed_bps"] > 0 else 10 ** 9
-            st.caption(t("eml.est_line",
-                         size=_fmt_size(_pr["size_bytes"]),
-                         speed=f"{_pr['speed_bps'] / 1024:.0f} KB/s",
-                         eta=_fmt_eta(_eta)))
-            if not _pr["reliable"] or _eta > 300:  # 预计超 5 分钟或测速被时限截断
-                st.caption(t("eml.est_slow", path=_cache_dir))
+            if _pr["speed_bps"] < 1024:
+                # < 1 KB/s:字节仍在流但已无可用带宽,按"近乎断流"处理,
+                # 不渲染体积/速度换算出的夸张 ETA
+                st.warning(t("eml.est_dead",
+                             speed=f"{_pr['speed_bps']:.0f} B/s",
+                             path=_cache_dir))
+            else:
+                _eta_raw = _pr["size_bytes"] / _pr["speed_bps"]
+                _eta = min(_eta_raw, 5400)  # ETA 封顶展示,超时部分交给慢速提示
+                st.caption(t("eml.est_line",
+                             size=_fmt_size(_pr["size_bytes"]),
+                             speed=f"{_pr['speed_bps'] / 1024:.0f} KB/s",
+                             eta=_fmt_eta(_eta)))
+                if not _pr["reliable"] or _eta_raw > 300:  # 预计超 5 分钟或测速被时限截断
+                    st.caption(t("eml.est_slow", path=_cache_dir))
         elif _probe.get("err"):
             st.caption(t("eml.est_failed", path=_cache_dir))
+        # 警告两级:矩阵已缓存 → 权威判定(探针级且注释缺失才算不可用;
+        # 基因级矩阵不需要注释,基于元数据的警告对它是误报);未缓存 → 元数据条件版
+        _as = _probe.get("assess")
+        if _as is not None:
+            if (not _as["matrix_empty"] and not _as["symbol_level"]
+                    and _as["annot"] == "missing"):
+                st.error(t("eml.usa_annot_missing", gpl=_as["gpl"]))
+        elif _probe.get("annot") == "missing":
+            st.warning(t("eml.annot_missing_warn", gpl=_probe.get("gpl", "")))
 
 # 数据源判定:本地矩阵(两路都填)与 GSE 二选一(方案 §6,与管线防呆一致)
 use_local = bool(expr_path.strip()) and bool(labels_path.strip())
@@ -173,18 +226,31 @@ local_partial = bool(expr_path.strip()) != bool(labels_path.strip())
 has_gse = bool(selected_gse.strip())
 source_conflict = use_local and has_gse
 
+# 可用性锁定(方案 §11:确定性不可用 → 不允许进入配置与运行)。
+# 只认权威判定(空矩阵 / 探针级且注释缺失);分组字段启发式不算 —— 分组写在
+# 样本标题里的数据集(如 GSE218929)预检看不到,锁掉就误杀了。
+_probe_d = ss.eml.get("probe") or {}
+_as = _probe_d.get("assess")
+unusable = bool(has_gse and _as and _probe_d.get("gse") == selected_gse
+                and (_as.get("matrix_empty")
+                     or (not _as.get("symbol_level")
+                         and _as.get("annot") == "missing")))
+
 st.divider()
 
-# ---------- ② 配置区 ----------
+# ---------- ② 配置区(数据集被判定不可用时整体锁定) ----------
 st.subheader(t("eml.step2"))
+if unusable:
+    st.error(t("eml.step2_blocked"))
 
 col_case, col_ctrl = st.columns(2)
 with col_case:
     case_pat = st.text_input(t("eml.case_pattern"), key="eml_case",
-                             placeholder="steatosis|non-alcoholic")
+                             placeholder="steatosis|non-alcoholic",
+                             disabled=unusable)
 with col_ctrl:
     ctrl_pat = st.text_input(t("eml.ctrl_pattern"), key="eml_ctrl",
-                             placeholder="healthy")
+                             placeholder="healthy", disabled=unusable)
 
 # 分组总览按钮(运行中禁用:重复触发会对同一数据集并发下载,文件锁只能保正确、不能省时间)
 if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview",
@@ -203,6 +269,34 @@ if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview",
                     st.markdown(t("eml.overview_title"))
                     st.dataframe(overview, use_container_width=True, hide_index=True)
                     st.caption(t("eml.overview_hint"))
+                    # 可用性预检(方案 §11:空矩阵/平台注释缺失/无病例对照设计,
+                    # 在选型阶段排除而不是点「开始分析」后才发现)。
+                    # 结果写回 probe 会话键:Step 2/3 的锁定与警告同一来源
+                    a = assess_expression_dataset(ds)
+                    ss.eml.setdefault("probe", {})["assess"] = a
+                    if a["matrix_empty"]:
+                        st.error(t("eml.usa_matrix_empty"))
+                    else:
+                        st.caption(t("eml.usa_matrix",
+                                     shape=f"{a['shape'][0]}×{a['shape'][1]}",
+                                     idkind=t("eml.usa_id_symbol" if a["symbol_level"]
+                                              else "eml.usa_id_probe")))
+                        if not a["symbol_level"]:
+                            if a["annot"] in ("cached", "ok"):
+                                st.caption(t("eml.usa_annot_ok", gpl=a["gpl"]))
+                            elif a["annot"] == "missing":
+                                st.error(t("eml.usa_annot_missing", gpl=a["gpl"]))
+                            else:
+                                st.caption(t("eml.usa_annot_unknown", gpl=a["gpl"]))
+                    if a["group_fields"]:
+                        st.caption(t("eml.usa_groups",
+                                     fields="; ".join(a["group_fields"][:3])))
+                    else:
+                        st.warning(t("eml.usa_groups_missing"))
+                    if a["n_samples"] < 2 * config.ML_MIN_SAMPLES_PER_GROUP:
+                        st.warning(t("eml.usa_samples_low",
+                                     n=a["n_samples"],
+                                     min=2 * config.ML_MIN_SAMPLES_PER_GROUP))
             except Exception as exc:
                 st.error(t("eml.overview_failed", exc=exc))
     finally:
@@ -250,7 +344,7 @@ with col_rank:
             selected_files = st.multiselect(
                 t("eml.ranked_csv_select"),
                 options=[rf["label"] for rf in shown],
-                key="eml_ranked")
+                key="eml_ranked", disabled=unusable)
             ss.eml["ranked_paths"] = [
                 rf["path"] for rf in shown if rf["label"] in selected_files]
         else:
@@ -260,15 +354,18 @@ with col_rank:
 
 with col_param:
     top_k = st.number_input(t("eml.topk_label"), min_value=5, max_value=100,
-                            value=config.ML_SHORTLIST_TOP_K, key="eml_topk")
+                            value=config.ML_SHORTLIST_TOP_K, key="eml_topk",
+                            disabled=unusable)
     # 默认随 config(500 基因 × 30 轮,页面/CLI 统一口径):本机实测 500×30 ML 段约 2 分钟
     # (LOOCV 小样本数据集约 2.5 分钟);SVM-RFE 对特征数近平方级,调大候选池会显著变慢
     prefilter_n = st.number_input(
         t("eml.prefilter_label"), min_value=50, max_value=5000,
-        value=config.ML_DEG_PREFILTER_TOP_N, key="eml_prefilter")
+        value=config.ML_DEG_PREFILTER_TOP_N, key="eml_prefilter",
+        disabled=unusable)
     bootstrap_n = st.number_input(
         t("eml.bootstrap_label"), min_value=5, max_value=200,
-        value=config.ML_BOOTSTRAP_ROUNDS, key="eml_bootstrap")
+        value=config.ML_BOOTSTRAP_ROUNDS, key="eml_bootstrap",
+        disabled=unusable)
     st.caption(t("eml.perf_hint"))
 
 st.divider()
@@ -276,8 +373,10 @@ st.divider()
 # ---------- ③ 运行区 ----------
 st.subheader(t("eml.step3"))
 can_run = ((has_gse and case_pat.strip() and ctrl_pat.strip()) or use_local) \
-    and not source_conflict
-if source_conflict:
+    and not source_conflict and not unusable
+if unusable:
+    pass  # 锁定原因已在 Step 2 顶部渲染,此处不重复
+elif source_conflict:
     st.error(t("eml.source_conflict"))
 elif local_partial:
     st.warning(t("eml.local_missing"))
@@ -365,6 +464,7 @@ if ss.eml.get("geo_fallback"):
             try:
                 fetch_geo_dataset(_fb["gse"], force_refresh=True)
                 ss.eml.pop("geo_fallback", None)
+                ss.eml.pop("probe", None)  # 清掉探测/预检缓存:注释文件已更新,下一步全部重判
                 st.success(t("eml.force_dl_ok"))
             except Exception as exc:
                 st.error(t("eml.run_failed", exc=exc))
