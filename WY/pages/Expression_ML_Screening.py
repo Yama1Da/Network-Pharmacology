@@ -45,6 +45,20 @@ ss = st.session_state
 ss.setdefault("eml", {})
 ss.setdefault("eml_busy", False)
 
+
+def _fmt_size(n: float) -> str:
+    """字节数 → KB/MB 显示(下载耗时预估用)。"""
+    return f"{n / 1024:.0f} KB" if n < 1048576 else f"{n / 1048576:.1f} MB"
+
+
+def _fmt_eta(seconds: float) -> str:
+    """秒数 → 秒 / 分钟 / 小时+分钟 显示。"""
+    if seconds < 90:
+        return t("eml.eta_sec", n=max(1, round(seconds)))
+    if seconds < 3600:
+        return t("eml.eta_min", n=max(1, round(seconds / 60)))
+    return t("eml.eta_hr_min", h=int(seconds // 3600), m=round(seconds % 3600 / 60))
+
 # ---------- ① 输入区 ----------
 st.subheader(t("eml.step1"))
 
@@ -127,6 +141,31 @@ else:
 if selected_gse:
     ss.eml["selected_gse"] = selected_gse
     st.info(t("eml.gse_confirmed", gse=selected_gse))
+    # 下载耗时预估(方案 §4.1:跨境带宽波动大,选型阶段先知道要等多久)。
+    # 每个 GSE 每会话只探测一次(存 session),网络变化后换 GSE 或刷新页面重测;
+    # 本地矩阵模式不探测。单个小 Range 请求,不落盘、不写缓存、不影响正式下载。
+    if not expr_path.strip() and ss.eml.get("probe", {}).get("gse") != selected_gse:
+        with st.spinner(t("eml.est_probing")):
+            try:
+                from core.geo import probe_series_matrix
+                ss.eml["probe"] = {"gse": selected_gse,
+                                   "r": probe_series_matrix(selected_gse), "err": ""}
+            except Exception as _exc:
+                ss.eml["probe"] = {"gse": selected_gse, "r": None, "err": str(_exc)}
+    _probe = ss.eml.get("probe", {})
+    if not expr_path.strip() and _probe.get("gse") == selected_gse:
+        _cache_dir = os.path.join(config.CACHE_DIR, config.GEO_SERIES_CACHE_SUBDIR)
+        if _probe.get("r"):
+            _pr = _probe["r"]
+            _eta = _pr["size_bytes"] / _pr["speed_bps"] if _pr["speed_bps"] > 0 else 10 ** 9
+            st.caption(t("eml.est_line",
+                         size=_fmt_size(_pr["size_bytes"]),
+                         speed=f"{_pr['speed_bps'] / 1024:.0f} KB/s",
+                         eta=_fmt_eta(_eta)))
+            if not _pr["reliable"] or _eta > 300:  # 预计超 5 分钟或测速被时限截断
+                st.caption(t("eml.est_slow", path=_cache_dir))
+        elif _probe.get("err"):
+            st.caption(t("eml.est_failed", path=_cache_dir))
 
 # 数据源判定:本地矩阵(两路都填)与 GSE 二选一(方案 §6,与管线防呆一致)
 use_local = bool(expr_path.strip()) and bool(labels_path.strip())

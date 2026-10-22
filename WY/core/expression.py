@@ -97,13 +97,29 @@ def _gpl_annot_url(gpl: str) -> str:
 
 
 def _fetch_gpl_annotation(gpl: str) -> str:
-    """下载 GPL 注释表(GEO 平台基因注释,含 ID ↔ Gene symbol 列),永久缓存。"""
+    """下载 GPL 注释表(GEO 平台基因注释,含 ID ↔ Gene symbol 列),永久缓存。
+
+    GEO 只为部分平台生成 annot 文件:新式 Agilent/Illumina 平台常缺失
+    (404 属服务器端"文件不存在",确定性问题),这类平台表往往连符号列都
+    没有、只有转录本 ID。404 直接给"换数据集"的准确报错,不走 3 轮重试
+    ——重试与手动下载对不存在的文件都无意义。
+    """
     from .geo import download_geo_file
 
     path = _gpl_annot_path(gpl)
     if os.path.isfile(path):
         return path
-    download_geo_file(_gpl_annot_url(gpl.strip()), path)
+    url = _gpl_annot_url(gpl.strip())
+    try:
+        head = requests.head(url, timeout=(15, 30), headers=_GPL_HEADERS)
+        if head.status_code == 404:
+            raise RuntimeError(
+                f"GEO 未为平台 {gpl} 提供基因注释文件(服务器 404,常见于新式 "
+                "Agilent/Illumina 平台)。这不是网络问题,重试与手动下载均无效"
+                " —— 请换 symbol 级数据集,或选用平台注释齐全的数据集。")
+    except requests.RequestException:
+        pass  # 探测失败不阻断:交给 download_geo_file 的重试链路给出网络类报错
+    download_geo_file(url, path)
     return path
 
 

@@ -74,6 +74,41 @@ def series_matrix_url(gse: str) -> str:
             f"matrix/{gse}_series_matrix.txt.gz")
 
 
+def probe_series_matrix(gse: str, probe_bytes: int = 262144,
+                        max_probe_seconds: float = 15.0) -> dict:
+    """探测 series matrix 体积与当前下载速度,供页面预估下载耗时。
+
+    跨境到 NCBI 的带宽波动极大(实测 70 KB/s 到个位数都有),选型时让用户
+    「先知道要等多久」比下载后报错更有用。实现是单个带 Range 的小请求:
+    读 probe_bytes 或 max_probe_seconds 先到为准,不落盘、不写缓存、
+    不影响正式下载;失败响亮抛错(不猜测、不静默)。
+
+    返回 {size_bytes, speed_bps, reliable}:reliable=False 表示探测在时限内
+    没读完样本量(速度极低),速度值仅供参考下限。
+    """
+    url = series_matrix_url(gse)
+    t0 = time.monotonic()
+    got = 0
+    with requests.get(url, headers={**_NCBI_HEADERS,
+                                    "Range": f"bytes=0-{probe_bytes - 1}"},
+                      stream=True, timeout=(10, 30)) as r:
+        r.raise_for_status()
+        # Range 请求的完整体积在 Content-Range 的 "/" 之后;服务端忽略 Range
+        # 返回 200 时退回 Content-Length
+        cr = r.headers.get("content-range", "")
+        total_str = cr.rsplit("/", 1)[-1] if "/" in cr else r.headers.get("content-length", "0")
+        size = int(total_str) if total_str.isdigit() else 0
+        for chunk in r.iter_content(chunk_size=65536):
+            got += len(chunk)
+            if got >= probe_bytes or time.monotonic() - t0 >= max_probe_seconds:
+                break
+    elapsed = time.monotonic() - t0
+    if got == 0 or elapsed <= 0:
+        raise RuntimeError(f"测速失败:未收到任何数据({url})")
+    return {"size_bytes": size, "speed_bps": got / elapsed,
+            "reliable": got >= probe_bytes}
+
+
 @dataclass
 class GeoDataset:
     """一个 GSE 数据集的解析产物。
@@ -375,8 +410,11 @@ def _download_one_pass(url: str, dest: str, config) -> None:
             for sp in seg_paths:
                 with open(sp, "rb") as f:
                     shutil.copyfileobj(f, out, 1 << 20)
-        # 成品已替换,清掉本布局段文件与历史遗留的其他布局段/.part 残留
-        for leftover in glob.glob(glob.escape(dest) + ".p*"):
+        # 清掉本布局段文件与历史遗留的其他布局段残留(段文件名形如 .p4x6708161.0,
+        # 以 .p<数字> 开头)。曾用 ".p*" 连刚装配的 .part 一并误删 —— gzip 校验变成
+        # "文件不存在"必失败(报错却显示"损坏"),段文件也已清空,每次重试都从零
+        # 整下(审查 BUG-14)
+        for leftover in glob.glob(glob.escape(dest) + ".p[0-9]*"):
             try:
                 os.remove(leftover)
             except OSError:
