@@ -619,7 +619,8 @@ def list_gse_supplementary(gse: str) -> list[dict]:
 # 扩展名只认 .gz 变体 —— download_geo_file 强制 gzip 完整性校验,纯文本候选
 # 必然死在校验上,报错还误导(审查 BUG-15)
 _COUNTS_SCORE_DENY = ("processed", "tpm", "fpkm", "cpm", "normalized", "norm",
-                      ".xls", ".xlsx", ".tar", "irregular")
+                      ".xls", ".xlsx", ".tar", "irregular", "metadata",
+                      "series_matrix")
 _COUNTS_SCORE_HIT = ("count", "raw")
 _COUNTS_EXT_HIT = (".tsv.gz", ".txt.gz", ".csv.gz")
 
@@ -637,43 +638,68 @@ def _score_counts_candidate(name: str) -> int:
 def fetch_gse_count_matrix(gse: str, prefer: str | None = None) -> dict:
     """定位并下载 GSE 的 raw counts 矩阵(pyDESeq2 输入,方案二期)。
 
-    策略: 列举 suppl → 文件名打分选候选 → download_geo_file 分段下载 +
-    永久缓存 → 解析为 基因×样本 整数矩阵。只支持"单文件矩阵"形态;逐样本
-    文件打包在 _RAW.tar 里的数据集本版不支持(会明确报错,解析 tar 属后续增强)。
+    策略: **本地缓存优先**(此前成功下载过的直接复用,suppl 索引页瞬时不通
+    不影响重跑)→ 未命中则 列举 suppl → 文件名打分选候选 → download_geo_file
+    分段下载 + 永久缓存 → 解析为 基因×样本 整数矩阵。只支持"单文件矩阵"形态;
+    逐样本文件打包在 _RAW.tar 里的数据集本版不支持(会明确报错,解析 tar 属
+    后续增强)。
 
     返回 {counts: DataFrame(基因×样本, 整数), source_file: str, candidates: [...]}。
     无候选 / 校验不过 → 响亮报错并列出看到了什么文件,不猜测。
     """
     config = _config()
     gse = gse.strip().upper()
-    names = [f["name"] for f in list_gse_supplementary(gse)]
-    ranked = sorted(((_score_counts_candidate(n), n) for n in names), reverse=True)
-    candidates = [n for s, n in ranked if s > 0]
-    if prefer:
-        if prefer not in names:
-            raise RuntimeError(f"{gse}: 指定的补充文件 {prefer!r} 不在 suppl 目录中"
-                               f"(现有: {names})")
-        chosen = prefer
-    elif candidates:
-        chosen = candidates[0]
-    else:
-        raise RuntimeError(
-            f"{gse}: 补充文件中未识别到 raw counts 候选。看到的文件: "
-            f"{names or '(目录为空/不可达)'}—— 常见原因: 只有 processed 结果"
-            "(xls/xlsx,TPM/FPKM 等处理后数据不能作为 DESeq2 输入),或逐样本文件"
-            "打包在 _RAW.tar 中(本版不支持)。请换数据集,或手动解包后用本地矩阵模式。")
+    d_cache = os.path.join(config.CACHE_DIR, config.GEO_SERIES_CACHE_SUBDIR)
+    names: list[str] = []
+    candidates: list[str] = []
+    chosen = None
 
-    url = (f"https://ftp.ncbi.nlm.nih.gov/geo/series/{_geo_bucket(gse)}/{gse}/"
-           f"suppl/{chosen}")
+    # 1) 缓存优先(审查 BUG-18):索引页是真实 HTTP,瞬时不可达不该挡住已缓存
+    #    数据集的重跑;GSE 绑定命名(BUG-16)让按前缀找回成为可能。
+    #    metadata 文件(样本元数据,非表达矩阵)排除在外
+    cached = [f for f in (os.listdir(d_cache) if os.path.isdir(d_cache) else [])
+              if f.startswith(f"{gse}_") and _score_counts_candidate(f) > 0]
+
+    if prefer:
+        # 显式指定:先看缓存,再核对线上目录
+        for cand_name in (f"{gse}_{prefer}", prefer):
+            p = os.path.join(d_cache, cand_name)
+            if os.path.isfile(p) and _gzip_intact(p):
+                chosen = cand_name
+                break
+        if chosen is None:
+            names = [f["name"] for f in list_gse_supplementary(gse)]
+            if prefer not in names:
+                raise RuntimeError(f"{gse}: 指定的补充文件 {prefer!r} 不在 suppl 目录中"
+                                   f"(现有: {names or '(列举失败/为空)'})")
+            chosen = prefer
+    elif cached:
+        chosen = max(cached, key=lambda f: os.path.getmtime(os.path.join(d_cache, f)))
+        candidates = list(cached)
+    else:
+        names = [f["name"] for f in list_gse_supplementary(gse)]
+        ranked = sorted(((_score_counts_candidate(n), n) for n in names), reverse=True)
+        candidates = [n for s, n in ranked if s > 0]
+        if candidates:
+            chosen = candidates[0]
+        else:
+            raise RuntimeError(
+                f"{gse}: 补充文件中未识别到 raw counts 候选。看到的文件: "
+                f"{names or '(目录为空/不可达)'}—— 常见原因: 只有 processed 结果"
+                "(xls/xlsx,TPM/FPKM 等处理后数据不能作为 DESeq2 输入),或逐样本文件"
+                "打包在 _RAW.tar 中(本版不支持)。请换数据集,或手动解包后用本地矩阵模式。")
+
     # 缓存文件名必须绑定 GSE:提交者未必给文件带 GSE 前缀(如 counts.txt.gz),
     # 裸名会让两个数据集在共享缓存目录里互相覆盖、静默拿错数据(审查 BUG-16)
     dest_name = chosen if chosen.upper().startswith(gse) else f"{gse}_{chosen}"
-    dest = os.path.join(config.CACHE_DIR, config.GEO_SERIES_CACHE_SUBDIR, dest_name)
+    dest = os.path.join(d_cache, dest_name)
     # 缓存命中快路径:download_geo_file 没有目的地存在性检查(成功装配后段文件
     # 已清理,重跑会从零整下 —— GSE239512 实测一次 105s,审查 BUG-17)
     if os.path.isfile(dest) and _gzip_intact(dest):
         logging.info("counts 文件缓存命中: %s", dest)
     else:
+        url = (f"https://ftp.ncbi.nlm.nih.gov/geo/series/{_geo_bucket(gse)}/{gse}/"
+               f"suppl/{chosen}")
         download_geo_file(url, dest)
 
     sep = "," if chosen.lower().endswith(".csv") else "\t"
@@ -707,6 +733,39 @@ def fetch_gse_count_matrix(gse: str, prefer: str | None = None) -> dict:
             "原始 counts 后用本地矩阵模式。")
     return {"counts": df, "source_file": chosen, "candidates": candidates,
             "transposed": transposed}
+
+
+def assign_groups_from_columns(columns, case_pattern: str,
+                               control_pattern: str) -> pd.Series:
+    """按正则把 counts 矩阵的样本列分为 case(1)/control(0)。
+
+    边界与 assign_groups 同款(零命中/全命中/重叠/每组低于 ML_MIN_SAMPLES_PER_GROUP),
+    匹配对象是 counts 的列名(样本名,如 BSA1/PA1/CTL1)。
+    """
+    config = _config()
+    text = pd.Series([str(c) for c in columns], index=[str(c) for c in columns])
+    case_hit = text.str.contains(case_pattern, case=False, regex=True)
+    ctrl_hit = text.str.contains(control_pattern, case=False, regex=True)
+    n_case, n_ctrl = int(case_hit.sum()), int(ctrl_hit.sum())
+    if n_case == 0 or n_ctrl == 0:
+        raise RuntimeError(
+            f"分组正则匹配失败:case 匹配 {n_case} 个、control 匹配 {n_ctrl} 个"
+            f"样本列(列名如 {list(text.index[:3])});请核对正则与 counts 列名。")
+    if n_case == len(text) or n_ctrl == len(text):
+        raise RuntimeError("分组正则匹配了全部样本列(必须留出病例组/对照组),"
+                           "请把正则收紧到具体分组标识。")
+    overlap = text[case_hit & ctrl_hit]
+    if len(overlap):
+        raise RuntimeError(f"case 与 control 正则命中重叠({list(overlap.index[:3])}):"
+                           "同一样本列不能既是病例又是对照。")
+    for name, n in (("case", n_case), ("control", n_ctrl)):
+        if n < config.ML_MIN_SAMPLES_PER_GROUP:
+            raise RuntimeError(
+                f"{name} 组仅 {n} 个样本列(低于 {config.ML_MIN_SAMPLES_PER_GROUP}):"
+                "小样本下统计与 ML 均无意义,请换数据集。")
+    labels = pd.Series(0, index=text.index[case_hit | ctrl_hit], dtype=int)
+    labels[text.index[case_hit]] = 1
+    return labels
 
 
 # ---------------- 分组辅助(「全模块最脏环节」的人工决策支持) ----------------

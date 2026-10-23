@@ -319,7 +319,8 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
     for i in range(len(algs)):
         for j in range(i + 1, len(algs)):
             rho, _ = spearmanr(imps[algs[i]].reindex(genes), imps[algs[j]].reindex(genes))
-            pairs.append(rho)
+            if np.isfinite(rho):
+                pairs.append(rho)
     meta = {
         "n_samples": int(len(y)), "n_genes": int(X.shape[1]),
         "n_case": int(np.asarray(y).sum()), "n_control": int(len(y) - int(np.asarray(y).sum())),
@@ -329,8 +330,10 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
         "seed": seed, "top_k_rule": _top_k(X.shape[1]),
         "consensus_weights": {"rank": config.ML_CONSENSUS_RANK_W,
                               "freq": config.ML_CONSENSUS_FREQ_W},
-        "algo_spearman_mean": round(float(np.mean(pairs)), 4),
-        "algo_spearman_min": round(float(np.min(pairs)), 4),
+        # 小样本 LOOCV 下个别算法重要性可能恒定(rho=NaN):nan 安全统计,
+        # 全 NaN 时置 None(审查随二期 counts 路径发现)
+        "algo_spearman_mean": round(float(np.mean(pairs)), 4) if pairs else None,
+        "algo_spearman_min": round(float(np.min(pairs)), 4) if pairs else None,
         "boruta_iter_full": _BORUTA_ITER_FULL, "boruta_iter_boot": _BORUTA_ITER_BOOT,
         "elapsed_s": round(time.time() - t0, 1),
     }
