@@ -75,6 +75,7 @@ TEXT_EN: dict[str, str] = {
     "eml.local_missing": "Local-matrix mode requires both the matrix path and the labels path.",
     "eml.source_conflict": "GSE and local matrix are mutually exclusive — clear one of them.",
     "eml.filter_drug": "Filter by drug (narrow when one disease has multiple drug analyses)",
+    "eml.filter_all": "All drugs (pick one, or type a keyword to filter)",
     "eml.no_ranked_for_disease": "No local analysis records for this disease yet, so no ranked files are available — run an analysis on the Data Network page first, or clear the disease to see all history.",
     "eml.cache_fallback": "⚠️ GEO download failed this time; a previously cached file was reused (cached on {date}). Results below are based on stale data — force an update and rerun.",
     "eml.force_redownload": "⟳ Force re-download GEO file",

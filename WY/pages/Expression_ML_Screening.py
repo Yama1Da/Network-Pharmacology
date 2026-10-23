@@ -23,9 +23,14 @@ import config
 from core.expression import assess_expression_dataset, normalize_gpl
 from core.geo import fetch_geo_dataset
 from core.ml_pipeline import run_screen_chain
-from core.ppi import base_disease_of, list_analyzed_pairs
+from core.ppi import (
+    base_disease_of,
+    list_analyzed_diseases,
+    list_analyzed_drugs,
+    list_ranked_csv_candidates,
+)
 from i18n import t
-from ui.widgets import back_button, hide_sidebar
+from ui.widgets import back_button, hide_sidebar, search_selectbox
 
 st.set_page_config(page_title=t("eml.page_title"), layout="wide")
 
@@ -79,20 +84,12 @@ with tab_search:
     # 疾病名优先从本机 App 分析记录取(用户跑过靶点的疾病):下拉列出干净的
     # 基准疾病名(剥掉 rwrNN 变体后缀),accept_new_options 仍允许手输新名称;
     # 无记录时退回文本框直接输入
-    _pairs = list_analyzed_pairs()
-    _seen: set = set()
-    disease_options = []
-    for _p in _pairs:
-        _key = _p["base_disease"].strip().lower()
-        if _key and _key not in _seen:
-            _seen.add(_key)
-            disease_options.append(_p["base_disease"].strip())
+    disease_options = list_analyzed_diseases()
     col_d, col_l = st.columns([3, 1])
     with col_d:
         if disease_options:
-            disease = st.selectbox(t("eml.disease_label"), options=disease_options,
-                                   index=None, accept_new_options=True,
-                                   key="eml_disease_sel") or ""
+            disease = search_selectbox(t("eml.disease_label"), disease_options,
+                                       key="eml_disease_sel")
             st.caption(t("eml.analyzed_hint", n=len(disease_options)))
         else:
             disease = st.text_input(t("eml.disease_label"), key="eml_disease_txt",
@@ -154,10 +151,9 @@ _gse_opts = []
 if _srch is not None and not _srch.empty and "gse" in _srch.columns:
     _gse_opts = [str(g).strip() for g in _srch["gse"].tolist() if str(g).strip()]
 if _gse_opts:
-    _sel = st.selectbox(t("eml.select_gse"), options=_gse_opts, index=None,
-                        accept_new_options=True, key="eml_selected_gse_sel",
-                        placeholder="GSE63067")
-    selected_gse = (_sel or "").strip().upper()
+    selected_gse = search_selectbox(t("eml.select_gse"), _gse_opts,
+                                    key="eml_selected_gse_sel",
+                                    placeholder="GSE63067").upper()
 else:
     selected_gse = st.text_input(t("eml.select_gse"), key="eml_selected_gse",
                                  placeholder="GSE63067").strip().upper()
@@ -320,30 +316,22 @@ with col_rank:
     # 的疾病自动限定 —— rwr 等参数变体的排序以文件维度并列展示,跨疾病的排序
     # 不再出现,从源头排除"把别的疾病的排序勾进交集"的可能(方案 §M4 按元数据
     # 匹配,不用文件名猜)
-    ranked_files = []
-    for _rec in list_analyzed_pairs():
-        try:
-            _dir_files = os.listdir(_rec["directory"])
-        except OSError:
-            continue
-        for f in sorted(_dir_files):
-            if not f.endswith("_query_genes.csv"):
-                continue
-            title = " · ".join(x for x in (
-                os.path.basename(_rec["directory"])[:-len("_data")],
-                _rec["analyzed_at"][:19],
-                f"STRING {_rec['string_version']}" if _rec["string_version"] else "",
-            ) if x)
-            ranked_files.append({"label": title,
-                                 "path": os.path.join(_rec["directory"], f),
-                                 "drug": _rec["drug"],
-                                 "base_disease": _rec["base_disease"]})
+    # 排序文件发现与药物过滤下拉的数据源均在 core(list_ranked_csv_candidates /
+    # list_analyzed_drugs),页面只做筛选与勾选
+    ranked_files = list_ranked_csv_candidates()
     # 当前疾病上下文(下拉或手输,同样剥掉可能手输的 rwrNN 后缀);为空则展示全部。
     # 匹配只允许"用户输的更泛 → 命中更具体的记录"(如输 cancer 带出 gastric cancer),
     # 不做反向:选 gastric cancer 不能把泛癌 cancer 的排序带进交集(疾病混淆)
     _ctx = base_disease_of(disease).lower() if disease.strip() else ""
     if ranked_files:
-        f_drug = st.text_input(t("eml.filter_drug"), key="eml_ranked_drug").strip().lower()
+        # 药物过滤下拉:选项来自本机已分析药物(同疾病下拉的数据源模式),
+        # accept_new_options 保留旧的自由输入过滤能力;留空 = 不过滤
+        _drugs = list_analyzed_drugs()
+        f_drug = ""
+        if _drugs:
+            f_drug = search_selectbox(t("eml.filter_drug"), _drugs,
+                                      key="eml_ranked_drug",
+                                      placeholder=t("eml.filter_all")).lower()
         shown = [rf for rf in ranked_files
                  if (not _ctx
                      or _ctx == rf["base_disease"].lower()

@@ -75,6 +75,7 @@ TEXT_ZH: dict[str, str] = {
     "eml.local_missing": "本地矩阵模式需同时填写表达矩阵与标签两个路径。",
     "eml.source_conflict": "GSE 与本地矩阵只能二选一,请清空其中一种输入。",
     "eml.filter_drug": "按药物过滤(同病多药分析时收窄)",
+    "eml.filter_all": "全部药物(可选定一项,或输入关键词过滤)",
     "eml.no_ranked_for_disease": "当前疾病在本机没有分析记录,暂无可用排序文件;可先在数据网络页跑一次分析,或清空疾病名查看全部历史。",
     "eml.cache_fallback": "⚠️ GEO 文件本次下载失败,已沿用本地旧缓存(缓存日期 {date});以下结果基于旧数据,建议强制更新后重跑。",
     "eml.force_redownload": "⟳ 强制更新 GEO 文件",
