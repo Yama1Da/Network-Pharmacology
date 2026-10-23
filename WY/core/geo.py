@@ -22,6 +22,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -590,6 +591,122 @@ def fetch_geo_dataset(gse: str, force_refresh: bool = False) -> GeoDataset:
         ds.cache_date = time.strftime("%Y-%m-%d %H:%M",
                                       time.localtime(os.path.getmtime(path)))
     return ds
+
+
+# ---------------- 补充文件:raw counts 定位与下载(二期 pyDESeq2 输入) ----------------
+
+
+def list_gse_supplementary(gse: str) -> list[dict]:
+    """列出 GSE 补充文件的文件名(suppl 目录索引页解析)。
+
+    返回 [{name, ...}];目录不可达/为空返回 []。供 counts 自动识别与选型预检。
+    """
+    import re
+    gse = gse.strip().upper()
+    url = f"https://ftp.ncbi.nlm.nih.gov/geo/series/{_geo_bucket(gse)}/{gse}/suppl/"
+    try:
+        r = requests.get(url, timeout=(15, 30), headers=_NCBI_HEADERS)
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        logging.warning("suppl 目录列举失败(%s): %s", gse, exc)
+        return []
+    return [{"name": h}
+            for h in re.findall(r'href="([^"]+)"', r.text)
+            if not h.startswith(("/", "mailto:", "http", "?"))]
+
+
+# counts 候选打分:命中 count/raw 加分;processed/tpm/fpkm/tar 等一票否决。
+# 扩展名只认 .gz 变体 —— download_geo_file 强制 gzip 完整性校验,纯文本候选
+# 必然死在校验上,报错还误导(审查 BUG-15)
+_COUNTS_SCORE_DENY = ("processed", "tpm", "fpkm", "cpm", "normalized", "norm",
+                      ".xls", ".xlsx", ".tar", "irregular")
+_COUNTS_SCORE_HIT = ("count", "raw")
+_COUNTS_EXT_HIT = (".tsv.gz", ".txt.gz", ".csv.gz")
+
+
+def _score_counts_candidate(name: str) -> int:
+    low = name.lower()
+    if any(k in low for k in _COUNTS_SCORE_DENY):
+        return -100
+    score = sum(3 for k in _COUNTS_SCORE_HIT if k in low)
+    if low.endswith(_COUNTS_EXT_HIT):
+        score += 2
+    return score
+
+
+def fetch_gse_count_matrix(gse: str, prefer: str | None = None) -> dict:
+    """定位并下载 GSE 的 raw counts 矩阵(pyDESeq2 输入,方案二期)。
+
+    策略: 列举 suppl → 文件名打分选候选 → download_geo_file 分段下载 +
+    永久缓存 → 解析为 基因×样本 整数矩阵。只支持"单文件矩阵"形态;逐样本
+    文件打包在 _RAW.tar 里的数据集本版不支持(会明确报错,解析 tar 属后续增强)。
+
+    返回 {counts: DataFrame(基因×样本, 整数), source_file: str, candidates: [...]}。
+    无候选 / 校验不过 → 响亮报错并列出看到了什么文件,不猜测。
+    """
+    config = _config()
+    gse = gse.strip().upper()
+    names = [f["name"] for f in list_gse_supplementary(gse)]
+    ranked = sorted(((_score_counts_candidate(n), n) for n in names), reverse=True)
+    candidates = [n for s, n in ranked if s > 0]
+    if prefer:
+        if prefer not in names:
+            raise RuntimeError(f"{gse}: 指定的补充文件 {prefer!r} 不在 suppl 目录中"
+                               f"(现有: {names})")
+        chosen = prefer
+    elif candidates:
+        chosen = candidates[0]
+    else:
+        raise RuntimeError(
+            f"{gse}: 补充文件中未识别到 raw counts 候选。看到的文件: "
+            f"{names or '(目录为空/不可达)'}—— 常见原因: 只有 processed 结果"
+            "(xls/xlsx,TPM/FPKM 等处理后数据不能作为 DESeq2 输入),或逐样本文件"
+            "打包在 _RAW.tar 中(本版不支持)。请换数据集,或手动解包后用本地矩阵模式。")
+
+    url = (f"https://ftp.ncbi.nlm.nih.gov/geo/series/{_geo_bucket(gse)}/{gse}/"
+           f"suppl/{chosen}")
+    # 缓存文件名必须绑定 GSE:提交者未必给文件带 GSE 前缀(如 counts.txt.gz),
+    # 裸名会让两个数据集在共享缓存目录里互相覆盖、静默拿错数据(审查 BUG-16)
+    dest_name = chosen if chosen.upper().startswith(gse) else f"{gse}_{chosen}"
+    dest = os.path.join(config.CACHE_DIR, config.GEO_SERIES_CACHE_SUBDIR, dest_name)
+    # 缓存命中快路径:download_geo_file 没有目的地存在性检查(成功装配后段文件
+    # 已清理,重跑会从零整下 —— GSE239512 实测一次 105s,审查 BUG-17)
+    if os.path.isfile(dest) and _gzip_intact(dest):
+        logging.info("counts 文件缓存命中: %s", dest)
+    else:
+        download_geo_file(url, dest)
+
+    sep = "," if chosen.lower().endswith(".csv") else "\t"
+    df = pd.read_csv(dest, sep=sep, index_col=0)
+    non_numeric = [c for c in df.columns
+                   if not pd.api.types.is_numeric_dtype(df[c])]
+    if non_numeric:
+        # 基因注释类字符串列丢弃是预期;但样本列若混入脏值会整列变字符串,
+        # 静默丢样本不可接受 —— 至少留痕(审查 BUG-16 伴随修复)
+        logging.warning("counts 文件含非数值列(已丢弃): %s", non_numeric[:8])
+        df = df.select_dtypes(include=[np.number])
+    if df.empty:
+        raise RuntimeError(f"{gse}: {chosen} 未解析出数值矩阵")
+    if df.index.duplicated().any():
+        n_dup = int(df.index.duplicated().sum())
+        logging.warning("counts 存在重复基因 ID %d 个,按求和合并(标准做法)", n_dup)
+        df = df.groupby(level=0).sum()
+    # 方向:基因数远多于样本数为常态;反过来则转置。转置决定记录在返回值里,
+    # 上层可用「列名与样本标题的匹配率」复核 —— 少基因×多样本的定制面板
+    # (如 50 基因 200 样本)会触发改 transpose 的歧义形态
+    transposed = False
+    if df.shape[1] > df.shape[0] and df.shape[0] <= 100:
+        df = df.T
+        transposed = True
+        logging.info("counts 文件为 样本×基因 布局,已转置: %s", chosen)
+    num = df.to_numpy(dtype=float)
+    if np.isnan(num).any() or (num < 0).any() or not (num % 1 == 0).all():
+        raise RuntimeError(
+            f"{gse}: {chosen} 不是 raw counts(存在小数/负值/缺失,疑似 TPM/FPKM 或"
+            "已归一化矩阵)—— DESeq2 只接受非负整数 counts。请换数据集或手动提供"
+            "原始 counts 后用本地矩阵模式。")
+    return {"counts": df, "source_file": chosen, "candidates": candidates,
+            "transposed": transposed}
 
 
 # ---------------- 分组辅助(「全模块最脏环节」的人工决策支持) ----------------

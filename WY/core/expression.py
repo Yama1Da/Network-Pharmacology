@@ -298,6 +298,86 @@ def map_probe_to_symbol(matrix: pd.DataFrame, gpl: str) -> pd.DataFrame:
     return out
 
 
+# ---------------- raw counts 判定与 DESeq2 差异表达(二期 RNA-seq 路径) ----------------
+
+
+def looks_count_matrix(matrix: pd.DataFrame) -> bool:
+    """行=基因 矩阵是否为 raw counts(全为非负整数)。
+
+    TPM/FPKM/归一化矩阵含小数,log 化矩阵可能含负值 —— DESeq2 只接受
+    非负整数 counts,喂错输入统计上无效,必须在此挡下。
+    """
+    num = matrix.select_dtypes(include=[np.number])
+    if num.empty:
+        return False
+    v = num.to_numpy(dtype=float)
+    if v.size == 0 or np.isnan(v).any() or (v < 0).any():
+        return False
+    return bool((v % 1 == 0).all())
+
+
+def differential_expression_counts(counts: pd.DataFrame,
+                                   labels: pd.Series) -> pd.DataFrame:
+    """raw counts 的差异表达(pyDESeq2 负二项 GLM + Wald 检验,二期 RNA-seq 路径)。
+
+    输入与 differential_expression 同构: counts 为 基因×样本 整数矩阵,
+    labels 样本→1(case)/0(control)。输出同构 DEG 表:
+    gene|log2FC|stat|p|FDR|direction —— stat 为 Wald 统计量;FDR 取
+    pyDESeq2 的 padj(BH + 独立过滤,优于朴素 BH)。全零/未通过检验的基因
+    (p 为 NaN)按现路径 valid 口径过滤。行标识可为 Ensembl ID,符号映射由
+    调用方决定(职责同 map_probe_to_symbol)。需要 pydeseq2(见 requirements)。
+    """
+    try:
+        from pydeseq2.dds import DeseqDataSet
+        from pydeseq2.ds import DeseqStats
+    except ImportError as exc:
+        raise RuntimeError(
+            "pydeseq2 未安装(RNA-seq counts 路径依赖,见 requirements.txt "
+            f"的 pydeseq2==0.5.4): {exc}")
+
+    if not looks_count_matrix(counts):
+        raise RuntimeError(
+            "输入矩阵不是 raw counts(存在小数/负值/缺失,疑似 TPM/FPKM 或已"
+            "归一化矩阵)—— DESeq2 只接受非负整数 counts,请提供原始 counts。")
+    labels = labels.loc[labels.index.intersection(counts.columns)]
+    case_cols = labels[labels == 1].index
+    ctrl_cols = labels[labels == 0].index
+    # 守卫:交集为空或某组不足 2 个样本时,pyDESeq2 会抛深堆栈的底层数值错误
+    # (或静默产出空表),在此给出可读的报错
+    if len(case_cols) == 0 or len(ctrl_cols) == 0:
+        raise RuntimeError(
+            "分组标签与 counts 矩阵的样本列无交集(或某组为 0)—— "
+            f"case={len(case_cols)}, control={len(ctrl_cols)};请检查样本命名"
+            "是否与 counts 列名一致")
+    if len(case_cols) < 2 or len(ctrl_cols) < 2:
+        raise RuntimeError(
+            f"每组至少需要 2 个样本才能估计离散度(case={len(case_cols)}, "
+            f"control={len(ctrl_cols)});请补充样本或换数据集")
+    X = counts.loc[:, list(case_cols) + list(ctrl_cols)].T.astype(int)  # 样本×基因
+    meta = pd.DataFrame(
+        {"group": ["case"] * len(case_cols) + ["control"] * len(ctrl_cols)},
+        index=X.index)
+    X = X.loc[:, X.sum(axis=0) > 0]  # 全零基因:DESeq2 必置 NaN,提前剔除
+
+    try:
+        dds = DeseqDataSet(counts=X, metadata=meta, design="~group")
+    except TypeError:  # 旧版参数名(design_factors)
+        dds = DeseqDataSet(counts=X, metadata=meta, design_factors="group")
+    dds.deseq2()
+    stats = DeseqStats(dds, contrast=("group", "case", "control"))
+    stats.summary()
+    res = stats.results_df
+
+    out = res.copy()
+    out.insert(0, "gene", out.index)
+    out = out[["gene", "log2FoldChange", "stat", "pvalue", "padj"]].dropna(
+        subset=["pvalue"])
+    out.columns = ["gene", "log2FC", "stat", "p", "FDR"]
+    out["direction"] = np.where(out["log2FC"] > 0, "up",
+                                np.where(out["log2FC"] < 0, "down", "flat"))
+    return out.sort_values("p").reset_index(drop=True)
+
+
 # ---------------- 差异表达:Welch t + BH ----------------
 
 
