@@ -191,9 +191,17 @@ def assess_expression_dataset(ds) -> dict:
     """
     n = len(ds.samples)
     if ds.table.empty:
+        # 空矩阵 ≠ 判死:RNA-seq 数据集的 counts 在补充文件里,运行时会自动回退
+        # DESeq2 路径 —— 预检此时探测 counts 可用性,有则放行(否则锁定才正确)
+        try:
+            from .geo import has_counts_supplement
+            counts_available = has_counts_supplement(ds.gse)
+        except Exception:
+            counts_available = False
         return {"matrix_empty": True, "symbol_level": None, "shape": None,
                 "gpl": ds.gpl, "annot": None, "group_fields": [],
-                "n_samples": n, "usable": False}
+                "counts_available": counts_available,
+                "n_samples": n, "usable": counts_available}
 
     symbol = looks_symbol_level(ds.table.index)
     if symbol:
@@ -224,6 +232,7 @@ def assess_expression_dataset(ds) -> dict:
     usable = bool(group_fields) and (symbol or annot in ("cached", "ok"))
     return {"matrix_empty": False, "symbol_level": symbol, "shape": tuple(ds.table.shape),
             "gpl": ds.gpl, "annot": annot, "group_fields": group_fields,
+            "counts_available": None,
             "n_samples": n, "usable": usable}
 
 

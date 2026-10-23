@@ -75,7 +75,7 @@ def series_matrix_url(gse: str) -> str:
             f"matrix/{gse}_series_matrix.txt.gz")
 
 
-def probe_series_matrix(gse: str, probe_bytes: int = 262144,
+def probe_series_matrix(gse: str, probe_bytes: int = 131072,
                         max_probe_seconds: float = 15.0) -> dict:
     """探测 series matrix 体积与当前下载速度,供页面预估下载耗时。
 
@@ -83,6 +83,7 @@ def probe_series_matrix(gse: str, probe_bytes: int = 262144,
     「先知道要等多久」比下载后报错更有用。实现是单个带 Range 的小请求:
     读 probe_bytes 或 max_probe_seconds 先到为准,不落盘、不写缓存、
     不影响正式下载;失败响亮抛错(不猜测、不静默)。
+    probe_bytes 取 128KB:14 KB/s 的慢日也要 ~9s,样本再大会让探测本身变成负担。
 
     返回 {size_bytes, speed_bps, reliable}:reliable=False 表示探测在时限内
     没读完样本量(速度极低),速度值仅供参考下限。
@@ -633,6 +634,19 @@ def _score_counts_candidate(name: str) -> int:
     if low.endswith(_COUNTS_EXT_HIT):
         score += 2
     return score
+
+
+def has_counts_supplement(gse: str) -> bool:
+    """GSE 补充文件里是否存在 raw counts 候选(选型预检用,单次目录列举)。
+
+    与 fetch_gse_count_matrix 同一套打分:series_matrix/metadata/processed/tar
+    均不算;网络失败按 False 处理(预检只降级为"未知",不误报可用)。
+    """
+    try:
+        names = [f["name"] for f in list_gse_supplementary(gse)]
+    except Exception:
+        return False
+    return any(_score_counts_candidate(n) > 0 for n in names)
 
 
 def fetch_gse_count_matrix(gse: str, prefer: str | None = None) -> dict:
