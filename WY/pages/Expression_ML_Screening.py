@@ -15,7 +15,6 @@
 CLI 与页面共用同一套编排,防止两处漂移。
 """
 import os
-import re
 import warnings
 
 import pandas as pd
@@ -24,7 +23,7 @@ import streamlit as st
 import config
 from core.expression import assess_expression_dataset, normalize_gpl
 from core.geo import fetch_geo_dataset
-from core.ml_pipeline import run_screen_chain
+from core.ml_pipeline import STAGES, run_screen_chain
 from core.ppi import (
     base_disease_of,
     list_analyzed_diseases,
@@ -296,24 +295,44 @@ if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview",
                     st.warning(t("eml.dataset_issues",
                                  issues="; ".join(ds.issues)))
 
-                # 分组字段取值分布(counts 数据集同样展示:元数据字段仍是重要参考)
+                # 分组字段取值分布(counts 数据集同样展示:元数据字段仍是重要参考;
+                # 但"正则匹配对象=样本注释全文"的说法对 counts 数据集不成立 ——
+                # 运行时匹配的是 counts 列名,提示由下方 counts_overview_hint 给出)
                 overview = group_fields_overview(ds)
                 st.markdown(t("eml.overview_title"))
                 st.dataframe(overview, use_container_width=True, hide_index=True)
-                st.caption(t("eml.overview_hint"))
+                if not ds.table.empty:
+                    st.caption(t("eml.overview_hint"))
 
-                # counts 类数据集(空 series matrix):追加样本列名清单 —— 正则的
-                # 匹配对象;只列名字,不做命中预览(与正则解耦,无需反复刷新)
+                # counts 类数据集(空 series matrix):追加样本列清单 —— 正则的
+                # 匹配对象;并按样本标题把元数据分组信息(如 treatment)合并进来,
+                # 用户能直接看出每个列属于哪个组,正则照着写即可
                 if ds.issues and ds.table.empty and selected_gse.strip():
                     try:
                         from core.geo import fetch_gse_count_matrix
                         cnt = fetch_gse_count_matrix(selected_gse.strip())
+                        # 候选分组列:取值 2-8 类的 characteristics 列(剔除属性列)
+                        _grp_cols = [c for c in ds.samples.columns
+                                     if c.startswith("characteristics")
+                                     and 2 <= ds.samples[c].astype(str).nunique() <= 8
+                                     and not any(k in c.lower() for k in
+                                                 ("age", "sex", "gender", "date",
+                                                  "batch"))]
+                        _title = (ds.samples["title"].astype(str)
+                                  if "title" in ds.samples.columns else None)
+                        _rows = []
+                        for _c in [str(c) for c in cnt["counts"].columns]:
+                            _row = {t("eml.col_sample"): _c}
+                            if _title is not None:
+                                _m = ds.samples[_title == _c]
+                                if not _m.empty:
+                                    for _gc in _grp_cols:
+                                        _row[_gc] = str(_m.iloc[0][_gc])[:64]
+                            _rows.append(_row)
                         st.markdown(t("eml.counts_overview_title",
-                                      n=cnt["counts"].shape[1]))
-                        st.dataframe(pd.DataFrame(
-                            {t("eml.col_sample"): [str(c) for c in
-                                                   cnt["counts"].columns]}),
-                            use_container_width=True, hide_index=True)
+                                      n=len(_rows)))
+                        st.dataframe(pd.DataFrame(_rows), use_container_width=True,
+                                     hide_index=True)
                         st.caption(t("eml.counts_overview_hint"))
                     except Exception as exc:
                         st.error(t("eml.overview_failed", exc=exc))
@@ -416,6 +435,53 @@ with col_param:
 
 st.divider()
 
+# ---------- 运行进度面板 ----------
+class _MLProgress:
+    """Step3 运行进度面板:总进度条 + 各阶段状态行(⏳ 待执行 / 🔄 进行中 / ✅ 完成)。
+
+    与数据网络页 Build Report 的 _ReportProgress 同款;区别在 ML 管线于脚本
+    主线程同步执行,回调里可直接更新组件,无需线程轮询。管线只在阶段开始时
+    发键,前序阶段随之置为完成;补充信息行(stage=None)不改变面板状态。
+    """
+
+    _ICON = {"pending": "⏳", "running": "🔄", "done": "✅"}
+
+    def __init__(self, steps: list[str]):
+        self._steps = list(steps)
+        self._states = {k: "pending" for k in self._steps}
+        with st.container(border=True):
+            st.caption(t("eml.prog.caption"))
+            self._bar = st.progress(0.0)
+            self._rows = {k: st.empty() for k in self._steps}
+        for k in self._steps:
+            self._redraw(k)
+
+    def _redraw(self, key: str) -> None:
+        self._rows[key].markdown(
+            f"{self._ICON[self._states[key]]} {t(f'eml.prog.{key}')}")
+
+    def _set(self, key: str, state: str) -> None:
+        self._states[key] = state
+        self._redraw(key)
+
+    def start(self, key: str) -> None:
+        """某阶段开始:前序全部置为完成,本阶段置为进行中,总进度推进到阶段起点;
+        键不在面板里时忽略(管线发出的补充信息行 stage=None 走这里)。"""
+        if key not in self._states:
+            return
+        idx = self._steps.index(key)
+        for prev in self._steps[:idx]:
+            self._set(prev, "done")
+        self._set(key, "running")
+        self._bar.progress(idx / len(self._steps))
+
+    def finish(self) -> None:
+        """全链完成:全部阶段置为完成,总进度拉满。"""
+        for k in self._steps:
+            self._set(k, "done")
+        self._bar.progress(1.0)
+
+
 # ---------- ③ 运行区 ----------
 st.subheader(t("eml.step3"))
 can_run = ((has_gse and case_pat.strip() and ctrl_pat.strip()) or use_local) \
@@ -434,21 +500,12 @@ if ss.eml_busy:
 if st.button(t("eml.run_btn"), key="eml_run", type="primary",
              disabled=(not can_run) or ss.eml_busy):
     ss.eml_busy = True
-    # 进度回调:管线发七阶段键,页面按 i18n 映射展示;补充信息行(message 为中文)
-    # 不直显,避免与界面语言冲突
-    _progress_map = {
-        "fetch": t("eml.progress_fetch"),
-        "group": t("eml.progress_group"),
-        "preprocess": t("eml.progress_preprocess"),
-        "deg": t("eml.progress_deg"),
-        "ml": t("eml.progress_ml"),
-        "shortlist": t("eml.progress_shortlist"),
-        "save": t("eml.progress_save"),
-    }
+    # 进度面板:管线发 STAGES 七阶段键,阶段开始即推进入面板;补充信息行
+    # (message 为中文)不进面板,避免与界面语言冲突
+    prog = _MLProgress(STAGES)
 
     def _on_progress(stage, _message):
-        if stage in _progress_map:
-            st.markdown(_progress_map[stage])
+        prog.start(stage)
 
     try:
         with st.spinner(t("eml.running")):
@@ -470,6 +527,7 @@ if st.button(t("eml.run_btn"), key="eml_run", type="primary",
                         gse=selected_gse.strip().upper(),
                         case_pattern=case_pat.strip(),
                         control_pattern=ctrl_pat.strip(), **common)
+                prog.finish()
                 ss.eml["result"] = {
                     "consensus": res["consensus"],
                     "shortlist": res["shortlist"],
