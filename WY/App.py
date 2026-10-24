@@ -290,22 +290,35 @@ st.markdown("""
         50%  { transform: translateY(-4px); }
         100% { transform: translateY(0); }
     }
+    /* 密钥框(写-only 设计)不提供"显示值"切换:框内永远为空,眼睛按钮只会误导。
+       Streamlit 的 password 输入无参数可关此按钮,只能在 CSS 层隐藏。 */
+    [data-testid="stTextInput"]:has(input[type="password"]) button {
+        display: none;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ---------- Settings floating window (modal dialog, opened by the bottom-left gear) ----------
-@st.dialog(t("app.settings.title"))
+@st.dialog(t("app.settings.title"), width="large")
 def _open_settings_dialog() -> None:
-    """设置悬浮窗:靶点降噪阈值与黑名单、富集/模块参数,改动即时生效并持久化。"""
+    """设置悬浮窗:左侧选项栏分「数据源 / 分析算法 / 分子对接」三板块,改动即时生效并持久化。"""
     st.caption(t("app.settings.caption"))
-    # ChEMBL 黑名单:可在常用选项里勾选,也支持手输任意基因符号
-    new_bl = st.multiselect(
-        t("app.settings.blacklist"),
-        options=list(config.CHEMBL_BLACKLIST_OPTIONS),
-        default=list(config.CHEMBL_TARGET_BLACKLIST),
-        accept_new_options=True,
-        key="set_blacklist",
-    )
+
+    def _apply(new_vals: dict, new_bl: list | None = None) -> None:
+        """有变化才动手:改 config 运行时值 + 持久化 + 清 merged 整合缓存(只比对当前板块渲染出的控件,
+        板块切换后未渲染的参数在上一次改动时已即时保存,不存在丢改的问题)。"""
+        changed = {k: v for k, v in new_vals.items() if v != getattr(config, k)}
+        if new_bl is not None and sorted(new_bl) != sorted(config.CHEMBL_TARGET_BLACKLIST):
+            changed["CHEMBL_TARGET_BLACKLIST"] = new_bl
+        if changed:
+            for _k, _v in changed.items():
+                setattr(config, _k, _v)
+            # PPI 置信度变更时同步派生阈值:背景互作组(RWR/邻近度)的筛选与缓存文件名都依赖它
+            config.INTERACTOME_CONFIDENCE = int(config.PPI_CONFIDENCE * 1000)
+            save_ui_settings(changed)
+            purge_merged_cache()
+            st.toast(t("app.settings.toast"))
+
     def _stepper(label: str, cfg_key: str, lo: int, hi: int, step: int, skey: str) -> int:
         """+- 步进器:只允许按钮加减(不提供键入入口),到达上下限后对应按钮立即置灰。
         用 on_click 回调改值(回调先于本次渲染执行),保证同一次点击里数值与按钮置灰状态同步刷新。"""
@@ -333,113 +346,194 @@ def _open_settings_dialog() -> None:
         st.caption(label)
         return val
 
-    ot_topn = _stepper(t("app.settings.ot_topn"), "OT_TOP_N",
-                       lo=200, hi=1000, step=50, skey="set_ot_topn")
-    dg_pages = _stepper(t("app.settings.dg_pages"), "DISGENET_PAGES",
-                        lo=1, hi=10, step=1, skey="set_dg_pages")
-    new_vals = {
-        "CHEMBL_PCHEMBL_THRESHOLD": st.number_input(
-            t("app.settings.pchembl"), min_value=0.0, max_value=12.0, step=0.1,
-            value=float(config.CHEMBL_PCHEMBL_THRESHOLD), key="set_pchembl"),
-        "DGIDB_MIN_SCORE": st.number_input(
-            t("app.settings.dgidb"), min_value=0.0, max_value=1.0, step=0.01,
-            value=float(config.DGIDB_MIN_SCORE), key="set_dgidb"),
-        "CHEMBL_CORROBORATION_REQUIRED": st.checkbox(
-            t("app.settings.corroboration"),
-            value=bool(config.CHEMBL_CORROBORATION_REQUIRED), key="set_corroboration"),
-        "OT_MIN_SCORE": st.number_input(
-            t("app.settings.ot"), min_value=0.0, max_value=1.0, step=0.05,
-            value=float(config.OT_MIN_SCORE), key="set_ot"),
-        "OT_TOP_N": ot_topn,
-        "DISGENET_PAGES": dg_pages,
-        "ENRICHMENT_PVALUE": st.number_input(
-            t("app.settings.enr_p"), min_value=0.001, max_value=0.5, step=0.005,
-            value=float(config.ENRICHMENT_PVALUE), key="set_enr_p"),
-        "LOUVAIN_RESOLUTION": st.number_input(
-            t("app.settings.louvain"), min_value=0.3, max_value=3.0, step=0.1,
-            value=float(config.LOUVAIN_RESOLUTION), key="set_louvain"),
-        "POCKET_CUTOFF": st.number_input(
-            t("app.settings.pocket"), min_value=3.0, max_value=6.0, step=0.5,
-            value=float(config.POCKET_CUTOFF), key="set_pocket"),
-        "PPI_CONFIDENCE": st.slider(
-            t("app.settings.ppi_conf"), min_value=0.1, max_value=0.9, step=0.05,
-            value=float(config.PPI_CONFIDENCE), key="set_ppi_conf",
-            help=t("app.settings.ppi_conf_help")),
-    }
-    # 有变化才动手:改 config 运行时值 + 持久化 + 清 merged 整合缓存
-    changed = {k: v for k, v in new_vals.items() if v != getattr(config, k)}
-    if sorted(new_bl) != sorted(config.CHEMBL_TARGET_BLACKLIST):
-        changed["CHEMBL_TARGET_BLACKLIST"] = new_bl
-    if changed:
-        for _k, _v in changed.items():
-            setattr(config, _k, _v)
-        # PPI 置信度变更时同步派生阈值:背景互作组(RWR/邻近度)的筛选与缓存文件名都依赖它
-        config.INTERACTOME_CONFIDENCE = int(config.PPI_CONFIDENCE * 1000)
-        save_ui_settings(changed)
-        purge_merged_cache()
-        st.toast(t("app.settings.toast"))
+    def _key_state(has: str) -> str:
+        """密钥框下方状态行文案:只报"已配置/未配置",不回显值本身(防肩窥/录屏泄漏)。"""
+        return t("app.settings.key_configured" if has else "app.settings.key_not_set")
 
-    # ---------- STRING 数据版本切换 ----------
-    # 查询 API 与背景互作组按版本同源派生;切换需二次确认,保存前经下载站探活,
-    # 新版本发布后在此输入版本号即可,无需改代码。齿轮弹窗内不能嵌套弹窗,
-    # 确认步骤用两段式按钮实现(先「切换到」再「确认切换」)。
-    st.divider()
-    st.caption(t("app.settings.string_ver_caption"))
-    _known = list(config.STRING_KNOWN_VERSIONS)
-    _custom_opt = t("app.settings.string_ver_custom_opt")
-    _choice = st.selectbox(
-        t("app.settings.string_ver"), _known + [_custom_opt],
-        index=(_known.index(config.STRING_VERSION)
-               if config.STRING_VERSION in _known else len(_known)),
-        key="set_string_ver_choice", label_visibility="collapsed")
-    if _choice == _custom_opt:
-        _raw = st.text_input(
-            t("app.settings.string_ver_custom"),
-            value=config.STRING_VERSION if config.STRING_VERSION not in _known else "",
-            placeholder="v13.0", key="set_string_ver_input")
-        _target = config.normalized_string_version(_raw)
-        if _raw.strip() and _target is None:
-            # 非法格式给内联提示,不再静默禁用按钮让用户摸不着头脑
-            st.error(t("app.settings.string_ver_bad_format", raw=_raw.strip()))
-    else:
-        _target = _choice
-    if st.button(
-            t("app.settings.string_ver_apply", ver=_target or "?"),
-            key="set_string_ver_apply",
-            disabled=not _target or _target == config.STRING_VERSION,
-            use_container_width=True):
-        from core.interactome import string_version_exists
+    def _key_ph(has: bool) -> str:
+        """密钥框占位文本:已配置显示掩码占位(视觉上"已填充"),未配置提示输入新密钥。
+        占位符不是值、永远不会被保存——避免掩码被误当密钥写回 API.env。"""
+        return "********" if has else t("app.settings.key_placeholder_new")
 
-        if string_version_exists(_target):
-            st.session_state["set_string_ver_pending"] = _target
+    # 左侧选项栏 + 右侧板块:radio 存稳定选项值,经 format_func 映射成当前语言文案,语言切换不残留旧值
+    _nav, _body = st.columns([1, 3], gap="small")
+    with _nav:
+        _section = st.radio(
+            t("app.settings.title"), ("data", "algo", "docking"),
+            format_func=lambda s: {
+                "data": t("app.settings.section_data"),
+                "algo": t("app.settings.section_algo"),
+                "docking": t("app.settings.section_docking"),
+            }[s],
+            label_visibility="collapsed", key="set_section")
+    with _body:
+        if _section == "data":
+            # ======== 数据源设置:抓取规模 + STRING 数据版本 ========
+            ot_topn = _stepper(t("app.settings.ot_topn"), "OT_TOP_N",
+                               lo=200, hi=1000, step=50, skey="set_ot_topn")
+            dg_pages = _stepper(t("app.settings.dg_pages"), "DISGENET_PAGES",
+                                lo=1, hi=10, step=1, skey="set_dg_pages")
+            _apply({"OT_TOP_N": ot_topn, "DISGENET_PAGES": dg_pages})
+
+            # ---------- STRING 数据版本切换 ----------
+            # 查询 API 与背景互作组按版本同源派生;切换需二次确认,保存前经下载站探活,
+            # 新版本发布后在此输入版本号即可,无需改代码。齿轮弹窗内不能嵌套弹窗,
+            # 确认步骤用两段式按钮实现(先「切换到」再「确认切换」)。
+            st.divider()
+            st.caption(t("app.settings.string_ver_caption"))
+            _known = list(config.STRING_KNOWN_VERSIONS)
+            _custom_opt = t("app.settings.string_ver_custom_opt")
+            _choice = st.selectbox(
+                t("app.settings.string_ver"), _known + [_custom_opt],
+                index=(_known.index(config.STRING_VERSION)
+                       if config.STRING_VERSION in _known else len(_known)),
+                key="set_string_ver_choice", label_visibility="collapsed")
+            if _choice == _custom_opt:
+                _raw = st.text_input(
+                    t("app.settings.string_ver_custom"),
+                    value=config.STRING_VERSION if config.STRING_VERSION not in _known else "",
+                    placeholder="v13.0", key="set_string_ver_input")
+                _target = config.normalized_string_version(_raw)
+                if _raw.strip() and _target is None:
+                    # 非法格式给内联提示,不再静默禁用按钮让用户摸不着头脑
+                    st.error(t("app.settings.string_ver_bad_format", raw=_raw.strip()))
+            else:
+                _target = _choice
+            if st.button(
+                    t("app.settings.string_ver_apply", ver=_target or "?"),
+                    key="set_string_ver_apply",
+                    disabled=not _target or _target == config.STRING_VERSION,
+                    use_container_width=True):
+                from core.interactome import string_version_exists
+
+                if string_version_exists(_target):
+                    st.session_state["set_string_ver_pending"] = _target
+                else:
+                    st.session_state["set_string_ver_pending"] = None
+                    st.error(t("app.settings.string_ver_missing", ver=_target))
+            _pending = st.session_state.get("set_string_ver_pending")
+            if _pending and _pending != _target:
+                # 待确认期间又改了所选版本:旧确认作废
+                st.session_state["set_string_ver_pending"] = None
+                _pending = None
+            if _pending:
+                st.warning(t("app.settings.string_ver_confirm", ver=_pending))
+                if st.button(t("app.settings.string_ver_confirm_btn", ver=_pending),
+                             key="set_string_ver_confirm", type="primary",
+                             use_container_width=True):
+                    config.STRING_VERSION = _pending
+                    # 与 config.py 末尾的派生保持同一变换:版本化子域名把 v12.0 写作 version-12-0
+                    config.STRING_BASE_URL = (
+                        f"https://version-{_pending[1:].replace('.', '-')}.string-db.org/api/json")
+                    from core.interactome import clear_runtime_caches
+
+                    clear_runtime_caches()  # 图/度表/LCC 上下文按版本隔离,清一次防旧版本残留
+                    save_ui_settings({"STRING_VERSION": _pending})
+                    # 清掉版本控件自身的会话状态:重开齿轮时按新当前版本重新定位选中项,
+                    # 避免停留在切换前的旧选项上被误点切回
+                    for _wk in ("set_string_ver_choice", "set_string_ver_input"):
+                        st.session_state.pop(_wk, None)
+                    st.session_state["set_string_ver_pending"] = None
+                    st.toast(t("app.settings.string_ver_done", ver=_pending))
+                    st.rerun()
+
+            # ---------- API 密钥(写-only):不回显当前值,输入新值即覆盖;留空=不修改 ----------
+            # 落盘走 API.env(core.management.save_api_env),与本板块上方 ui_settings 系参数的
+            # _apply 持久化通道不同;密钥控件一律 type=password 且保存后立即清空控件会话状态。
+            st.divider()
+            st.caption(t("app.settings.api_key_caption"))
+            _dg_key = st.text_input(t("app.settings.disgenet_key_label"), value="",
+                                    type="password", key="set_disgenet_key",
+                                    placeholder=_key_ph(bool(config.DisGeNET_API_KEY)))
+            st.caption(t("app.settings.key_status", state=_key_state(config.DisGeNET_API_KEY)))
+            _ncbi_key = st.text_input(t("app.settings.ncbi_key_label"), value="",
+                                      type="password", key="set_ncbi_key",
+                                      placeholder=_key_ph(bool(config.NCBI_API_KEY)))
+            st.caption(t("app.settings.key_status", state=_key_state(config.NCBI_API_KEY)))
+            _new_keys = {}
+            if _dg_key.strip():
+                _new_keys["DisGeNET_API_KEY"] = _dg_key
+            if _ncbi_key.strip():
+                _new_keys["NCBI_API_KEY"] = _ncbi_key
+            if st.button(t("app.settings.key_save"), key="set_key_save",
+                         disabled=not _new_keys, use_container_width=True):
+                try:
+                    from core.management import save_api_env
+
+                    save_api_env(_new_keys)
+                except Exception as exc:
+                    st.error(t("app.settings.key_save_failed", exc=exc))
+                else:
+                    st.toast(t("app.settings.key_saved"))
+                    # 密钥不留在控件会话状态里:保存成功立即清空输入框(重开齿轮为空框+状态行)
+                    for _wk in ("set_disgenet_key", "set_ncbi_key"):
+                        st.session_state.pop(_wk, None)
+                    st.rerun()
+        elif _section == "algo":
+            # ======== 分析算法设置:靶点降噪 / 网络构建 / 富集 ========
+            # ChEMBL 黑名单:可在常用选项里勾选,也支持手输任意基因符号
+            new_bl = st.multiselect(
+                t("app.settings.blacklist"),
+                options=list(config.CHEMBL_BLACKLIST_OPTIONS),
+                default=list(config.CHEMBL_TARGET_BLACKLIST),
+                accept_new_options=True,
+                key="set_blacklist",
+            )
+            new_vals = {
+                "CHEMBL_PCHEMBL_THRESHOLD": st.number_input(
+                    t("app.settings.pchembl"), min_value=0.0, max_value=12.0, step=0.1,
+                    value=float(config.CHEMBL_PCHEMBL_THRESHOLD), key="set_pchembl"),
+                "DGIDB_MIN_SCORE": st.number_input(
+                    t("app.settings.dgidb"), min_value=0.0, max_value=1.0, step=0.01,
+                    value=float(config.DGIDB_MIN_SCORE), key="set_dgidb"),
+                "CHEMBL_CORROBORATION_REQUIRED": st.checkbox(
+                    t("app.settings.corroboration"),
+                    value=bool(config.CHEMBL_CORROBORATION_REQUIRED), key="set_corroboration"),
+                "OT_MIN_SCORE": st.number_input(
+                    t("app.settings.ot"), min_value=0.0, max_value=1.0, step=0.05,
+                    value=float(config.OT_MIN_SCORE), key="set_ot"),
+                "ENRICHMENT_PVALUE": st.number_input(
+                    t("app.settings.enr_p"), min_value=0.001, max_value=0.5, step=0.005,
+                    value=float(config.ENRICHMENT_PVALUE), key="set_enr_p"),
+                "LOUVAIN_RESOLUTION": st.number_input(
+                    t("app.settings.louvain"), min_value=0.3, max_value=3.0, step=0.1,
+                    value=float(config.LOUVAIN_RESOLUTION), key="set_louvain"),
+                "PPI_CONFIDENCE": st.slider(
+                    t("app.settings.ppi_conf"), min_value=0.1, max_value=0.9, step=0.05,
+                    value=float(config.PPI_CONFIDENCE), key="set_ppi_conf",
+                    help=t("app.settings.ppi_conf_help")),
+            }
+            _apply(new_vals, new_bl)
         else:
-            st.session_state["set_string_ver_pending"] = None
-            st.error(t("app.settings.string_ver_missing", ver=_target))
-    _pending = st.session_state.get("set_string_ver_pending")
-    if _pending and _pending != _target:
-        # 待确认期间又改了所选版本:旧确认作废
-        st.session_state["set_string_ver_pending"] = None
-        _pending = None
-    if _pending:
-        st.warning(t("app.settings.string_ver_confirm", ver=_pending))
-        if st.button(t("app.settings.string_ver_confirm_btn", ver=_pending),
-                     key="set_string_ver_confirm", type="primary",
-                     use_container_width=True):
-            config.STRING_VERSION = _pending
-            # 与 config.py 末尾的派生保持同一变换:版本化子域名把 v12.0 写作 version-12-0
-            config.STRING_BASE_URL = (
-                f"https://version-{_pending[1:].replace('.', '-')}.string-db.org/api/json")
-            from core.interactome import clear_runtime_caches
+            # ======== 分子对接设置:口袋判定 + 本机工具路径 ========
+            _apply({"POCKET_CUTOFF": st.number_input(
+                t("app.settings.pocket"), min_value=3.0, max_value=6.0, step=0.5,
+                value=float(config.POCKET_CUTOFF), key="set_pocket")})
 
-            clear_runtime_caches()  # 图/度表/LCC 上下文按版本隔离,清一次防旧版本残留
-            save_ui_settings({"STRING_VERSION": _pending})
-            # 清掉版本控件自身的会话状态:重开齿轮时按新当前版本重新定位选中项,
-            # 避免停留在切换前的旧选项上被误点切回
-            for _wk in ("set_string_ver_choice", "set_string_ver_input"):
-                st.session_state.pop(_wk, None)
-            st.session_state["set_string_ver_pending"] = None
-            st.toast(t("app.settings.string_ver_done", ver=_pending))
-            st.rerun()
+            # ---------- 本机工具路径(明文可编辑:路径不是秘密,需可见以便确认填对) ----------
+            # 落盘同样走 API.env(save_api_env),运行时 VINA_EXE/OBABEL_EXE 随目录即时重探;
+            # 留空=不修改(不支持在面板里清空回自动探测,如需回退请手动编辑 API.env 后重启)。
+            st.divider()
+            st.caption(t("app.settings.path_caption"))
+            _path_vals = {
+                "VINA_DIR": st.text_input(t("app.settings.vina_dir"),
+                                          value=config.VINA_DIR, key="set_vina_dir"),
+                "OBABEL_DIR": st.text_input(t("app.settings.obabel_dir"),
+                                            value=config.OBABEL_DIR, key="set_obabel_dir"),
+                "CLI_RESULTS_DIR": st.text_input(t("app.settings.cli_results_dir"),
+                                                 value=config.CLI_RESULTS_DIR,
+                                                 key="set_cli_results_dir"),
+            }
+            _path_changed = {k: v for k, v in _path_vals.items()
+                             if v.strip() and v.strip() != str(getattr(config, k))}
+            if _path_changed:
+                try:
+                    from core.management import save_api_env
+
+                    save_api_env(_path_changed)
+                    st.toast(t("app.settings.path_saved"))
+                except Exception as exc:
+                    st.error(t("app.settings.key_save_failed", exc=exc))
 
 
 # ---------- Title ----------

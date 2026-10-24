@@ -531,3 +531,42 @@ ML_CONSENSUS_RANK_W = 0.5             # 共识打分权重:平均秩分(方案:�
 ML_CONSENSUS_FREQ_W = 0.5             # 共识打分权重:bootstrap 选中频率
 ML_RESULTS_KEEP_PER_GSE = 6           # 结果保留语义(§10 增补):同 tag 只留最近 6 份,落盘后自动清
                                       # 理更旧的;跨数据集总量永不自动清(实验记录),治理走结果管理页
+
+
+# ======== API.env 可视化设置(齿轮面板:数据源板块的密钥 + 分子对接板块的本机工具路径) ========
+# 键名与 API.env 文件内一致;落盘由 core.management.save_api_env 负责(set_key 保留注释与其他行),
+# 落盘后经 apply_api_env 回填运行时,免重启生效。密钥类键不回显当前值,输入新值即覆盖。
+API_ENV_KEYS = ("DisGeNET_API_KEY", "NCBI_API_KEY", "VINA_DIR", "OBABEL_DIR", "CLI_RESULTS_DIR")
+
+
+def apply_api_env(changes: dict) -> list[str]:
+    """把用户提交的 API.env 参数回填到运行时 config 常量,返回实际生效的键名列表。
+
+    只接受 API_ENV_KEYS 白名单内的键;派生值随源同步重算:NCBI_API_KEY 变更联动
+    E-UTILS 节流间隔(与本文件前文注册逻辑保持同一变换),VINA/OBABEL 目录变更时
+    重探对应可执行文件(目录为空时 _find_exe 安全返回空串)。本函数只改本进程状态,
+    不做任何落盘。"""
+    global DisGeNET_API_KEY, NCBI_API_KEY, VINA_DIR, VINA_EXE
+    global OBABEL_DIR, OBABEL_EXE, CLI_RESULTS_DIR
+    applied: list[str] = []
+    for _k, _v in changes.items():
+        if _k not in API_ENV_KEYS:
+            continue
+        _v = str(_v).strip()
+        if _k == "DisGeNET_API_KEY":
+            DisGeNET_API_KEY = _v
+        elif _k == "NCBI_API_KEY":
+            NCBI_API_KEY = _v
+            HOST_MIN_REQUEST_INTERVAL["NCBI_EUTILS"] = 0.10 if _v else 0.34
+        elif _k == "VINA_DIR":
+            VINA_DIR = _v
+            VINA_EXE = _find_exe(_v, "vina", exclude="vina_split")
+        elif _k == "OBABEL_DIR":
+            OBABEL_DIR = _v
+            OBABEL_EXE = _find_exe(_v, "obabel")
+        elif _k == "CLI_RESULTS_DIR":
+            CLI_RESULTS_DIR = _v
+        else:
+            continue
+        applied.append(_k)
+    return applied
