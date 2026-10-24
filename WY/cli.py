@@ -32,7 +32,8 @@ from core.network_algorithms import run_proximity_cached, run_rwr_cached
 from core.ppi import (build_ppi_graph, compute_mcc_scores, compute_ppi_metrics,
                       fetch_string_ppi, mark_hub_genes, pick_top_mcc_genes)
 from core.targets import (get_disease_targets_merged, get_drug_targets_merged,
-                          get_targets_concurrent)
+                          get_targets_concurrent, intersect_target_symbols)
+from core.analysis import expand_targets_with_rwr, pair_prefix
 from core.text_utils import safe_name
 import config
 
@@ -51,12 +52,6 @@ def _slug(*parts: str) -> str:
         digest = hashlib.md5(name.encode("utf-8")).hexdigest()[:6]
         name = f"{name[:_SLUG_MAX_LEN - 7]}~{digest}"
     return name
-
-
-def _pair_prefix(drug: str, disease: str) -> str:
-    """药病对的缓存 label,与网页分析页 prefix 同一拼法(Data_Network.py):
-    PPI 边表/富集/邻近度/RWR 缓存文件名都带它,网页跑过的对 CLI 直接命中。"""
-    return re.sub(r"[^\w\-]+", "_", f"{drug}_{disease}")
 
 
 def _resolve_out_dir(out_arg: str | None) -> str | None:
@@ -354,7 +349,7 @@ def run_pair(drug: str, disease: str, out_dir: str) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     steps: dict[str, dict] = {}
     t0 = time.monotonic()
-    prefix_full = _pair_prefix(drug, disease)
+    prefix_full = pair_prefix(drug, disease)
 
     def _run(name: str, fn) -> dict:
         t = time.monotonic()
@@ -380,9 +375,8 @@ def run_pair(drug: str, disease: str, out_dir: str) -> dict:
         common: list[str] = []
         if drug_df is not None and not drug_df.empty \
                 and disease_df is not None and not disease_df.empty:
-            common = sorted(set(drug_df["approvedSymbol"].dropna().astype(str).str.upper())
-                            & set(disease_df["approvedSymbol"].dropna().astype(str).str.upper())
-                            )[:config.STRING_QUERY_LIMIT]
+            common = intersect_target_symbols(drug_df, disease_df,
+                                              config.STRING_QUERY_LIMIT)
             _save_csv(pd.DataFrame({"approvedSymbol": common}),
                       os.path.join(out_dir, "common_targets.csv"))
             detail_bits.append(f"common {len(common)}")
@@ -396,31 +390,27 @@ def run_pair(drug: str, disease: str, out_dir: str) -> dict:
     t_res = _run("targets", _targets_fn)
     common = t_res["common"]
 
-    # ---- RWR 扩展(与网页分析页同款:交集靶点在背景网络上扩展查询集,前缀带 _rwr{N};
-    #      扩展失败按原始交集继续,不让分析挂掉) ----
+    # ---- RWR 扩展(与网页 Build Report 共用 core.analysis.expand_targets_with_rwr:
+    #      交集靶点在背景网络上扩展查询集;扩展失败按原始交集继续,不让分析挂掉) ----
     genes = list(common)
     prefix = prefix_full
     expansion: dict | None = None
     if int(config.RWR_EXPAND_TOP_N) > 0 and common and interactome.is_built():
-        rwr_res = run_rwr_cached(common, label=f"expand_{prefix_full}")
-        if rwr_res.get("ok"):
-            top = sorted(rwr_res.get("top_nonseed") or [],
-                         key=lambda r: (-float(r["score"]), str(r["gene"])
-                                        ))[:int(config.RWR_EXPAND_TOP_N)]
-            added = [str(r["gene"]) for r in top]
-            genes = sorted(set(common) | set(added))
-            prefix = f"{prefix_full}_rwr{int(config.RWR_EXPAND_TOP_N)}"
-            expansion = {"added": len(added), "genes": added,
-                         "cached": bool(rwr_res.get("cached"))}
-            cache_txt = " (cache hit)" if rwr_res.get("cached") else ""
+        genes, prefix, rwr_exp = expand_targets_with_rwr(
+            common, int(config.RWR_EXPAND_TOP_N), prefix_full)
+        added = [str(r["gene"]) for r in rwr_exp["added"]]
+        if rwr_exp["ok"]:
+            expansion = {"added": len(added), "genes": added, "cached": rwr_exp["cached"]}
+            cache_txt = " (cache hit)" if rwr_exp["cached"] else ""
             print(f"[analyze] expansion  ok        query set +{len(added)} genes "
                   f"via RWR (total {len(genes)}){cache_txt}")
         else:
-            # 扩展失败按原始交集继续(与网页一致),但失败原因要记进 summary 供追溯
-            expansion = {"added": 0, "error": rwr_res.get("error") or "unknown"}
+            # 扩展失败按原始交集继续(与网页一致),失败原因记进 summary 供追溯
+            # (旧实现在此分支引用仅成功分支定义的 added,直接 NameError,已随收敛修复)
+            expansion = {"added": 0, "error": rwr_exp["error"]}
             print(f"[analyze] expansion  skipped   RWR expansion failed "
-                  f"({expansion['error']}); continuing with raw intersection")
-            steps["targets"]["detail"] += f"; RWR expanded +{len(added)}"
+                  f"({rwr_exp['error']}); continuing with raw intersection")
+            steps["targets"]["detail"] += f"; RWR expansion failed ({rwr_exp['error']})"
 
     # ---- PPI / 富集 / 邻近度 / RWR(相互独立,某步失败不影响其余) ----
     if common:
@@ -643,7 +633,7 @@ def cmd_proximity(args) -> int:
     drug_syms = sorted({str(g).strip().upper() for g in drug_df["approvedSymbol"].dropna()})
     disease_syms = sorted({str(g).strip().upper() for g in disease_df["approvedSymbol"].dropna()})
     res = _proximity_step(drug_syms, disease_syms, out_dir,
-                          label=_pair_prefix(args.drug, args.disease))
+                          label=pair_prefix(args.drug, args.disease))
     print(f"[proximity] {res['detail']}")
     if not res["ok"]:
         _warn(res["detail"])

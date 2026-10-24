@@ -334,3 +334,38 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
               done=idx, total=len(merged_names))
     _tick(1.0, "mgmt.prog.done")
     return pd.DataFrame(rows, columns=["File", "Status", "Message"])
+
+
+def save_api_env(changes: dict) -> list[str]:
+    """把齿轮面板提交的 API.env 参数写入 API.env 并回填运行时(config.apply_api_env)。
+
+    只接受 config.API_ENV_KEYS 白名单内的键;值先消毒(去首尾空白、剥掉一层成对的
+    首尾引号——从文件属性等处复制路径时常把引号一起带上来,留着会被 dotenv 读回
+    成值的一部分;含换行/井号的值直接丢弃,堵 env 文件的注入面);空值一律跳过——
+    密钥框不回显当前值,空输入天然等于"不修改"。返回实际生效的键名;写盘失败时
+    异常原样抛出由调用方提示。
+    落盘格式由 set_key 决定(单引号包裹、反斜杠转义为 \\\\):这是设计内形态,
+    dotenv 读回时无损还原,与手写单反斜杠的旧行为等价。
+    CLI 与 Web 进程共享 API.env:落盘对 CLI 在其下次启动时生效,本进程即时生效。
+    日志只记键名不记值,密钥与路径都不应进入日志文件。"""
+    import config
+    from dotenv import set_key
+
+    clean: dict = {}
+    for k, v in changes.items():
+        if k not in config.API_ENV_KEYS:
+            continue
+        v = str(v).strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1].strip()
+        if not v or "\n" in v or "\r" in v or "#" in v:
+            continue
+        clean[k] = v
+    if not clean:
+        return []
+    env_path = os.path.join(config.BASE_DIR, "API.env")
+    for k, v in clean.items():
+        set_key(env_path, k, v)  # 只改目标行,保留注释与其他行;文件不存在则创建
+    applied = config.apply_api_env(clean)
+    logging.info("API.env updated: %s", ", ".join(applied))
+    return applied

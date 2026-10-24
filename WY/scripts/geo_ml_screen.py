@@ -12,6 +12,9 @@ M2:screen 子命令(在 deg 产物之上叠加六算法共识与 shortlist)。
     python scripts/geo_ml_screen.py screen --expr expr.csv --labels labels.csv --case-label disease
         # 自备数据直跑(方案 §6,不经 GEO):expr.csv 首列为基因符号,样本轴自动识别;
         # labels 两列(样本ID, 分组),分组写法宽松(disease/control、case/ctrl、1/0)
+    python scripts/geo_ml_screen.py screen --gse GSE239512 --counts --case-pattern "PA" --control-pattern "CTL"
+        # RNA-seq 模式(二期):从补充文件取 raw counts 走 DESeq2;
+        # case/control 正则匹配 counts 的样本列名(如 PA*/CTL*)
 """
 
 import argparse
@@ -140,6 +143,7 @@ def cmd_screen(args) -> int:
         gse=args.gse, case_pattern=args.case_pattern,
         control_pattern=args.control_pattern,
         expr=args.expr, labels=args.labels, case_label=args.case_label,
+        counts_mode=args.counts, counts_file=args.counts_file,
         force_refresh=args.force_refresh, force_log=args.force_log,
         prefilter_top=args.prefilter_top, bootstrap_rounds=args.bootstrap_rounds,
         ranked_csvs=ranked_csvs, top_k=args.top_k, out_base=base,
@@ -174,6 +178,13 @@ def main() -> int:
     p_scr.add_argument("--case-label", default=None,
                        help="--expr 模式:分组列中代表病例组的值"
                             "(缺省按 1/case/disease/treated/patient 推断,推断不了报错)")
+    p_scr.add_argument("--counts", action="store_true",
+                       help="RNA-seq 模式(二期):强制从 suppl 补充文件取 raw counts 走 "
+                            "DESeq2;series matrix 为空/不可解析时本来就会自动回退,"
+                            "此参数用于 series matrix 存在但想直接用 counts 的场景;"
+                            "case/control 正则此时匹配 counts 的样本列名")
+    p_scr.add_argument("--counts-file", default=None,
+                       help="指定补充文件名(默认按文件名打分自动挑选)")
     p_scr.add_argument("--case-pattern", default=None, help="病例组正则(--gse 模式必填)")
     p_scr.add_argument("--control-pattern", default=None, help="对照组正则(--gse 模式必填)")
     p_scr.add_argument("--ranked-csv", action="append",

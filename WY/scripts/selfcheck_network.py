@@ -1128,6 +1128,46 @@ def t_hub_rank_topn_and_fallback():
     assert len(empty) == 0 and {"is_hub", "hub_rank", "hub_rule"} <= set(empty.columns)
 
 
+def t_rwr_expansion_shared():
+    """RWR 查询集扩展共享语义(core.analysis.expand_targets_with_rwr):成功路径的
+    平局排序/基因并集/前缀后缀、失败路径的原集降级与 error 透传、游走缓存 label 不带
+    _rwr{N}、未启用或空基因集的原样返回。网页 Build Report 与 CLI run_pair 共用此
+    唯一定义;旧 CLI 失败分支曾引用仅成功分支定义的变量直接 NameError,本测试锁住该路径。"""
+    import core.analysis as ana
+
+    fake = {"ok": True, "cached": True,
+            "top_nonseed": [{"gene": "EGFR", "score": 0.5},
+                            {"gene": "BRAF", "score": 0.5},
+                            {"gene": "AKT1", "score": 0.9}]}
+    with patch_attr(ana, "run_rwr_cached", lambda genes, label=None, **k: fake):
+        genes, prefix, info = ana.expand_targets_with_rwr(
+            ["TP53", "KRAS"], 2, "metformin_Type_2_diabetes_mellitus")
+        # 平局按基因名稳定排序:AKT1(0.9) 第一,0.5 的 BRAF/EGFR 按名字升序取 BRAF
+        assert [r["gene"] for r in info["added"]] == ["AKT1", "BRAF"], info["added"]
+        assert genes == ["AKT1", "BRAF", "KRAS", "TP53"], genes
+        assert prefix == "metformin_Type_2_diabetes_mellitus_rwr2", prefix
+        assert info["ok"] and info["cached"] and info["error"] is None, info
+        assert info["attempted"] is True
+    # 失败:按原基因集返回、prefix 仍带后缀(标记"请求了扩展")、error 透传
+    with patch_attr(ana, "run_rwr_cached",
+                    lambda genes, label=None, **k: {"ok": False, "error": "boom"}):
+        genes, prefix, info = ana.expand_targets_with_rwr(["TP53"], 30, "x_y")
+        assert genes == ["TP53"] and info["ok"] is False, (genes, info)
+        assert info["error"] == "boom" and info["attempted"] is True, info
+        assert prefix == "x_y_rwr30", prefix
+    # 游走缓存 label 不带 _rwr{N}(改 N 复用同一份游走)
+    seen = {}
+    with patch_attr(ana, "run_rwr_cached",
+                    lambda genes, label=None, **k: seen.update(label=label)
+                    or {"ok": False, "error": "probe"}):
+        ana.expand_targets_with_rwr(["TP53"], 5, "a_b")
+    assert seen["label"] == "expand_a_b", seen
+    # 未启用(0)或空基因集:不尝试游走,原样返回
+    for g, n in ((["TP53"], 0), ([], 30)):
+        genes, prefix, info = ana.expand_targets_with_rwr(g, n, "a_b")
+        assert info["attempted"] is False and prefix == "a_b" and genes == list(g), (g, info)
+
+
 def t_drug_target_pathway_plot():
     """药物-靶点-通路网络图:KEGG 行参与构图、GO 行忽略;无 KEGG/无命中返回 None;
     g:Profiler 列表样式 / 分号 / 逗号三种基因格式都兼容;
@@ -1206,6 +1246,7 @@ def main():
         ("rwr enrichment synthetic", t_rwr_enrich_synthetic),
         ("rwr real interactome + cache (skip if not built)", t_rwr_real_and_cached),
         ("rwr truncation guarantee (large seed set)", t_rwr_truncation_guarantee),
+        ("rwr expansion shared semantics (web+cli)", t_rwr_expansion_shared),
         ("mcc known values", t_mcc_known_values),
         ("mcc pick + core target plot", t_mcc_pick_and_core_plot),
         ("hub rank top-N + small-net fallback", t_hub_rank_topn_and_fallback),

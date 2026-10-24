@@ -191,9 +191,17 @@ def assess_expression_dataset(ds) -> dict:
     """
     n = len(ds.samples)
     if ds.table.empty:
+        # 空矩阵 ≠ 判死:RNA-seq 数据集的 counts 在补充文件里,运行时会自动回退
+        # DESeq2 路径 —— 预检此时探测 counts 可用性,有则放行(否则锁定才正确)
+        try:
+            from .geo import has_counts_supplement
+            counts_available = has_counts_supplement(ds.gse)
+        except Exception:
+            counts_available = False
         return {"matrix_empty": True, "symbol_level": None, "shape": None,
                 "gpl": ds.gpl, "annot": None, "group_fields": [],
-                "n_samples": n, "usable": False}
+                "counts_available": counts_available,
+                "n_samples": n, "usable": counts_available}
 
     symbol = looks_symbol_level(ds.table.index)
     if symbol:
@@ -224,6 +232,7 @@ def assess_expression_dataset(ds) -> dict:
     usable = bool(group_fields) and (symbol or annot in ("cached", "ok"))
     return {"matrix_empty": False, "symbol_level": symbol, "shape": tuple(ds.table.shape),
             "gpl": ds.gpl, "annot": annot, "group_fields": group_fields,
+            "counts_available": None,
             "n_samples": n, "usable": usable}
 
 
@@ -296,6 +305,153 @@ def map_probe_to_symbol(matrix: pd.DataFrame, gpl: str) -> pd.DataFrame:
     logging.info("探针映射: %d 探针 → %d 基因(覆盖率 %.0f%%)",
                  len(keep), len(out), coverage * 100)
     return out
+
+
+# ---------------- raw counts 判定与 DESeq2 差异表达(二期 RNA-seq 路径) ----------------
+
+
+def looks_count_matrix(matrix: pd.DataFrame) -> bool:
+    """行=基因 矩阵是否为 raw counts(全为非负整数)。
+
+    TPM/FPKM/归一化矩阵含小数,log 化矩阵可能含负值 —— DESeq2 只接受
+    非负整数 counts,喂错输入统计上无效,必须在此挡下。
+    """
+    num = matrix.select_dtypes(include=[np.number])
+    if num.empty:
+        return False
+    v = num.to_numpy(dtype=float)
+    if v.size == 0 or np.isnan(v).any() or (v < 0).any():
+        return False
+    return bool((v % 1 == 0).all())
+
+
+def _deseq2_run(counts: pd.DataFrame, labels: pd.Series):
+    """DESeq2 共享实现:校验 + 一次拟合,返回 (results_df, 样本×基因 标准化counts)。"""
+    try:
+        from pydeseq2.dds import DeseqDataSet
+        from pydeseq2.ds import DeseqStats
+    except ImportError as exc:
+        raise RuntimeError(
+            "pydeseq2 未安装(RNA-seq counts 路径依赖,见 requirements.txt "
+            f"的 pydeseq2==0.5.4): {exc}")
+
+    if not looks_count_matrix(counts):
+        raise RuntimeError(
+            "输入矩阵不是 raw counts(存在小数/负值/缺失,疑似 TPM/FPKM 或已"
+            "归一化矩阵)—— DESeq2 只接受非负整数 counts,请提供原始 counts。")
+    labels = labels.loc[labels.index.intersection(counts.columns)]
+    case_cols = labels[labels == 1].index
+    ctrl_cols = labels[labels == 0].index
+    # 守卫:交集为空或某组不足 2 个样本时,pyDESeq2 会抛深堆栈的底层数值错误
+    # (或静默产出空表),在此给出可读的报错
+    if len(case_cols) == 0 or len(ctrl_cols) == 0:
+        raise RuntimeError(
+            "分组标签与 counts 矩阵的样本列无交集(或某组为 0)—— "
+            f"case={len(case_cols)}, control={len(ctrl_cols)};请检查样本命名"
+            "是否与 counts 列名一致")
+    if len(case_cols) < 2 or len(ctrl_cols) < 2:
+        raise RuntimeError(
+            f"每组至少需要 2 个样本才能估计离散度(case={len(case_cols)}, "
+            f"control={len(ctrl_cols)});请补充样本或换数据集")
+    X = counts.loc[:, list(case_cols) + list(ctrl_cols)].T.astype(int)  # 样本×基因
+    meta = pd.DataFrame(
+        {"group": ["case"] * len(case_cols) + ["control"] * len(ctrl_cols)},
+        index=X.index)
+    X = X.loc[:, X.sum(axis=0) > 0]  # 全零基因:DESeq2 必置 NaN,提前剔除
+
+    try:
+        dds = DeseqDataSet(counts=X, metadata=meta, design="~group")
+    except TypeError:  # 旧版参数名(design_factors)
+        dds = DeseqDataSet(counts=X, metadata=meta, design_factors="group")
+    dds.deseq2()
+    stats = DeseqStats(dds, contrast=("group", "case", "control"))
+    stats.summary()
+    norm = pd.DataFrame(np.asarray(dds.layers["normed_counts"]),
+                        index=X.index, columns=X.columns)
+    return stats.results_df, norm
+
+
+def _deg_table_from_results(res: pd.DataFrame) -> pd.DataFrame:
+    out = res.copy()
+    out.insert(0, "gene", out.index)
+    out = out[["gene", "log2FoldChange", "stat", "pvalue", "padj"]].dropna(
+        subset=["pvalue"])
+    out.columns = ["gene", "log2FC", "stat", "p", "FDR"]
+    out["direction"] = np.where(out["log2FC"] > 0, "up",
+                                np.where(out["log2FC"] < 0, "down", "flat"))
+    return out.sort_values("p").reset_index(drop=True)
+
+
+def differential_expression_counts(counts: pd.DataFrame,
+                                   labels: pd.Series) -> pd.DataFrame:
+    """raw counts 的差异表达(pyDESeq2 负二项 GLM + Wald 检验,二期 RNA-seq 路径)。
+
+    输入与 differential_expression 同构: counts 为 基因×样本 整数矩阵,
+    labels 样本→1(case)/0(control)。输出同构 DEG 表:
+    gene|log2FC|stat|p|FDR|direction —— stat 为 Wald 统计量;FDR 取
+    pyDESeq2 的 padj(BH + 独立过滤,优于朴素 BH)。全零/未通过检验的基因
+    (p 为 NaN)按现路径 valid 口径过滤。行标识可为 Ensembl ID,符号映射由
+    调用方决定(职责同 map_probe_to_symbol)。需要 pydeseq2(见 requirements)。
+    """
+    res, _ = _deseq2_run(counts, labels)
+    return _deg_table_from_results(res)
+
+
+def rnaseq_deg_and_matrix(counts: pd.DataFrame,
+                          labels: pd.Series) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """DESeq2 一次拟合,同时产出 DEG 表与 ML 用表达矩阵。
+
+    ML 不吃 raw counts(方差随均值增长,树/线性模型会被高表达基因主导),
+    也不直接用 log2 raw counts(未去文库深度)—— 用 log2(尺寸因子标准化
+    counts + 1),是 VST 的廉价折中(VST 更优但耗时,一期取折中)。
+    返回 (deg 同构表, ml_matrix: 样本×基因)。
+    """
+    res, norm = _deseq2_run(counts, labels)
+    deg = _deg_table_from_results(res)
+    ml_matrix = np.log2(norm.clip(lower=0) + 1)
+    return deg, ml_matrix
+
+
+# ---------------- Ensembl → 符号映射(路线 A:mygene 批量,懒映射) ----------------
+
+_MYGENE_URL = "https://mygene.info/v3/query"
+
+
+def map_ids_to_symbol(gene_ids, chunk: int = 1000) -> dict:
+    """批量把基因 ID 映射为 HGNC 符号(mygene.info REST,方案二期路线 A)。
+
+    设计要点:
+    - 懒映射:调用方只传 DEG 预过滤池(几百个 ID),不映射全矩阵;
+    - 非 Ensembl ID(已是大写符号等)不经网络,直接原样直通 —— 零成本;
+    - Ensembl ID 分块批量 POST;未命中/多义取第一个 symbol,未命中记 None;
+    - 网络失败响亮抛错(调用方负责降级保留原 ID),HTTP 层走 request_with_retry
+      的统一重试;POST 响应不被 requests-cache 缓存(GET-only),重复调用即重查,
+      结果由调用方落盘 symbol_map.csv 保证可复现。
+    返回 {输入ID: 符号 或 None}(只含入参中出现过的 ID)。
+    """
+    from .http_client import request_with_retry
+
+    ids = [str(g).strip() for g in gene_ids]
+    ens = [g for g in ids if g.upper().startswith("ENS")]
+    mapping: dict = {g: g for g in ids if not g.upper().startswith("ENS")}
+    for i in range(0, len(ens), chunk):
+        part = ens[i:i + chunk]
+        resp = request_with_retry(
+            _MYGENE_URL, method="post", max_retries=3, timeout=60,
+            label=f"mygene 批量符号映射({len(part)} 个 ID)",
+            data={"q": "\n".join(part), "scopes": "ensembl.gene",
+                  "fields": "symbol", "species": "all"},
+            headers={"User-Agent": "NetworkPharmacologyPlatform/1.0"},
+            raise_on_exhausted=True)
+        payload = resp.json()
+        # 批量 POST 返回平铺的 hit 列表(每项自带 query 字段);兼容字典形态
+        hits = payload if isinstance(payload, list) else payload.get("hits", [])
+        for hit in hits:
+            q = hit.get("query")
+            if q in mapping or q not in part:   # 同 ID 多 hit 取首个
+                continue
+            mapping[q] = hit.get("symbol")      # 未命中为 None
+    return mapping
 
 
 # ---------------- 差异表达:Welch t + BH ----------------

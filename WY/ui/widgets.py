@@ -115,6 +115,21 @@ def show_busy_notice(key: str) -> None:
         st.warning(t("common.task_interrupted"))
 
 
+def search_selectbox(label: str, options: list[str], *, key: str,
+                     placeholder: str | None = None) -> str:
+    """可搜索下拉的统一封装:打字即模糊过滤选项(filter_mode="fuzzy" 为
+    selectbox 原生默认),并允许输入列表外的值作为自由过滤条件
+    (accept_new_options)。统一 index=None(默认不选)。
+
+    返回去空白后的所选字符串;未选或 options 为空返回 ""。大小写归一
+    (upper/lower)由调用方按业务决定。"""
+    if not options:
+        return ""
+    pick = st.selectbox(label, options=options, index=None, key=key,
+                        accept_new_options=True, placeholder=placeholder)
+    return (pick or "").strip()
+
+
 def back_button(label_key: str = "common.back_main", *, key: str = "back_btn",
                 target: str = "App.py", disabled: bool = False) -> None:
     """"返回"按钮:点击后切到 target 页面;页面自行把它放进列布局。

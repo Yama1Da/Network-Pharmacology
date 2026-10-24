@@ -3,6 +3,10 @@ import logging
 import os
 from dotenv import load_dotenv
 
+# 平级零依赖叶子:Vina/OBABEL 工具链探测逻辑(本文件导入时调用取值,详见该模块 docstring)。
+# 按就地运行约定(WY 目录在 sys.path)以裸名导入。
+import env_discovery
+
 # 项目根目录,即 config.py 所在文件夹
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -299,70 +303,15 @@ RWR_NULL_SEED = 0
 RWR_CACHE_DIR = os.path.join(CACHE_DIR, "rwr")
 
 # ======== 分子对接配置（AutoDock Vina v1.2.7） ========
-# Vina 程序目录自动探测:优先环境变量 VINA_DIR(可写入 API.env),其次 PATH;换电脑只需设置其中之一。
-# 都找不到时 VINA_DIR 为空串,运行对接时会报错提示设置 VINA_DIR。
-def _find_exe(vina_dir: str, prefix: str, exclude: str = "") -> str:
-    """目录里按文件名前缀找可执行文件(不限定平台与版本文件名)。
-
-    多个匹配时取字典序最后一个;exclude 用于主程序排除 vina_split;找不到返回空串。
-    """
-    if not vina_dir or not os.path.isdir(vina_dir):
-        return ""
-    names = sorted(
-        f for f in os.listdir(vina_dir)
-        if f.lower().startswith(prefix)
-        and not (exclude and f.lower().startswith(exclude))
-        and os.path.isfile(os.path.join(vina_dir, f))
-    )
-    return os.path.join(vina_dir, names[-1]) if names else ""
-
-
-def _find_vina_dir() -> str:
-    """探测 Vina 程序所在目录(跨平台):VINA_DIR 优先,其次 PATH。
-
-    VINA_DIR 或 PATH 里填目录即可(也可填可执行文件全路径)。
-    """
-    env_dir = os.environ.get("VINA_DIR")
-    if env_dir:
-        if os.path.isfile(env_dir):                                   # 填的是可执行文件全路径
-            return os.path.dirname(env_dir)
-        if _find_exe(env_dir, "vina", exclude="vina_split"):          # 填的是目录
-            return env_dir
-
-    # vina 所在目录已加入 PATH(按 vina* 前缀匹配,兼容各平台发布文件名)
-    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
-        if _find_exe(path_dir.strip().strip('"'), "vina", exclude="vina_split"):
-            return path_dir.strip().strip('"')
-
-    return ""  # 找不到时,运行对接会报错提示设置 VINA_DIR
-
-
-def _find_obabel_dir() -> str:
-    """探测 Open Babel(obabel)所在目录(跨平台):OBABEL_DIR 优先,其次 PATH。
-
-    OBABEL_DIR 或 PATH 里填目录即可(也可填可执行文件全路径)。
-    """
-    env_dir = os.environ.get("OBABEL_DIR")
-    if env_dir:
-        if os.path.isfile(env_dir):                                   # 填的是可执行文件全路径
-            return os.path.dirname(env_dir)
-        if _find_exe(env_dir, "obabel"):                              # 填的是目录
-            return env_dir
-
-    # obabel 所在目录已加入 PATH
-    for path_dir in os.environ.get("PATH", "").split(os.pathsep):
-        if _find_exe(path_dir.strip().strip('"'), "obabel"):
-            return path_dir.strip().strip('"')
-
-    return ""  # 找不到时,运行转换会报错提示设置 OBABEL_DIR
-
-
-VINA_DIR = _find_vina_dir()
-VINA_EXE = _find_exe(VINA_DIR, "vina", exclude="vina_split")
-VINA_SPLIT_EXE = _find_exe(VINA_DIR, "vina_split")  # 缺失时 docking 自动改用内置拆分
+# Vina 程序目录自动探测(逻辑在 env_discovery.py,导入时求值):优先环境变量 VINA_DIR
+# (可写入 API.env),其次 PATH;换电脑只需设置其中之一。都找不到时 VINA_DIR 为空串,
+# 运行对接时会报错提示设置 VINA_DIR。
+VINA_DIR = env_discovery.find_vina_dir()
+VINA_EXE = env_discovery.find_exe(VINA_DIR, "vina", exclude="vina_split")
+VINA_SPLIT_EXE = env_discovery.find_exe(VINA_DIR, "vina_split")  # 缺失时 docking 自动改用内置拆分
 # 受体转换以子进程调用 obabel 命令行(不依赖其 Python 绑定);都找不到时 OBABEL_EXE 为空串,运行转换时报错提示。
-OBABEL_DIR = _find_obabel_dir()
-OBABEL_EXE = _find_exe(OBABEL_DIR, "obabel")
+OBABEL_DIR = env_discovery.find_obabel_dir()
+OBABEL_EXE = env_discovery.find_exe(OBABEL_DIR, "obabel")
 
 # 对接算法参数
 EXHAUSTIVENESS = 8          # 搜索深度（越大越充分，耗时越长）
@@ -531,3 +480,43 @@ ML_CONSENSUS_RANK_W = 0.5             # 共识打分权重:平均秩分(方案:�
 ML_CONSENSUS_FREQ_W = 0.5             # 共识打分权重:bootstrap 选中频率
 ML_RESULTS_KEEP_PER_GSE = 6           # 结果保留语义(§10 增补):同 tag 只留最近 6 份,落盘后自动清
                                       # 理更旧的;跨数据集总量永不自动清(实验记录),治理走结果管理页
+
+
+# ======== API.env 可视化设置(齿轮面板:数据源板块的密钥 + 分子对接板块的本机工具路径) ========
+# 键名与 API.env 文件内一致;落盘由 core.management.save_api_env 负责(set_key 保留注释与其他行),
+# 落盘后经 apply_api_env 回填运行时,免重启生效。密钥类键不回显当前值,输入新值即覆盖。
+API_ENV_KEYS = ("DisGeNET_API_KEY", "NCBI_API_KEY", "VINA_DIR", "OBABEL_DIR", "CLI_RESULTS_DIR")
+
+
+def apply_api_env(changes: dict) -> list[str]:
+    """把用户提交的 API.env 参数回填到运行时 config 常量,返回实际生效的键名列表。
+
+    只接受 API_ENV_KEYS 白名单内的键;派生值随源同步重算:NCBI_API_KEY 变更联动
+    E-UTILS 节流间隔(与本文件前文注册逻辑保持同一变换),VINA/OBABEL 目录变更时
+    重探对应可执行文件(目录为空时 find_exe 安全返回空串;VINA 目录变更时
+    VINA_SPLIT_EXE 一并重探)。本函数只改本进程状态,不做任何落盘。"""
+    global DisGeNET_API_KEY, NCBI_API_KEY, VINA_DIR, VINA_EXE, VINA_SPLIT_EXE
+    global OBABEL_DIR, OBABEL_EXE, CLI_RESULTS_DIR
+    applied: list[str] = []
+    for _k, _v in changes.items():
+        if _k not in API_ENV_KEYS:
+            continue
+        _v = str(_v).strip()
+        if _k == "DisGeNET_API_KEY":
+            DisGeNET_API_KEY = _v
+        elif _k == "NCBI_API_KEY":
+            NCBI_API_KEY = _v
+            HOST_MIN_REQUEST_INTERVAL["NCBI_EUTILS"] = 0.10 if _v else 0.34
+        elif _k == "VINA_DIR":
+            VINA_DIR = _v
+            VINA_EXE = env_discovery.find_exe(_v, "vina", exclude="vina_split")
+            VINA_SPLIT_EXE = env_discovery.find_exe(_v, "vina_split")
+        elif _k == "OBABEL_DIR":
+            OBABEL_DIR = _v
+            OBABEL_EXE = env_discovery.find_exe(_v, "obabel")
+        elif _k == "CLI_RESULTS_DIR":
+            CLI_RESULTS_DIR = _v
+        else:
+            continue
+        applied.append(_k)
+    return applied

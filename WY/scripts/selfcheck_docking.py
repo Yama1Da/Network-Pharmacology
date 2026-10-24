@@ -352,6 +352,104 @@ def t_ui_settings_roundtrip():
             os.remove(tmp)
 
 
+def t_api_env_roundtrip():
+    """API.env 设置链路(save_api_env):白名单过滤、值消毒(换行/井号拒收)、set_key 落盘
+    保留注释与其他行、运行时回填含派生值联动(NCBI key 生效 → E-UTILS 节流间隔切 0.10)。"""
+    import shutil
+
+    from core.management import save_api_env
+
+    base = tempfile.mkdtemp(prefix="selfcheck_apienv_")
+    env_path = os.path.join(base, "API.env")
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.write("# 注释行必须保留\nCLI_RESULTS_DIR=D:/old\n")
+    orig = {k: getattr(config, k) for k in config.API_ENV_KEYS}
+    orig_interval = config.HOST_MIN_REQUEST_INTERVAL["NCBI_EUTILS"]
+    try:
+        with patch_attr(config, "BASE_DIR", base):
+            applied = save_api_env({
+                "DisGeNET_API_KEY": "  abc123  ",   # 消毒:去首尾空白后生效
+                "NCBI_API_KEY": "bad\nvalue",       # 消毒:含换行拒收
+                "VINA_DIR": "",                     # 空值跳过(留空=不修改)
+                "NOT_IN_WHITELIST": "x",            # 白名单外丢弃
+                "OBABEL_DIR": '"D:/obabel dir"',    # 消毒:剥掉成对首尾引号(复制路径常带引号)
+                "CLI_RESULTS_DIR": "D:/new",        # 已有行被覆盖
+            })
+        assert applied == ["DisGeNET_API_KEY", "OBABEL_DIR", "CLI_RESULTS_DIR"], applied
+        assert config.DisGeNET_API_KEY == "abc123" and config.CLI_RESULTS_DIR == "D:/new"
+        assert config.OBABEL_DIR == "D:/obabel dir", config.OBABEL_DIR
+        with open(env_path, encoding="utf-8") as f:
+            text = f.read()
+        assert "# 注释行必须保留" in text
+        assert "abc123" in text and "D:/new" in text and "D:/old" not in text
+        assert "NOT_IN_WHITELIST" not in text and "bad" not in text
+        # 引号已剥离:文件里不应出现带引号的值
+        assert '"D:/obabel dir"' not in text
+        # 运行时回填联动派生值:NCBI key 生效 → E-UTILS 节流间隔切 0.10
+        with patch_attr(config, "BASE_DIR", base):
+            save_api_env({"NCBI_API_KEY": "ncbi_key_456"})
+        assert config.NCBI_API_KEY == "ncbi_key_456"
+        assert config.HOST_MIN_REQUEST_INTERVAL["NCBI_EUTILS"] == 0.10
+    finally:
+        config.apply_api_env(orig)
+        config.HOST_MIN_REQUEST_INTERVAL["NCBI_EUTILS"] = orig_interval
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def t_env_discovery():
+    """工具链探测(env_discovery,自 config 拆出):find_exe 的前缀匹配/exclude/非文件与
+    空目录安全空串,find_vina_dir 的 环境变量>PATH 回退与"可执行文件全路径"识别、
+    都找不到时返回空串。打桩 PATH 只含测试目录,不受本机真实安装干扰。"""
+    import shutil
+
+    import env_discovery
+
+    base = tempfile.mkdtemp(prefix="selfcheck_envdisc_")
+    saved_env = {k: os.environ.get(k) for k in ("VINA_DIR", "OBABEL_DIR")}
+    saved_path = os.environ.get("PATH", "")
+    try:
+        vina_dir = os.path.join(base, "vina_bin")
+        os.makedirs(vina_dir)
+        for name in ("vina_1.2.7_win.exe", "vina_split_1.2.7_win.exe",
+                     "obabel.exe", "readme.txt"):
+            open(os.path.join(vina_dir, name), "wb").close()
+        # find_exe:前缀匹配 + exclude 排除 vina_split + 多匹配取字典序最后一个
+        assert env_discovery.find_exe(vina_dir, "vina", exclude="vina_split") == \
+            os.path.join(vina_dir, "vina_1.2.7_win.exe")
+        assert env_discovery.find_exe(vina_dir, "vina_split") == \
+            os.path.join(vina_dir, "vina_split_1.2.7_win.exe")
+        assert env_discovery.find_exe(vina_dir, "obabel") == \
+            os.path.join(vina_dir, "obabel.exe")
+        # 目录本身(其名以 vina 开头但是目录)、空参、不存在的目录:安全返回空串
+        assert env_discovery.find_exe(base, "vina") == ""
+        assert env_discovery.find_exe("", "vina") == ""
+        assert env_discovery.find_exe(os.path.join(base, "nope"), "vina") == ""
+        # find_vina_dir:环境变量优先;填可执行文件全路径时返回其所在目录
+        os.environ["VINA_DIR"] = vina_dir
+        assert env_discovery.find_vina_dir() == vina_dir
+        os.environ["VINA_DIR"] = os.path.join(vina_dir, "vina_1.2.7_win.exe")
+        assert env_discovery.find_vina_dir() == vina_dir
+        # PATH 回退:打桩期间 PATH 只含该目录,防本机真实安装干扰
+        del os.environ["VINA_DIR"]
+        os.environ["PATH"] = vina_dir
+        assert env_discovery.find_vina_dir() == vina_dir
+        # 都找不到:返回空串(运行对接时报错提示设置 VINA_DIR)
+        os.environ["PATH"] = base
+        assert env_discovery.find_vina_dir() == ""
+        # find_obabel_dir 同规则:环境变量指向目录即命中
+        os.environ["OBABEL_DIR"] = vina_dir
+        os.environ["PATH"] = base
+        assert env_discovery.find_obabel_dir() == vina_dir
+    finally:
+        for _k, _v in saved_env.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+        os.environ["PATH"] = saved_path
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def t_docking_result_prefix():
     """归档前缀消毒:空段剔除(不出现 unnamed)、路径穿越/分隔符净化、正常名与主分析页命名对齐。
     (该函数已下沉 core.docking,直接测 core,不再经页面模块。)"""
@@ -441,6 +539,8 @@ def main():
         ("pocket residues cutoff param", t_residues_near_ligand_cutoff),
         ("interactions near ligand", t_interactions_near_ligand),
         ("ui settings roundtrip", t_ui_settings_roundtrip),
+        ("API.env settings roundtrip", t_api_env_roundtrip),
+        ("env discovery (exe/dir/PATH fallback)", t_env_discovery),
         ("docking result prefix sanitize", t_docking_result_prefix),
         ("cache clean exempts permanent files", t_clean_docking_cache_exempts_permanent),
     ]

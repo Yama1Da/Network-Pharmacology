@@ -783,6 +783,64 @@ def list_analyzed_pairs() -> list[dict]:
     return out
 
 
+def list_analyzed_diseases() -> list[str]:
+    """去重后的已分析疾病清单(剥 rwrNN 后缀的干净名,最近分析在前)。
+
+    供 ML 筛选页的疾病下拉直接使用(方案 §M4);大小写不敏感去重,
+    保留首次出现的写法。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for rec in list_analyzed_pairs():
+        d = rec["base_disease"].strip()
+        if d and d.lower() not in seen:
+            seen.add(d.lower())
+            out.append(d)
+    return out
+
+
+def list_analyzed_drugs() -> list[str]:
+    """去重后的已分析药物清单(最近分析在前)。
+
+    供 ML 筛选页排序文件的药物过滤下拉使用;大小写不敏感去重,
+    保留首次出现的写法。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for rec in list_analyzed_pairs():
+        d = rec["drug"].strip()
+        if d and d.lower() not in seen:
+            seen.add(d.lower())
+            out.append(d)
+    return out
+
+
+def list_ranked_csv_candidates() -> list[dict]:
+    """列出全部已分析药病对下的排序 CSV(*_query_genes.csv,gene/source/rwr_score
+    排序表),供 ML 筛选页勾选进入 shortlist 交集(方案 §M4:按元数据匹配,
+    不用文件名猜)。
+
+    每项 {label, path, drug, base_disease};label = 目录前缀 · 分析时间 ·
+    STRING 版本。nodes/edges 是网络结构表而非排序,不在此列。"""
+    out: list[dict] = []
+    for rec in list_analyzed_pairs():
+        try:
+            dir_files = os.listdir(rec["directory"])
+        except OSError:
+            continue
+        for f in sorted(dir_files):
+            if not f.endswith("_query_genes.csv"):
+                continue
+            label = " · ".join(x for x in (
+                os.path.basename(rec["directory"])[:-len("_data")],
+                rec["analyzed_at"][:19],
+                f"STRING {rec['string_version']}" if rec["string_version"] else "",
+            ) if x)
+            out.append({"label": label,
+                        "path": os.path.join(rec["directory"], f),
+                        "drug": rec["drug"],
+                        "base_disease": rec["base_disease"]})
+    return out
+
+
 def save_ppi_results(
     graph: "nx.Graph",
     static_fig: "matplotlib.figure.Figure",

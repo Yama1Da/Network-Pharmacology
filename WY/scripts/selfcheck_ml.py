@@ -194,6 +194,68 @@ def t_group_hard_boundaries():
             pass  # 预期报错
 
 
+def t_rnaseq_deg_matrix():
+    """二期 RNA-seq 路径:合成 NB counts → DESeq2 一次拟合产出 DEG + ML 矩阵。"""
+    rng = np.random.default_rng(21)
+    genes = [f"G{i:02d}" for i in range(20)]
+    ctrl = rng.poisson(50, size=(20, 3))
+    case = rng.poisson(50, size=(20, 3))
+    case[:6] = rng.poisson(200, size=(6, 3))
+    counts = pd.DataFrame(np.hstack([ctrl, case]), index=genes,
+                          columns=[f"C{i}" for i in range(3)] + [f"T{i}" for i in range(3)])
+    labels = pd.Series([0] * 3 + [1] * 3, index=list(counts.columns))
+    deg, ml_matrix = expr.rnaseq_deg_and_matrix(counts, labels)
+    assert len(set(genes[:6]) & set(deg.head(8)["gene"])) >= 5, "DESeq2 信号召回不足"
+    assert set(ml_matrix.columns) == set(counts.index), "ML 矩阵列应为基因"
+    assert set(ml_matrix.index) == set(labels.index), "ML 矩阵行应为样本"
+    assert ml_matrix.to_numpy().min() >= 0, "log2 标准化矩阵不应有负值"
+    # 非 counts 拒收
+    try:
+        expr.rnaseq_deg_and_matrix(counts.astype(float) / 3, labels)
+        raise AssertionError("非 counts 输入未拒收")
+    except RuntimeError:
+        pass
+
+
+def t_pipeline_counts_local():
+    """二期管线 counts 分支(桩替 fetch_gse_count_matrix,纯本地):
+    全链 7 产物 + source=suppl-counts + DESeq2 DEG 表同构。"""
+    import json
+    import shutil
+    import tempfile
+    from core import geo, ml_pipeline
+
+    rng = np.random.default_rng(5)
+    genes = [f"G{i:03d}" for i in range(40)]
+    cols = ["CTL1", "CTL2", "CTL3", "PA1", "PA2", "PA3"]
+    ctrl = rng.poisson(50, size=(40, 3))
+    case = rng.poisson(50, size=(40, 3))
+    case[:8] = rng.poisson(200, size=(8, 3))
+    counts = pd.DataFrame(np.hstack([ctrl, case]), index=genes, columns=cols)
+    tmp = tempfile.mkdtemp(prefix="selfcheck_counts_")
+    try:
+        orig = geo.fetch_gse_count_matrix
+        geo.fetch_gse_count_matrix = lambda gse, prefer=None: {
+            "counts": counts, "source_file": "SYNTH_raw_counts.tsv.gz",
+            "candidates": [], "transposed": False}
+        try:
+            res = ml_pipeline.run_screen_chain(
+                gse="SYNTHC", counts_mode=True, case_pattern="PA",
+                control_pattern="CTL", bootstrap_rounds=5, prefilter_top=20,
+                top_k=8, out_base=tmp)
+        finally:
+            geo.fetch_gse_count_matrix = orig
+        assert res["summary"]["source"] == "suppl-counts", "source 标注错误"
+        assert set(res["deg"].columns) == {"gene", "log2FC", "stat", "p",
+                                           "FDR", "direction"}
+        assert res["meta"]["n_samples"] == 6 and res["meta"]["n_genes"] == 20
+        for fname in ("ml_consensus_scores.csv", "shortlist.csv", "funnel.csv",
+                      "summary.json"):
+            assert os.path.isfile(os.path.join(res["out_dir"], fname)), f"缺产物 {fname}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def t_pipeline_roundtrip():
     """共用管线(方案 §M4):本地矩阵全链 → 落盘产物齐全 → summary 可读 → 陈旧判定。"""
     import json
@@ -423,6 +485,8 @@ def main():
         ("丢弃样本剔除(M1 审查回归)", t_dropped_samples),
         ("分组四道硬边界", t_group_hard_boundaries),
         ("共用管线全链落盘与陈旧判定(M4)", t_pipeline_roundtrip),
+        ("RNA-seq DESeq2 路径(合成 NB counts)", t_rnaseq_deg_matrix),
+        ("管线 counts 分支(桩替 fetch,纯本地)", t_pipeline_counts_local),
         ("样本来源标注(细胞系/组织/未标注)", t_sample_source_label),
         ("bootstrap 分母(失败轮不计)", t_bootstrap_denominator),
         ("疾病下拉数据源(已分析药病对发现)", t_list_analyzed_pairs),
