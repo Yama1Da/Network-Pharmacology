@@ -431,14 +431,9 @@ def _open_settings_dialog() -> None:
                 if st.button(t("app.settings.string_ver_confirm_btn", ver=_pending),
                              key="set_string_ver_confirm", type="primary",
                              use_container_width=True):
-                    config.STRING_VERSION = _pending
-                    # 与 config.py 末尾的派生保持同一变换:版本化子域名把 v12.0 写作 version-12-0
-                    config.STRING_BASE_URL = (
-                        f"https://version-{_pending[1:].replace('.', '-')}.string-db.org/api/json")
-                    from WY.core.interactome import clear_runtime_caches
+                    from WY.core.management import activate_string_version
 
-                    clear_runtime_caches()  # 图/度表/LCC 上下文按版本隔离,清一次防旧版本残留
-                    save_ui_settings({"STRING_VERSION": _pending})
+                    activate_string_version(_pending)
                     # 清掉版本控件自身的会话状态:重开齿轮时按新当前版本重新定位选中项,
                     # 避免停留在切换前的旧选项上被误点切回
                     for _wk in ("set_string_ver_choice", "set_string_ver_input"):

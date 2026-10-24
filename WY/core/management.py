@@ -369,3 +369,21 @@ def save_api_env(changes: dict) -> list[str]:
     applied = config.apply_api_env(clean)
     logging.info("API.env updated: %s", ", ".join(applied))
     return applied
+
+
+def activate_string_version(version: str) -> str:
+    """切换 STRING 数据版本并使全部派生项即时生效(设置齿轮与 TS 设置页共用):
+    版本常量、版本化子域名 API 地址、互作组运行时缓存(图/度表/LCC 按版本隔离,
+    清一次防旧版本残留),并持久化到 ui_settings.json。
+    调用方负责先做格式校验(normalized_string_version)与下载站探活(string_version_exists)。"""
+    import WY.config as config
+    from WY.core.interactome import clear_runtime_caches
+
+    version = str(version).strip()
+    config.STRING_VERSION = version
+    # 与 config.py 末尾的派生保持同一变换:版本化子域名把 v12.0 写作 version-12-0
+    config.STRING_BASE_URL = (
+        f"https://version-{version[1:].replace('.', '-')}.string-db.org/api/json")
+    clear_runtime_caches()
+    save_ui_settings({"STRING_VERSION": version})
+    return version

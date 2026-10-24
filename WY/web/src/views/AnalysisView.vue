@@ -2,11 +2,13 @@
 /** PPI 分析(Data_Network 的 TS 迁移,阶段 3a)。
  * 产物直出:分析图表由后端落盘、经 /api/artifacts 伺服;交互区重跑(模块/GSEA)
  * 无状态化——从落盘 nodes/edges CSV 重建图。行为与 Streamlit 版一致。 */
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   api, artifactsUrl, type PpiAnalyzeBody, type PpiResult, type Row
 } from '../api'
+import { takePrefill } from '../store'
 import { useJob } from '../composables/useJob'
+import Stepper from '../components/Stepper.vue'
 
 /* ---------------- 表单 ---------------- */
 
@@ -186,6 +188,16 @@ async function zipWholeDirectory(): Promise<void> {
 const fmt = (v: unknown, digits = 3): string =>
   typeof v === 'number' ? v.toFixed(digits) : (v == null ? '—' : String(v))
 
+onMounted(() => {
+  // 主页四库检索完成后的预填跳转
+  const pf = takePrefill()
+  if (pf) {
+    mode.value = 'names'
+    drug.value = pf.drug
+    disease.value = pf.disease
+  }
+})
+
 onBeforeUnmount(() => window.clearTimeout(noticeTimer))
 </script>
 
@@ -236,11 +248,11 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
       </label>
       <label class="opt">
         <span class="opt-label">RWR 扩展靶点数(0 = 关闭)</span>
-        <input v-model.number="rwrExpand" type="number" min="0" max="100" />
+        <Stepper v-model="rwrExpand" :min="0" :max="100" />
       </label>
       <label class="opt">
         <span class="opt-label">Hub 数量(5–20)</span>
-        <input v-model.number="hubTopN" type="number" min="5" max="20" />
+        <Stepper v-model="hubTopN" :min="5" :max="20" />
       </label>
       <label class="opt">
         <span class="opt-label">Hub 排名依据</span>

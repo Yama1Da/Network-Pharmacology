@@ -5,27 +5,31 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import CollectionView from './views/CollectionView.vue'
 import AnalysisView from './views/AnalysisView.vue'
 import DataView from './views/DataView.vue'
+import HomeView from './views/HomeView.vue'
 import LogsView from './views/LogsView.vue'
+import SettingsView from './views/SettingsView.vue'
 import SourcesView from './views/SourcesView.vue'
 
 const NAV = [
+  { hash: '#/home', label: '主页' },
   { hash: '#/analysis', label: '分析' },
+  { hash: '#/data', label: '数据' },
   { hash: '#/logs', label: '日志' },
-  { hash: '#/drug-sources', label: '药物靶点' },
-  { hash: '#/disease-sources', label: '疾病靶点' },
+  { hash: '#/drug-sources', label: '药物' },
+  { hash: '#/disease-sources', label: '疾病' },
   { hash: '#/ppi', label: 'PPI' },
   { hash: '#/enrichment', label: '富集' },
   { hash: '#/stars', label: '收藏' },
-  { hash: '#/data', label: '数据' },
+  { hash: '#/settings', label: '设置' },
 ]
 
-const route = ref(location.hash.replace(/^#\/?/, '') || 'analysis')
+const route = ref(location.hash.replace(/^#\/?/, '') || 'home')
 const introVisible = ref(true)
 const ready = ref(false)
 let introTimer = 0
 
 function onHash(): void {
-  route.value = location.hash.replace(/^#\/?/, '') || 'analysis'
+  route.value = location.hash.replace(/^#\/?/, '') || 'home'
 }
 
 onMounted(() => {
@@ -44,7 +48,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="screen">
     <div class="whisper w2" aria-hidden="true"></div>
-    <div class="whisper w1" aria-hidden="true"></div>
+    <div class="whisper w1" aria-hidden="true"><i class="orbiter"></i></div>
 
     <Transition name="intro-fade">
       <div v-if="introVisible" class="intro" aria-hidden="true">
@@ -56,7 +60,7 @@ onBeforeUnmount(() => {
     </Transition>
 
     <header class="top">
-      <a class="brand" href="#/logs">NPAP<i class="brand-dot"></i></a>
+      <a class="brand" href="#/home">NPAP<i class="brand-dot"></i></a>
       <nav class="links">
         <a v-for="n in NAV" :key="n.hash" :href="n.hash"
            :class="{ active: route === n.hash.slice(2) }">{{ n.label }}</a>
@@ -64,7 +68,8 @@ onBeforeUnmount(() => {
     </header>
 
     <main class="center" :class="{ ready }">
-      <AnalysisView v-if="route === 'analysis'" />
+      <HomeView v-if="route === 'home'" />
+      <AnalysisView v-else-if="route === 'analysis'" />
       <LogsView v-else-if="route === 'logs'" />
       <SourcesView v-else-if="route === 'drug-sources'" kind="drug" />
       <SourcesView v-else-if="route === 'disease-sources'" kind="disease" />
@@ -76,6 +81,7 @@ onBeforeUnmount(() => {
       <CollectionView v-else-if="route === 'stars'" kind="stars" kicker="STARRED RESULTS"
                       title="收藏的对接结果" sub="分子对接收藏 · 目录整体打包" />
       <DataView v-else-if="route === 'data'" />
+      <SettingsView v-else-if="route === 'settings'" />
     </main>
 
     <footer class="foot">

@@ -175,7 +175,30 @@ export const api = {
     disease: string,
     prefix: string
   ): Promise<{ job_id: string }> =>
-    post('/api/ppi/rerun-gsea', { side, drug, disease, prefix })
+    post('/api/ppi/rerun-gsea', { side, drug, disease, prefix }),
+
+  /* ---- 主页四库检索 + 设置(阶段 3 补全) ---- */
+  retrieveTargets: (drug: string, disease: string): Promise<{ job_id: string }> =>
+    post('/api/targets/retrieve', { drug, disease }),
+
+  settings: (): Promise<{
+    keys: { disgenet: boolean; ncbi: boolean }
+    vina_dir: string
+    obabel_dir: string
+    cli_results_dir: string
+    string_version: string
+    known_versions: string[]
+    pocket_cutoff: number
+  }> => fetch('/api/settings').then((r) => json(r)),
+
+  saveApiEnv: (changes: Record<string, string>): Promise<{ applied: string[] }> =>
+    post('/api/settings/api-env', { changes }),
+
+  setStringVersion: (version: string): Promise<{ version: string; changed: boolean }> =>
+    post('/api/settings/string-version', { version }),
+
+  saveUiSettings: (changes: Record<string, number>): Promise<{ pocket_cutoff: number }> =>
+    post('/api/settings/ui', { changes })
 }
 
 /** 产物直出:downloads 相对路径 → 伺服 URL(download=true 触发附件下载)。 */

@@ -41,6 +41,30 @@
   }
 }
 
+/* 环上缓行的黑色微点(36s 一圈,样本同款) */
+.orbiter {
+  position: absolute;
+  inset: -2.5px;
+  border-radius: 50%;
+  animation: orbit 36s linear infinite;
+}
+.orbiter::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: #1a1a1a;
+}
+@keyframes orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ---------- 入场幕布 ---------- */
 .intro {
   position: absolute;
@@ -525,7 +549,7 @@
     animation: none;
     opacity: 1;
   }
-  .w1, .w2 {
+  .w1, .w2, .orbiter {
     animation: none;
   }
 }

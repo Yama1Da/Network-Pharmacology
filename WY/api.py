@@ -23,8 +23,8 @@ from WY.core.interactome import (build_interactome, clean_old_version_caches,
                                  interactome_age_days, is_built, is_stale,
                                  require_meta)
 from WY.core.logging_setup import set_logging_level, setup_logging
-from WY.core.management import (enrichment_display_name, save_ui_settings,
-                                update_all_cache_files)
+from WY.core.management import (enrichment_display_name, save_api_env,
+                                save_ui_settings, update_all_cache_files)
 from WY.core.sources import disease_spec, drug_spec
 from WY.core.analysis import run_ppi_analysis
 from WY.core.sources import file_path as spec_file_path
@@ -538,6 +538,158 @@ def ppi_rerun_gsea(body: RerunGseaBody) -> dict:
     return {"job_id": jobs.submit(task, "ppi rerun gsea")}
 
 
+# ======== 设置(App.py 齿轮职责的 TS 化):密钥/工具路径/STRING 版本/口袋阈值 ========
+
+class ApiEnvBody(BaseModel):
+    changes: dict
+
+
+@app.get("/api/settings")
+def settings_get() -> dict:
+    """设置快照:密钥只回布尔(不回值),路径明文,STRING 版本与已知清单,口袋阈值。"""
+    return {
+        "keys": {"disgenet": bool(config.DisGeNET_API_KEY),
+                 "ncbi": bool(config.NCBI_API_KEY)},
+        "vina_dir": config.VINA_DIR,
+        "obabel_dir": config.OBABEL_DIR,
+        "cli_results_dir": config.CLI_RESULTS_DIR,
+        "string_version": config.STRING_VERSION,
+        "known_versions": list(config.STRING_KNOWN_VERSIONS),
+        "pocket_cutoff": config.POCKET_CUTOFF,
+    }
+
+
+@app.post("/api/settings/api-env")
+def settings_api_env(body: ApiEnvBody) -> dict:
+    """密钥/工具路径写入:走 core.management.save_api_env(白名单+消毒+set_key+运行时回填)。"""
+    return {"applied": save_api_env(body.changes)}
+
+
+class StringVersionBody(BaseModel):
+    version: str
+
+
+@app.post("/api/settings/string-version")
+def settings_string_version(body: StringVersionBody) -> dict:
+    """STRING 版本切换:格式校验 → 下载站探活 → 激活(core.activate_string_version,
+    版本常量/派生 URL/互作组运行时缓存一并处理)。"""
+    from WY.core.interactome import string_version_exists
+    from WY.core.management import activate_string_version
+
+    target = config.normalized_string_version(body.version)
+    if not target:
+        raise HTTPException(status_code=400, detail=f"bad version format: {body.version!r}")
+    if target == config.STRING_VERSION:
+        return {"version": target, "changed": False}
+    if not string_version_exists(target):
+        raise HTTPException(status_code=400, detail=f"version {target} not found on download site")
+    activate_string_version(target)
+    return {"version": target, "changed": True}
+
+
+class UiSettingsBody(BaseModel):
+    changes: dict
+
+
+_ALLOWED_UI_KEYS = ("POCKET_CUTOFF",)  # 段 2 设置页先放开这一项,其余齿轮参数后续逐个开放
+
+
+@app.post("/api/settings/ui")
+def settings_ui(body: UiSettingsBody) -> dict:
+    changes = {k: v for k, v in body.changes.items() if k in _ALLOWED_UI_KEYS}
+    if not changes:
+        raise HTTPException(status_code=400,
+                            detail=f"no allowed keys (allowed: {_ALLOWED_UI_KEYS})")
+    for k, v in changes.items():
+        setattr(config, k, v)
+    save_ui_settings(changes)
+    return {"pocket_cutoff": config.POCKET_CUTOFF}
+
+
+# ======== 主页四库检索(App.py 检索职责的 TS 化) ========
+
+class RetrieveBody(BaseModel):
+    drug: str
+    disease: str
+
+
+_VENN_CACHE: dict[str, dict] = {}   # job_id → {"png": bytes}(任务线程写入,端点读取)
+_VENN_ORDER: list[str] = []
+
+
+def _render_venn_png(drug_set: set, disease_set: set, drug_name: str, disease_name: str) -> bytes:
+    """venn2 服务端渲染(与 App.py 主页同款;线程安全:用 Figure API 而非 pyplot 全局状态)。
+    图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。"""
+    import io
+
+    from matplotlib.figure import Figure
+    from matplotlib_venn import venn2
+
+    fig = Figure(figsize=(6, 4))
+    ax = fig.add_subplot()
+    v = venn2(
+        subsets=(len(drug_set - disease_set), len(disease_set - drug_set),
+                 len(drug_set & disease_set)),
+        set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
+        ax=ax,
+    )
+    if v and v.get_label_by_id("11"):
+        v.get_label_by_id("11").set_fontsize(12)  # 交集区域字号
+    ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    return buf.getvalue()
+
+
+@app.post("/api/targets/retrieve")
+def targets_retrieve(body: RetrieveBody) -> dict:
+    """四库并发检索(ChEMBL/DGIdb/OpenTargets/DisGeNET),写入来源与 merged 缓存;
+    分析页的 targets 阶段将直接命中本次缓存。完成后附带主页 venn 图(内存缓存,按 job_id 伺服)。"""
+    if not body.drug.strip() or not body.disease.strip():
+        raise HTTPException(status_code=400, detail="drug and disease are required")
+
+    venn_holder: dict = {}
+
+    def task(progress) -> dict:
+        from WY.core.targets import get_targets_concurrent
+
+        def cb(done: list, total: int) -> None:
+            progress(fraction=(len(done) / total) if total else None,
+                     text=f"四库检索中 · 已完成 {len(done)}/{total}", done=done)
+
+        drug_df, disease_df, failed = get_targets_concurrent(
+            body.drug.strip(), body.disease.strip(), progress_cb=cb)
+        drug_set = (set(drug_df["approvedSymbol"].dropna().astype(str))
+                    if drug_df is not None and not drug_df.empty else set())
+        disease_set = (set(disease_df["approvedSymbol"].dropna().astype(str))
+                       if disease_df is not None and not disease_df.empty else set())
+        if drug_set or disease_set:
+            venn_holder["png"] = _render_venn_png(drug_set, disease_set,
+                                                  body.drug.strip(), body.disease.strip())
+        common = sorted(drug_set & disease_set)
+        return {"drug_count": len(drug_set), "disease_count": len(disease_set),
+                "common_count": len(common),
+                "common_genes": common[:200],
+                "failed": list(failed)}
+
+    job_id = jobs.submit(task, f"targets retrieve {body.drug}/{body.disease}")
+    _VENN_CACHE[job_id] = venn_holder
+    _VENN_ORDER.append(job_id)
+    if len(_VENN_ORDER) > 10:  # 只保留最近 10 次检索的 venn,防内存增长
+        old = _VENN_ORDER.pop(0)
+        _VENN_CACHE.pop(old, None)
+    return {"job_id": job_id}
+
+
+@app.get("/api/targets/venn")
+def targets_venn(job_id: str) -> Response:
+    holder = _VENN_CACHE.get(job_id)
+    png = (holder or {}).get("png")
+    if not png:
+        raise HTTPException(status_code=404, detail="no venn for this job")
+    return Response(content=png, media_type="image/png")
+
+
 # ======== 前端静态托管(SPA):WY/web/dist 由 npm run build 产出 ========
 
 _DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
@@ -552,7 +704,9 @@ if os.path.isdir(os.path.join(_DIST, "assets")):
         candidate = os.path.join(_DIST, full_path)
         if full_path and os.path.isfile(candidate):
             return FileResponse(candidate)
-        return FileResponse(os.path.join(_DIST, "index.html"))
+        # index.html 不缓存:构建产物文件名带哈希,浏览器缓存旧 index 会引用已删除的旧资产
+        return FileResponse(os.path.join(_DIST, "index.html"),
+                            headers={"Cache-Control": "no-cache"})
 else:
     @app.get("/", include_in_schema=False)
     async def no_frontend() -> dict:
