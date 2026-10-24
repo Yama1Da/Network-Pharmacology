@@ -15,7 +15,7 @@ import requests
 
 from .caching import load_json_file, save_json_file, save_text_atomic
 from .text_utils import load_name_map, safe_name
-from i18n import t
+from WY.i18n import t
 
 # PDB 结构中的水分子残基名,不参与结合位点定位与共晶配体识别
 _WATER_RESNAMES = ("HOH", "H2O", "WAT", "DOD")
@@ -299,7 +299,7 @@ def interactions_table(interactions: list[dict]) -> pd.DataFrame:
 
 def download_pdb(pdb_id: str) -> str:
     """按 PDB 编号下载受体结构文件;之前下载过则直接复用本地文件。返回本地路径。"""
-    import config
+    from WY import config
 
     pdb_id = pdb_id.strip().lower()
     os.makedirs(config.DOCKING_RAW_CACHE_DIR, exist_ok=True)
@@ -335,7 +335,7 @@ def resolve_cid(query: str) -> int | None:
     """
     import time
 
-    import config
+    from WY import config
     import pubchempy
 
     query = query.strip()
@@ -392,7 +392,7 @@ def fetch_ligand_sdf_3d(cid: int, out_dir: str | None = None) -> str:
     """从 PubChem 下载配体的现成 3D 结构(SDF);无此化合物或无 3D 结构时返回空字符串。
     同一化合物下载过一次后直接复用缓存。
     """
-    import config
+    from WY import config
     import pubchempy
 
     out_dir = out_dir or config.DOCKING_RAW_CACHE_DIR
@@ -413,7 +413,7 @@ def fetch_ligand_sdf_3d(cid: int, out_dir: str | None = None) -> str:
 
 def prepare_ligand_pdbqt(sdf_path: str, out_path: str | None = None) -> str:
     """把配体 3D SDF 转成对接所需的 pdbqt 格式,转换结果可复用;读取失败或缺少 3D 坐标时直接报错。"""
-    import config
+    from WY import config
     from meeko import MoleculePreparation, PDBQTWriterLegacy
     from rdkit import Chem
 
@@ -499,7 +499,7 @@ def _rcsb_search_entry_ids(gene_symbol: str, max_hits: int) -> list[str]:
     """在 RCSB 中用基因符号精确检索结构,返回 entry 编号列表(最多 max_hits 条)。
     与旧的逐基因检索完全同一查询,保证召回一致;失败向上抛错。
     """
-    import config
+    from WY import config
     from .http_client import request_with_retry
 
     query = {
@@ -532,7 +532,7 @@ def _rcsb_graphql_entries(entry_ids: list[str]) -> dict[str, dict]:
     """按 entry 编号批量取分辨率/实验方法/标题元数据;返回 {entry号: 信息字典}。
     一次请求即可覆盖最多 100 个 entry;GraphQL 层面的软错误记录日志后按缺数据处理,不中断整体。
     """
-    import config
+    from WY import config
     from .http_client import request_with_retry
 
     out: dict[str, dict] = {}
@@ -596,7 +596,7 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
     raise_on_search_failure=True 时检索服务不可达直接抛出底层异常(单基因入口用,
     由包装层翻译成可读错误);默认 False 按无结构处理,不让整批报废。
     """
-    import config
+    from WY import config
 
     uniq = sorted({g.strip().upper() for g in genes if g and g.strip()})
     empty = pd.DataFrame(columns=["pdb_id", "resolution", "method", "title", "source", "flag"])
@@ -699,7 +699,7 @@ def _run_obabel(source: str, out_path: str, *flags: str) -> None:
     """
     import subprocess
 
-    import config
+    from WY import config
 
     if not os.path.isfile(config.OBABEL_EXE):
         raise RuntimeError(
@@ -721,7 +721,7 @@ def prepare_receptor_pdbqt(pdb_path: str, out_path: str | None = None) -> str:
     """把受体蛋白 PDB 转成对接所需的 pdbqt 格式:去水去杂原子、加氢(pH 7.4)、分配 AutoDock 原子类型,结果可复用。
     失败时报错,成功返回 pdbqt 文件路径。
     """
-    import config
+    from WY import config
 
     os.makedirs(config.DOCKING_RAW_CACHE_DIR, exist_ok=True)
     cleaned = os.path.join(
@@ -781,7 +781,7 @@ def run_vina(
 ) -> "subprocess.CompletedProcess":
     """调用 AutoDock Vina,在指定口袋范围内对受体和配体执行分子对接;超时或运行失败时报错,运行日志(含打分)保留在返回结果中。"""
     import subprocess
-    import config
+    from WY import config
 
     if not os.path.isfile(config.VINA_EXE):
         raise RuntimeError(
@@ -855,7 +855,7 @@ def split_vina(out_pdbqt: str, out_dir: str | None = None) -> list[str]:
     """
     import subprocess
     import glob
-    import config
+    from WY import config
 
     out_dir = out_dir or os.path.dirname(out_pdbqt)
     os.makedirs(out_dir, exist_ok=True)
@@ -946,7 +946,7 @@ def write_docking_metadata(meta_path: str, fields: dict) -> str:
 def star_docking_result(result_dir: str) -> str:
     """把本次对接成果目录完整复制到收藏区长期保存,不会被自动清理;原目录仍按版本控制自动管理,返回收藏副本路径。"""
     import shutil
-    import config
+    from WY import config
 
     os.makedirs(config.MD_STAR_DIR, exist_ok=True)
     dest = _unique_path(os.path.join(config.MD_STAR_DIR, os.path.basename(result_dir)))
@@ -960,7 +960,7 @@ def prune_docking_results(result_dir: str, max_versions: int | None = None) -> l
     import re
     import shutil
     import glob
-    import config
+    from WY import config
 
     max_versions = max_versions or config.DOCKING_MAX_VERSIONS
     parent = os.path.dirname(result_dir)
@@ -990,7 +990,7 @@ def clean_docking_cache(ttl_days: int | None = None) -> int:
     只扫 raw/ligand/receptor 三个已知子目录;缓存根目录下的文件(UniProt 基因映射、
     3Dmol.js 库等按设计长期有效的缓存)一律不动,否则会被 TTL 误删后反复重下、浪费配额。"""
     import time
-    import config
+    from WY import config
 
     if ttl_days is not None:
         cache_ttl = raw_ttl = ttl_days
@@ -1061,7 +1061,7 @@ def save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, bo
                         pose_mode: int | None = None) -> str:
     """归档本次对接成果:打分表、所选构象和参数信息存入结果文件夹,并清理旧版本。
     pose_mode 提供时归档用户选定的 pose,未提供(默认)归档打分最佳的构象。"""
-    import config
+    from WY import config
 
     gene = safe_name(gene)  # 清理基因名中的非法字符,再用于文件命名
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1131,7 +1131,7 @@ def _lookup_uniprot_ebi(gene_symbol: str, taxon: int) -> str:
     """在 EBI 数据库按基因符号查找已校验(reviewed)蛋白的条目号。
     接口按名称模糊匹配,易混入同源基因,拿到结果后需再按基因名精确筛选;只取主条目,跳过异构体(isoform)。
     """
-    import config
+    from WY import config
     from .http_client import throttle
 
     throttle("ebi_proteins")
@@ -1152,7 +1152,7 @@ def _lookup_uniprot_ebi(gene_symbol: str, taxon: int) -> str:
 
 def _lookup_uniprot_rest(gene_symbol: str, taxon: int) -> str:
     """在 UniProt 官方接口按基因符号精确查找已校验蛋白的条目号;查询失败时报错。"""
-    import config
+    from WY import config
     from .http_client import throttle
 
     throttle("uniprot")
@@ -1174,7 +1174,7 @@ def fetch_uniprot_accession(gene_symbol: str, taxon: int = 9606) -> str:
     """基因符号 → UniProt 蛋白条目号,依次尝试多个数据源;全失败报错,确认查无条目返回空字符串。
     查询结果永久缓存,包括"确认查无"的情况;但网络失败不写入缓存,下次会重查。
     """
-    import config
+    from WY import config
 
     gene = gene_symbol.strip().upper()
     cache_file = config.UNIPROT_LOOKUP_CACHE
@@ -1218,7 +1218,7 @@ def fetch_alphafold_pdb(accession: str) -> str:
     """
     import requests
 
-    import config
+    from WY import config
     from .http_client import throttle
 
     acc = accession.strip()
@@ -1399,7 +1399,7 @@ def _load_3dmol_js() -> str | None:
     """读取 3Dmol.js 库源码:本地有缓存直接用,没有则下载一次并长期缓存。
     两个下载地址都失败时返回 None,HTML 将改用在线引用(打开时需联网)。
     """
-    import config
+    from WY import config
 
     cache_path = os.path.join(config.DOCKING_CACHE_DIR, "3Dmol-min.js")
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 100_000:

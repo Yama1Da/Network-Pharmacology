@@ -17,7 +17,7 @@ from .text_utils import genes_from_dataframe, safe_name
 def _string_post(endpoint: str, params: dict) -> requests.Response | None:
     """向 STRING 数据库发送请求,失败时返回 None。
     提交的基因在 STRING 中一个都识别不出来(404),不算错误,按空结果处理,不重试。"""
-    import config
+    from WY import config
 
     url = f"{config.STRING_BASE_URL}/{endpoint}"
     resp = request_with_retry(
@@ -41,7 +41,7 @@ def fetch_string_ppi(
     """从 STRING 数据库获取基因列表的蛋白互作边表:先把基因符号映射为 STRING 蛋白 ID(不认识的基因被剔除),再按置信度阈值 score(0~1)筛选互作边。
     network_type 默认 "full" 为功能关联,"physical" 仅保留有物理结合证据的互作;species 为物种编号,人类是 "9606";基因列表自动去重排序,最多取 1000 个。
     相同参数的结果存为本地缓存,有效期内且基因列表指纹与文件头记录一致时直接复用,否则重新请求覆盖;请求失败、基因全部不被识别或没有达到阈值的边时,返回空表。"""
-    import config
+    from WY import config
 
     genes = sorted({g.strip() for g in genes if g and g.strip()})
     if not genes:
@@ -318,7 +318,7 @@ def render_pyvis_html(
 ) -> str:
     """生成交互式 PPI 网络网页(HTML 文本):节点大小代表连接数多少,连线粗细代表置信度高低;默认 Hub 基因金色、其余节点淡蓝。
     传入 module_map(基因→模块ID)时改为按模块着色,不属于任何多基因模块的节点为浅灰;鼠标悬停节点可查看度数、模块等信息。"""
-    import config
+    from WY import config
     from pyvis.network import Network
 
     hub_set = set(metrics_df.loc[metrics_df["is_hub"], "gene"])
@@ -678,7 +678,7 @@ def build_main_figures(graph, metrics_df, edges_df, hub_method: str, mcc_map: di
     失败只跳过自身。返回 (html_content, static_fig, mcc_map, hub_df, core_fig,
     core_genes, string_fig, cyto_fig)。
     """
-    import config
+    from WY import config
 
     html_content = render_pyvis_html(graph, metrics_df)
     static_fig = render_static_plot(graph, metrics_df)
@@ -741,7 +741,7 @@ def list_analyzed_pairs() -> list[dict]:
     """
     import json
 
-    import config
+    from WY import config
     out: list[dict] = []
     dl = config.DOWNLOADS_DIR
     if not os.path.isdir(dl):
@@ -865,7 +865,7 @@ def save_ppi_results(
     import glob
     import shutil
     import networkx as nx
-    import config
+    from WY import config
 
     os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
 
@@ -983,7 +983,7 @@ def read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
     """读取指定的 PPI 结果目录,返回 HUB 基因集合与富集验证基因集合;
     对应文件缺失时返回空集合。历史版本产出的 nodes 表可能缺 is_hub/gene 列
     (downloads 目录跨版本留存),缺列或读不了时按空集合处理,不让调用方崩溃。"""
-    import config
+    from WY import config
 
     base = os.path.join(config.DOWNLOADS_DIR, dir_name)
     prefix = dir_name[:-5] if dir_name.endswith("_data") else dir_name
@@ -1020,7 +1020,7 @@ def save_gsea_results(
     和疾病靶点排秩结果({prefix}_gsea_disease.csv),以及各侧的 NES 条形图({prefix}_gsea_{side}.png/.svg)。
     条形图只画与页面展示一致的 FDR 筛后 top-N,该侧筛后为空则不画也不落盘——无图即无文件,
     ZIP 与下载按钮自动缺省;CSV 始终是完整计算结果。约定同前:空表不落盘。"""
-    import config
+    from WY import config
     from .enrichment import render_gsea_plot
 
     paths = _save_optional_csvs(directory, "GSEA results", (

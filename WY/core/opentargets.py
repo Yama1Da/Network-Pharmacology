@@ -23,7 +23,7 @@ def opentargets_post(query: str, variables: dict, timeout: int = 30,
     """向 Open Targets 数据库发送查询;网络失败时自动重试几次,仍失败则返回 None。
     查询本身报错(返回结果带 errors)不算网络失败,由调用方自行处理。
     """
-    import config
+    from WY import config
 
     resp = request_with_retry(
         OPENTARGETS_API_URL, json={"query": query, "variables": variables},
@@ -78,7 +78,7 @@ def _get_disease_targets_impl(disease_name: str,
     至少需要的条数(即 config.OT_TOP_N),原始缓存行数不足时自动重新抓取,否则直接复用缓存。
     查询失败或找不到该疾病时返回空表；结果存为本地 CSV，已有缓存则直接复用。
     """
-    import config
+    from WY import config
 
     csv_path, cached = open_named_csv_cache(
         config.DISEASE_CACHE_DIR, "OpenTargets_", disease_name,

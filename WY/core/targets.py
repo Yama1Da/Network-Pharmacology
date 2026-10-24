@@ -32,7 +32,7 @@ _OT_KEEP_BIOTYPES = {"protein_coding"}
 def _filter_dgidb_targets(df: pd.DataFrame) -> pd.DataFrame:
     """DGIdb 降噪：保留交互分数达到下限、且有至少 1 条 PMID 文献支撑的记录;
     单独卡分数或单独要求 PMID 都挡不住低质量预测,两条件需同时满足。"""
-    import config
+    from WY import config
 
     if df.empty:
         return df
@@ -48,7 +48,7 @@ def _filter_dgidb_targets(df: pd.DataFrame) -> pd.DataFrame:
 
 def _filter_ot_targets(df: pd.DataFrame) -> pd.DataFrame:
     """Open Targets 降噪：总关联分数达到下限,且只保留蛋白编码基因。"""
-    import config
+    from WY import config
 
     if df.empty:
         return df
@@ -67,7 +67,7 @@ def _filter_chembl_targets(df: pd.DataFrame, corroborated_genes: set[str],
     没有 pChEMBL 定量值的基因,CHEMBL_CORROBORATION_REQUIRED 开启时须被 DGIdb 佐证(corroborated_genes 为
     通过 DGIdb 过滤的大写基因集合),关闭时无条件保留;剔除：仅有弱定量活性(0 < pChEMBL < 阈值)的基因。
     blacklist_only=True 时只做黑名单过滤,供整侧过滤后为空时的兜底。"""
-    import config
+    from WY import config
 
     if df.empty:
         return df
@@ -115,7 +115,7 @@ def _prepare_disease_sources(disease_name: str, ot_df: pd.DataFrame,
     """对疾病两个数据源做规模控制与降噪过滤,返回过滤后的 (OpenTargets, DisGeNET) 两表。
     规模控制(设置面板可调):Open Targets 截取关联分数前 OT_TOP_N 个、DisGeNET 截取前 DISGENET_PAGES 页
     (两张原始表均按分数降序存放);随后 Open Targets 再做降噪过滤(分数下限+只留蛋白编码)。"""
-    import config
+    from WY import config
 
     if not ot_df.empty:
         ot_df = ot_df.head(int(config.OT_TOP_N))
@@ -203,7 +203,7 @@ def get_drug_targets_merged(drug_name: str) -> pd.DataFrame:
     """整合 ChEMBL 与 DGIdb 两个数据库的药物靶点，按基因符号取并集去重;整合前先做降噪过滤(ChEMBL 黑名单+
     pChEMBL 阈值与 DGIdb 佐证、DGIdb 分数+PMID 双门槛,见 _prepare_drug_sources)。为每个基因标记来自哪些数据库
     (source_chmbl / source_dgidb)并保留各库的活性/交互分数;两个库都没有数据时返回空表;结果存为本地 CSV,已有缓存则直接复用。"""
-    import config
+    from WY import config
 
     # merged 缓存文件名带降噪过滤规则版本号(config.MERGED_DRUG_PREFIX),规则或阈值变更后旧缓存自动失效
     cache_path, cached = open_named_csv_cache(
@@ -225,7 +225,7 @@ def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
     """整合 Open Targets 与 DisGeNET 两个数据库的疾病靶点，按基因符号取并集去重;整合前先对 Open Targets 做
     降噪过滤(分数下限+只留蛋白编码;DisGeNET 本身按分数取第一页,不过滤,见 _prepare_disease_sources)。
     为每个基因标记来自哪些数据库(source_ot / source_disgenet)并保留各库的关联分数;两个库都没有数据时返回空表;结果存为本地 CSV,已有缓存则直接复用。"""
-    import config
+    from WY import config
 
     cache_path, cached = open_named_csv_cache(
         config.MERGED_CACHE_DIR, config.MERGED_DISEASE_PREFIX, disease_name,
@@ -285,7 +285,7 @@ def get_targets_concurrent(
 
     import time
 
-    import config
+    from WY import config
 
     drug_cache, drug_df = open_named_csv_cache(
         config.MERGED_CACHE_DIR, config.MERGED_DRUG_PREFIX, drug_name,
@@ -386,7 +386,7 @@ def get_targets_concurrent(
 def invalidate_merged_disease_targets(disease_name: str) -> None:
     """更新疾病来源文件后删除对应 merged 缓存,避免整合结果与来源不一致。
     传入的是原始疾病名,文件名需走同样的 safe_name 规范化才能对上。"""
-    import config
+    from WY import config
 
     path = os.path.join(config.MERGED_CACHE_DIR,
                         f"{config.MERGED_DISEASE_PREFIX}{safe_name(disease_name)}.csv")
@@ -397,7 +397,7 @@ def invalidate_merged_disease_targets(disease_name: str) -> None:
 def invalidate_merged_drug_targets(drug_name: str) -> None:
     """更新药物来源文件后删除对应 merged 缓存,避免整合结果与来源不一致。
     传入的是原始药物名,文件名需走同样的 safe_name 规范化才能对上。"""
-    import config
+    from WY import config
 
     path = os.path.join(config.MERGED_CACHE_DIR,
                         f"{config.MERGED_DRUG_PREFIX}{safe_name(drug_name)}.csv")

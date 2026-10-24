@@ -23,19 +23,17 @@ import os
 import sys
 import warnings
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import pandas as pd
 
-from selfcheck_common import run
+from WY.scripts.selfcheck_common import run
 
 warnings.filterwarnings("ignore")
 
-import core.expression as expr
-import core.ml_screening as ml
-from core.geo import GeoDataset, assign_groups
+import WY.core.expression as expr
+import WY.core.ml_screening as ml
+from WY.core.geo import GeoDataset, assign_groups
 
 
 def _make_synthetic(n_ctrl=10, n_case=10, n_genes=200, n_planted=10, seed=42):
@@ -223,7 +221,7 @@ def t_pipeline_counts_local():
     import json
     import shutil
     import tempfile
-    from core import geo, ml_pipeline
+    from WY.core import geo, ml_pipeline
 
     rng = np.random.default_rng(5)
     genes = [f"G{i:03d}" for i in range(40)]
@@ -262,8 +260,8 @@ def t_pipeline_roundtrip():
     import shutil
     import tempfile
 
-    import config
-    from core.ml_pipeline import run_screen_chain, stale_reasons
+    from WY import config
+    from WY.core.ml_pipeline import run_screen_chain, stale_reasons
 
     tmp = tempfile.mkdtemp(prefix="selfcheck_ml_pipe_")
     try:
@@ -330,7 +328,7 @@ def t_pipeline_roundtrip():
 def t_sample_source_label():
     """样本来源启发式(方案 §4.1/§4.3):检索表 possible_cellline 与 shortlist
     evidence_scope 共用 sample_source_label,三值口径 + 细胞系优先。"""
-    from core.geo import sample_source_label
+    from WY.core.geo import sample_source_label
     assert sample_source_label("HEPG2 cell line", "hepatic cells in vitro") == "细胞系", \
         "细胞系关键词未命中"
     assert sample_source_label("liver tissue biopsy", "patients") == "组织", \
@@ -376,8 +374,8 @@ def t_list_analyzed_pairs():
     import shutil
     import tempfile
 
-    import config
-    from core.ppi import list_analyzed_pairs
+    from WY import config
+    from WY.core.ppi import list_analyzed_pairs
 
     tmp = tempfile.mkdtemp(prefix="selfcheck_pairs_")
     orig_dl = config.DOWNLOADS_DIR
@@ -427,7 +425,7 @@ def t_results_mgmt():
     import shutil
     import tempfile
 
-    from core import ml_results
+    from WY.core import ml_results
 
     tmp = tempfile.mkdtemp(prefix="selfcheck_ml_mgmt_")
     try:

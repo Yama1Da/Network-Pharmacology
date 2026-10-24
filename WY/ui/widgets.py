@@ -10,9 +10,9 @@ from collections.abc import Callable
 
 import streamlit as st
 
-from i18n import t
-from core.files import make_dir_zip, make_dirs_zip, make_ppi_zip
-from core.text_utils import load_name_map
+from WY.i18n import t
+from WY.core.files import make_dir_zip, make_dirs_zip, make_ppi_zip
+from WY.core.text_utils import load_name_map
 
 # ---------- 界面公共组件 ----------
 
@@ -296,7 +296,7 @@ def load_search_history(search_key: str) -> list[str]:
     """
     import json
 
-    import config
+    from WY import config
 
     if not os.path.exists(config.SEARCH_HISTORY_FILE):
         return []
@@ -316,7 +316,7 @@ def add_search_history(search_key: str, query: str) -> None:
     """
     import json
 
-    import config
+    from WY import config
 
     query = (query or "").strip().lower()
     if not query:
@@ -335,7 +335,7 @@ def add_search_history(search_key: str, query: str) -> None:
         data[search_key] = [query] + [h for h in hist if h != query]
         os.makedirs(os.path.dirname(config.SEARCH_HISTORY_FILE), exist_ok=True)
         # 原子写(临时文件+替换),中断不会留下半截 JSON
-        from core.caching import save_json_file
+        from WY.core.caching import save_json_file
         save_json_file(config.SEARCH_HISTORY_FILE, data)
 
 
@@ -394,7 +394,7 @@ def search_hit(name: str, query: str, name_map: dict[str, str] | None = None) ->
     if q in loose_name(name):
         return True
     if name_map is None:
-        from core.text_utils import load_name_map
+        from WY.core.text_utils import load_name_map
 
         name_map = load_name_map()
     expanded = str(name)

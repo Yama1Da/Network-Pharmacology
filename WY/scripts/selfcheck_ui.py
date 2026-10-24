@@ -11,11 +11,10 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from selfcheck_common import patch_attr, run
+from WY.scripts.selfcheck_common import patch_attr, run
 
-import ui.widgets as widgets
+import WY.ui.widgets as widgets
 
 
 class _Col:
@@ -132,7 +131,7 @@ def t_pager_next_click_mutates_page():
 
 
 def t_i18n_page_keys_complete():
-    from i18n import TEXT, t
+    from WY.i18n import TEXT, t
 
     for key in ("common.page_prev", "common.page_next", "common.page_status"):
         for lang, table in TEXT.items():

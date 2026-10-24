@@ -1,10 +1,10 @@
-import config
-from core.disgenet import fetch_disease_targets_refresh as fetch_disgenet_refresh
-from core.management import refresh_cache_file
-from core.opentargets import fetch_disease_targets_refresh as fetch_opentargets_refresh
-from core.targets import (get_disease_targets_merged,
+from WY import config
+from WY.core.disgenet import fetch_disease_targets_refresh as fetch_disgenet_refresh
+from WY.core.management import refresh_cache_file
+from WY.core.opentargets import fetch_disease_targets_refresh as fetch_opentargets_refresh
+from WY.core.targets import (get_disease_targets_merged,
                           invalidate_merged_disease_targets)
-from ui.source_management import render_source_management_page
+from WY.ui.source_management import render_source_management_page
 
 # 各来源文件的抓取逻辑与 merged 缓存失效已下沉 core:
 #   opentargets.fetch_disease_targets_refresh / disgenet.fetch_disease_targets_refresh /

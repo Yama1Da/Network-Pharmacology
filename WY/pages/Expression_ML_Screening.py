@@ -20,18 +20,18 @@ import warnings
 import pandas as pd
 import streamlit as st
 
-import config
-from core.expression import assess_expression_dataset, normalize_gpl
-from core.geo import fetch_geo_dataset
-from core.ml_pipeline import STAGES, run_screen_chain
-from core.ppi import (
+from WY import config
+from WY.core.expression import assess_expression_dataset, normalize_gpl
+from WY.core.geo import fetch_geo_dataset
+from WY.core.ml_pipeline import STAGES, run_screen_chain
+from WY.core.ppi import (
     base_disease_of,
     list_analyzed_diseases,
     list_analyzed_drugs,
     list_ranked_csv_candidates,
 )
-from i18n import t
-from ui.widgets import back_button, hide_sidebar, search_selectbox
+from WY.i18n import t
+from WY.ui.widgets import back_button, hide_sidebar, search_selectbox
 
 st.set_page_config(page_title=t("eml.page_title"), layout="wide")
 
@@ -105,7 +105,7 @@ with tab_search:
         else:
             with st.spinner(t("eml.searching")):
                 try:
-                    from core.geo import search_geo_datasets
+                    from WY.core.geo import search_geo_datasets
                     results = search_geo_datasets(disease.strip(), limit=int(limit))
                     ss.eml["search_results"] = results
                     ss.eml["search_disease"] = disease.strip()  # 结果带检索上下文
@@ -167,7 +167,7 @@ if selected_gse:
     if not expr_path.strip() and ss.eml.get("probe", {}).get("gse") != selected_gse:
         with st.spinner(t("eml.est_probing")):
             try:
-                from core.geo import probe_series_matrix
+                from WY.core.geo import probe_series_matrix
                 ss.eml["probe"] = {"gse": selected_gse,
                                    "r": probe_series_matrix(selected_gse), "err": ""}
             except Exception as _exc:
@@ -181,13 +181,13 @@ if selected_gse:
             if len(_row) and str(_row["type"].iloc[0]) == "芯片":
                 _pgpl = str(_row["platform"].iloc[0]).strip()
                 if _pgpl:
-                    from core.expression import probe_platform_annot
+                    from WY.core.expression import probe_platform_annot
                     ss.eml["probe"]["annot"] = probe_platform_annot(_pgpl)
                     ss.eml["probe"]["gpl"] = normalize_gpl(_pgpl)
         # 矩阵已在本地缓存 → 直接解析做权威判定(基因级矩阵不需要注释文件,
         # 上面基于检索元数据的注释警告对它就是误报 —— GSE281291 即此形态);
         # 未缓存则不做(预检不该替正式下载),保持条件措辞
-        from core.geo import _geo_cache_path
+        from WY.core.geo import _geo_cache_path
         if os.path.isfile(_geo_cache_path(selected_gse)):
             try:
                 ss.eml["probe"]["assess"] = assess_expression_dataset(
@@ -198,7 +198,7 @@ if selected_gse:
                 and ss.eml["probe"]["r"].get("size_bytes", 10 ** 9) < 20 * 1024):
             # 小体积 series matrix(≈3KB)几乎必然是元数据型空表:预检 counts
             # 可用性 —— 有则放行(运行时自动回退 DESeq2),没有才判死
-            from core.geo import has_counts_supplement
+            from WY.core.geo import has_counts_supplement
             ss.eml["probe"]["assess"] = {
                 "matrix_empty": True,
                 "counts_available": has_counts_supplement(selected_gse),
@@ -283,7 +283,7 @@ if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview",
     try:
         with st.spinner(t("eml.loading")):
             try:
-                from core.geo import fetch_geo_dataset, group_fields_overview
+                from WY.core.geo import fetch_geo_dataset, group_fields_overview
                 ds = fetch_geo_dataset(selected_gse.strip())
                 ss.eml["dataset"] = ds
                 if ds.issues and not (ds.table.empty
@@ -309,7 +309,7 @@ if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview",
                 # 用户能直接看出每个列属于哪个组,正则照着写即可
                 if ds.issues and ds.table.empty and selected_gse.strip():
                     try:
-                        from core.geo import fetch_gse_count_matrix
+                        from WY.core.geo import fetch_gse_count_matrix
                         cnt = fetch_gse_count_matrix(selected_gse.strip())
                         # 候选分组列:取值 2-8 类的 characteristics 列(剔除属性列)
                         _grp_cols = [c for c in ds.samples.columns
@@ -658,7 +658,7 @@ else:
 st.divider()
 
 # ---------- 历史结果(近 3 次;翻页/搜索/勾选删除/打包下载在结果管理页) ----------
-from core.ml_results import list_ml_runs
+from WY.core.ml_results import list_ml_runs
 
 st.subheader(t("eml.hist_recent"))
 _runs = list_ml_runs()[:3]

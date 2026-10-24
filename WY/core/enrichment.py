@@ -73,7 +73,7 @@ def _clean_cache_dir_limited() -> None:
     global _cache_cleaned_at
     import time
 
-    import config
+    from WY import config
 
     now = time.monotonic()
     if now - _cache_cleaned_at < max(config.CACHE_TTL_SECONDS / 4, 300):
@@ -133,7 +133,7 @@ def migrate_legacy_cache_names() -> int:
     """把旧版带哈希命名的富集缓存改为"数据源_标识"同名覆盖式命名,返回处理(改名/去重)的文件数。
     同一标识多变体时保留最新一份、删除其余,同目标的新格式文件同样参与"最新者胜";幂等,重复调用无副作用。
     """
-    import config
+    from WY import config
 
     try:
         names = sorted(os.listdir(config.ENRICHMENT_CACHE_DIR))
@@ -205,7 +205,7 @@ class _FileCircuitBreaker:
 
     def _file(self) -> str:
         """熔断标记文件路径（记录失败时刻与冷却阶梯档位）。"""
-        import config
+        from WY import config
 
         return os.path.join(config.ENRICHMENT_CACHE_DIR, self._marker_name)
 
@@ -233,7 +233,7 @@ class _FileCircuitBreaker:
 
     def cooldown(self, stage: int) -> float:
         """第 stage 档对应的冷却时长（秒），超出阶梯按最后一档封顶。"""
-        import config
+        from WY import config
 
         ladder = getattr(config, self._ladder_key)
         return ladder[min(stage, len(ladder)) - 1]
@@ -266,7 +266,7 @@ class _FileCircuitBreaker:
         避免同一次故障里并发线程的逐次失败把冷却阶梯一次推满。"""
         import time
 
-        import config
+        from WY import config
 
         prev = self.read()
         stage = int((prev or {}).get("stage", 0))
@@ -307,7 +307,7 @@ class _FileCircuitBreaker:
         """本次请求的执行预算：冷却到期（probe）按单次尝试 + 短超时探测，失败按"恢复失败"
         推进阶梯；closed 按常规尝试次数（normal_attempts 为 None 时取 ENRICHMENT_MAX_RETRIES）。
         open 不会走到（skip_reason 已拦截），防御性按常规预算返回。"""
-        import config
+        from WY import config
 
         plan: dict = {"attempts": normal_attempts or config.ENRICHMENT_MAX_RETRIES}
         if self.state() == "probe":
@@ -365,7 +365,7 @@ def _ensure_default_socket_timeout() -> None:
     requests 链路无影响,只是让不带超时的库调用不再可能无限挂起。"""
     global _socket_timeout_set
     if not _socket_timeout_set:
-        import config
+        from WY import config
 
         socket.setdefaulttimeout(config.API_TIMEOUT)
         _socket_timeout_set = True
@@ -379,7 +379,7 @@ def _call_with_request_guard(fn, label: str, on_fail=None,
     限定尝试次数并在独立线程限时执行（超时按失败处理），让冷却到期后的探测快速给出结论。"""
     import time
 
-    import config
+    from WY import config
 
     _ensure_default_socket_timeout()
     if attempts is None:
@@ -475,7 +475,7 @@ def _fetch_enrichment_cached(
     on_fail 在每次失败后被调用(用于累计熔断),on_result_ok 在拿到有效响应后调用(用于关闭熔断;
     空结果也算有效——服务可用性与结果多少是两回事,先复位再判空),request_plan 返回探测预算时
     按单次限时执行(g:Profiler 冷却到期后的探测)。"""
-    import config
+    from WY import config
 
     if not input_ok:
         _set_status(status, False, "empty_input")
@@ -676,7 +676,7 @@ def run_enrichment(
     """富集分析主入口：输入基因列表（通常是药物与疾病的交集靶点），先请求 g:Profiler，失败自动改用 Enrichr。
     两条链路都拿不到结果时返回空表;status（若提供）区分"真无显著项"（reason="no_significant"）
     与"服务不可用"（reason="both_sources_down"/"gprofiler_down_no_fallback"），供页面显著告警。"""
-    import config
+    from WY import config
 
     sources = sources or config.ENRICHMENT_SOURCES
 
@@ -713,7 +713,7 @@ def render_enrichment_plots(df: pd.DataFrame) -> tuple:
     """
     import numpy as np
     import matplotlib.pyplot as plt
-    import config
+    from WY import config
 
     df = df[df["adjusted_p_value"].notna() & (df["adjusted_p_value"] > 0)].copy()
     if df.empty:
@@ -788,7 +788,7 @@ def render_drug_target_pathway_plot(
 
     import numpy as np
     import matplotlib.pyplot as plt
-    import config
+    from WY import config
 
     if enrichment_df is None or enrichment_df.empty:
         return None
@@ -904,7 +904,7 @@ def _gsea_gmt_path(lib: str) -> str | None:
     之后一直复用，下载失败返回 None。删除 GSEA_GMT_DIR 目录可强制重新下载。
     """
     import glob
-    import config
+    from WY import config
 
     os.makedirs(config.GSEA_GMT_DIR, exist_ok=True)
     snaps = sorted(glob.glob(os.path.join(config.GSEA_GMT_DIR, f"{lib}_Human_*.gmt")))
@@ -938,7 +938,7 @@ def _gsea_gmt_path(lib: str) -> str | None:
 
 def gsea_gene_sets() -> dict[str, str]:
     """返回可用的基因集库（库名 → 文件路径）；单个库缺失自动跳过，全部缺失返回空字典。"""
-    import config
+    from WY import config
 
     out: dict[str, str] = {}
     for lib in config.GSEA_ENRICHR_LIBS:
@@ -1039,7 +1039,7 @@ def _normalize_enrichment_gsea(res2d: pd.DataFrame) -> pd.DataFrame:
 
 def _gsea_cache_md5(rnk: pd.DataFrame, libs: dict[str, str]) -> str:
     """GSEA 缓存键:由基因排序与分数、基因集库、计算参数共同决定,相同输入命中同一缓存。"""
-    import config
+    from WY import config
 
     gene_part = "\r".join(rnk["gene"].astype(str))
     score_part = "\r".join(f"{v:.6g}" for v in rnk["score"].astype(float))
@@ -1055,7 +1055,7 @@ def _gsea_cache_file(rnk: pd.DataFrame, libs: dict[str, str], label: str | None,
     """GSEA 结果缓存路径:同名覆盖式命名 GSEA_侧_标识.csv(键记录在文件头部,见 _hit_csv_cache)。
     label 约定"侧别_分析标识",侧别放在最前,避免与疾病名里可能含的"disease"字样混淆。
     """
-    import config
+    from WY import config
 
     if md5 is None:
         md5 = _gsea_cache_md5(rnk, libs)
@@ -1072,7 +1072,7 @@ def fetch_enrichment_gsea_prerank(
     """排序富集（GSEA prerank）主入口：在本地计算,逐个基因集库运行后合并,结果按 |NES| 降序。
     输入为 build_ranked_list 输出的"基因|分数"表;失败或无显著结果返回空表（失败不写缓存）,status 含义与 g:Profiler 版本一致。
     """
-    import config
+    from WY import config
 
     if libs is None:
         libs = gsea_gene_sets()
@@ -1150,7 +1150,7 @@ def render_gsea_plot(df: pd.DataFrame) -> "matplotlib.figure.Figure | None":
     没有有效结果时返回 None。
     """
     import matplotlib.pyplot as plt
-    import config
+    from WY import config
 
     df = df[df["nes"].notna()].copy()
     if df.empty:

@@ -20,7 +20,7 @@ class InteractomeNotBuiltError(RuntimeError):
 
 def _taxon(species: str) -> str:
     """检查物种是否已启用,返回其 NCBI 物种编号(如 'Human' -> '9606')。"""
-    import config
+    from WY import config
 
     if species not in config.INTERACTOME_ENABLED_SPECIES:
         raise ValueError(
@@ -34,7 +34,7 @@ def _file_stem(species: str, confidence: int, string_version: str) -> str:
 
 
 def _meta_path(species: str, confidence: int, string_version: str) -> str:
-    import config
+    from WY import config
 
     return os.path.join(
         config.INTERACTOME_CACHE_DIR,
@@ -62,7 +62,7 @@ def _read_meta(species: str, confidence: int, string_version: str) -> dict | Non
 
 
 def _cache_dir() -> str:
-    import config
+    from WY import config
 
     return config.INTERACTOME_CACHE_DIR
 
@@ -71,7 +71,7 @@ def is_built(species: str = "Human",
              confidence: int | None = None,
              string_version: str | None = None) -> bool:
     """背景网络缓存是否已构建且文件齐全可用。"""
-    import config
+    from WY import config
 
     confidence = int(confidence if confidence is not None else config.INTERACTOME_CONFIDENCE)
     string_version = string_version or config.STRING_VERSION
@@ -94,7 +94,7 @@ def _probe_range_support(url: str) -> int:
     stream=True 下立即关闭,不会把 200 的完整响应体拉下来。"""
     import requests
 
-    import config
+    from WY import config
 
     try:
         with requests.get(url, headers={"Range": "bytes=0-0"}, stream=True,
@@ -114,7 +114,7 @@ def string_version_exists(version: str) -> bool:
     供设置面板在保存版本切换前拦截拼错/尚未发布的版本号。"""
     import requests
 
-    import config
+    from WY import config
 
     rel = f"/protein.info.{version}/{_taxon('Human')}.protein.info.{version}.txt.gz"
     for base in (config.STRING_DOWNLOAD_MIRROR_BASE, config.STRING_DOWNLOAD_BASE):
@@ -138,7 +138,7 @@ def _download_segment(url: str, start: int, end: int, path: str,
 
     import requests
 
-    import config
+    from WY import config
 
     expected = end - start + 1
     have = 0
@@ -210,7 +210,7 @@ def _download_gz_ranged(url: str, dest: str, progress_cb,
     import time
     from concurrent.futures import ThreadPoolExecutor
 
-    import config
+    from WY import config
 
     total = _probe_range_support(url)
     if total < _RANGE_MIN_SIZE:
@@ -296,7 +296,7 @@ def _download_gz(url_path: str, dest: str,
 
     import requests
 
-    import config
+    from WY import config
 
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     lo, hi = progress_range
@@ -450,7 +450,7 @@ def build_interactome(species: str = "Human",
     import shutil
     from datetime import datetime
 
-    import config
+    from WY import config
 
     confidence = int(confidence if confidence is not None else config.INTERACTOME_CONFIDENCE)
     string_version = string_version or config.STRING_VERSION
@@ -538,7 +538,7 @@ def clean_old_version_caches(species: str = "Human") -> int:
     """删除该物种其它 STRING 版本/置信度组合的背景网络缓存(边表/度表/构建记录三件套)。
     供数据管理页在新版本构建成功后调用(确认弹窗已告知清理代价):当前生效组合一律保留,
     切回旧组合需重新构建。只删各 _meta.json 登记的文件,无构建记录的孤儿文件不动。返回删除文件数。"""
-    import config
+    from WY import config
 
     cur_conf = int(config.INTERACTOME_CONFIDENCE)
     cur_ver = config.STRING_VERSION
@@ -596,7 +596,7 @@ def clean_old_version_caches(species: str = "Human") -> int:
 
 def require_meta(species: str = "Human") -> dict:
     """读取构建记录;缓存未构建时报错提示,绝不静默降级。"""
-    import config
+    from WY import config
 
     meta = _read_meta(species, config.INTERACTOME_CONFIDENCE, config.STRING_VERSION)
     if meta is None:
@@ -638,7 +638,7 @@ def load_degree_table(species: str = "Human") -> pd.DataFrame:
 
 def interactome_age_days(species: str = "Human") -> int | None:
     """背景网络构建至今的天数;未构建返回 None。"""
-    import config
+    from WY import config
     from datetime import datetime
 
     meta = _read_meta(species, config.INTERACTOME_CONFIDENCE, config.STRING_VERSION)
@@ -654,7 +654,7 @@ def interactome_age_days(species: str = "Human") -> int | None:
 def is_stale(species: str = "Human", days: int | None = None) -> bool:
     """背景网络是否过于陈旧(超过 config 设定的天数阈值,默认365天);陈旧只是提示该检查 STRING 是否已发布新版本。
     未构建时返回 False。"""
-    import config
+    from WY import config
 
     days = days if days is not None else config.INTERACTOME_STALE_DAYS
     age = interactome_age_days(species)

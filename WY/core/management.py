@@ -19,10 +19,10 @@ from collections.abc import Callable
 
 import pandas as pd
 
-from i18n import t
-from core.enrichment import parse_enrichment_filename
-from core.http_client import clear_http_cache
-from core.text_utils import resolve_original_name, safe_name
+from WY.i18n import t
+from WY.core.enrichment import parse_enrichment_filename
+from WY.core.http_client import clear_http_cache
+from WY.core.text_utils import resolve_original_name, safe_name
 
 # ui_settings.json 的进程内读写锁:齿轮面板与对接页都会高频保存设置
 _ui_settings_lock = threading.Lock()
@@ -37,7 +37,7 @@ def save_ui_settings(overrides: dict) -> None:
     """
     import json
 
-    import config
+    from WY import config
 
     clean: dict = {}
     for k, v in overrides.items():
@@ -72,7 +72,7 @@ def save_ui_settings(overrides: dict) -> None:
         merged.update(clean)
         os.makedirs(os.path.dirname(config.UI_SETTINGS_FILE), exist_ok=True)
         # 原子写(临时文件+替换),中断不会留下半截 JSON
-        from core.caching import save_json_file
+        from WY.core.caching import save_json_file
         save_json_file(config.UI_SETTINGS_FILE, merged)
 
 
@@ -84,7 +84,7 @@ def purge_merged_cache() -> int:
     """
     import glob
 
-    import config
+    from WY import config
 
     n = 0
     for path in glob.glob(os.path.join(config.MERGED_CACHE_DIR, "*.csv")):
@@ -348,7 +348,7 @@ def save_api_env(changes: dict) -> list[str]:
     dotenv 读回时无损还原,与手写单反斜杠的旧行为等价。
     CLI 与 Web 进程共享 API.env:落盘对 CLI 在其下次启动时生效,本进程即时生效。
     日志只记键名不记值,密钥与路径都不应进入日志文件。"""
-    import config
+    from WY import config
     from dotenv import set_key
 
     clean: dict = {}

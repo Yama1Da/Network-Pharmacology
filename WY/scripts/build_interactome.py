@@ -17,9 +17,8 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.interactome import (  # noqa: E402
+from WY.core.interactome import (  # noqa: E402
     build_interactome,
     is_built,
 )
@@ -50,7 +49,7 @@ def main() -> int:
         keep_raw=args.keep_raw,
     )
     dt = time.time() - t0
-    import config
+    from WY import config
 
     print("[done] nodes=%d edges=%d version=%s confidence>=%d elapsed=%.1fs"
           % (meta["n_nodes"], meta["n_edges"], meta["string_version"],

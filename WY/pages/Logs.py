@@ -2,12 +2,12 @@ import os
 
 import streamlit as st
 
-import config
-from core.files import list_log_files
-from core.logging_setup import set_logging_level, setup_logging
-from core.management import save_ui_settings
-from ui.widgets import back_button, hide_sidebar
-from i18n import t
+from WY import config
+from WY.core.files import list_log_files
+from WY.core.logging_setup import set_logging_level, setup_logging
+from WY.core.management import save_ui_settings
+from WY.ui.widgets import back_button, hide_sidebar
+from WY.i18n import t
 
 # 初始化日志系统
 setup_logging()

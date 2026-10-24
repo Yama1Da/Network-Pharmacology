@@ -13,9 +13,9 @@ import time
 import pandas as pd
 import streamlit as st
 
-from core.ml_results import delete_ml_runs, list_ml_runs, zip_ml_runs
-from i18n import t
-from ui.widgets import back_button, hide_sidebar
+from WY.core.ml_results import delete_ml_runs, list_ml_runs, zip_ml_runs
+from WY.i18n import t
+from WY.ui.widgets import back_button, hide_sidebar
 
 st.set_page_config(page_title=t("mri.title"), layout="wide")
 

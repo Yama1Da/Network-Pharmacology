@@ -2,9 +2,9 @@ import os
 import time
 import streamlit as st
 
-import config
-from core.files import list_download_dirs
-from ui.widgets import (
+from WY import config
+from WY.core.files import list_download_dirs
+from WY.ui.widgets import (
     CSS_HIDE_IDLE_PROGRESS,
     back_button,
     cached_dir_zip,
@@ -23,8 +23,8 @@ from ui.widgets import (
     show_busy_notice,
     show_file_op_result,
 )
-from i18n import t
-from core.interactome import (
+from WY.i18n import t
+from WY.core.interactome import (
     build_interactome,
     clean_old_version_caches,
     interactome_age_days,

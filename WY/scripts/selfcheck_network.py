@@ -17,22 +17,20 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from selfcheck_common import patch_attr, run
+from WY.scripts.selfcheck_common import patch_attr, run
 
 import networkx as nx
 import numpy as np
 import pandas as pd
 import requests
 
-import config
-import core.network_algorithms as na
-from core import enrichment as en
-from core import interactome as itx
-from core.caching import save_json_file
-from core.enrichment import (
+from WY import config
+import WY.core.network_algorithms as na
+from WY.core import enrichment as en
+from WY.core import interactome as itx
+from WY.core.caching import save_json_file
+from WY.core.enrichment import (
     TRUSTED_REASONS,
     _gsea_cache_file,
     _normalize_enrichment_gsea,
@@ -40,7 +38,7 @@ from core.enrichment import (
     fetch_enrichment_gsea_prerank,
     render_drug_target_pathway_plot,
 )
-from core.network_algorithms import (
+from WY.core.network_algorithms import (
     _multi_source_bfs,
     _proximity_zscore_from_context,
     _rwr_power_iteration,
@@ -48,7 +46,7 @@ from core.network_algorithms import (
     run_proximity_cached,
     run_rwr_cached,
 )
-from core.ppi import (
+from WY.core.ppi import (
     compute_mcc_scores,
     mark_hub_genes,
     pick_top_mcc_genes,
@@ -1133,7 +1131,7 @@ def t_rwr_expansion_shared():
     平局排序/基因并集/前缀后缀、失败路径的原集降级与 error 透传、游走缓存 label 不带
     _rwr{N}、未启用或空基因集的原样返回。网页 Build Report 与 CLI run_pair 共用此
     唯一定义;旧 CLI 失败分支曾引用仅成功分支定义的变量直接 NameError,本测试锁住该路径。"""
-    import core.analysis as ana
+    import WY.core.analysis as ana
 
     fake = {"ok": True, "cached": True,
             "top_nonseed": [{"gene": "EGFR", "score": 0.5},

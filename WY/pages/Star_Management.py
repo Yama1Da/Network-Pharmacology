@@ -4,8 +4,8 @@ from datetime import datetime
 
 import streamlit as st
 
-import config
-from ui.widgets import (
+from WY import config
+from WY.ui.widgets import (
     back_button,
     cached_dir_zip,
     collect_selected,
@@ -19,7 +19,7 @@ from ui.widgets import (
     search_input,
     show_file_op_result,
 )
-from i18n import t
+from WY.i18n import t
 
 st.set_page_config(page_title=t("star.page_title"), layout="wide")
 

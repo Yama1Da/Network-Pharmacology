@@ -13,29 +13,27 @@ import sys
 import time
 from datetime import datetime
 
-# 控制台脚本不保证工作目录在本目录:先把本文件所在目录放进 sys.path,
-# 保证任意目录调用(开发期 python cli.py、封装后的 npap 入口点)都能 import config/core
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import i18n
+# 导入统一走 WY 包绝对导入,可见性由可编辑安装(pip install -e .)提供,
+# 全仓不再有 sys.path 补丁(selfcheck_architecture 守护)。入口:npap / python -m WY.cli。
+from WY import i18n
 
 i18n.set_lang_provider(lambda: "en")  # 纪律 1:core 内 t() 输出钉死英文,先于一切 core 调用
 
 import pandas as pd
 
-from core import interactome
-from core.caching import load_json_file, save_json_file
-from core.enrichment import (TRUSTED_REASONS, enrichment_retry_hint_minutes,
+from WY.core import interactome
+from WY.core.caching import load_json_file, save_json_file
+from WY.core.enrichment import (TRUSTED_REASONS, enrichment_retry_hint_minutes,
                              run_enrichment)
-from core.logging_setup import setup_logging
-from core.network_algorithms import run_proximity_cached, run_rwr_cached
-from core.ppi import (build_ppi_graph, compute_mcc_scores, compute_ppi_metrics,
+from WY.core.logging_setup import setup_logging
+from WY.core.network_algorithms import run_proximity_cached, run_rwr_cached
+from WY.core.ppi import (build_ppi_graph, compute_mcc_scores, compute_ppi_metrics,
                       fetch_string_ppi, mark_hub_genes, pick_top_mcc_genes)
-from core.targets import (get_disease_targets_merged, get_drug_targets_merged,
+from WY.core.targets import (get_disease_targets_merged, get_drug_targets_merged,
                           get_targets_concurrent, intersect_target_symbols)
-from core.analysis import expand_targets_with_rwr, pair_prefix
-from core.text_utils import safe_name
-import config
+from WY.core.analysis import expand_targets_with_rwr, pair_prefix
+from WY.core.text_utils import safe_name
+from WY import config
 
 # _slug 结果目录名的最大长度:Windows 路径 260 字符上限下给深层文件名留足余量
 _SLUG_MAX_LEN = 120

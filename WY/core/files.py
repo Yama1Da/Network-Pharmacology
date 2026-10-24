@@ -36,7 +36,7 @@ def _list_to_table(directory: str, *, name_col: str, dirs: bool,
 
 def list_cache_files(category: str, *, exts: tuple = ()) -> pd.DataFrame:
     """列出指定类别缓存目录（如 "drug" 或 "disease"）下的文件名与最后修改时间；目录为空时返回空表。"""
-    import config
+    from WY import config
 
     return _list_to_table(os.path.join(config.CACHE_DIR, category), name_col="File name",
                           dirs=False, skip_suffixes=(".bak", ".tmp"), exts=exts)
@@ -44,7 +44,7 @@ def list_cache_files(category: str, *, exts: tuple = ()) -> pd.DataFrame:
 
 def list_download_dirs() -> pd.DataFrame:
     """列出下载目录下的各次分析子目录及其最后修改时间；无子目录时返回空表。"""
-    import config
+    from WY import config
 
     return _list_to_table(config.DOWNLOADS_DIR, name_col="Directory", dirs=True)
 
@@ -53,7 +53,7 @@ def list_log_files() -> pd.DataFrame:
     """列出日志文件的文件名与最后修改时间；无日志文件时返回空表。
     app.log 为当前正在写入的日志（即"今天"的），app.log.日期 为历史日志。
     """
-    import config
+    from WY import config
 
     return _list_to_table(
         config.LOG_DIR, name_col="File name", dirs=False,

@@ -1,8 +1,8 @@
 import streamlit as st
 
-import config
-from core.files import list_cache_files
-from ui.widgets import (
+from WY import config
+from WY.core.files import list_cache_files
+from WY.ui.widgets import (
     CSS_BTN_DOWNLOAD,
     back_button,
     hide_sidebar,
@@ -10,7 +10,7 @@ from ui.widgets import (
     render_file_table,
     show_file_op_result,
 )
-from i18n import t
+from WY.i18n import t
 
 st.set_page_config(page_title=t("ppi_info.page_title"), layout="wide")
 

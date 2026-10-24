@@ -1,9 +1,9 @@
-import config
-from core.chembl import fetch_drug_targets_refresh as fetch_chembl_refresh
-from core.dgidb import fetch_drug_targets_refresh as fetch_dgidb_refresh
-from core.management import refresh_cache_file
-from core.targets import get_drug_targets_merged, invalidate_merged_drug_targets
-from ui.source_management import render_source_management_page
+from WY import config
+from WY.core.chembl import fetch_drug_targets_refresh as fetch_chembl_refresh
+from WY.core.dgidb import fetch_drug_targets_refresh as fetch_dgidb_refresh
+from WY.core.management import refresh_cache_file
+from WY.core.targets import get_drug_targets_merged, invalidate_merged_drug_targets
+from WY.ui.source_management import render_source_management_page
 
 # 各来源文件的抓取逻辑与 merged 缓存失效已下沉 core:
 #   chembl.fetch_drug_targets_refresh / dgidb.fetch_drug_targets_refresh /

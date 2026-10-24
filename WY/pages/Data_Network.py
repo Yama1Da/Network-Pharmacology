@@ -4,18 +4,18 @@ import re
 import pandas as pd
 import streamlit as st
 
-import config
-from core.files import make_fig_zip, make_ppi_zip
-from ui.widgets import (back_button, download_button,
+from WY import config
+from WY.core.files import make_fig_zip, make_ppi_zip
+from WY.ui.widgets import (back_button, download_button,
                         download_file_button, enter_busy, finish_busy, hide_sidebar,
                         is_busy, show_busy_notice)
-from i18n import t
-from core.enrichment import (
+from WY.i18n import t
+from WY.core.enrichment import (
     enrichment_retry_hint_minutes,
     render_gsea_plot,
 )
-from core.ppi import render_pyvis_html
-from core.analysis import (compute_ppi_modules, gsea_prerank_side,
+from WY.core.ppi import render_pyvis_html
+from WY.core.analysis import (compute_ppi_modules, gsea_prerank_side,
                            run_ppi_analysis)
 
 st.set_page_config(page_title=t("net.page_title"), layout="wide")

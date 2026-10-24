@@ -6,15 +6,15 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-import config
-from core.files import list_cache_files, list_download_dirs
-from core.management import enrichment_display_name, humanize_analysis_label
-from core.text_utils import genes_from_dataframe, safe_name
-from core.ppi import read_ppi_dataset
-from ui.widgets import (back_button, cached_dir_zip, enter_busy,
+from WY import config
+from WY.core.files import list_cache_files, list_download_dirs
+from WY.core.management import enrichment_display_name, humanize_analysis_label
+from WY.core.text_utils import genes_from_dataframe, safe_name
+from WY.core.ppi import read_ppi_dataset
+from WY.ui.widgets import (back_button, cached_dir_zip, enter_busy,
                         finish_busy, hide_sidebar, is_busy, show_busy_notice)
-from i18n import t
-from core.docking import (
+from WY.i18n import t
+from WY.core.docking import (
     PubChemUnavailable,
     clamp_box,
     clean_docking_cache,
@@ -48,7 +48,7 @@ from core.docking import (
     star_docking_result,
     write_docking_metadata,
 )
-from core.enrichment import (enrichment_filename_label,
+from WY.core.enrichment import (enrichment_filename_label,
                              migrate_legacy_cache_names,
                              parse_enrichment_filename)
 

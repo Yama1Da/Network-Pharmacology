@@ -9,11 +9,11 @@ import logging
 import pandas as pd
 import streamlit as st
 
-from i18n import t
-from core.files import list_cache_files
-from core.management import (_mgmt_file_path, refresh_cache_file,
+from WY.i18n import t
+from WY.core.files import list_cache_files
+from WY.core.management import (_mgmt_file_path, refresh_cache_file,
                              update_all_cache_files)
-from ui.widgets import (CSS_BTN_DOWNLOAD, CSS_BTN_UPDATE, CSS_HIDE_IDLE_PROGRESS,
+from WY.ui.widgets import (CSS_BTN_DOWNLOAD, CSS_BTN_UPDATE, CSS_HIDE_IDLE_PROGRESS,
                         back_button, busy_pending, enter_busy, finish_busy,
                         hide_sidebar, is_busy, render_file_action_bar,
                         render_file_table, show_busy_notice, show_file_op_result)

@@ -2,14 +2,24 @@ import logging
 
 import pandas as pd
 import streamlit as st
-import config
-from core.logging_setup import setup_logging
-from core.management import purge_merged_cache, save_ui_settings
-from core.targets import get_targets_concurrent
-from ui.widgets import (busy_pending, enter_busy, finish_busy, is_busy,
+
+# 全仓唯二的常驻 sys.path 操作之一(白名单见 selfcheck_architecture):Streamlit 把页面
+# 所在目录(WY/)而非项目根放进 sys.path,这里条件补上项目根让 WY 包可导入——
+# 已可编辑安装(npap)时 find_spec 命中,一行 sys.path 操作都不发生。
+import importlib.util as _ilu
+if _ilu.find_spec("WY") is None:
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+from WY import config
+from WY.core.logging_setup import setup_logging
+from WY.core.management import purge_merged_cache, save_ui_settings
+from WY.core.targets import get_targets_concurrent
+from WY.ui.widgets import (busy_pending, enter_busy, finish_busy, is_busy,
                         show_busy_notice)
-import i18n
-from i18n import DEFAULT_LANG, t, get_lang
+from WY import i18n
+from WY.i18n import DEFAULT_LANG, t, get_lang
 import matplotlib.pyplot as plt
 from matplotlib_venn import venn2
 
@@ -404,7 +414,7 @@ def _open_settings_dialog() -> None:
                     key="set_string_ver_apply",
                     disabled=not _target or _target == config.STRING_VERSION,
                     use_container_width=True):
-                from core.interactome import string_version_exists
+                from WY.core.interactome import string_version_exists
 
                 if string_version_exists(_target):
                     st.session_state["set_string_ver_pending"] = _target
@@ -425,7 +435,7 @@ def _open_settings_dialog() -> None:
                     # 与 config.py 末尾的派生保持同一变换:版本化子域名把 v12.0 写作 version-12-0
                     config.STRING_BASE_URL = (
                         f"https://version-{_pending[1:].replace('.', '-')}.string-db.org/api/json")
-                    from core.interactome import clear_runtime_caches
+                    from WY.core.interactome import clear_runtime_caches
 
                     clear_runtime_caches()  # 图/度表/LCC 上下文按版本隔离,清一次防旧版本残留
                     save_ui_settings({"STRING_VERSION": _pending})
@@ -458,7 +468,7 @@ def _open_settings_dialog() -> None:
             if st.button(t("app.settings.key_save"), key="set_key_save",
                          disabled=not _new_keys, use_container_width=True):
                 try:
-                    from core.management import save_api_env
+                    from WY.core.management import save_api_env
 
                     _applied = save_api_env(_new_keys)
                 except Exception as exc:
@@ -534,7 +544,7 @@ def _open_settings_dialog() -> None:
                              if v.strip() and v.strip() != str(getattr(config, k))}
             if _path_changed:
                 try:
-                    from core.management import save_api_env
+                    from WY.core.management import save_api_env
 
                     _applied = save_api_env(_path_changed)
                 except Exception as exc:
@@ -551,7 +561,7 @@ def _open_settings_dialog() -> None:
 # ---------- Title ----------
 def _string_ver_status_line() -> str:
     """首页常驻的 STRING 版本行(版本 + 背景网络构建状态):切换版本后不至于遗忘当前用的是哪版数据。"""
-    from core.interactome import is_built
+    from WY.core.interactome import is_built
 
     status = t("app.string_ver_built") if is_built("Human") else t("app.string_ver_not_built")
     return t("app.string_ver_line", ver=config.STRING_VERSION, status=status)
