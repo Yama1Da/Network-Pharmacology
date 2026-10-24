@@ -108,6 +108,52 @@ class PpiAnalysisResult(TypedDict):
                                          #  network_type, rwr_expand, hub_top_n, hub_method)
 
 
+def pair_prefix(drug: str, disease: str) -> str:
+    """药病对的缓存 label / 结果目录前缀(唯一定义点,网页 Build Report 与 CLI run_pair 共用):
+    非单词字符统一压成 _。PPI 边表/富集/邻近度/RWR 缓存文件名都带它,
+    网页跑过的药病对 CLI 直接命中缓存。"""
+    return re.sub(r"[^\w\-]+", "_", f"{drug}_{disease}")
+
+
+class RwrExpansion(TypedDict):
+    """expand_targets_with_rwr 的信息字典契约。"""
+    attempted: bool    # 是否真正尝试了游走(未启用或基因集为空时为 False)
+    ok: bool           # attempted 且成功
+    added: list[dict]  # 成功时的扩展条目 [{"gene": str, "score": float}],已按 (-score, 基因名) 排序
+    cached: bool       # 本次游走是否命中缓存
+    error: str | None  # attempted 但失败的原因
+
+
+def expand_targets_with_rwr(genes: list[str], rwr_expand: int,
+                            prefix: str) -> tuple[list[str], str, RwrExpansion]:
+    """RWR 查询集扩展(Step 0.5 共享语义,网页 Build Report 与 CLI run_pair 共用):
+    以当前基因集为种子在背景互作组上游走,取得分最高的前 rwr_expand 个非种子并入查询集。
+
+    游走结果只依赖种子与 α,与 N 无关,游走缓存 label 用 f"expand_{prefix}" 不带 _rwr{N}
+    (改 N 复用同一份游走);只有返回的 prefix 带 _rwr{N},供下游(STRING/富集)命名。
+    未启用(<=0)或基因集为空时不尝试,原样返回;失败时按原基因集返回并把原因写入
+    info["error"],调用方自行降级,不让分析挂掉。prefix 后缀标记"请求了扩展":
+    成功时查询集确已扩展;失败时查询集仍是原交集,但下游缓存/目录沿用同一命名规则
+    便于对照(旧 CLI 失败路径不带后缀,收敛时已统一到网页规则)。"""
+    info: RwrExpansion = {"attempted": False, "ok": False, "added": [],
+                          "cached": False, "error": None}
+    if int(rwr_expand) <= 0 or not genes:
+        return list(genes), prefix, info
+    rwr_res = run_rwr_cached(genes, label=f"expand_{prefix}")
+    info["attempted"] = True
+    if rwr_res.get("ok"):
+        # 平局按基因名稳定排序,保证扩展清单可复现
+        top = sorted(rwr_res.get("top_nonseed", []),
+                     key=lambda r: (-float(r["score"]), str(r["gene"])))[:int(rwr_expand)]
+        info["ok"] = True
+        info["added"] = top
+        info["cached"] = bool(rwr_res.get("cached"))
+        genes = sorted(set(genes) | {str(r["gene"]) for r in top})
+    else:
+        info["error"] = rwr_res.get("error") or "unknown"
+    return genes, f"{prefix}_rwr{int(rwr_expand)}", info
+
+
 def compute_ppi_modules(graph, organism, directory, prefix) -> dict:
     """模块检测 + 富集 + 结果落盘（交互区手动重跑入口）。目录须已存在。"""
     return save_module_computation(directory, prefix,
@@ -306,34 +352,25 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
     _prog("targets", "running", 0.02)
     if mode == "names":
         genes = get_common_targets(drug_name, disease_name, top_n=config.STRING_QUERY_LIMIT)
-        # 结果目录/文件名前缀：药物名_疾病名
-        prefix = re.sub(r"[^\w\-]+", "_", f"{drug_name}_{disease_name}")
+        prefix = pair_prefix(drug_name, disease_name)
     else:
         tokens = re.split(r"[\s,;]+", gene_text)
         genes = sorted({t.strip().upper() for t in tokens if t.strip()})
         prefix = "manual"
 
-    # Step 0.5: RWR 扩展(可选)。游走结果只依赖种子与 α,与 N 无关,因此缓存 label
-    # 不带 _rwr{N}(改 N 复用同一份游走);只有下游(STRING/富集)的 prefix 带 _rwr{N}。
+    # Step 0.5: RWR 扩展(可选),共享语义见 expand_targets_with_rwr;扩展失败按原始交集
+    # 继续并保留纯种子清单,不让整个分析挂掉
     expansion_df: pd.DataFrame | None = None
     if int(rwr_expand) > 0 and genes:
-        rwr_res = run_rwr_cached(genes, label=f"expand_{prefix}")
-        if rwr_res.get("ok"):
-            # 平局按基因名稳定排序,保证扩展清单可复现
-            top = sorted(rwr_res.get("top_nonseed", []),
-                         key=lambda r: (-float(r["score"]), str(r["gene"])))[:int(rwr_expand)]
+        seed_rows = [{"gene": g, "source": "seed", "rwr_score": ""} for g in genes]
+        genes, prefix, rwr_exp = expand_targets_with_rwr(genes, int(rwr_expand), prefix)
+        if rwr_exp["ok"]:
             expansion_df = pd.DataFrame(
-                [{"gene": g, "source": "seed", "rwr_score": ""} for g in genes]
-                + [{"gene": str(r["gene"]), "source": "expanded", "rwr_score": float(r["score"])}
-                   for r in top])
-            genes = sorted(set(genes) | {str(r["gene"]) for r in top})
+                seed_rows + [{"gene": str(r["gene"]), "source": "expanded",
+                              "rwr_score": float(r["score"])} for r in rwr_exp["added"]])
         else:
-            # 背景网络未构建等原因导致扩展失败:按原始交集继续,不让整个分析挂掉
-            logging.warning("RWR expansion skipped: %s", rwr_res.get("error"))
-            expansion_df = pd.DataFrame(
-                [{"gene": g, "source": "seed", "rwr_score": ""} for g in genes])
-    if int(rwr_expand) > 0:
-        prefix = f"{prefix}_rwr{int(rwr_expand)}"
+            logging.warning("RWR expansion skipped: %s", rwr_exp["error"])
+            expansion_df = pd.DataFrame(seed_rows)
     _prog("targets", "done", 0.08)
 
     # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,孤立节点在下游展示时隐藏）
