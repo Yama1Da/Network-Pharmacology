@@ -17,15 +17,21 @@ CLI 与页面共用同一套编排,防止两处漂移。
 import os
 import warnings
 
+import pandas as pd
 import streamlit as st
 
 import config
 from core.expression import assess_expression_dataset, normalize_gpl
 from core.geo import fetch_geo_dataset
-from core.ml_pipeline import run_screen_chain
-from core.ppi import base_disease_of, list_analyzed_pairs
+from core.ml_pipeline import STAGES, run_screen_chain
+from core.ppi import (
+    base_disease_of,
+    list_analyzed_diseases,
+    list_analyzed_drugs,
+    list_ranked_csv_candidates,
+)
 from i18n import t
-from ui.widgets import back_button, hide_sidebar
+from ui.widgets import back_button, hide_sidebar, search_selectbox
 
 st.set_page_config(page_title=t("eml.page_title"), layout="wide")
 
@@ -79,20 +85,12 @@ with tab_search:
     # 疾病名优先从本机 App 分析记录取(用户跑过靶点的疾病):下拉列出干净的
     # 基准疾病名(剥掉 rwrNN 变体后缀),accept_new_options 仍允许手输新名称;
     # 无记录时退回文本框直接输入
-    _pairs = list_analyzed_pairs()
-    _seen: set = set()
-    disease_options = []
-    for _p in _pairs:
-        _key = _p["base_disease"].strip().lower()
-        if _key and _key not in _seen:
-            _seen.add(_key)
-            disease_options.append(_p["base_disease"].strip())
+    disease_options = list_analyzed_diseases()
     col_d, col_l = st.columns([3, 1])
     with col_d:
         if disease_options:
-            disease = st.selectbox(t("eml.disease_label"), options=disease_options,
-                                   index=None, accept_new_options=True,
-                                   key="eml_disease_sel") or ""
+            disease = search_selectbox(t("eml.disease_label"), disease_options,
+                                       key="eml_disease_sel")
             st.caption(t("eml.analyzed_hint", n=len(disease_options)))
         else:
             disease = st.text_input(t("eml.disease_label"), key="eml_disease_txt",
@@ -154,10 +152,9 @@ _gse_opts = []
 if _srch is not None and not _srch.empty and "gse" in _srch.columns:
     _gse_opts = [str(g).strip() for g in _srch["gse"].tolist() if str(g).strip()]
 if _gse_opts:
-    _sel = st.selectbox(t("eml.select_gse"), options=_gse_opts, index=None,
-                        accept_new_options=True, key="eml_selected_gse_sel",
-                        placeholder="GSE63067")
-    selected_gse = (_sel or "").strip().upper()
+    selected_gse = search_selectbox(t("eml.select_gse"), _gse_opts,
+                                    key="eml_selected_gse_sel",
+                                    placeholder="GSE63067").upper()
 else:
     selected_gse = st.text_input(t("eml.select_gse"), key="eml_selected_gse",
                                  placeholder="GSE63067").strip().upper()
@@ -197,6 +194,16 @@ if selected_gse:
                     fetch_geo_dataset(selected_gse))
             except Exception:
                 pass  # 解析失败不阻断预估展示,警告回退到元数据条件版
+        elif (ss.eml["probe"].get("r")
+                and ss.eml["probe"]["r"].get("size_bytes", 10 ** 9) < 20 * 1024):
+            # 小体积 series matrix(≈3KB)几乎必然是元数据型空表:预检 counts
+            # 可用性 —— 有则放行(运行时自动回退 DESeq2),没有才判死
+            from core.geo import has_counts_supplement
+            ss.eml["probe"]["assess"] = {
+                "matrix_empty": True,
+                "counts_available": has_counts_supplement(selected_gse),
+                "symbol_level": None, "annot": None, "gpl": "", "group_fields": [],
+                "n_samples": None, "usable": False}
     _probe = ss.eml.get("probe", {})
     if not expr_path.strip() and _probe.get("gse") == selected_gse:
         _cache_dir = os.path.join(config.CACHE_DIR, config.GEO_SERIES_CACHE_SUBDIR)
@@ -220,13 +227,21 @@ if selected_gse:
         elif _probe.get("err"):
             st.caption(t("eml.est_failed", path=_cache_dir))
         # 警告两级:矩阵已缓存 → 权威判定(探针级且注释缺失才算不可用;
-        # 基因级矩阵不需要注释,基于元数据的警告对它是误报);未缓存 → 元数据条件版
+        # 基因级矩阵不需要注释,基于元数据的警告对它就是误报);未缓存 → 元数据条件版
         _as = _probe.get("assess")
         if _as is not None:
-            if (not _as["matrix_empty"] and not _as["symbol_level"]
-                    and _as["annot"] == "missing"):
+            if _as.get("matrix_empty"):
+                # 空矩阵 ≠ 判死:有 counts 补充文件时运行时会自动回退 DESeq2
+                if _as.get("counts_available"):
+                    st.info(t("eml.usa_matrix_empty_counts"))
+                else:
+                    st.error(t("eml.usa_matrix_empty"))
+            elif not _as["symbol_level"] and _as["annot"] == "missing":
                 st.error(t("eml.usa_annot_missing", gpl=_as["gpl"]))
-        elif _probe.get("annot") == "missing":
+        elif (_probe.get("annot") == "missing"
+              and ss.eml.get("overview_done_gse") != selected_gse):
+            # 总览已跑过 → 权威判定已存,此处的条件版警告不再重复渲染
+            # (否则同一页会出现"⚠️大概率不可用 + ❌不可用"两套话)
             st.warning(t("eml.annot_missing_warn", gpl=_probe.get("gpl", "")))
 
 # 数据源判定:本地矩阵(两路都填)与 GSE 二选一(方案 §6,与管线防呆一致)
@@ -241,7 +256,7 @@ source_conflict = use_local and has_gse
 _probe_d = ss.eml.get("probe") or {}
 _as = _probe_d.get("assess")
 unusable = bool(has_gse and _as and _probe_d.get("gse") == selected_gse
-                and (_as.get("matrix_empty")
+                and ((_as.get("matrix_empty") and not _as.get("counts_available", False))
                      or (not _as.get("symbol_level")
                          and _as.get("annot") == "missing")))
 
@@ -271,41 +286,90 @@ if selected_gse.strip() and st.button(t("eml.overview_btn"), key="eml_overview",
                 from core.geo import fetch_geo_dataset, group_fields_overview
                 ds = fetch_geo_dataset(selected_gse.strip())
                 ss.eml["dataset"] = ds
-                if ds.issues:
-                    st.warning(t("eml.dataset_issues", issues="; ".join(ds.issues)))
-                else:
-                    overview = group_fields_overview(ds)
-                    st.markdown(t("eml.overview_title"))
-                    st.dataframe(overview, use_container_width=True, hide_index=True)
+                if ds.issues and not (ds.table.empty
+                                      and ((ss.eml.get("probe") or {}).get("assess")
+                                           or {}).get("counts_available")):
+                    # 「数据表为空」对 counts 类数据集是 RNA-seq 常态而非问题:
+                    # 运行时会自动回退 DESeq2,ℹ️ 提示与下方 counts 列名已经说明
+                    # 情况 —— 此时不再渲染黄色警告,避免与 ℹ️ 自相矛盾
+                    st.warning(t("eml.dataset_issues",
+                                 issues="; ".join(ds.issues)))
+
+                # 分组字段取值分布(counts 数据集同样展示:元数据字段仍是重要参考;
+                # 但"正则匹配对象=样本注释全文"的说法对 counts 数据集不成立 ——
+                # 运行时匹配的是 counts 列名,提示由下方 counts_overview_hint 给出)
+                overview = group_fields_overview(ds)
+                st.markdown(t("eml.overview_title"))
+                st.dataframe(overview, use_container_width=True, hide_index=True)
+                if not ds.table.empty:
                     st.caption(t("eml.overview_hint"))
-                    # 可用性预检(方案 §11:空矩阵/平台注释缺失/无病例对照设计,
-                    # 在选型阶段排除而不是点「开始分析」后才发现)。
-                    # 结果写回 probe 会话键:Step 2/3 的锁定与警告同一来源
-                    a = assess_expression_dataset(ds)
-                    ss.eml.setdefault("probe", {})["assess"] = a
-                    if a["matrix_empty"]:
+
+                # counts 类数据集(空 series matrix):追加样本列清单 —— 正则的
+                # 匹配对象;并按样本标题把元数据分组信息(如 treatment)合并进来,
+                # 用户能直接看出每个列属于哪个组,正则照着写即可
+                if ds.issues and ds.table.empty and selected_gse.strip():
+                    try:
+                        from core.geo import fetch_gse_count_matrix
+                        cnt = fetch_gse_count_matrix(selected_gse.strip())
+                        # 候选分组列:取值 2-8 类的 characteristics 列(剔除属性列)
+                        _grp_cols = [c for c in ds.samples.columns
+                                     if c.startswith("characteristics")
+                                     and 2 <= ds.samples[c].astype(str).nunique() <= 8
+                                     and not any(k in c.lower() for k in
+                                                 ("age", "sex", "gender", "date",
+                                                  "batch"))]
+                        _title = (ds.samples["title"].astype(str)
+                                  if "title" in ds.samples.columns else None)
+                        _rows = []
+                        for _c in [str(c) for c in cnt["counts"].columns]:
+                            _row = {t("eml.col_sample"): _c}
+                            if _title is not None:
+                                _m = ds.samples[_title == _c]
+                                if not _m.empty:
+                                    for _gc in _grp_cols:
+                                        _row[_gc] = str(_m.iloc[0][_gc])[:64]
+                            _rows.append(_row)
+                        st.markdown(t("eml.counts_overview_title",
+                                      n=len(_rows)))
+                        st.dataframe(pd.DataFrame(_rows), use_container_width=True,
+                                     hide_index=True)
+                        st.caption(t("eml.counts_overview_hint"))
+                    except Exception as exc:
+                        st.error(t("eml.overview_failed", exc=exc))
+
+                # 可用性预检(方案 §11:空矩阵/平台注释缺失/无病例对照设计,
+                # 在选型阶段排除而不是点「开始分析」后才发现)。
+                # 结果写回 probe 会话键:Step 2/3 的锁定与警告同一来源
+                a = assess_expression_dataset(ds)
+                ss.eml.setdefault("probe", {})["assess"] = a
+                ss.eml["overview_done_gse"] = selected_gse
+                if a["matrix_empty"]:
+                    if a.get("counts_available"):
+                        st.info(t("eml.usa_matrix_empty_counts"))
+                    else:
                         st.error(t("eml.usa_matrix_empty"))
-                    else:
-                        st.caption(t("eml.usa_matrix",
-                                     shape=f"{a['shape'][0]}×{a['shape'][1]}",
-                                     idkind=t("eml.usa_id_symbol" if a["symbol_level"]
-                                              else "eml.usa_id_probe")))
-                        if not a["symbol_level"]:
-                            if a["annot"] in ("cached", "ok"):
-                                st.caption(t("eml.usa_annot_ok", gpl=a["gpl"]))
-                            elif a["annot"] == "missing":
-                                st.error(t("eml.usa_annot_missing", gpl=a["gpl"]))
-                            else:
-                                st.caption(t("eml.usa_annot_unknown", gpl=a["gpl"]))
-                    if a["group_fields"]:
-                        st.caption(t("eml.usa_groups",
-                                     fields="; ".join(a["group_fields"][:3])))
-                    else:
-                        st.warning(t("eml.usa_groups_missing"))
-                    if a["n_samples"] < 2 * config.ML_MIN_SAMPLES_PER_GROUP:
-                        st.warning(t("eml.usa_samples_low",
-                                     n=a["n_samples"],
-                                     min=2 * config.ML_MIN_SAMPLES_PER_GROUP))
+                else:
+                    st.caption(t("eml.usa_matrix",
+                                 shape=f"{a['shape'][0]}×{a['shape'][1]}",
+                                 idkind=t("eml.usa_id_symbol" if a["symbol_level"]
+                                          else "eml.usa_id_probe")))
+                    if not a["symbol_level"]:
+                        if a["annot"] in ("cached", "ok"):
+                            st.caption(t("eml.usa_annot_ok", gpl=a["gpl"]))
+                        elif a["annot"] == "missing":
+                            st.error(t("eml.usa_annot_missing", gpl=a["gpl"]))
+                        else:
+                            st.caption(t("eml.usa_annot_unknown", gpl=a["gpl"]))
+                if a["group_fields"]:
+                    st.caption(t("eml.usa_groups",
+                                 fields="; ".join(a["group_fields"][:3])))
+                elif not (ds.issues and ds.table.empty):
+                    # counts 数据集的分组信息在样本列清单里,不渲染"未发现分组字段"
+                    st.warning(t("eml.usa_groups_missing"))
+                if a["n_samples"] < 2 * config.ML_MIN_SAMPLES_PER_GROUP:
+                    st.warning(t("eml.usa_samples_low",
+                                 n=a["n_samples"],
+                                 min=2 * config.ML_MIN_SAMPLES_PER_GROUP))
             except Exception as exc:
                 st.error(t("eml.overview_failed", exc=exc))
     finally:
@@ -320,30 +384,22 @@ with col_rank:
     # 的疾病自动限定 —— rwr 等参数变体的排序以文件维度并列展示,跨疾病的排序
     # 不再出现,从源头排除"把别的疾病的排序勾进交集"的可能(方案 §M4 按元数据
     # 匹配,不用文件名猜)
-    ranked_files = []
-    for _rec in list_analyzed_pairs():
-        try:
-            _dir_files = os.listdir(_rec["directory"])
-        except OSError:
-            continue
-        for f in sorted(_dir_files):
-            if not f.endswith("_query_genes.csv"):
-                continue
-            title = " · ".join(x for x in (
-                os.path.basename(_rec["directory"])[:-len("_data")],
-                _rec["analyzed_at"][:19],
-                f"STRING {_rec['string_version']}" if _rec["string_version"] else "",
-            ) if x)
-            ranked_files.append({"label": title,
-                                 "path": os.path.join(_rec["directory"], f),
-                                 "drug": _rec["drug"],
-                                 "base_disease": _rec["base_disease"]})
+    # 排序文件发现与药物过滤下拉的数据源均在 core(list_ranked_csv_candidates /
+    # list_analyzed_drugs),页面只做筛选与勾选
+    ranked_files = list_ranked_csv_candidates()
     # 当前疾病上下文(下拉或手输,同样剥掉可能手输的 rwrNN 后缀);为空则展示全部。
     # 匹配只允许"用户输的更泛 → 命中更具体的记录"(如输 cancer 带出 gastric cancer),
     # 不做反向:选 gastric cancer 不能把泛癌 cancer 的排序带进交集(疾病混淆)
     _ctx = base_disease_of(disease).lower() if disease.strip() else ""
     if ranked_files:
-        f_drug = st.text_input(t("eml.filter_drug"), key="eml_ranked_drug").strip().lower()
+        # 药物过滤下拉:选项来自本机已分析药物(同疾病下拉的数据源模式),
+        # accept_new_options 保留旧的自由输入过滤能力;留空 = 不过滤
+        _drugs = list_analyzed_drugs()
+        f_drug = ""
+        if _drugs:
+            f_drug = search_selectbox(t("eml.filter_drug"), _drugs,
+                                      key="eml_ranked_drug",
+                                      placeholder=t("eml.filter_all")).lower()
         shown = [rf for rf in ranked_files
                  if (not _ctx
                      or _ctx == rf["base_disease"].lower()
@@ -379,6 +435,53 @@ with col_param:
 
 st.divider()
 
+# ---------- 运行进度面板 ----------
+class _MLProgress:
+    """Step3 运行进度面板:总进度条 + 各阶段状态行(⏳ 待执行 / 🔄 进行中 / ✅ 完成)。
+
+    与数据网络页 Build Report 的 _ReportProgress 同款;区别在 ML 管线于脚本
+    主线程同步执行,回调里可直接更新组件,无需线程轮询。管线只在阶段开始时
+    发键,前序阶段随之置为完成;补充信息行(stage=None)不改变面板状态。
+    """
+
+    _ICON = {"pending": "⏳", "running": "🔄", "done": "✅"}
+
+    def __init__(self, steps: list[str]):
+        self._steps = list(steps)
+        self._states = {k: "pending" for k in self._steps}
+        with st.container(border=True):
+            st.caption(t("eml.prog.caption"))
+            self._bar = st.progress(0.0)
+            self._rows = {k: st.empty() for k in self._steps}
+        for k in self._steps:
+            self._redraw(k)
+
+    def _redraw(self, key: str) -> None:
+        self._rows[key].markdown(
+            f"{self._ICON[self._states[key]]} {t(f'eml.prog.{key}')}")
+
+    def _set(self, key: str, state: str) -> None:
+        self._states[key] = state
+        self._redraw(key)
+
+    def start(self, key: str) -> None:
+        """某阶段开始:前序全部置为完成,本阶段置为进行中,总进度推进到阶段起点;
+        键不在面板里时忽略(管线发出的补充信息行 stage=None 走这里)。"""
+        if key not in self._states:
+            return
+        idx = self._steps.index(key)
+        for prev in self._steps[:idx]:
+            self._set(prev, "done")
+        self._set(key, "running")
+        self._bar.progress(idx / len(self._steps))
+
+    def finish(self) -> None:
+        """全链完成:全部阶段置为完成,总进度拉满。"""
+        for k in self._steps:
+            self._set(k, "done")
+        self._bar.progress(1.0)
+
+
 # ---------- ③ 运行区 ----------
 st.subheader(t("eml.step3"))
 can_run = ((has_gse and case_pat.strip() and ctrl_pat.strip()) or use_local) \
@@ -397,21 +500,12 @@ if ss.eml_busy:
 if st.button(t("eml.run_btn"), key="eml_run", type="primary",
              disabled=(not can_run) or ss.eml_busy):
     ss.eml_busy = True
-    # 进度回调:管线发七阶段键,页面按 i18n 映射展示;补充信息行(message 为中文)
-    # 不直显,避免与界面语言冲突
-    _progress_map = {
-        "fetch": t("eml.progress_fetch"),
-        "group": t("eml.progress_group"),
-        "preprocess": t("eml.progress_preprocess"),
-        "deg": t("eml.progress_deg"),
-        "ml": t("eml.progress_ml"),
-        "shortlist": t("eml.progress_shortlist"),
-        "save": t("eml.progress_save"),
-    }
+    # 进度面板:管线发 STAGES 七阶段键,阶段开始即推进入面板;补充信息行
+    # (message 为中文)不进面板,避免与界面语言冲突
+    prog = _MLProgress(STAGES)
 
     def _on_progress(stage, _message):
-        if stage in _progress_map:
-            st.markdown(_progress_map[stage])
+        prog.start(stage)
 
     try:
         with st.spinner(t("eml.running")):
@@ -433,6 +527,7 @@ if st.button(t("eml.run_btn"), key="eml_run", type="primary",
                         gse=selected_gse.strip().upper(),
                         case_pattern=case_pat.strip(),
                         control_pattern=ctrl_pat.strip(), **common)
+                prog.finish()
                 ss.eml["result"] = {
                     "consensus": res["consensus"],
                     "shortlist": res["shortlist"],
@@ -440,6 +535,7 @@ if st.button(t("eml.run_btn"), key="eml_run", type="primary",
                     "deg": res["deg"],
                     "meta": res["meta"],
                     "roc": res["roc"],
+                    "roc_png": res.get("roc_png"),
                     "gse": res["gse"] or res["tag"],
                     "out_dir": res["out_dir"],
                     "elapsed": res["summary"]["elapsed_total_s"],
@@ -516,6 +612,12 @@ else:
         plt.close(fig)
     except Exception:
         st.warning(t("eml.roc_failed"))
+    # ROC PNG 下载(产物目录里的同名文件;页面图表是矢量重绘,论文用 PNG 从这里拿)
+    if r.get("roc_png") and os.path.isfile(r["roc_png"]):
+        with open(r["roc_png"], "rb") as _f:
+            st.download_button(t("eml.dl_roc"), data=_f.read(),
+                               file_name=os.path.basename(r["roc_png"]),
+                               mime="image/png", key="eml_dl_roc")
 
     # 共识表(top 50,可排序)
     st.markdown(t("eml.consensus_title"))

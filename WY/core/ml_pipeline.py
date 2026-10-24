@@ -150,6 +150,8 @@ def run_screen_chain(*, gse: str | None = None,
                      expr: str | None = None,
                      labels: str | None = None,
                      case_label: str | None = None,
+                     counts_mode: bool = False,
+                     counts_file: str | None = None,
                      force_refresh: bool = False,
                      force_log: bool | None = None,
                      prefilter_top: int | None = None,
@@ -184,6 +186,9 @@ def run_screen_chain(*, gse: str | None = None,
     # 参数边界(CLI 与页面共用同一套防呆)
     if bool(expr) == bool(gse):
         raise RuntimeError("数据源必须二选一:gse(GEO 数据集)或 expr(本地矩阵 + labels)")
+    if counts_mode and expr:
+        raise RuntimeError("counts 模式基于 GSE 补充文件,不支持本地矩阵"
+                           "(本地 counts 矩阵直接用 expr 模式即可)")
     if expr:
         if not labels:
             raise RuntimeError("本地矩阵模式需同时提供 labels(两列 CSV:样本ID, 分组)")
@@ -197,24 +202,54 @@ def run_screen_chain(*, gse: str | None = None,
     ds = None
     local_info: dict = {}
     gse_id = gpl_id = None
+    counts_df = counts_source = None
+    gene_symbol = None
     if expr:
         _report("fetch", f"读取本地表达矩阵 {expr}")
         matrix_raw, label_series, tag, local_info = load_local_expr(
             expr, labels, case_label, progress=progress)
         _report(None, f"矩阵 {matrix_raw.shape[0]} 基因 × {matrix_raw.shape[1]} 样本")
+    elif counts_mode:
+        # RNA-seq 路径(二期):raw counts 来自 suppl 补充文件,DEG 走 DESeq2
+        gse_id = gse.strip().upper()
+        _report("fetch", f"获取 {gse_id} 补充文件中的 raw counts")
+        from .geo import fetch_gse_count_matrix
+        cnt = fetch_gse_count_matrix(gse_id, prefer=counts_file)
+        counts_df, counts_source = cnt["counts"], cnt["source_file"]
+        tag = gse_id
+        matrix_raw = counts_df
+        _report(None, f"counts {counts_df.shape[0]} 基因 × {counts_df.shape[1]} 样本 "
+                      f"| 来源 {counts_source}")
     else:
         gse_id = gse.strip().upper()
         _report("fetch", f"获取 {gse_id}")
         ds = fetch_geo_dataset(gse_id, force_refresh=force_refresh)
         if ds.issues:
-            raise RuntimeError(f"{gse_id}: " + ";".join(ds.issues))
-        gpl_id = ds.gpl
-        tag = gse_id
-        matrix_raw = ds.table
-        _report(None, f"样本 {len(ds.samples)} | 矩阵 {ds.table.shape} | 平台 {ds.gpl}")
-        if ds.cache_fallback:
-            _report(None, f"警告: GEO 文件下载失败,已沿用本地旧缓存(缓存日期 "
-                          f"{ds.cache_date});CLI 可加 --force-refresh 强制重下")
+            # 空矩阵(元数据型提交/RNA-seq 常态)→ 自动回退补充文件 counts(二期),
+            # 无可比候选才报错,并同时带上两种原因
+            _report(None, f"series matrix 为空/不可解析({';'.join(ds.issues)})"
+                          "—— 尝试补充文件 counts 回退")
+            try:
+                from .geo import fetch_gse_count_matrix
+                cnt = fetch_gse_count_matrix(gse_id, prefer=counts_file)
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"{gse_id}: " + ";".join(ds.issues)
+                    + f"。补充文件 counts 回退也失败: {exc}")
+            counts_mode = True   # 后续分组/预处理/DEG/ML 全部走 counts 分支
+            counts_df, counts_source = cnt["counts"], cnt["source_file"]
+            tag = gse_id
+            matrix_raw = counts_df
+            _report(None, f"counts 回退成功: {counts_df.shape[0]} 基因 × "
+                          f"{counts_df.shape[1]} 样本 | 来源 {counts_source}")
+        else:
+            gpl_id = ds.gpl
+            tag = gse_id
+            matrix_raw = ds.table
+            _report(None, f"样本 {len(ds.samples)} | 矩阵 {ds.table.shape} | 平台 {ds.gpl}")
+            if ds.cache_fallback:
+                _report(None, f"警告: GEO 文件下载失败,已沿用本地旧缓存(缓存日期 "
+                              f"{ds.cache_date});CLI 可加 --force-refresh 强制重下")
 
     # 样本来源标注(承检索启发式,方案 §4.3 shortlist 的 evidence_scope 列;
     # geo 分支取数据集标题/摘要判定,本地矩阵无数据集元数据 → 未标注)
@@ -222,11 +257,22 @@ def run_screen_chain(*, gse: str | None = None,
         evidence_scope = sample_source_label(ds.meta.get("Series_title", ""),
                                              ds.meta.get("Series_summary", ""))
         _report(None, f"样本来源(启发式): {evidence_scope}")
+    elif counts_mode:
+        evidence_scope = "未标注(suppl counts,样本元数据未解析)"
     else:
         evidence_scope = "未标注(本地矩阵)"
 
-    _report("group", "分组" if ds is not None else "分组(labels 文件,硬边界已校验)")
-    if ds is not None:
+    _report("group", "分组" if ds is not None else
+            ("分组(counts 列名,硬边界已校验)" if counts_mode
+             else "分组(labels 文件,硬边界已校验)"))
+    if counts_mode:
+        from .geo import assign_groups_from_columns
+        label_series = assign_groups_from_columns(counts_df.columns,
+                                                  case_pattern, control_pattern)
+        n_case, n_ctrl = int((label_series == 1).sum()), int((label_series == 0).sum())
+        _report(None, f"case={n_case} control={n_ctrl} "
+                      f"丢弃={counts_df.shape[1] - len(label_series)}")
+    elif ds is not None:
         label_series = assign_groups(ds, case_pattern, control_pattern)
         n_case, n_ctrl = int((label_series == 1).sum()), int((label_series == 0).sum())
         _report(None, f"case={n_case} control={n_ctrl} 丢弃={len(ds.samples) - len(label_series)}")
@@ -234,22 +280,59 @@ def run_screen_chain(*, gse: str | None = None,
         n_case, n_ctrl = local_info["n_case"], local_info["n_control"]
 
     _report("preprocess", "预处理与映射")
-    matrix, log_branch = preprocess(matrix_raw, force_log=force_log)
-    if ds is not None:
-        matrix = map_probe_to_symbol(matrix, ds.gpl)
+    if counts_mode:
+        matrix = matrix_raw
+        log_branch = "raw counts(DESeq2 路径:不 log2、不做探针映射)"
+    else:
+        matrix, log_branch = preprocess(matrix_raw, force_log=force_log)
+        if ds is not None:
+            matrix = map_probe_to_symbol(matrix, ds.gpl)
     _report(None, f"log2 决策: {log_branch} | 基因数 {len(matrix)}")
 
-    _report("deg", "差异表达")
-    deg = differential_expression(matrix, label_series)
+    _report("deg", "差异表达" + ("(DESeq2)" if counts_mode else ""))
+    if counts_mode:
+        from .expression import looks_symbol_level, rnaseq_deg_and_matrix
+        deg, ml_matrix = rnaseq_deg_and_matrix(matrix, label_series)
+        gene_symbol = bool(looks_symbol_level(ml_matrix.columns[:200]))
+        if not gene_symbol:
+            _report(None, "提示: counts 行标识为非基因符号(如 Ensembl ID)"
+                          "—— 预过滤后将经 mygene 批量映射为符号(路线 A)")
+    else:
+        ml_matrix = None
+        deg = differential_expression(matrix, label_series)
     sig_n = int((deg["FDR"] < 0.05).sum())
     _report(None, f"FDR<0.05: {sig_n} | 全部基因 {len(deg)}")
 
     _report("ml", "DEG 预过滤 + ML 共识(六算法 × 三验证)")
     deg_top, leak_note = deg_prefilter(deg, top_n=prefilter_top)
     genes = deg_top["gene"].tolist()
+    symbol_map: dict = {}
+    symbol_hits = None
+    if counts_mode and not gene_symbol:
+        from .expression import map_ids_to_symbol
+        _report(None, f"行标识为非基因符号:经 mygene 批量映射 {len(genes)} 个 ID "
+                      f"→ 符号(路线 A,懒映射)")
+        try:
+            symbol_map = map_ids_to_symbol(genes)
+            symbol_hits = sum(1 for g in genes if symbol_map.get(g))
+            _report(None, f"符号映射命中 {symbol_hits}/{len(genes)}(未命中保留原 ID)")
+        except Exception as exc:
+            _report(None, f"符号映射失败({exc})—— 保留原 ID,"
+                          "与平台排序 CSV 的交集将为空")
     # 只取有标签的样本(丢弃的中间分级样本不在标签中,全样本矩阵会 KeyError,审核 BUG-7)
     labeled = list(label_series[label_series == 1].index) + list(label_series[label_series == 0].index)
-    X = matrix[labeled].T[genes]  # 转置为样本×基因(仅已标记样本)
+    if counts_mode:
+        X = ml_matrix.loc[labeled, genes]  # 样本×基因(log2 标准化 counts),列=预过滤基因
+        if symbol_map:
+            # 未命中(symbol=None)保留原 ID —— None 列名会被 sklearn 拒绝
+            # (混合 str/None 特征名直接报错,实跑抓到)
+            rename_map = {g: (symbol_map.get(g) or g) for g in genes}
+            X = X.rename(columns=rename_map)  # 共识/shortlist 直接以符号呈现
+            deg = deg.copy()
+            deg["gene"] = deg["gene"].map(lambda g: rename_map.get(g, g))
+            deg = deg.drop_duplicates("gene", keep="first")  # 防止 shortlist join 行爆炸
+    else:
+        X = matrix[labeled].T[genes]  # 转置为样本×基因(仅已标记样本)
     res = run_ml_screening(X, label_series.loc[X.index], bootstrap_rounds=bootstrap_rounds)
     m = res["meta"]
     _report(None, f"ML 输入: {m['n_samples']}样本 × {m['n_genes']}基因 | "
@@ -284,9 +367,17 @@ def run_screen_chain(*, gse: str | None = None,
                   res["roc"]["y_true"], res["roc"]["scores"], str(tag))
     write_consensus_curve_png(os.path.join(out_dir, "consensus_curve.png"),
                               res["consensus"], resolved_top_k)
+    if symbol_map:
+        pd.DataFrame({"ensembl": list(symbol_map.keys()),
+                      "symbol": list(symbol_map.values())}).to_csv(
+            os.path.join(out_dir, "symbol_map.csv"),
+            index=False, encoding="utf-8-sig")
     summary = {
         "module": "geo-ml-screen", "ml_version": config.ML_SCREENING_VERSION,
-        "source": "local-expr" if expr else "geo",
+        "source": "suppl-counts" if counts_mode else ("local-expr" if expr else "geo"),
+        "counts_source": counts_source,
+        "gene_id_symbol_level": gene_symbol if counts_mode else None,
+        "symbol_map_hits": symbol_hits,
         "gse": gse_id, "gpl": gpl_id, "expr": expr, "labels": labels,
         "n_samples": len(ds.samples) if ds is not None else n_case + n_ctrl,
         "groups": {"case": n_case, "control": n_ctrl,
@@ -307,6 +398,7 @@ def run_screen_chain(*, gse: str | None = None,
         "args": {"gse": gse_id, "expr": expr, "labels": labels,
                  "case_label": case_label, "case_pattern": case_pattern,
                  "control_pattern": control_pattern,
+                 "counts_mode": counts_mode, "counts_file": counts_file,
                  "force_refresh": force_refresh, "force_log": force_log,
                  "prefilter_top": prefilter_top,
                  "bootstrap_rounds": bootstrap_rounds, "top_k": top_k,

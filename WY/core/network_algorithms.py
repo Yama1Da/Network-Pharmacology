@@ -7,6 +7,7 @@
 import functools
 import logging
 import os
+from typing import TypedDict
 
 import pandas as pd
 
@@ -23,6 +24,17 @@ from .enrichment import (
 # fetch_enrichment_* 返回状态中代表"调用成功"的取值复用 core.enrichment.TRUSTED_REASONS；
 # "circuit_open"（被熔断跳过）、"probe_failed"（冷却到期的探测失败）与 "request_failed" 均视为不可信。
 _UNTRUSTED_REASONS = ("request_failed", "probe_failed", "circuit_open")
+
+
+class ModuleAnalysis(TypedDict):
+    """compute_module_analysis 的返回契约:Louvain 模块检测 + 模块富集的完整中间结果。
+    字段同时是 save_module_computation 的输入,改字段名须两处同步。"""
+    modules: list[dict]          # detect_louvain_modules 原始输出(module_id/size/avg_degree/genes)
+    summary_df: pd.DataFrame     # 模块汇总表(仅多基因模块),落盘为 {prefix}_modules.csv
+    module_map: dict[str, int]   # 基因 → 模块号(仅多基因模块),供网络着色
+    long_df: pd.DataFrame        # 模块富集长表,落盘为 {prefix}_module_enrichment.csv
+    failures: list[dict]         # 富集失败的模块及原因
+    no_sig: list[int]            # 富集成功但无显著通路的模块号
 
 
 def detect_louvain_modules(graph: "nx.Graph", resolution: float = 1.0, seed: int = 0) -> list[dict]:
@@ -230,7 +242,7 @@ def enrich_modules(
     return long_df, failures, no_sig
 
 
-def compute_module_analysis(graph, organism, label_prefix: str = "") -> dict:
+def compute_module_analysis(graph, organism, label_prefix: str = "") -> ModuleAnalysis:
     """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）；
     label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。"""
     import config

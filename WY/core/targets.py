@@ -243,13 +243,22 @@ def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
                               cache_path=cache_path, **_DISEASE_MERGE)
 
 
-def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> list[str]:
-    """取药物靶点与疾病靶点的交集基因，作为后续 PPI 网络分析的输入;按字母序排序,最多返回 top_n 个
-    (默认 1000,对齐 STRING 查询上限);任一侧无数据时返回空列表。"""
-    drug_df, disease_df, _failed = get_targets_concurrent(drug_name, disease_name)
-    drug_set = set(drug_df["approvedSymbol"].dropna()) if not drug_df.empty else set()
-    disease_set = set(disease_df["approvedSymbol"].dropna()) if not disease_df.empty else set()
+def intersect_target_symbols(drug_df: pd.DataFrame, disease_df: pd.DataFrame,
+                             top_n: int) -> list[str]:
+    """两侧靶点表按 approvedSymbol 列取交集,字母序排序后截断 top_n(对齐 STRING 查询上限)。
+    网页 get_common_targets 与 CLI run_pair 共用的交集规则唯一定义点:改排序/截断规则只改这里。"""
+    drug_set = (set(drug_df["approvedSymbol"].dropna())
+                if drug_df is not None and not drug_df.empty else set())
+    disease_set = (set(disease_df["approvedSymbol"].dropna())
+                   if disease_df is not None and not disease_df.empty else set())
     return sorted(drug_set & disease_set)[:top_n]
+
+
+def get_common_targets(drug_name: str, disease_name: str, top_n: int = 1000) -> list[str]:
+    """取药物靶点与疾病靶点的交集基因，作为后续 PPI 网络分析的输入(交集规则见
+    intersect_target_symbols:字母序排序,最多 top_n 个);任一侧无数据时返回空列表。"""
+    drug_df, disease_df, _failed = get_targets_concurrent(drug_name, disease_name)
+    return intersect_target_symbols(drug_df, disease_df, top_n)
 
 
 

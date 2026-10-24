@@ -10,6 +10,7 @@ import config
 from core.files import list_cache_files, list_download_dirs
 from core.management import enrichment_display_name, humanize_analysis_label
 from core.text_utils import genes_from_dataframe, safe_name
+from core.ppi import read_ppi_dataset
 from ui.widgets import (back_button, cached_dir_zip, enter_busy,
                         finish_busy, hide_sidebar, is_busy, show_busy_notice)
 from i18n import t
