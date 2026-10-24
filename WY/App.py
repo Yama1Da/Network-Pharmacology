@@ -619,9 +619,6 @@ with st.container(key="top_left_buttons"):
             st.switch_page("pages/Enrichment_Information.py")
     # 下拉菜单:主分析(PPI/富集)、分子对接与表达谱 ML 筛选入口。
     with st.popover(t("app.popover_docking"), key="docking_mgmt_popover"):
-        if st.button(t("app.btn_data_network"), key="data_network_btn", width="stretch",
-                     disabled=_analyze_busy):
-            st.switch_page("pages/Data_Network.py")
         if st.button(t("app.btn_molecular_docking"), key="molecular_docking_btn", width="stretch",
                      disabled=_analyze_busy):
             st.session_state["_docking_entry"] = True  # 通知对接页:从入口进入并重置状态

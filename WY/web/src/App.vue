@@ -3,11 +3,13 @@
  * + hash 路由。过渡期 Streamlit(8501)仍是主入口,这里承载逐页迁入的 TS 页面。 */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import CollectionView from './views/CollectionView.vue'
+import AnalysisView from './views/AnalysisView.vue'
 import DataView from './views/DataView.vue'
 import LogsView from './views/LogsView.vue'
 import SourcesView from './views/SourcesView.vue'
 
 const NAV = [
+  { hash: '#/analysis', label: '分析' },
   { hash: '#/logs', label: '日志' },
   { hash: '#/drug-sources', label: '药物靶点' },
   { hash: '#/disease-sources', label: '疾病靶点' },
@@ -17,13 +19,13 @@ const NAV = [
   { hash: '#/data', label: '数据' },
 ]
 
-const route = ref(location.hash.replace(/^#\/?/, '') || 'logs')
+const route = ref(location.hash.replace(/^#\/?/, '') || 'analysis')
 const introVisible = ref(true)
 const ready = ref(false)
 let introTimer = 0
 
 function onHash(): void {
-  route.value = location.hash.replace(/^#\/?/, '') || 'logs'
+  route.value = location.hash.replace(/^#\/?/, '') || 'analysis'
 }
 
 onMounted(() => {
@@ -62,7 +64,8 @@ onBeforeUnmount(() => {
     </header>
 
     <main class="center" :class="{ ready }">
-      <LogsView v-if="route === 'logs'" />
+      <AnalysisView v-if="route === 'analysis'" />
+      <LogsView v-else-if="route === 'logs'" />
       <SourcesView v-else-if="route === 'drug-sources'" kind="drug" />
       <SourcesView v-else-if="route === 'disease-sources'" kind="disease" />
       <CollectionView v-else-if="route === 'ppi'" kind="ppi" kicker="PPI NETWORK FILES"

@@ -58,7 +58,7 @@ itx_busy = is_busy("itx_build_busy")
 
 col_back, _ = st.columns([1, 4])
 with col_back:
-    back_button("data_mgmt.back", target="pages/Data_Network.py", disabled=itx_busy)
+    back_button("data_mgmt.back", disabled=itx_busy)
 
 # 上一次构建被在途点击打断时给出提示(busy 复位后的下一轮才能看到,不能门在 busy 上)
 show_busy_notice("itx_build_busy")

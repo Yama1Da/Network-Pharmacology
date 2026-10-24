@@ -46,10 +46,45 @@ export interface JobState {
   job_id: string
   status: 'running' | 'done' | 'error'
   description: string
-  progress: { fraction: number | null; text: string }
+  progress: { fraction: number | null; text: string; [k: string]: unknown }
   result: Record<string, unknown> | null
   error: string | null
   trace?: string
+}
+
+export type Row = Record<string, unknown>
+
+export interface PpiResult {
+  prefix: string
+  directory_rel: string
+  params: (string | number)[]
+  hub_rule: string
+  hub_method_eff: string
+  genes_count: number
+  nodes: number
+  edges: number
+  hubs: number
+  expansion: { seeds: number; expanded: number } | null
+  hub_table: Row[]
+  views: string[]
+  artifacts: Record<string, string>
+  enrichment: { source: string; reason: string; rows: Row[] }
+  gsea: Record<string, { reason: string; stats: Row; rows: Row[] }>
+  proximity: Record<string, unknown> | null
+  rwr: Record<string, Record<string, unknown>> | null
+  modules: { summary: Row[]; failures: unknown[]; no_sig: number[] } | null
+}
+
+export interface PpiAnalyzeBody {
+  mode: 'names' | 'genes'
+  drug: string
+  disease: string
+  genes_text: string
+  score: number
+  network_type: string
+  rwr_expand: number
+  hub_top_n: number
+  hub_method: string
 }
 
 export interface InteractomeStatus {
@@ -125,5 +160,24 @@ export const api = {
     fetch('/api/interactome').then((r) => json(r)),
 
   buildInteractome: (): Promise<{ job_id: string }> =>
-    post('/api/interactome/build', {})
+    post('/api/interactome/build', {}),
+
+  /* ---- PPI 分析(阶段 3a) ---- */
+  analyzePpi: (body: PpiAnalyzeBody): Promise<{ job_id: string }> =>
+    post('/api/ppi/analyze', body),
+
+  rerunModules: (directoryRel: string, prefix: string): Promise<{ job_id: string }> =>
+    post('/api/ppi/rerun-modules', { directory_rel: directoryRel, prefix }),
+
+  rerunGsea: (
+    side: 'drug' | 'disease',
+    drug: string,
+    disease: string,
+    prefix: string
+  ): Promise<{ job_id: string }> =>
+    post('/api/ppi/rerun-gsea', { side, drug, disease, prefix })
 }
+
+/** 产物直出:downloads 相对路径 → 伺服 URL(download=true 触发附件下载)。 */
+export const artifactsUrl = (rel: string, download = false): string =>
+  `/api/artifacts?rel=${encodeURIComponent(rel)}${download ? '&download=1' : ''}`

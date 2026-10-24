@@ -1,11 +1,13 @@
 import { ref } from 'vue'
 import { api, type JobState } from '../api'
 
-/** 长任务的提交-轮询:run() 提交后每 0.6s 轮询一次,进度与结果落到本 composable。 */
+/** 长任务的提交-轮询:run() 提交后每 0.6s 轮询一次。
+ * fraction/text 为总进度;extra 携带后端附加字段(如 PPI 分析的 step/state 阶段状态)。 */
 export function useJob(onDone?: (result: Record<string, unknown>) => void) {
   const running = ref(false)
   const fraction = ref<number | null>(null)
   const text = ref('')
+  const extra = ref<Record<string, unknown>>({})
   const error = ref('')
   const result = ref<Record<string, unknown> | null>(null)
 
@@ -22,6 +24,7 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
         const state: JobState = await api.job(job_id)
         fraction.value = state.progress.fraction
         text.value = state.progress.text
+        extra.value = { ...state.progress }
         if (state.status === 'done') {
           result.value = state.result
           text.value = opts.doneText ?? '完成'
@@ -43,5 +46,5 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
     }
   }
 
-  return { running, fraction, text, error, result, run }
+  return { running, fraction, text, extra, error, result, run }
 }
