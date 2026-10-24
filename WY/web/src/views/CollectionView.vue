@@ -1,0 +1,245 @@
+<script setup lang="ts">
+/** 通用文件集合视图:PPI / 富集 / 收藏 / 数据 四页共用。
+ * mode "files" 条目为文件,"dirs" 条目为目录(行内也有独立打包下载);
+ * kind=enrichment 附加来源筛选与友好展示名。骨架(顶栏/幕布/页脚)由 App 提供。 */
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { api, type CollectionItem, type CollectionKind } from '../api'
+
+const props = defineProps<{
+  kind: CollectionKind
+  kicker: string
+  title: string
+  sub: string
+}>()
+
+const items = ref<CollectionItem[]>([])
+const mode = ref<'files' | 'dirs'>('files')
+const loaded = ref(false)
+const notice = ref('')
+let noticeTimer = 0
+
+function flash(msg: string): void {
+  notice.value = msg
+  window.clearTimeout(noticeTimer)
+  noticeTimer = window.setTimeout(() => (notice.value = ''), 2600)
+}
+
+/* ---------------- 搜索 / 筛选 / 选择 / 分页(客户端) ---------------- */
+
+const query = ref('')
+const selected = ref<Set<string>>(new Set())
+const page = ref(1)
+const PAGE_SIZE = 10
+
+/* 富集页筛选:GSEA 按侧别 + 两来源;无法识别命名的文件不受筛选影响 */
+const flt = ref({ gseaDrug: true, gseaDisease: true, gprofiler: true, enrichr: true })
+
+const filtered = computed<CollectionItem[]>(() => {
+  let list = items.value
+  if (props.kind === 'enrichment') {
+    const f = flt.value
+    list = list.filter((it) => {
+      if (!it.source && !it.side) return true
+      if (it.gsea) {
+        if (it.side === 'drug') return f.gseaDrug
+        if (it.side === 'disease') return f.gseaDisease
+        return f.gseaDrug || f.gseaDisease
+      }
+      if (it.source === 'gProfiler') return f.gprofiler
+      if (it.source === 'Enrichr') return f.enrichr
+      return true
+    })
+  }
+  const q = query.value.trim().toLowerCase()
+  if (q) {
+    list = list.filter((it) =>
+      it.name.toLowerCase().includes(q) || (it.display ?? '').toLowerCase().includes(q))
+  }
+  return list
+})
+
+const paged = computed(() =>
+  filtered.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE))
+const nPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / PAGE_SIZE)))
+
+function goto(p: number): void {
+  page.value = Math.min(Math.max(1, p), nPages.value)
+}
+
+function toggleSel(name: string): void {
+  const next = new Set(selected.value)
+  if (next.has(name)) next.delete(name)
+  else next.add(name)
+  selected.value = next
+}
+
+const allSelected = computed(
+  () => items.value.length > 0 && items.value.every((it) => selected.value.has(it.name)))
+
+function toggleAll(): void {
+  selected.value = allSelected.value
+    ? new Set()
+    : new Set(items.value.map((it) => it.name))
+}
+
+/* ---------------- 动作 ---------------- */
+
+const confirmArm = ref(false)
+let confirmTimer = 0
+
+async function load(): Promise<void> {
+  const listing = await api.collection(props.kind)
+  items.value = listing.items
+  mode.value = listing.mode
+  loaded.value = true
+  const names = new Set(listing.items.map((it) => it.name))
+  selected.value = new Set([...selected.value].filter((n) => names.has(n)))
+}
+
+async function refresh(): Promise<void> {
+  try {
+    await load()
+    flash('已刷新')
+  } catch {
+    flash('列表读取失败')
+  }
+}
+
+async function download(names: string[], single?: string): Promise<void> {
+  if (!names.length) return
+  try {
+    const blob = await api.zip(props.kind, names)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = single ?? zipName.value
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    flash('打包下载失败')
+  }
+}
+
+function deleteSelected(): void {
+  if (!confirmArm.value) {  // 两段式确认:再次点击才删,4 秒内未点自动撤防
+    confirmArm.value = true
+    window.clearTimeout(confirmTimer)
+    confirmTimer = window.setTimeout(() => (confirmArm.value = false), 4000)
+    return
+  }
+  confirmArm.value = false
+  const names = [...selected.value]
+  if (!names.length) return
+  void (async () => {
+    try {
+      const r = await api.remove(props.kind, names)
+      selected.value = new Set()
+      await load()
+      flash(r.failed.length
+        ? `删除 ${r.deleted} 项,失败:${r.failed.join(', ')}`
+        : `已删除 ${r.deleted} 项`)
+    } catch {
+      flash('删除失败')
+    }
+  })()
+}
+
+const zipName = computed(() => {
+  const map: Record<string, string> = {
+    ppi: 'PPI_files.zip', enrichment: 'Enrichment_files.zip',
+    stars: 'Starred_results.zip', downloads: 'Data_files.zip'
+  }
+  return map[props.kind] ?? `${props.kind}.zip`
+})
+
+const fmtSize = (n: number): string =>
+  n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
+
+/* ---------------- 生命周期 ---------------- */
+
+let pollTimer = 0
+onMounted(() => {
+  void load()
+  // 目录可能被分析进程写入:静默轻刷新(确认/删除进行中时跳过)
+  pollTimer = window.setInterval(() => {
+    if (!confirmArm.value) void load()
+  }, 15000)
+})
+onBeforeUnmount(() => {
+  window.clearTimeout(noticeTimer)
+  window.clearTimeout(confirmTimer)
+  window.clearInterval(pollTimer)
+})
+</script>
+
+<template>
+  <p class="kicker s1">{{ kicker }}</p>
+  <h1 class="title s2">{{ title }}</h1>
+  <p class="sub s3">{{ sub }}</p>
+
+  <div class="panel s4">
+    <div class="controls">
+      <label class="search">
+        <input v-model="query" spellcheck="false" placeholder="搜索…" @input="goto(1)" />
+        <i class="line"></i>
+      </label>
+      <span class="count">{{ filtered.length }} 项 · 已选 {{ selected.size }}</span>
+      <button class="go" title="刷新" @click="refresh">
+        <svg viewBox="0 0 20 20" width="15" height="15">
+          <path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6M16.5 2.5v3.4h-3.4" fill="none"
+                stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                stroke-linejoin="round" />
+        </svg>
+      </button>
+    </div>
+
+    <div v-if="kind === 'enrichment'" class="filters">
+      <span class="ctl-label">筛选</span>
+      <label class="chk"><input v-model="flt.gseaDrug" type="checkbox" /> GSEA · 药物侧</label>
+      <label class="chk"><input v-model="flt.gseaDisease" type="checkbox" /> GSEA · 疾病侧</label>
+      <label class="chk"><input v-model="flt.gprofiler" type="checkbox" /> gProfiler</label>
+      <label class="chk"><input v-model="flt.enrichr" type="checkbox" /> Enrichr</label>
+      <span class="ctl-meta">无法识别命名的旧文件始终显示</span>
+    </div>
+
+    <Transition name="note">
+      <p v-if="notice" class="notice">{{ notice }}</p>
+    </Transition>
+
+    <div class="bar" :class="{ dim: !selected.size }">
+      <button class="bar-btn" @click="toggleAll">
+        {{ allSelected ? '取消全选' : '全选' }}
+      </button>
+      <span class="bar-label">{{ selected.size ? `已选 ${selected.size} 项` : '勾选条目后可批量操作' }}</span>
+      <button class="bar-btn" :disabled="!selected.size" @click="download([...selected])">下载选中 (ZIP)</button>
+      <button class="bar-btn danger" :class="{ arm: confirmArm }" :disabled="!selected.size"
+              @click="deleteSelected">
+        {{ confirmArm ? `确认删除 ${selected.size} 项?` : '删除选中' }}
+      </button>
+    </div>
+
+    <ul class="files">
+      <li v-if="loaded && !filtered.length" class="empty">
+        {{ query ? '搜索无匹配。' : '目录为空。' }}
+      </li>
+      <li v-for="it in paged" :key="it.name" class="file">
+        <div class="row">
+          <label class="sel">
+            <input type="checkbox" :checked="selected.has(it.name)" @change="toggleSel(it.name)" />
+          </label>
+          <span class="fname" :title="it.name">
+            {{ it.display ?? it.name }}<i v-if="it.display" class="raw">{{ it.name }}</i>
+          </span>
+          <span class="fmeta">{{ fmtSize(it.size) }} · {{ it.modified }}</span>
+          <button class="mini" title="下载" @click="download([it.name], it.name)">⬇</button>
+        </div>
+      </li>
+    </ul>
+
+    <div v-if="nPages > 1" class="pager">
+      <button class="pager-btn" :disabled="page <= 1" @click="goto(page - 1)">‹</button>
+      <span class="pager-num">{{ page }} / {{ nPages }}</span>
+      <button class="pager-btn" :disabled="page >= nPages" @click="goto(page + 1)">›</button>
+    </div>
+  </div>
+</template>
