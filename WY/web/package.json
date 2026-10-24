@@ -1,0 +1,21 @@
+{
+  "name": "npap-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "网络药理学分析平台 · TS+Vue 前端(FastAPI 同源伺服;阶段 1:Logs 页)。设计语言源自 Front-end-screen-options 极简主义样本。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.6.3",
+    "vite": "^5.4.11",
+    "vue-tsc": "^2.1.10"
+  }
+}

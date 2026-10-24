@@ -841,9 +841,34 @@ def cmd_batch(args) -> int:
     return 1 if failed_n else 0
 
 
+def _setup_serve(p) -> None:
+    p.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    p.add_argument("--no-browser", action="store_true",
+                   help="do not auto-open the browser after startup")
+
+
+def cmd_serve(args) -> int:
+    """启动 Web 服务:FastAPI(/api)伺服已构建的 TS 前端(WY/web/dist)与 API,
+    可选自动打开浏览器。前端改代码后需在 WY/web 下 npm run build 重建 dist。"""
+    import threading
+    import webbrowser
+
+    import uvicorn
+    from WY.api import app
+
+    url = f"http://{args.host}:{args.port}"
+    print(f"[serve] {url}  (Ctrl+C 停止)")
+    if not args.no_browser:
+        threading.Timer(1.5, webbrowser.open, args=[url]).start()
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
 # ======== 命令注册表:名字 → (参数装配, 处理函数) ========
 
 HANDLER_HELP = {
+    "serve": "Launch the local web server (FastAPI API + built TS frontend) and open the browser",
     "targets": "Fetch drug/disease targets from 4 databases (ChEMBL/DGIdb/OpenTargets/DisGeNET)",
     "ppi": "Build STRING PPI network, compute topology metrics and MCC core targets",
     "enrich": "GO/KEGG enrichment (g:Profiler with automatic Enrichr fallback)",
@@ -854,6 +879,7 @@ HANDLER_HELP = {
 }
 
 COMMANDS = {
+    "serve": (_setup_serve, cmd_serve),
     "targets": (_setup_targets, cmd_targets),
     "ppi": (_setup_ppi, cmd_ppi),
     "enrich": (_setup_enrich, cmd_enrich),
