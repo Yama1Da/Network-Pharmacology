@@ -196,6 +196,7 @@ TEXT_EN: dict[str, str] = {
     "app.settings.obabel_dir": "Open Babel directory (OBABEL_DIR)",
     "app.settings.cli_results_dir": "CLI results directory (CLI_RESULTS_DIR)",
     "app.settings.path_saved": "Paths saved; executables re-probed from the new directories",
+    "app.settings.save_rejected": "These settings were NOT applied (values must not contain '#' or line breaks): {keys}. Other changes were saved normally; edit API.env manually if you really need such a value.",
     "app.settings.ppi_conf": "STRING confidence threshold (PPI edge cutoff)",
     "app.settings.ppi_conf_help": "0.4 = medium confidence (common in literature), 0.7 = high. PPI and background-network caches rebuild automatically per threshold; the Data Network page slider defaults to this value.",
     "app.settings.string_ver": "STRING data version",

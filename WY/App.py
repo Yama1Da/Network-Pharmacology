@@ -460,15 +460,21 @@ def _open_settings_dialog() -> None:
                 try:
                     from core.management import save_api_env
 
-                    save_api_env(_new_keys)
+                    _applied = save_api_env(_new_keys)
                 except Exception as exc:
                     st.error(t("app.settings.key_save_failed", exc=exc))
                 else:
-                    st.toast(t("app.settings.key_saved"))
-                    # 密钥不留在控件会话状态里:保存成功立即清空输入框(重开齿轮为空框+状态行)
-                    for _wk in ("set_disgenet_key", "set_ncbi_key"):
-                        st.session_state.pop(_wk, None)
-                    st.rerun()
+                    # 被消毒拒收的键(含 # / 换行)不在 applied 里:明确报未生效,输入保留供修改
+                    _rejected = [k for k in _new_keys if k not in _applied]
+                    if _rejected:
+                        st.error(t("app.settings.save_rejected", keys="、".join(_rejected)))
+                    if _applied:
+                        st.toast(t("app.settings.key_saved"))
+                    if not _rejected:
+                        # 密钥不留在控件会话状态里:保存成功立即清空输入框(重开齿轮为空框+状态行)
+                        for _wk in ("set_disgenet_key", "set_ncbi_key"):
+                            st.session_state.pop(_wk, None)
+                        st.rerun()
         elif _section == "algo":
             # ======== 分析算法设置:靶点降噪 / 网络构建 / 富集 ========
             # ChEMBL 黑名单:可在常用选项里勾选,也支持手输任意基因符号
@@ -530,10 +536,16 @@ def _open_settings_dialog() -> None:
                 try:
                     from core.management import save_api_env
 
-                    save_api_env(_path_changed)
-                    st.toast(t("app.settings.path_saved"))
+                    _applied = save_api_env(_path_changed)
                 except Exception as exc:
                     st.error(t("app.settings.key_save_failed", exc=exc))
+                else:
+                    # 同密钥板块:被消毒拒收的键明确报未生效,不再无条件弹"已保存"
+                    _rejected = [k for k in _path_changed if k not in _applied]
+                    if _rejected:
+                        st.error(t("app.settings.save_rejected", keys="、".join(_rejected)))
+                    if _applied:
+                        st.toast(t("app.settings.path_saved"))
 
 
 # ---------- Title ----------

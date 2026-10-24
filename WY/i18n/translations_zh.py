@@ -196,6 +196,7 @@ TEXT_ZH: dict[str, str] = {
     "app.settings.obabel_dir": "Open Babel 目录（OBABEL_DIR）",
     "app.settings.cli_results_dir": "CLI 结果目录（CLI_RESULTS_DIR）",
     "app.settings.path_saved": "路径已保存，可执行文件已按新目录重新探测",
+    "app.settings.save_rejected": "以下参数未生效（值不可包含 # 或换行等字符）：{keys}。其余修改已照常保存；如确需此类值请手动编辑 API.env 文件。",
     "app.settings.ppi_conf": "STRING 置信度阈值（PPI 边筛选下限）",
     "app.settings.ppi_conf_help": "0.4=中等置信（多数文献取值），0.7=高置信；更改后 PPI 与背景网络缓存会按新阈值自动重建，「数据网络」页的置信度滑条默认取此值。",
     "app.settings.string_ver": "STRING 数据版本",
