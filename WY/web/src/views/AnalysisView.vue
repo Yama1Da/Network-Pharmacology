@@ -207,7 +207,7 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
   <p class="sub s3">成分&nbsp;—&nbsp;靶点&nbsp;—&nbsp;网络&nbsp;—&nbsp;富集&nbsp;—&nbsp;模块</p>
 
   <!-- ================= 表单 ================= -->
-  <div class="panel s4">
+  <div class="panel wide s4">
     <div class="mode-row">
       <span class="ctl-label">输入模式</span>
       <span class="lv-group">
@@ -296,7 +296,7 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
   </div>
 
   <!-- ================= 结果 ================= -->
-  <div v-if="ppi" class="panel result">
+  <div v-if="ppi" class="panel wide result">
     <p v-if="paramsStale" class="stale">
       表单参数已变化 —— 下方结果属于上一次参数;重新点击"生成报告"刷新。
     </p>

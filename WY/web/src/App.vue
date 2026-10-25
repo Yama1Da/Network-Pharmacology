@@ -5,6 +5,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import CollectionView from './views/CollectionView.vue'
 import AnalysisView from './views/AnalysisView.vue'
 import DataView from './views/DataView.vue'
+import DockingView from './views/DockingView.vue'
 import HomeView from './views/HomeView.vue'
 import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
@@ -13,6 +14,7 @@ import SourcesView from './views/SourcesView.vue'
 const NAV = [
   { hash: '#/home', label: '主页' },
   { hash: '#/analysis', label: '分析' },
+  { hash: '#/docking', label: '对接' },
   { hash: '#/data', label: '数据' },
   { hash: '#/logs', label: '日志' },
   { hash: '#/drug-sources', label: '药物' },
@@ -70,6 +72,7 @@ onBeforeUnmount(() => {
     <main class="center" :class="{ ready }">
       <HomeView v-if="route === 'home'" />
       <AnalysisView v-else-if="route === 'analysis'" />
+      <DockingView v-else-if="route === 'docking'" />
       <LogsView v-else-if="route === 'logs'" />
       <SourcesView v-else-if="route === 'drug-sources'" kind="drug" />
       <SourcesView v-else-if="route === 'disease-sources'" kind="disease" />
