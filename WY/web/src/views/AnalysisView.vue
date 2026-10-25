@@ -171,6 +171,14 @@ const gseaDone = computed(() => {
 })
 
 /* 下载清单 */
+/** 下载区逐项说明。注意 vue-i18n 的 te() 不认扁平点号键,改以 t() 原样返回键名判定缺失
+ * (词典缺键的未来产物回退显示产物键名)。 */
+function dlDesc(key: string): string {
+  const ik = `web.analysis.dl_desc.${key}`
+  const s = t(ik)
+  return s === ik ? key : s
+}
+
 const downloadItems = computed<{ label: string; rel: string }[]>(() => {
   const a = artifacts.value
   const out: { label: string; rel: string }[] = []
@@ -616,7 +624,10 @@ onMounted(() => {
         <button class="bar-btn" @click="zipWholeDirectory">{{ t('web.analysis.dl_whole', { name: `${dirName}.zip` }) }}</button>
         <ul class="dl-list">
           <li v-for="d in downloadItems" :key="d.rel" class="dl-row">
-            <span class="dl-name">{{ d.rel }}</span>
+            <div class="dl-main">
+              <span class="dl-desc">{{ dlDesc(d.label) }}</span>
+              <span class="dl-name">{{ d.rel }}</span>
+            </div>
             <a class="mini" :href="artifactsUrl(d.rel, true)">{{ t('web.common.download') }}</a>
           </li>
         </ul>
@@ -914,10 +925,23 @@ onMounted(() => {
   padding: 8px 2px;
   border-bottom: 1px solid #f4f4f2;
 }
+/* 说明为主、文件名为辅(旧版下载区的逐项备注) */
+.dl-main {
+  flex: 1;
+  min-width: 0;
+}
+.dl-desc {
+  display: block;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  color: #1a1a1a;
+}
 .dl-name {
+  display: block;
+  margin-top: 2px;
   font-family: 'SF Mono', Consolas, monospace;
-  font-size: 11px;
-  color: #6e6e6c;
+  font-size: 10.5px;
+  color: #a6a6a6;
   word-break: break-all;
 }
 .notice.err {
