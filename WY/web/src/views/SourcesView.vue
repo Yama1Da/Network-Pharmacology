@@ -4,7 +4,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, type CollectionItem, type CollectionKind } from '../api'
+import { useConfirmArm } from '../composables/useConfirmArm'
 import { useJob } from '../composables/useJob'
+import { useNotice } from '../composables/useNotice'
+import { usePager } from '../composables/usePager'
+import { useSelection } from '../composables/useSelection'
+import { downloadBlob } from '../utils/download'
+import { fmtSize } from '../utils/format'
 
 const { t } = useI18n()
 const props = defineProps<{ kind: 'drug' | 'disease' }>()
@@ -26,10 +32,11 @@ const head = computed(() => HEAD.value[props.kind])
 
 const items = ref<CollectionItem[]>([])
 const loaded = ref(false)
+const { notice, flash } = useNotice(3200)
 const query = ref('')
-const selected = ref<Set<string>>(new Set())
-const page = ref(1)
-const PAGE_SIZE = 10
+const { page, paged, nPages, goto } = usePager<CollectionItem>(() => filtered.value)
+const { selected, toggle: toggleSel, allSelected, toggleAll, retain } = useSelection(
+  () => items.value.map((it) => it.name))
 
 /* 来源筛选 + merged 整合文件开关 */
 const srcOn = ref<Record<string, boolean>>({})
@@ -55,25 +62,6 @@ const filtered = computed<CollectionItem[]>(() => {
   return list
 })
 
-const paged = computed(() =>
-  filtered.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE))
-const nPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / PAGE_SIZE)))
-function goto(p: number): void {
-  page.value = Math.min(Math.max(1, p), nPages.value)
-}
-
-function toggleSel(name: string): void {
-  const next = new Set(selected.value)
-  if (next.has(name)) next.delete(name)
-  else next.add(name)
-  selected.value = next
-}
-const allSelected = computed(
-  () => items.value.length > 0 && items.value.every((it) => selected.value.has(it.name)))
-function toggleAll(): void {
-  selected.value = allSelected.value ? new Set() : new Set(items.value.map((it) => it.name))
-}
-
 /* ---------------- 更新(长任务,job 轮询) ---------------- */
 
 const job = useJob((result) => {
@@ -84,14 +72,6 @@ const job = useJob((result) => {
     : t('web.sources.update_done_ok', { n: rows.length }))
   void load()
 })
-
-const notice = ref('')
-let noticeTimer = 0
-function flash(msg: string): void {
-  notice.value = msg
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 3200)
-}
 
 async function refreshFiles(kind: 'drug' | 'disease', filenames: string[] | null): Promise<void> {
   await job.run(api.refreshSources(kind, filenames), { doneText: t('web.sources.one_ok') })
@@ -112,42 +92,31 @@ async function zipSelected(): Promise<void> {
   const names = [...selected.value]
   if (!names.length) return
   try {
-    const blob = await api.zip(collectionKind.value, names)
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = head.value.zip
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(await api.zip(collectionKind.value, names), head.value.zip)
   } catch {
     flash(t('web.common.zip_fail'))
   }
 }
 
-const confirmArm = ref(false)
-let confirmTimer = 0
+const { armed: confirmArm, tap: confirmTap } = useConfirmArm()
+
 function deleteSelected(): void {
-  if (!confirmArm.value) {
-    confirmArm.value = true
-    window.clearTimeout(confirmTimer)
-    confirmTimer = window.setTimeout(() => (confirmArm.value = false), 4000)
-    return
-  }
-  confirmArm.value = false
-  const names = [...selected.value]
-  if (!names.length) return
-  void (async () => {
-    try {
-      const r = await api.remove(collectionKind.value, names)
-      selected.value = new Set()
-      await load()
-      flash(r.failed.length
-        ? t('web.common.deleted_partial', { n: r.deleted, names: r.failed.join(', ') })
-        : t('web.common.deleted', { n: r.deleted }))
-    } catch {
-      flash(t('web.common.delete_fail'))
-    }
-  })()
+  confirmTap(() => {
+    const names = [...selected.value]
+    if (!names.length) return
+    void (async () => {
+      try {
+        const r = await api.remove(collectionKind.value, names)
+        selected.value = new Set()
+        await load()
+        flash(r.failed.length
+          ? t('web.common.deleted_partial', { n: r.deleted, names: r.failed.join(', ') })
+          : t('web.common.deleted', { n: r.deleted }))
+      } catch {
+        flash(t('web.common.delete_fail'))
+      }
+    })()
+  })
 }
 
 /* ---------------- 生命周期 ---------------- */
@@ -156,8 +125,7 @@ async function load(): Promise<void> {
   const listing = await api.collection(collectionKind.value)
   items.value = listing.items
   loaded.value = true
-  const names = new Set(listing.items.map((it) => it.name))
-  selected.value = new Set([...selected.value].filter((n) => names.has(n)))
+  retain(listing.items.map((it) => it.name))
   // 来源筛选项按实际清单初始化(默认全开)
   for (const s of sourceNames.value) {
     if (!(s in srcOn.value)) srcOn.value[s] = true
@@ -170,13 +138,8 @@ onMounted(() => {
   pollTimer = window.setInterval(() => { if (!job.running.value && !confirmArm.value) void load() }, 15000)
 })
 onBeforeUnmount(() => {
-  window.clearTimeout(noticeTimer)
-  window.clearTimeout(confirmTimer)
   window.clearInterval(pollTimer)
 })
-
-const fmtSize = (n: number): string =>
-  n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
 </script>
 
 <template>

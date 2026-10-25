@@ -2,7 +2,7 @@
 /** 主页(App.py 职责的 TS 化):四库检索落地页,1:1 复刻 Front-end-screen-options 极简主义样本。
  * 箭头点击 → /api/targets/retrieve job(四库并发检索,写入来源与 merged 缓存),
  * 完成后展示两侧靶点数并可预填跳转分析页。 */
-import { onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import { setPrefill } from '../store'
@@ -44,35 +44,39 @@ function goAnalysis(): void {
   location.hash = '#/analysis'
 }
 
-/* 页脚统计数字滚动(样本同款:装饰性品牌数字) */
-interface CountStat {
-  v: Ref<number>
-  t: number
-}
-const stats: CountStat[] = [
-  { v: ref(0), t: 12 },
-  { v: ref(0), t: 8932 },
-  { v: ref(0), t: 31486 },
-  { v: ref(0), t: 402 }
-]
+/* 页脚统计数字滚动(样本同款):数值为 /api/stats 的本机缓存实数,非装饰值 */
+type StatKey = 'databases' | 'compounds' | 'targets' | 'pathways'
+const STAT_KEYS: StatKey[] = ['databases', 'compounds', 'targets', 'pathways']
+const stats = ref<Record<StatKey, number>>(
+  { databases: 0, compounds: 0, targets: 0, pathways: 0 })
+const shown = reactive<Record<StatKey, number>>(
+  { databases: 0, compounds: 0, targets: 0, pathways: 0 })
 const fmt = (n: number): string => n.toLocaleString('en-US')
 
 let raf = 0
 let started = false
-function startCount(): void {
-  if (started) return
+let introDone = false
+let statsDone = false
+function maybeStart(): void {
+  if (started || !introDone || !statsDone) return
   started = true
   const t0 = performance.now()
   const dur = 1600
   const step = (t: number): void => {
     const p = Math.min(1, (t - t0) / dur)
     const e = 1 - Math.pow(1 - p, 3)
-    for (const s of stats) s.v.value = Math.round(s.t * e)
+    for (const k of STAT_KEYS) shown[k] = Math.round(stats.value[k] * e)
     if (p < 1) raf = window.requestAnimationFrame(step)
   }
   raf = window.requestAnimationFrame(step)
 }
-onMounted(() => window.setTimeout(startCount, 1750))  // 与 App 入场幕布对齐
+onMounted(() => {
+  window.setTimeout(() => { introDone = true; maybeStart() }, 1750)  // 与 App 入场幕布对齐
+  void api.homeStats()
+    .then((s) => { stats.value = s })
+    .catch(() => { /* 读取失败保持 0:宁可真实为 0,不放假数 */ })
+    .finally(() => { statsDone = true; maybeStart() })
+})
 onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 </script>
 
@@ -143,10 +147,10 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   </Transition>
 
   <div class="foot-stats s5">
-    <span><b>{{ fmt(stats[0].v.value) }}</b> {{ t('web.home.stat_dbs') }} ·
-      <b>{{ fmt(stats[1].v.value) }}</b> {{ t('web.home.stat_compounds') }} ·
-      <b>{{ fmt(stats[2].v.value) }}</b> {{ t('web.home.stat_targets') }} ·
-      <b>{{ fmt(stats[3].v.value) }}</b> {{ t('web.home.stat_pathways') }}</span>
+    <span><b>{{ fmt(shown.databases) }}</b> {{ t('web.home.stat_dbs') }} ·
+      <b>{{ fmt(shown.compounds) }}</b> {{ t('web.home.stat_compounds') }} ·
+      <b>{{ fmt(shown.targets) }}</b> {{ t('web.home.stat_targets') }} ·
+      <b>{{ fmt(shown.pathways) }}</b> {{ t('web.home.stat_pathways') }}</span>
   </div>
 </template>
 

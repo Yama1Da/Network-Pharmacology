@@ -4,21 +4,16 @@
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, type LogFile } from '../api'
+import { useNotice } from '../composables/useNotice'
+import { fmtSize } from '../utils/format'
 
 const { t } = useI18n()
+const { notice, flash } = useNotice(2600)
 const level = ref<'INFO' | 'DEBUG'>('INFO')
 const files = ref<LogFile[]>([])
 const expanded = ref('')
 const contents = ref<Record<string, { content: string; truncated: boolean }>>({})
 const loadingContent = ref(false)
-const notice = ref('')
-let noticeTimer = 0
-
-function flash(msg: string): void {
-  notice.value = msg
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 2600)
-}
 
 async function loadLevel(): Promise<void> {
   try {
@@ -66,9 +61,6 @@ function refresh(): void {
   void loadFiles()
   void loadLevel()
 }
-
-const fmtSize = (n: number): string =>
-  n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
 
 onMounted(() => {
   void loadLevel()

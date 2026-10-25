@@ -4,11 +4,13 @@
  * ③ 运行(七阶段 job) ④ 结果(指标/ROC/共识/漏斗/shortlist + 近 3 次摘要)。
  * 末段并入 ML_Results_Information(结果管理):run 清单/搜索/删除/ZIP/keep-N 清理。
  * 全链编排唯一定义在 core.ml_pipeline.run_screen_chain(CLI/页面/API 共用)。 */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, artifactsUrl, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
+import { useNotice } from '../composables/useNotice'
+import { fmtSize } from '../utils/format'
 
 const { t } = useI18n()
 
@@ -101,8 +103,6 @@ const unusable = computed(() => {
      (!a.symbol_level && a.annot === 'missing')))
 })
 
-const fmtSize = (n: number): string =>
-  n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`
 const fmtEta = (s: number): string =>
   s < 90 ? `${Math.max(1, Math.round(s))} ${t('web.ml.unit_sec')}`
     : s < 3600 ? `${Math.max(1, Math.round(s / 60))} ${t('web.ml.unit_min')}`
@@ -229,13 +229,7 @@ async function loadHistory(): Promise<void> {
 
 /* ---------------- 通用 ---------------- */
 
-const notice = ref('')
-let noticeTimer = 0
-function flash(msg: string): void {
-  notice.value = msg
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 4200)
-}
+const { notice, flash } = useNotice(4200)
 
 /* 阶段顺序与标签(标签走 i18n) */
 const STAGE_ORDER = ['fetch', 'group', 'preprocess', 'deg', 'ml', 'shortlist', 'save'] as const

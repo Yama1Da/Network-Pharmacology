@@ -1,22 +1,16 @@
 <script setup lang="ts">
 /** 数据管理(阶段 2):背景互作组状态与一键重建(job)+ 分析产物目录(CollectionView)。 */
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, type InteractomeStatus } from '../api'
 import { useJob } from '../composables/useJob'
+import { useNotice } from '../composables/useNotice'
 import CollectionView from './CollectionView.vue'
 
 const { t } = useI18n()
 const itx = ref<InteractomeStatus | null>(null)
 const loaded = ref(false)
-const notice = ref('')
-let noticeTimer = 0
-
-function flash(msg: string): void {
-  notice.value = msg
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 3200)
-}
+const { notice, flash } = useNotice(3200)
 
 const job = useJob((result) => {
   flash(t('web.data.built_flash', { nodes: result.nodes, edges: result.edges }) +
@@ -37,13 +31,8 @@ function build(): void {
   void job.run(api.buildInteractome(), { doneText: t('web.data.build_done') })
 }
 
-let pollTimer = 0
 onMounted(() => {
   void load()
-})
-onBeforeUnmount(() => {
-  window.clearTimeout(noticeTimer)
-  if (!job.running.value) window.clearInterval(pollTimer)
 })
 </script>
 

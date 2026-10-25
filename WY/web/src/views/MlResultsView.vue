@@ -2,41 +2,39 @@
 /** ML 结果管理(阶段 3c,ML_Results_Information 的 TS 迁移,独立页面):
  * 全部 ML run 清单(双根同扫:GEOresult + results/mlscreen)· 关键词筛选 ·
  * 勾选删除(两段确认)· ZIP 下载 · keep-N 清理。数据层在 core.ml_results。 */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api'
+import { useConfirmArm } from '../composables/useConfirmArm'
+import { useNotice } from '../composables/useNotice'
+import { usePager } from '../composables/usePager'
+import { useSelection } from '../composables/useSelection'
 import Stepper from '../components/Stepper.vue'
+import { downloadBlob } from '../utils/download'
 
 const { t } = useI18n()
 const runs = ref<Record<string, any>[]>([])
 const runsLoaded = ref(false)
 const runsQuery = ref('')
-const runsSel = ref<Set<string>>(new Set())
-const runsPage = ref(1)
-const RUNS_PAGE = 10
+const { notice, flash } = useNotice(4200)
+const { page: runsPage, paged: runsPaged, nPages: runsNPages, goto: runsGoto } =
+  usePager<Record<string, any>>(() => runsFiltered.value)
+const { selected: runsSel, toggle: runsToggle, allSelected: runsAllSelected,
+        toggleAll: runsToggleAll, retain: runsRetain } = useSelection(
+  () => runs.value.map((r) => r.name))
 const cleanupKeep = ref(6)
 const cleanupBusy = ref(false)
 const cleanupErr = ref('')
 const runsDeleteBusy = ref(false)
 const runsDeleteErr = ref('')
-const runsConfirm = ref(false)
-let runsConfirmTimer = 0
+const { armed: runsConfirm, tap: runsConfirmTap } = useConfirmArm()
 const zipBusy = ref(false)
-
-const notice = ref('')
-let noticeTimer = 0
-function flash(msg: string): void {
-  notice.value = msg
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 4200)
-}
 
 async function loadRuns(): Promise<void> {
   try {
     runs.value = (await api.mlRuns()).runs
     runsLoaded.value = true
-    const names = new Set(runs.value.map((r) => r.name))
-    runsSel.value = new Set([...runsSel.value].filter((n) => names.has(n)))
+    runsRetain(runs.value.map((r) => r.name))
   } catch (e) {
     flash(t('web.ml_results.load_fail', { msg: e instanceof Error ? e.message : String(e) }))
   }
@@ -50,24 +48,6 @@ const runsFiltered = computed(() => {
     String(r.gse ?? '').toLowerCase().includes(q) ||
     String(r.source ?? '').toLowerCase().includes(q))
 })
-const runsPaged = computed(() =>
-  runsFiltered.value.slice((runsPage.value - 1) * RUNS_PAGE, runsPage.value * RUNS_PAGE))
-const runsNPages = computed(() => Math.max(1, Math.ceil(runsFiltered.value.length / RUNS_PAGE)))
-function runsGoto(p: number): void {
-  runsPage.value = Math.min(Math.max(1, p), runsNPages.value)
-}
-function runsToggle(name: string): void {
-  const next = new Set(runsSel.value)
-  if (next.has(name)) next.delete(name)
-  else next.add(name)
-  runsSel.value = next
-}
-const runsAllSelected = computed(() =>
-  runs.value.length > 0 && runs.value.every((r) => runsSel.value.has(r.name)))
-function runsToggleAll(): void {
-  runsSel.value = runsAllSelected.value
-    ? new Set() : new Set(runs.value.map((r) => r.name))
-}
 function runsPaths(names: Iterable<string>): string[] {
   return [...names].map((n) => runs.value.find((r) => r.name === n)?.path ?? '').filter(Boolean)
 }
@@ -76,13 +56,8 @@ async function runsZip(): Promise<void> {
   if (!paths.length) return
   zipBusy.value = true
   try {
-    const blob = await api.mlRunsZip(paths)
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `ml_results_${new Date().toISOString().slice(0, 10)}.zip`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(await api.mlRunsZip(paths),
+                 `ml_results_${new Date().toISOString().slice(0, 10)}.zip`)
   } catch {
     flash(t('web.common.zip_fail'))
   } finally {
@@ -90,27 +65,24 @@ async function runsZip(): Promise<void> {
   }
 }
 async function runsDelete(): Promise<void> {
-  if (!runsConfirm.value) {
-    runsConfirm.value = true
-    window.clearTimeout(runsConfirmTimer)
-    runsConfirmTimer = window.setTimeout(() => (runsConfirm.value = false), 4000)
-    return
-  }
-  runsConfirm.value = false
-  const paths = runsPaths(runsSel.value)
-  if (!paths.length) return
-  runsDeleteBusy.value = true
-  runsDeleteErr.value = ''
-  try {
-    const r = await api.mlRunsDelete({ paths })
-    flash(t('web.ml_results.delete_done', { n: r.deleted.length }))
-    runsSel.value = new Set()
-    await loadRuns()
-  } catch (e) {
-    runsDeleteErr.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    runsDeleteBusy.value = false
-  }
+  runsConfirmTap(() => {
+    const paths = runsPaths(runsSel.value)
+    if (!paths.length) return
+    void (async () => {
+      runsDeleteBusy.value = true
+      runsDeleteErr.value = ''
+      try {
+        const r = await api.mlRunsDelete({ paths })
+        flash(t('web.ml_results.delete_done', { n: r.deleted.length }))
+        runsSel.value = new Set()
+        await loadRuns()
+      } catch (e) {
+        runsDeleteErr.value = e instanceof Error ? e.message : String(e)
+      } finally {
+        runsDeleteBusy.value = false
+      }
+    })()
+  })
 }
 async function runsCleanup(): Promise<void> {
   cleanupBusy.value = true

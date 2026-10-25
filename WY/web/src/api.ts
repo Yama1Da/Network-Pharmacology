@@ -181,6 +181,14 @@ export const api = {
   retrieveTargets: (drug: string, disease: string): Promise<{ job_id: string }> =>
     post('/api/targets/retrieve', { drug, disease }),
 
+  /* ---- 主页页脚统计(本机缓存实数) ---- */
+  homeStats: (): Promise<{
+    databases: number
+    compounds: number
+    targets: number
+    pathways: number
+  }> => fetch('/api/stats').then((r) => json(r)),
+
   settings: (): Promise<{
     keys: { disgenet: boolean; ncbi: boolean }
     vina_dir: string

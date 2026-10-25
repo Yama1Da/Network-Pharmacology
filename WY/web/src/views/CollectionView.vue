@@ -5,6 +5,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, type CollectionItem, type CollectionKind } from '../api'
+import { useConfirmArm } from '../composables/useConfirmArm'
+import { useNotice } from '../composables/useNotice'
+import { usePager } from '../composables/usePager'
+import { useSelection } from '../composables/useSelection'
+import { downloadBlob } from '../utils/download'
+import { fmtSize } from '../utils/format'
 
 const { t } = useI18n()
 const props = defineProps<{
@@ -17,21 +23,11 @@ const props = defineProps<{
 const items = ref<CollectionItem[]>([])
 const mode = ref<'files' | 'dirs'>('files')
 const loaded = ref(false)
-const notice = ref('')
-let noticeTimer = 0
-
-function flash(msg: string): void {
-  notice.value = msg
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 2600)
-}
+const { notice, flash } = useNotice(2600)
 
 /* ---------------- 搜索 / 筛选 / 选择 / 分页(客户端) ---------------- */
 
 const query = ref('')
-const selected = ref<Set<string>>(new Set())
-const page = ref(1)
-const PAGE_SIZE = 10
 
 /* 富集页筛选:GSEA 按侧别 + 两来源;无法识别命名的文件不受筛选影响 */
 const flt = ref({ gseaDrug: true, gseaDisease: true, gprofiler: true, enrichr: true })
@@ -60,42 +56,20 @@ const filtered = computed<CollectionItem[]>(() => {
   return list
 })
 
-const paged = computed(() =>
-  filtered.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE))
-const nPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / PAGE_SIZE)))
-
-function goto(p: number): void {
-  page.value = Math.min(Math.max(1, p), nPages.value)
-}
-
-function toggleSel(name: string): void {
-  const next = new Set(selected.value)
-  if (next.has(name)) next.delete(name)
-  else next.add(name)
-  selected.value = next
-}
-
-const allSelected = computed(
-  () => items.value.length > 0 && items.value.every((it) => selected.value.has(it.name)))
-
-function toggleAll(): void {
-  selected.value = allSelected.value
-    ? new Set()
-    : new Set(items.value.map((it) => it.name))
-}
+const { page, paged, nPages, goto } = usePager<CollectionItem>(() => filtered.value)
+const { selected, toggle: toggleSel, allSelected, toggleAll, retain } = useSelection(
+  () => items.value.map((it) => it.name))
 
 /* ---------------- 动作 ---------------- */
 
-const confirmArm = ref(false)
-let confirmTimer = 0
+const { armed: confirmArm, tap: confirmTap } = useConfirmArm()
 
 async function load(): Promise<void> {
   const listing = await api.collection(props.kind)
   items.value = listing.items
   mode.value = listing.mode
   loaded.value = true
-  const names = new Set(listing.items.map((it) => it.name))
-  selected.value = new Set([...selected.value].filter((n) => names.has(n)))
+  retain(listing.items.map((it) => it.name))
 }
 
 async function refresh(): Promise<void> {
@@ -110,40 +84,29 @@ async function refresh(): Promise<void> {
 async function download(names: string[], single?: string): Promise<void> {
   if (!names.length) return
   try {
-    const blob = await api.zip(props.kind, names)
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = single ?? zipName.value
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(await api.zip(props.kind, names), single ?? zipName.value)
   } catch {
     flash(t('web.common.zip_fail'))
   }
 }
 
 function deleteSelected(): void {
-  if (!confirmArm.value) {  // 两段式确认:再次点击才删,4 秒内未点自动撤防
-    confirmArm.value = true
-    window.clearTimeout(confirmTimer)
-    confirmTimer = window.setTimeout(() => (confirmArm.value = false), 4000)
-    return
-  }
-  confirmArm.value = false
-  const names = [...selected.value]
-  if (!names.length) return
-  void (async () => {
-    try {
-      const r = await api.remove(props.kind, names)
-      selected.value = new Set()
-      await load()
-      flash(r.failed.length
-        ? t('web.common.deleted_partial', { n: r.deleted, names: r.failed.join(', ') })
-        : t('web.common.deleted', { n: r.deleted }))
-    } catch {
-      flash(t('web.common.delete_fail'))
-    }
-  })()
+  confirmTap(() => {  // 两段式确认:再次点击才删,4 秒内未点自动撤防
+    const names = [...selected.value]
+    if (!names.length) return
+    void (async () => {
+      try {
+        const r = await api.remove(props.kind, names)
+        selected.value = new Set()
+        await load()
+        flash(r.failed.length
+          ? t('web.common.deleted_partial', { n: r.deleted, names: r.failed.join(', ') })
+          : t('web.common.deleted', { n: r.deleted }))
+      } catch {
+        flash(t('web.common.delete_fail'))
+      }
+    })()
+  })
 }
 
 const zipName = computed(() => {
@@ -153,9 +116,6 @@ const zipName = computed(() => {
   }
   return map[props.kind] ?? `${props.kind}.zip`
 })
-
-const fmtSize = (n: number): string =>
-  n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
 
 /* ---------------- 生命周期 ---------------- */
 
@@ -168,8 +128,6 @@ onMounted(() => {
   }, 15000)
 })
 onBeforeUnmount(() => {
-  window.clearTimeout(noticeTimer)
-  window.clearTimeout(confirmTimer)
   window.clearInterval(pollTimer)
 })
 </script>

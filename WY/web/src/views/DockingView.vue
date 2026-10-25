@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { api, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
+import { useNotice } from '../composables/useNotice'
 
 const { t } = useI18n()
 
@@ -319,13 +320,7 @@ async function save3d(): Promise<void> {
 
 /* ---------------- 通用 ---------------- */
 
-const notice = ref('')
-let noticeTimer = 0
-function flash(msg: string): void {
-  notice.value = msg
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 3600)
-}
+const { notice, flash } = useNotice(3600)
 
 const stepDone = computed(() => ({
   s1: genes.value.length > 0,
@@ -344,7 +339,6 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
-  window.clearTimeout(noticeTimer)
   window.clearTimeout(reloadTimer)
 })
 </script>

@@ -7,8 +7,10 @@ import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import Stepper from '../components/Stepper.vue'
+import { useNotice } from '../composables/useNotice'
 
 const { t } = useI18n()
+const { notice, flash } = useNotice(3200)
 const keys = ref({ disgenet: false, ncbi: false })
 const dgKey = ref('')
 const ncbiKey = ref('')
@@ -20,14 +22,6 @@ const knownVersions = ref<string[]>([])
 const customMode = ref(false)
 const customVersion = ref('')
 const pocketCutoff = ref(4.0)
-const notice = ref('')
-let noticeTimer = 0
-
-function flash(msg: string): void {
-  notice.value = msg
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 3200)
-}
 
 async function load(): Promise<void> {
   const s = await api.settings()

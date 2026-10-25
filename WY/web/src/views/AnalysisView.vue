@@ -2,14 +2,17 @@
 /** PPI 分析(Data_Network 的 TS 迁移,阶段 3a)。
  * 产物直出:分析图表由后端落盘、经 /api/artifacts 伺服;交互区重跑(模块/GSEA)
  * 无状态化——从落盘 nodes/edges CSV 重建图。行为与 Streamlit 版一致。 */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   api, artifactsUrl, type PpiAnalyzeBody, type PpiResult, type Row
 } from '../api'
 import { takePrefill } from '../store'
 import { useJob } from '../composables/useJob'
+import { useNotice } from '../composables/useNotice'
 import Stepper from '../components/Stepper.vue'
+import { downloadBlob } from '../utils/download'
+import { fmt } from '../utils/format'
 
 const { t } = useI18n()
 
@@ -85,13 +88,7 @@ const paramsStale = computed(() => {
   return a.length !== b.length || a.some((v, i) => String(v) !== String(b[i]))
 })
 
-const notice = ref('')
-let noticeTimer = 0
-function flash(msg: string): void {
-  notice.value = msg
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => (notice.value = ''), 3200)
-}
+const { notice, flash } = useNotice(3200)
 
 const view = ref('')
 const availableViews = computed(() => ppi.value?.views ?? [])
@@ -184,20 +181,11 @@ const dirName = computed(() =>
 async function zipWholeDirectory(): Promise<void> {
   if (!dirName.value) return
   try {
-    const blob = await api.zip('downloads', [dirName.value])
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${dirName.value}.zip`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(await api.zip('downloads', [dirName.value]), `${dirName.value}.zip`)
   } catch {
     flash(t('web.analysis.dl_zip_fail'))
   }
 }
-
-const fmt = (v: unknown, digits = 3): string =>
-  typeof v === 'number' ? v.toFixed(digits) : (v == null ? '—' : String(v))
 
 onMounted(() => {
   // 主页四库检索完成后的预填跳转
@@ -208,8 +196,6 @@ onMounted(() => {
     disease.value = pf.disease
   }
 })
-
-onBeforeUnmount(() => window.clearTimeout(noticeTimer))
 </script>
 
 <template>
