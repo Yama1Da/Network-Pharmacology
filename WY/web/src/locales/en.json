@@ -857,6 +857,7 @@
  "web.docking.archive_btn": "Archive results",
  "web.docking.archive_idle": "Run the docking first — interpretation and archiving live here.",
  "web.docking.archived": "Archived",
+ "web.docking.archived_btn": "Archived · edit the content to re-archive",
  "web.docking.archiving": "Archiving…",
  "web.docking.box_empty": "No residues inside the box — check its position.",
  "web.docking.box_label": "Center / size (Å)",

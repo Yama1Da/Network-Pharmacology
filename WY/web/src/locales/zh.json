@@ -857,6 +857,7 @@
  "web.docking.archive_btn": "归档结果",
  "web.docking.archive_idle": "运行对接后可在此解读与归档。",
  "web.docking.archived": "已归档",
+ "web.docking.archived_btn": "已归档 · 内容有变可重新归档",
  "web.docking.archiving": "归档中…",
  "web.docking.box_empty": "盒内无残基 —— 检查盒子位置。",
  "web.docking.box_label": "中心 / 尺寸(Å)",

@@ -1022,6 +1022,9 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
         hub_set = set(dock.get("hub_genes") or [])
         enr_set = set(dock.get("enrichment_genes") or [])
         dock["candidate_pre"] = sorted(hub_set & enr_set) if hub_set else sorted(enr_set)
+        # genes 先按候选全集初始化:跳过结构检查直接进 Step 3 也能选基因;
+        # 之后 check-structures 会把它替换为"有结构"的子集
+        dock["genes"] = list(dock["candidate_pre"])
     return {
         "label": dock.get("label", ""), "drug": dock.get("drug", ""),
         "disease": dock.get("disease", ""),

@@ -877,9 +877,16 @@ tr.selrow td,
 tr.selrow {
   cursor: pointer;
 }
-.tbl tbody tr.selrow td,
 .tbl tbody tr:hover td {
   background: #f7f7f5;
+}
+/* 选中行:底色加深 + 首列左缘黑色竖线,与悬停浅灰明确区分 */
+.tbl tbody tr.selrow td {
+  background: #ececea;
+}
+.tbl tbody tr.selrow td:first-child {
+  box-shadow: inset 2px 0 0 #1a1a1a;
+  font-weight: 500;
 }
 td.ttl {
   max-width: 260px;

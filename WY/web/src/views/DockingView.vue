@@ -4,7 +4,7 @@
  * 3D 预览为服务端 py3Dmol 渲染的 HTML,iframe 内嵌。 */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, type Row } from '../api'
+import { api, artifactsUrl, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
@@ -130,15 +130,33 @@ const pdbSel = ref('')
 const receptor = ref<{ pdb_id: string; receptor_source: string } | null>(null)
 const recJob = useJob((result) => {
   receptor.value = result as unknown as { pdb_id: string; receptor_source: string }
+  resetSteps4to6()
   flash(t('web.docking.receptor_ready'))
 })
+
+/** 换基因 / 换受体后清空 Step 4-6 的旧结果:盒子、对接得分、归档、3D 视图
+ * 都绑定在具体受体上,留着上一受体的缓存展示会误导。 */
+function resetSteps4to6(): void {
+  box.value = null
+  boxMeta.value = null
+  dockState.value = null
+  saved.value = null
+  starred.value = false
+  poseSel.value = 1
+  conclusion.value = ''
+  view3dSrc.value = ''
+  view3dKey.value++
+  interRows.value = []
+  pocketRows.value = []
+  interOpen.value = false
+}
 
 async function loadCandidates(): Promise<void> {
   if (!gene.value) return
   sid.value = await ensureSession()
   pdbSel.value = ''
   receptor.value = null
-  box.value = null
+  resetSteps4to6()
   try {
     const r = await api.dockingReceptorCandidates(sid.value, { gene: gene.value, allow_af: allowAf.value })
     candError.value = r.error ?? ''
@@ -213,9 +231,11 @@ const fmt = (v: unknown, digits = 3): string =>
 
 /* ---------------- Step 5 运行对接 ---------------- */
 
+const runSeq = ref(0)  // 每完成一轮对接 +1,归档签名用它识别"新一轮结果未归档"
 const runJob = useJob((result) => {
   const r = result as { log_tail: string; scores: Row[] }
   dockState.value = { result: { log_tail: r.log_tail, scores: r.scores } }
+  runSeq.value++
 })
 const dockState = ref<{ result: { log_tail: string; scores: Row[] } } | null>(null)
 
@@ -241,6 +261,14 @@ const saveBusy = ref(false)
 const scores = computed<Row[]>(() => dockState.value?.result?.scores ?? [])
 const logTail = computed(() => dockState.value?.result?.log_tail ?? '')
 
+/* 归档防重复:签名 = 对接轮次 + 受体 + 构象 + 结论 + 前后缀;归档后按钮置灰,
+ * 上述任一内容变化才重新允许归档(想留多版本就改一下结论再归)。 */
+const lastSavedSig = ref('')
+const archiveSig = computed(() => JSON.stringify(
+  [runSeq.value, receptor.value?.pdb_id, poseSel.value,
+   conclusion.value, drugName.value, diseaseName.value]))
+const archiveDirty = computed(() => archiveSig.value !== lastSavedSig.value)
+
 const cutoff = ref(4.0)
 const focus = ref(false)
 const view3dKey = ref(0)
@@ -255,6 +283,7 @@ async function load3d(): Promise<void> {
   if (!scores.value.length || !sid.value) return
   view3dBusy.value = true
   try {
+    view3dKey.value++  // 重建 iframe:同参数再点"刷新视图"也能真正重载,而不是静默无反应
     view3dSrc.value = api.dockingView3dUrl(sid.value, poseSel.value, cutoff.value, focus.value)
     const inter = await api.dockingInteractions(sid.value, poseSel.value)
     interRows.value = inter.rows
@@ -284,6 +313,7 @@ async function saveResult(): Promise<void> {
       drug: drugName.value, disease: diseaseName.value
     })
     saved.value = { result_dir: r.result_dir }
+    lastSavedSig.value = archiveSig.value
     starred.value = false
     flash(t('web.docking.archived'))
   } catch (e) {
@@ -311,6 +341,10 @@ async function save3d(): Promise<void> {
     const r = await api.dockingSave3d(sid.value, { pose: poseSel.value, caption })
     flash(t('web.docking.saved_3d', { rel: r.artifact_rel,
                                        offline: r.offline_ok ? t('web.docking.offline_ok') : t('web.docking.offline_no') }))
+    // 保存进结果目录的同时把 HTML 直接下载到本地(对齐旧版"下载交互式 3D 视图")
+    const a = document.createElement('a')
+    a.href = artifactsUrl(r.artifact_rel, true)
+    a.click()
   } catch (e) {
     flash(e instanceof Error ? e.message : String(e))
   } finally {
@@ -585,8 +619,9 @@ onBeforeUnmount(() => {
           <label class="set-label">{{ t('web.docking.prefix_label') }}</label>
           <div class="field"><input v-model="drugName" :placeholder="s1?.drug || t('web.docking.drug_name_ph')" spellcheck="false" /><i class="line"></i></div>
           <div class="field"><input v-model="diseaseName" :placeholder="s1?.disease || t('web.docking.disease_name_ph')" spellcheck="false" /><i class="line"></i></div>
-          <button class="bar-btn strong" :disabled="saveBusy" @click="saveResult">
-            {{ saveBusy ? t('web.docking.archiving') : t('web.docking.archive_btn') }}
+          <button class="bar-btn strong" :disabled="saveBusy || (!!saved && !archiveDirty)" @click="saveResult">
+            {{ saveBusy ? t('web.docking.archiving')
+              : (!!saved && !archiveDirty) ? t('web.docking.archived_btn') : t('web.docking.archive_btn') }}
           </button>
           <button v-if="saved" class="bar-btn" @click="toggleStar">
             {{ starred ? t('web.docking.starred') : t('web.docking.star') }}
@@ -605,7 +640,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
         <p class="hint-line">{{ t('web.docking.legend') }}</p>
-        <iframe v-if="view3dSrc" class="fig-frame" :src="view3dSrc" title="3d preview" />
+        <iframe v-if="view3dSrc" :key="view3dKey" class="fig-frame" :src="view3dSrc" title="3d preview" />
         <p v-else class="hint-line">{{ t('web.docking.load_3d_hint') }}</p>
         <p v-if="pocketNames.length" class="hint-line">
           {{ t('web.docking.pocket_list', { n: pocketNames.length, cutoff, list: pocketNames.slice(0, 40).join(', ') }) }}
