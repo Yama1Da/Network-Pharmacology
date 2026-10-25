@@ -20,7 +20,7 @@ def setup_logging() -> None:
     """初始化日志:同时输出到屏幕和按天滚动的日志文件,保留两年;重复调用不会重复设置。
     过期日志自动删除;只记录重要信息,屏蔽画图库的琐碎调试信息;日志目录创建失败时只在屏幕输出,不影响程序运行。
     """
-    import config
+    from WY import config
 
     logger = logging.getLogger()
     if logger.hasHandlers():

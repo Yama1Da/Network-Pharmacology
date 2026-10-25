@@ -17,7 +17,7 @@ def fetch_drug_targets_dgidb_stated(drug_name: str) -> tuple[pd.DataFrame, str]:
     失败或无数据时返回空表；结果存为本地 CSV，已有缓存则直接复用
     (空结果不落盘,故缓存命中必非空)。
     """
-    import config
+    from WY import config
 
     # 已有缓存则直接读取本地文件
     csv_path, cached = open_named_csv_cache(

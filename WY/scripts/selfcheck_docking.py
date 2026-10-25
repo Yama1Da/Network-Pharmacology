@@ -13,17 +13,16 @@ import tempfile
 import threading
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from selfcheck_common import _tmp_uniprot_cache, patch_attr, run
+from WY.scripts.selfcheck_common import _tmp_uniprot_cache, patch_attr, run
 
 import requests
 
-import config
-import core.docking as dock
-import core.http_client as hc
-from core.management import save_ui_settings
-from core.http_client import throttle
+from WY import config
+import WY.core.docking as dock
+import WY.core.http_client as hc
+from WY.core.management import save_ui_settings
+from WY.core.http_client import throttle
 
 
 def t_clamp_box():
@@ -357,7 +356,7 @@ def t_api_env_roundtrip():
     保留注释与其他行、运行时回填含派生值联动(NCBI key 生效 → E-UTILS 节流间隔切 0.10)。"""
     import shutil
 
-    from core.management import save_api_env
+    from WY.core.management import save_api_env
 
     base = tempfile.mkdtemp(prefix="selfcheck_apienv_")
     env_path = os.path.join(base, "API.env")
@@ -402,7 +401,7 @@ def t_env_discovery():
     都找不到时返回空串。打桩 PATH 只含测试目录,不受本机真实安装干扰。"""
     import shutil
 
-    import env_discovery
+    from WY import env_discovery
 
     base = tempfile.mkdtemp(prefix="selfcheck_envdisc_")
     saved_env = {k: os.environ.get(k) for k in ("VINA_DIR", "OBABEL_DIR")}

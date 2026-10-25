@@ -4,8 +4,8 @@ import os
 from dotenv import load_dotenv
 
 # 平级零依赖叶子:Vina/OBABEL 工具链探测逻辑(本文件导入时调用取值,详见该模块 docstring)。
-# 按就地运行约定(WY 目录在 sys.path)以裸名导入。
-import env_discovery
+# 以 WY 包绝对导入(可编辑安装提供可见性,见 selfcheck_architecture)。
+from WY import env_discovery
 
 # 项目根目录,即 config.py 所在文件夹
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

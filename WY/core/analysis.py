@@ -179,7 +179,7 @@ def gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str)
 
 def run_enrichment_task(genes: list[str], organism: str, prefix: str):
     """功能富集(g:Profiler 主 + Enrichr 备,输入为交集靶点),返回 (结果表, 数据源, 状态原因)。"""
-    import config
+    from WY import config
 
     enr_status: dict = {}
     df, source = run_enrichment(genes, organism=organism,
@@ -334,7 +334,7 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
     """执行完整分析（交集→[RWR扩展]→STRING→建图→指标→富集→可视化→保存），返回结果字典。
     物种固定为人类（疾病靶点数据源仅有人类数据）；PPI 建网只隐藏孤立节点、不做最低连接度剪枝
     （会抵消 RWR 扩展拉入的外周靶点）；RWR 扩展只作用于建网/拓扑/hub/模块/富集,邻近度与 GSEA 仍基于原始靶点集。"""
-    import config
+    from WY import config
 
     species_id = config.SPECIES_MAP["Human"]["ncbi_taxon"]
     organism = config.SPECIES_MAP["Human"]["gprofiler"]

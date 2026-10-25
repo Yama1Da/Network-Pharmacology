@@ -24,13 +24,12 @@ import sys
 import time
 import warnings
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 
-import config
-from core.expression import differential_expression, map_probe_to_symbol, preprocess
-from core.geo import (
+from WY import config
+from WY.core.expression import differential_expression, map_probe_to_symbol, preprocess
+from WY.core.geo import (
     assign_groups,
     fetch_geo_dataset,
     group_fields_overview,
@@ -119,7 +118,7 @@ def cmd_screen(args) -> int:
     流程本体在 core/ml_pipeline.run_screen_chain(CLI 与 M4 页面共用,方案 §M4
     "页面不新增能力、只换交互形态");本函数只做参数收集与进度打印。
     """
-    from core.ml_pipeline import STAGES, run_screen_chain
+    from WY.core.ml_pipeline import STAGES, run_screen_chain
 
     # 抑制小样本 LinearSVC 偶发收敛警告(不影响结果,代码内已处理)
     warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")

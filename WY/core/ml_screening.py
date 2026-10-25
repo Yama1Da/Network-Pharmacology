@@ -25,7 +25,7 @@ _C_GRID = (0.01, 0.03, 0.1, 0.3, 1.0)  # 逻辑回归正则强度候选(越小�
 
 
 def _config():
-    import config
+    from WY import config
     return config
 
 

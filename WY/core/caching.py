@@ -89,7 +89,7 @@ def _read_cache_csv(cache_file: str) -> pd.DataFrame | None:
 def is_cache_fresh(cache_file: str, ttl_seconds: int | None = None) -> bool:
     """缓存文件是否仍有效:文件存在、且保存时间距今没超过有效期（过期需重新请求,有效期默认取全局配置）。"""
     import time
-    import config
+    from WY import config
 
     if not os.path.exists(cache_file):
         return False
@@ -171,7 +171,7 @@ def clean_expired_cache_files(directory: str, *, exts: tuple[str, ...] = (".csv"
     分析结果目录(<prefix>_data)中,过期文件直接删除即可,下次分析会重算并覆盖。"""
     import time
 
-    import config
+    from WY import config
 
     if not os.path.isdir(directory):
         return 0
