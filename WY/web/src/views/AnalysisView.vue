@@ -925,25 +925,7 @@ onMounted(() => {
   padding: 8px 2px;
   border-bottom: 1px solid #f4f4f2;
 }
-/* 说明为主、文件名为辅(旧版下载区的逐项备注) */
-.dl-main {
-  flex: 1;
-  min-width: 0;
-}
-.dl-desc {
-  display: block;
-  font-size: 12.5px;
-  letter-spacing: 0.04em;
-  color: #1a1a1a;
-}
-.dl-name {
-  display: block;
-  margin-top: 2px;
-  font-family: 'SF Mono', Consolas, monospace;
-  font-size: 10.5px;
-  color: #a6a6a6;
-  word-break: break-all;
-}
+/* dl-list/dl-main/dl-desc/dl-name 已提升为全局样式(styles/screen.css) */
 .notice.err {
   color: #b3261e;
 }

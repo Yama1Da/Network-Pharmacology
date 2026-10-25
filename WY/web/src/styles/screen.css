@@ -988,3 +988,36 @@ td.warn {
   padding: 6px 10px 6px 0;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- 下载列表(全局:Analysis/Ml 共用)——说明为主、文件名为辅 ---------- */
+.dl-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+.dl-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 8px 2px;
+  border-bottom: 1px solid #f4f4f2;
+}
+.dl-main {
+  flex: 1;
+  min-width: 0;
+}
+.dl-desc {
+  display: block;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  color: #1a1a1a;
+}
+.dl-name {
+  display: block;
+  margin-top: 2px;
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 10.5px;
+  color: #a6a6a6;
+  word-break: break-all;
+}

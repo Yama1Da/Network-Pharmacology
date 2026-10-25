@@ -4,7 +4,7 @@
  * ③ 运行(七阶段 job) ④ 结果(指标/ROC/共识/漏斗/shortlist + 近 3 次摘要)。
  * 末段并入 ML_Results_Information(结果管理):run 清单/搜索/删除/ZIP/keep-N 清理。
  * 全链编排唯一定义在 core.ml_pipeline.run_screen_chain(CLI/页面/API 共用)。 */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, artifactsUrl, type MlHistoryRun, type MlOverviewResult,
          type MlProbeResult, type MlRunResult, type Row } from '../api'
@@ -154,6 +154,16 @@ function toggleRanked(label: string): void {
   rankedSel.value = next
 }
 
+/** 全选/清空只作用于当前过滤后可见的条目(滚动列表配套操作)。 */
+function rankedSelectAll(on: boolean): void {
+  const next = new Set(rankedSel.value)
+  for (const f of rankedShown.value) {
+    if (on) next.add(f.label)
+    else next.delete(f.label)
+  }
+  rankedSel.value = next
+}
+
 /* 参数 */
 const topK = ref(50)
 const prefilterN = ref(500)
@@ -174,6 +184,47 @@ const runJob = useJob((result) => {
   flash(t('web.ml.run_done_flash', { gse: r.gse, s: r.elapsed }))
   void loadHistory()
 })
+
+/* 切换数据上下文时清掉上一轮的展示,避免④区残留旧结果:
+ * - 换 GSE:结果/总览/回退提示清空,分组正则一并清(样本命名规则变了),
+ *   但三个调节器参数保留——那是用户的分析偏好,与数据集无关;
+ * - 换疾病名 / 换输入方式(tab):只清结果区。 */
+watch(gse, () => {
+  resultData.value = null
+  fallback.value = null
+  overview.value = null
+  casePat.value = ''
+  ctrlPat.value = ''
+})
+watch(disease, () => {
+  resultData.value = null
+  fallback.value = null
+})
+watch(tab, () => {
+  resultData.value = null
+  fallback.value = null
+})
+
+/* 整包下载:当前 run 目录打成一个 zip(单 run 走 make_dir_zip) */
+const zipBusy = ref(false)
+const runDirName = computed(() => (resultData.value?.out_dir ?? '').split(/[\\/]/).pop() ?? '')
+async function zipRun(): Promise<void> {
+  if (!resultData.value?.out_dir) return
+  zipBusy.value = true
+  try {
+    const blob = await api.mlRunsZip([resultData.value.out_dir])
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${runDirName.value}.zip`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    flash(t('web.common.zip_fail'))
+  } finally {
+    zipBusy.value = false
+  }
+}
 
 const canRun = computed(() =>
   ((hasGse.value && casePat.value.trim() && ctrlPat.value.trim()) || useLocal.value)
@@ -214,6 +265,40 @@ const funnelRows = computed<Row[]>(() => resultData.value?.funnel ?? [])
 const shortlistRows = computed<Row[]>(() => resultData.value?.shortlist ?? [])
 const shortlistCount = computed(() => resultData.value?.shortlist_count ?? '—')
 const artifactsMap = computed<Record<string, string>>(() => resultData.value?.artifacts ?? {})
+
+/* ---------------- 下载区(run 目录全部落盘文件,按说明归类) ---------------- */
+
+interface DlItem { file: string; rel: string; desc: string; main: boolean }
+
+/** 产物归类:页面展示对应的四项为主成果;DEG 全表/共识曲线/元数据等为补充产物(默认折叠)。
+ * 未识别的新产物文件名即说明,进补充区——后端新增产物不需要改前端就能出现。 */
+function classifyArtifact(file: string): { desc: string; main: boolean } | null {
+  if (/^ml_roc_.*\.png$/.test(file)) return { desc: t('web.ml.dl_roc'), main: true }
+  if (file === 'ml_consensus_scores.csv') return { desc: t('web.ml.dl_consensus'), main: true }
+  if (file === 'shortlist.csv') return { desc: t('web.ml.dl_shortlist'), main: true }
+  if (file === 'funnel.csv') return { desc: t('web.ml.dl_funnel'), main: true }
+  if (file === 'deg_results.csv') return { desc: t('web.ml.dl_deg'), main: false }
+  if (file === 'consensus_curve.png') return { desc: t('web.ml.dl_curve'), main: false }
+  if (file === 'summary.json') return { desc: t('web.ml.dl_summary'), main: false }
+  return null
+}
+
+const mainDownloads = computed<DlItem[]>(() => {
+  const out: DlItem[] = []
+  for (const [file, rel] of Object.entries(artifactsMap.value)) {
+    const c = classifyArtifact(file)
+    if (c?.main) out.push({ file, rel, desc: c.desc, main: true })
+  }
+  return out
+})
+const extraDownloads = computed<DlItem[]>(() => {
+  const out: DlItem[] = []
+  for (const [file, rel] of Object.entries(artifactsMap.value)) {
+    const c = classifyArtifact(file)
+    if (!c?.main) out.push({ file, rel, desc: c?.desc ?? file, main: false })
+  }
+  return out
+})
 
 /* ---------------- 历史(近 3 次) ---------------- */
 
@@ -454,11 +539,19 @@ onMounted(() => {
         <div class="field"><input v-model="drugFilter" spellcheck="false"
                                   :placeholder="t('web.ml.drug_filter_ph')" @change="loadRanked" /><i class="line"></i></div>
         <span class="ctl-meta">{{ t('web.ml.ranked_meta', { n: rankedShown.length, m: rankedSel.size }) }}</span>
+        <template v-if="rankedShown.length">
+          <button type="button" class="bar-btn" :disabled="unusable"
+                  @click="rankedSelectAll(true)">{{ t('web.common.all') }}</button>
+          <button type="button" class="bar-btn" :disabled="unusable"
+                  @click="rankedSelectAll(false)">{{ t('web.ml.ranked_clear') }}</button>
+        </template>
       </div>
-      <div v-if="rankedShown.length" class="filters">
-        <label v-for="f in rankedShown" :key="f.label" class="chk">
+      <!-- 定高滚动列表:候选多时不再折行挤压,一行一项 -->
+      <div v-if="rankedShown.length" class="ranked-list">
+        <label v-for="f in rankedShown" :key="f.label" class="ranked-item">
           <input type="checkbox" :checked="rankedSel.has(f.label)" @change="toggleRanked(f.label)"
-                 :disabled="unusable" /> {{ f.label }}
+                 :disabled="unusable" />
+          <span class="ranked-name" :title="f.label">{{ f.label }}</span>
         </label>
       </div>
       <p v-else-if="disease" class="hint-line">{{ t('web.ml.ranked_none_disease') }}</p>
@@ -564,10 +657,32 @@ onMounted(() => {
         </table>
       </div>
 
-      <div class="bar">
-        <a v-for="(rel, name) in artifactsMap" :key="name" class="bar-btn"
-           :href="artifactsUrl(rel, true)" :download="name">{{ name }}</a>
-      </div>
+      <!-- 下载区:整包一键带走;主成果带说明(与分析页同款排版),补充产物默认折叠 -->
+      <h4 class="sub-sec">{{ t('web.ml.dl_title') }}</h4>
+      <button class="bar-btn" :disabled="zipBusy" @click="zipRun">
+        {{ zipBusy ? t('web.ml_results.zipping') : t('web.ml.dl_zip', { name: `${runDirName}.zip` }) }}
+      </button>
+      <ul v-if="mainDownloads.length" class="dl-list">
+        <li v-for="d in mainDownloads" :key="d.rel" class="dl-row">
+          <div class="dl-main">
+            <span class="dl-desc">{{ d.desc }}</span>
+            <span class="dl-name">{{ d.file }}</span>
+          </div>
+          <a class="mini" :href="artifactsUrl(d.rel, true)">{{ t('web.common.download') }}</a>
+        </li>
+      </ul>
+      <details v-if="extraDownloads.length" class="fold">
+        <summary class="hint-line fold2">{{ t('web.ml.dl_more', { n: extraDownloads.length }) }}</summary>
+        <ul class="dl-list">
+          <li v-for="d in extraDownloads" :key="d.rel" class="dl-row">
+            <div class="dl-main">
+              <span class="dl-desc">{{ d.desc }}</span>
+              <span class="dl-name">{{ d.file }}</span>
+            </div>
+            <a class="mini" :href="artifactsUrl(d.rel, true)">{{ t('web.common.download') }}</a>
+          </li>
+        </ul>
+      </details>
     </section>
     <section class="sec" v-else>
       <h3 class="sec-title">{{ t('web.ml.sec_result_idle') }}</h3>
@@ -679,5 +794,59 @@ onMounted(() => {
   padding: 0 5px;
   margin-left: 10px;
   vertical-align: 1.5px;
+}
+/* 平台排序表:定高滚动列表(发丝线边框,一行一项,候选多时滚动选) */
+.ranked-list {
+  margin-top: 10px;
+  max-height: 176px;
+  overflow-y: auto;
+  border: 1px solid #f0f0ee;
+}
+.ranked-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #f4f4f2;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #4a4a48;
+  cursor: pointer;
+  user-select: none;
+}
+.ranked-item:last-child {
+  border-bottom: none;
+}
+.ranked-item:hover {
+  background: #f7f7f5;
+}
+.ranked-item input {
+  accent-color: #1a1a1a;
+  flex: none;
+}
+.ranked-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* 排序表列表与下方参数调节器之间留出呼吸间距 */
+.opt-grid {
+  margin-top: 30px;
+}
+/* 补充产物折叠(下载区) */
+.fold2 {
+  margin-top: 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.fold2::before {
+  content: '› ';
+  color: #c2c2c2;
+}
+.fold[open] .fold2::before {
+  content: '⌄ ';
 }
 </style>
