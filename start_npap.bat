@@ -19,3 +19,8 @@ if errorlevel 1 (
 :run
 echo [NPAP] Starting web server (http://127.0.0.1:8000 , Ctrl+C to stop)...
 .venv\Scripts\npap.exe serve
+rem Server exited (port occupied / crash / Ctrl+C): keep the window open so
+rem the message above stays readable.
+echo.
+echo [NPAP] Server stopped. If it failed to start, read the message above.
+pause
