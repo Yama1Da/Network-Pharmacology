@@ -19,10 +19,9 @@ npap = "WY.cli:main"
 
 [tool.setuptools]
 # 显式列出包:根目录还有 .venv 等与发布无关的顶层目录,禁止 setuptools 自动发现乱吸。
-# CLI 只依赖 WY 本体(config.py/cli.py)与 core、i18n 三个包;pages/ui/scripts 属网页端,
-# 依旧按就地运行方式使用,不参与安装。
-# ui 与 scripts 也按包安装:统一后的 WY. 绝对导入需要它们可导入
-packages = ["WY", "WY.core", "WY.i18n", "WY.ui", "WY.scripts"]
+# scripts 按包安装(自检脚本走 WY. 绝对导入);ui 已随 Streamlit 退场删除,不再列出,
+# 误列不存在的目录会让可编辑安装直接构建失败。
+packages = ["WY", "WY.core", "WY.i18n", "WY.scripts"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["WY/requirements.txt"] }

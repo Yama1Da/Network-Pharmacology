@@ -857,6 +857,25 @@ def _render_venn_png(drug_set: set, disease_set: set, drug_name: str, disease_na
     return buf.getvalue()
 
 
+def _target_rows(df) -> list[dict]:
+    """merged 靶点表 → 主页列表行(JSON 安全:NaN→None,分数保留 4 位;去掉 source_count 冗余列)。"""
+    if df is None or df.empty:
+        return []
+    cols = [c for c in df.columns if c != "source_count"]
+    rows: list[dict] = []
+    for rec in df[cols].to_dict("records"):
+        out: dict = {}
+        for k, v in rec.items():
+            if v is None or v != v:  # v != v 即 NaN
+                out[k] = None
+            elif isinstance(v, float):
+                out[k] = round(v, 4)
+            else:
+                out[k] = v
+        rows.append(out)
+    return rows
+
+
 @app.post("/api/targets/retrieve")
 def targets_retrieve(body: RetrieveBody) -> dict:
     """四库并发检索(ChEMBL/DGIdb/OpenTargets/DisGeNET),写入来源与 merged 缓存;
@@ -883,9 +902,21 @@ def targets_retrieve(body: RetrieveBody) -> dict:
             venn_holder["png"] = _render_venn_png(drug_set, disease_set,
                                                   body.drug.strip(), body.disease.strip())
         common = sorted(drug_set & disease_set)
+        drug_rows = _target_rows(drug_df)[:1000]
+        disease_rows = _target_rows(disease_df)[:1000]
+        common_rows: list[dict] = []
+        if drug_rows and disease_rows:
+            import pandas as pd
+
+            common_df = drug_df.drop(columns=["source_count"]).merge(
+                disease_df.drop(columns=["source_count"]),
+                on="approvedSymbol", how="inner")
+            common_rows = _target_rows(common_df)[:1000]
         return {"drug_count": len(drug_set), "disease_count": len(disease_set),
                 "common_count": len(common),
                 "common_genes": common[:200],
+                "drug_rows": drug_rows, "disease_rows": disease_rows,
+                "common_rows": common_rows,
                 "failed": list(failed)}
 
     job_id = jobs.submit(task, f"targets retrieve {body.drug}/{body.disease}")
