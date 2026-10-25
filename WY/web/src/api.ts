@@ -136,7 +136,17 @@ export interface PpiResult {
   gsea: Record<string, { reason: string; stats: Row; rows: Row[] }>
   proximity: ProximityResult | null
   rwr: Record<string, RwrSideResult> | null
-  modules: { summary: Row[]; failures: unknown[]; no_sig: number[] } | null
+  modules: {
+    summary: Row[]
+    failures: unknown[]
+    no_sig: number[]
+    /** 单基因模块数(汇总表只含 ≥2 基因的模块,页面提示"已隐藏 N 个") */
+    hidden_single?: number
+    /** 模块富集长表(按 module_id, p_value 排序,截断前 100 行)与总量统计 */
+    enr_rows?: Row[]
+    enr_total?: number
+    enr_modules?: number
+  } | null
 }
 
 export interface PpiAnalyzeBody {

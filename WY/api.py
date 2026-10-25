@@ -353,13 +353,17 @@ def logs_level_set(body: LevelBody) -> dict:
 
 class _JobProgress:
     """把 core.analysis.AnalysisProgress 协议适配到 core.jobs 的进度回调:
-    阶段名/状态进 extra 字段,前端据此渲染阶段图标行。"""
+    阶段名/状态进 extra 字段,前端据此渲染阶段图标行。
+    富集/GSEA/邻近度+RWR/模块检测四个任务在线程池并发执行,这里维护完整的
+    step→state 映射并整体上报(steps),前端可同时点亮多个运行中的阶段。"""
 
     def __init__(self, cb):
         self._cb = cb
+        self._states: dict[str, str] = {}
 
     def set(self, key: str, state: str) -> None:
-        self._cb(text=f"{key}:{state}", step=key, state=state)
+        self._states[key] = state
+        self._cb(text=f"{key}:{state}", steps=dict(self._states))
 
     def advance(self, fraction: float) -> None:
         self._cb(fraction=fraction)
@@ -371,6 +375,25 @@ def _df_rows(df, limit: int | None = None) -> list[dict]:
     if limit is not None:
         df = df.head(limit)
     return df.to_dict(orient="records")
+
+
+def _modules_payload(modules: dict | None) -> dict | None:
+    """模块检测结果 → JSON 安全载荷:汇总表 + 模块富集长表(截断前 100 行)+ 单基因隐藏数。
+    long_df 在 core 侧已按 module_id, p_value 排序;完整结果由 modules_csv /
+    module_enrichment_csv 产物文件承载,前端下载区可直接取用。"""
+    if modules is None:
+        return None
+    long_df = modules.get("long_df")
+    has_enr = long_df is not None and len(long_df) > 0
+    return {
+        "summary": _df_rows(modules.get("summary_df")),
+        "failures": modules.get("failures", []),
+        "no_sig": modules.get("no_sig", []),
+        "hidden_single": sum(1 for m in modules.get("modules", []) if m.get("size", 0) < 2),
+        "enr_rows": _df_rows(long_df, 100) if has_enr else [],
+        "enr_total": int(len(long_df)) if has_enr else 0,
+        "enr_modules": int(long_df["module_id"].nunique()) if has_enr else 0,
+    }
 
 
 def _serialize_ppi(ppi: dict) -> dict:
@@ -416,11 +439,7 @@ def _serialize_ppi(ppi: dict) -> dict:
     rwr = {side: _cap_rwr(res) for side, res in (ppi.get("rwr") or {}).items()}
 
     modules = ppi.get("modules")
-    modules_out = None
-    if modules is not None:
-        modules_out = {"summary": _df_rows(modules.get("summary_df")),
-                       "failures": modules.get("failures", []),
-                       "no_sig": modules.get("no_sig", [])}
+    modules_out = _modules_payload(modules)
 
     enr_df = ppi.get("enrichment_df")
     return {
@@ -527,8 +546,7 @@ def ppi_rerun_modules(body: RerunModulesBody) -> dict:
         organism = config.SPECIES_MAP["Human"]["gprofiler"]
         computed = compute_module_analysis(graph, organism, label_prefix=body.prefix)
         save_module_computation(directory, body.prefix, computed)
-        return {"summary": _df_rows(computed["summary_df"]),
-                "failures": computed["failures"], "no_sig": computed["no_sig"]}
+        return _modules_payload(computed)
 
     return {"job_id": jobs.submit(task, "ppi rerun modules")}
 

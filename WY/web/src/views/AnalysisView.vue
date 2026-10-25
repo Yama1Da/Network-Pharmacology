@@ -61,8 +61,14 @@ const STATE_ICON: Record<string, string> = { pending: '○', running: '◐', don
 const stepStates = computed<Record<string, string>>(() => {
   const map: Record<string, string> = {}
   for (const k of stages.value) map[k] = 'pending'
-  const p = job.extra.value as { step?: string; state?: string }
-  if (p?.step && p?.state && p.step in map) map[p.step] = p.state
+  const p = job.extra.value as { step?: string; state?: string; steps?: Record<string, string> }
+  // 后端富集/GSEA/邻近度+RWR/模块检测并发执行,整体上报 steps 映射 → 多阶段同时点亮;
+  // steps 缺失时(旧任务/其他作业)退回单 step/state 语义
+  if (p?.steps) {
+    for (const [k, st] of Object.entries(p.steps)) if (k in map) map[k] = st
+  } else if (p?.step && p?.state && p.step in map) {
+    map[p.step] = p.state
+  }
   return map
 })
 
@@ -135,7 +141,11 @@ const modsJob = useJob((result) => {
     ppi.value = { ...ppi.value, modules: {
       summary: (result.summary ?? []) as Row[],
       failures: (result.failures ?? []) as unknown[],
-      no_sig: (result.no_sig ?? []) as number[]
+      no_sig: (result.no_sig ?? []) as number[],
+      hidden_single: Number(result.hidden_single ?? 0),
+      enr_rows: (result.enr_rows ?? []) as Row[],
+      enr_total: Number(result.enr_total ?? 0),
+      enr_modules: Number(result.enr_modules ?? 0)
     } }
   }
   flash(t('web.analysis.modules_done_flash'))
@@ -167,7 +177,10 @@ const downloadItems = computed<{ label: string; rel: string }[]>(() => {
   for (const key of ['nodes', 'edges', 'html', 'graphml', 'enrichment_csv',
     'network_png', 'network_svg', 'string_png', 'string_svg', 'cyto_png', 'cyto_svg',
     'core_png', 'core_svg', 'dtp_png', 'dtp_svg',
-    'enrichment_bar_png', 'enrichment_bar_svg', 'enrichment_dot_png', 'enrichment_dot_svg']) {
+    'enrichment_bar_png', 'enrichment_bar_svg', 'enrichment_dot_png', 'enrichment_dot_svg',
+    'gsea_drug_png', 'gsea_drug_svg', 'gsea_disease_png', 'gsea_disease_svg',
+    'gsea_drug_csv', 'gsea_disease_csv', 'rwr_disease_csv', 'rwr_drug_csv',
+    'proximity_csv', 'query_genes_csv', 'modules_csv', 'module_enrichment_csv']) {
     if (a[key]) out.push({ label: key, rel: a[key] })
   }
   return out
@@ -550,6 +563,10 @@ onMounted(() => {
         <p v-if="ppi.modules && !ppi.modules.summary.length" class="hint-line">
           {{ t('web.analysis.modules_empty') }}
         </p>
+        <p v-if="ppi.modules?.summary.length" class="hint-line">
+          {{ t('web.analysis.modules_summary_title') }}<template v-if="ppi.modules.hidden_single">
+            · {{ t('web.analysis.modules_hidden', { n: ppi.modules.hidden_single }) }}</template>
+        </p>
         <div v-if="ppi.modules?.summary.length" class="tbl-wrap">
           <table class="tbl">
             <thead><tr><th>module_id</th><th>size</th><th>avg_degree</th><th>genes_preview</th></tr></thead>
@@ -560,6 +577,29 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
+        <template v-if="ppi.modules?.enr_rows?.length">
+          <h4 class="sub-sec">{{ t('web.analysis.mod_enr_title') }}</h4>
+          <p class="hint-line">
+            {{ t('web.analysis.mod_enr_stats', { total: ppi.modules.enr_total, mods: ppi.modules.enr_modules }) }}
+            <a v-if="art('module_enrichment_csv')" class="bar-btn"
+               :href="artifactsUrl(art('module_enrichment_csv') ?? '', true)">{{ t('web.analysis.dl_full_csv') }}</a>
+          </p>
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead>
+                <tr><th>module_id</th><th>source</th><th>term_id</th><th>term_name</th>
+                    <th>adj_p</th><th>intersection</th><th>query_size</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r, i) in ppi.modules.enr_rows" :key="i">
+                  <td>{{ r.module_id }}</td><td>{{ r.source }}</td><td>{{ r.term_id }}</td>
+                  <td>{{ r.term_name }}</td><td>{{ fmt(r.adjusted_p_value, 4) }}</td>
+                  <td>{{ r.intersection_size }}</td><td>{{ r.query_size }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
         <p v-if="ppi.modules?.no_sig?.length" class="hint-line">
           {{ t('web.analysis.modules_no_sig', { names: ppi.modules.no_sig.join(', ') }) }}
         </p>
