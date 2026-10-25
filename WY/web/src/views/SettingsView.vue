@@ -181,19 +181,6 @@ function chooseVersion(v: string): void {
 </template>
 
 <style scoped>
-.set-row {
-  display: flex;
-  align-items: baseline;
-  gap: 18px;
-  padding: 10px 0;
-}
-.set-label {
-  flex: none;
-  width: 130px;
-  font-size: 11.5px;
-  letter-spacing: 0.1em;
-  color: #8a8a88;
-}
 .field {
   position: relative;
   width: 240px;

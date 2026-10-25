@@ -790,48 +790,6 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
   padding-top: 26px;
   border-top: 1px solid #f0f0ee;
 }
-.stale {
-  margin: 10px 0 0;
-  font-size: 12px;
-  letter-spacing: 0.05em;
-  color: #b3261e;
-}
-.metrics {
-  display: flex;
-  gap: 56px;
-  justify-content: center;
-  margin: 8px 0 6px;
-}
-.metrics.three {
-  gap: 40px;
-  justify-content: flex-start;
-}
-.metric {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-.metric b {
-  font-size: 30px;
-  font-weight: 300;
-  font-variant-numeric: tabular-nums;
-  color: #1a1a1a;
-}
-.metric span {
-  font-size: 10.5px;
-  letter-spacing: 0.2em;
-  color: #bcbcbc;
-}
-.hint-line {
-  margin: 10px 0 0;
-  font-size: 11.5px;
-  letter-spacing: 0.05em;
-  color: #8a8a88;
-}
-.hint-line.good {
-  color: #1a1a1a;
-}
 .sec {
   margin-top: 34px;
   padding-top: 20px;

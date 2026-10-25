@@ -604,27 +604,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.set-row {
-  display: flex;
-  align-items: baseline;
-  gap: 18px;
-  padding: 10px 0;
-  flex-wrap: wrap;
-}
-.set-label {
-  flex: none;
-  width: 120px;
-  font-size: 11.5px;
-  letter-spacing: 0.1em;
-  color: #8a8a88;
-}
 .state.on {
   color: #1a1a1a;
   font-weight: 500;
-}
-.sel.inline {
-  width: auto;
-  min-width: 200px;
 }
 .build {
   width: 52px;
@@ -677,27 +659,6 @@ onMounted(() => {
   margin-right: 6px;
   font-style: normal;
 }
-.metrics {
-  display: flex;
-  gap: 56px;
-  margin: 8px 0 6px;
-}
-.metric {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.metric b {
-  font-size: 28px;
-  font-weight: 300;
-  font-variant-numeric: tabular-nums;
-  color: #1a1a1a;
-}
-.metric span {
-  font-size: 10.5px;
-  letter-spacing: 0.2em;
-  color: #bcbcbc;
-}
 .fig-img {
   max-width: 420px;
   margin-top: 10px;
@@ -720,13 +681,5 @@ onMounted(() => {
   padding: 0 5px;
   margin-left: 10px;
   vertical-align: 1.5px;
-}
-.stale {
-  font-size: 12px;
-  letter-spacing: 0.05em;
-  color: #b3261e;
-}
-.hint-line.good {
-  color: #1a1a1a;
 }
 </style>
