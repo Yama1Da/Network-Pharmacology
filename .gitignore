@@ -20,9 +20,6 @@
 __pycache__/
 results/
 *.egg-info/
-/npap.bat
 /WY/_tmp_3d_test/
 /Front-end-screen-options/
-/.acl-recovery/acl-backup-94e87021795d4e23a2bf615bcf29674b.json
-/.acl-recovery/acl-backup-94e87021795d4e23a2bf615bcf29674b.json.ps1
-/.acl-recovery/acl-report-b63da281a99d4d00bb4dee13c5950f7a.jsonl
+/.acl-recovery/

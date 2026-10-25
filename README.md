@@ -64,48 +64,12 @@ Linux/macOS：conda install -c conda-forge vina   # 同时安装 vina 与 vina_s
 #          obabel：conda install -c conda-forge openbabel（或 apt/dnf 安装 openbabel）
 
 # 4. 启动
-streamlit run App.py
+start_npap.bat  (或 npap serve)
 
 # 5. （可选）把命令行批量分析装成全局命令 npap（详见「命令行批量分析（CLI）」一节）
 pip install -e ..        # 在 WY 目录下执行；必须带 -e（可编辑安装）
 npap --help              # 在已激活的环境中任意目录可用
 ```
-
-## Docker 部署（Linux 服务器 / 对外分发）
-
-面向 Linux 服务器部署、对外分发与答辩演示；Windows 科研用户建议用上面的 conda 方式。
-宿主机只需 Docker（含 compose 插件）与 DisGeNET 密钥，无需装 Python、Vina、Open Babel——
-这些全部在镜像内（`vina` / `obabel` 已在 PATH，容器内无需 `VINA_DIR` / `OBABEL_DIR`）。
-
-```bash
-# 1. 准备钥匙：密钥不在镜像里，运行时由 compose 注入
-cp WY/API.env.example API.env    # 编辑填入 DisGeNET_API_KEY（空 key 也能启动，仅 DisGeNET 靶点表为空）
-
-# 2. 准备缓存目录（容器以 uid 1000 运行；须先建好——compose 自动创建的目录属主是 root）
-mkdir -p Static && sudo chown 1000:1000 Static
-
-# 3. 构建并启动（首次构建较慢，镜像约 1.2 GB；之后改代码重建只需秒级到分钟级）
-docker compose up -d --build
-# 浏览器打开 http://<服务器IP>:8501；日志: docker logs -f network-pharmacy
-```
-
-- **密钥模型**：镜像 = 程序，`API.env` = 钥匙。`API.env` 与 `Static` 数据被 `.dockerignore`
-  挡在构建上下文外，不会进镜像；compose 的 `env_file` 在运行时逐行注入容器环境变量。
-- **缓存持久化**：`./Static` 挂载进容器，重建/升级容器缓存不丢。
-- **对外分发**：默认 `docker compose up -d --build` 在本机构建；也可把镜像推到 registry
-  （Docker Hub / 阿里云 ACR 等），把 compose.yaml 里的 `build: .` 注释掉、`image:` 换成
-  registry 路径，对方免构建直接 `docker compose up -d`。弱网环境可用
-  `docker save | gzip` 导出 tar 包离线搬运。
-- **容器内跑 CLI**（镜像内未装 `npap` 全局命令，统一用 `python cli.py` 调用；结果经
-  `--out` 落到挂载目录，宿主机直接可取；批量时把 `pairs.csv` 放进宿主机 `./Static/`，
-  容器内以 `/app/WY/Static/pairs.csv` 引用）：
-
-```bash
-docker compose run --rm app python cli.py analyze --drug aspirin --disease "colorectal cancer" \
-    --out /app/WY/Static/cli-results
-```
-
-- **升级版本**：`git pull && docker compose up -d --build`（依赖未变时只重建代码层，很快）。
 
 ## 使用流程
 
@@ -201,7 +165,7 @@ npap --help              # 入口脚本装进当前环境的 Scripts\（Windows�
 
 ```
 WY/
-├── App.py                  # 首页：发起分析、靶点概览、全局设置入口
+├── api.py                  # FastAPI：/api 端点 + 前端静态托管（TS 迁移后入口）
 ├── cli.py                  # 命令行批量分析入口（targets/ppi/enrich/proximity/rwr/analyze/batch）
 ├── config.py               # 全部可调参数（路径、限流/重试、缓存 TTL、过滤阈值）
 ├── API.env                 # 密钥与本机路径（不入库，模板见 API.env.example）
@@ -219,7 +183,7 @@ WY/
 └── Static/                 # 运行时产生的缓存与分析结果
 ```
 
-依赖严格单向：`pages / App.py → ui/ → core/ → i18n、config`。`core/` 与 `i18n/`
+依赖严格单向：`web(TS+Vue) / api.py → core/ → i18n、config`。`core/` 与 `i18n/`
 不依赖任何 UI 框架（Streamlit），可在无界面环境下导入、复用与测试；
 `cli.py` 同样只依赖 `core/` 与 `config`，与网页共享缓存与设置。
 
@@ -257,9 +221,6 @@ python scripts/lit_pcba_benchmark.py   # LIT-PCBA 基准验证脚本
 - **命令行结果没落在预期目录？** 不带 `--out` 时的落点优先级为：`--out` 参数 >
   `CLI_RESULTS_DIR`（`WY/API.env` 或同名系统环境变量）> 当前目录的 `results`；
   `--out` 仍可单次覆盖，无需删除已配置的 `CLI_RESULTS_DIR`。
-- **Docker 起不来或页面打不开？** 先看 `docker compose ps` 与 `docker logs network-pharmacy`
-  定位；远程服务器上浏览器应访问 `http://<服务器IP>:8501` 而非 localhost，
-  并确认防火墙/安全组已放行 8501。
 
 ## 免责声明
 

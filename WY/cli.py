@@ -858,6 +858,19 @@ def cmd_serve(args) -> int:
     from WY.api import app
 
     url = f"http://{args.host}:{args.port}"
+    # 端口预检:占用时给友好指引而不是 winerror 10048 裸异常
+    # (双击 bat 场景最常见的错误 = 上一个实例还在运行,或别的程序占了端口)。
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((args.host, args.port))
+    except OSError:
+        print(f"[serve] 端口 {args.port} 已被占用 —— 可能已有一个 NPAP 在运行,"
+              f"浏览器打开 {url} 即是;若为其他程序,请关闭它或加 --port 换端口。")
+        return 1
+    finally:
+        probe.close()
     print(f"[serve] {url}  (Ctrl+C 停止)")
     if not args.no_browser:
         threading.Timer(1.5, webbrowser.open, args=[url]).start()

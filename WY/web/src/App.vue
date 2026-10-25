@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /** 应用骨架:顶栏导航 / 入场幕布 / 呼吸细环 / 页脚(家族设计语言,样式见 styles/screen.css)
  * + hash 路由。过渡期 Streamlit(8501)仍是主入口,这里承载逐页迁入的 TS 页面。 */
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { setLang } from './i18n'
 import CollectionView from './views/CollectionView.vue'
 import AnalysisView from './views/AnalysisView.vue'
 import DataView from './views/DataView.vue'
@@ -13,21 +15,28 @@ import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import SourcesView from './views/SourcesView.vue'
 
+const { t, locale } = useI18n()
+
 const NAV = [
-  { hash: '#/home', label: '主页' },
-  { hash: '#/analysis', label: '分析' },
-  { hash: '#/docking', label: '对接' },
-  { hash: '#/data', label: '数据' },
-  { hash: '#/logs', label: '日志' },
-  { hash: '#/drug-sources', label: '药物' },
-  { hash: '#/disease-sources', label: '疾病' },
-  { hash: '#/ppi', label: 'PPI' },
-  { hash: '#/enrichment', label: '富集' },
-  { hash: '#/stars', label: '收藏' },
-  { hash: '#/ml', label: 'ML' },
-  { hash: '#/ml-results', label: 'ML 结果' },
-  { hash: '#/settings', label: '设置' },
+  { hash: '#/home', key: 'web.nav.home' },
+  { hash: '#/analysis', key: 'web.nav.analysis' },
+  { hash: '#/docking', key: 'web.nav.docking' },
+  { hash: '#/data', key: 'web.nav.data' },
+  { hash: '#/logs', key: 'web.nav.logs' },
+  { hash: '#/drug-sources', key: 'web.nav.drug_sources' },
+  { hash: '#/disease-sources', key: 'web.nav.disease_sources' },
+  { hash: '#/ppi', key: 'web.nav.ppi' },
+  { hash: '#/enrichment', key: 'web.nav.enrichment' },
+  { hash: '#/stars', key: 'web.nav.stars' },
+  { hash: '#/ml', key: 'web.nav.ml' },
+  { hash: '#/ml-results', key: 'web.nav.ml_results' },
+  { hash: '#/settings', key: 'web.nav.settings' },
 ]
+
+const lang = computed(() => (locale.value === 'zh' ? 'EN' : '中文'))
+function toggleLang(): void {
+  setLang(locale.value === 'zh' ? 'en' : 'zh')
+}
 
 const route = ref(location.hash.replace(/^#\/?/, '') || 'home')
 const introVisible = ref(true)
@@ -69,7 +78,8 @@ onBeforeUnmount(() => {
       <a class="brand" href="#/home">NPAP<i class="brand-dot"></i></a>
       <nav class="links">
         <a v-for="n in NAV" :key="n.hash" :href="n.hash"
-           :class="{ active: route === n.hash.slice(2) }">{{ n.label }}</a>
+           :class="{ active: route === n.hash.slice(2) }">{{ t(n.key) }}</a>
+        <a @click.prevent="toggleLang">{{ lang }}</a>
       </nav>
     </header>
 
