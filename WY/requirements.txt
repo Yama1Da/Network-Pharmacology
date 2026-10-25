@@ -1,5 +1,4 @@
 # ===== 权威 pip 依赖清单（唯一需要手工维护的依赖文件）=====
-streamlit==1.63.0
 pandas==2.3.3
 numpy==2.5.1
 scipy==1.18.0
@@ -22,3 +21,4 @@ scikit-learn==1.9.1
 xgboost==3.4.1
 pydeseq2==0.5.4
 anndata==0.13.4
+fastapi==0.162.0

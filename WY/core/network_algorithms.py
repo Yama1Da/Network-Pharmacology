@@ -65,7 +65,7 @@ def detect_louvain_modules(graph: "nx.Graph", resolution: float = 1.0, seed: int
 def _module_cache_files(genes: list[str], organism: str, sources: tuple,
                         pvalue: float, label: str) -> list[str]:
     """推算某模块富集可能产生的缓存文件路径（g:Profiler 与 Enrichr 两份），命名规则与 core.enrichment 内部一致。"""
-    import config
+    from WY import config
 
     genes_clean = sorted({g.strip() for g in genes if g and g.strip()})
     files: list[str] = []
@@ -100,7 +100,7 @@ def _purge_orphan_module_caches(module_ids: set[int], label_prefix: str) -> None
     """删除同分析标识下编号已不属于本次模块集的旧模块缓存(上次模块数更多时留下的孤儿文件)。
     缓存命中本就有基因集 md5 键校验,孤儿文件不会被误用,删除只为目录整洁;只匹配
     gProfiler_/Enrichr_ 前缀下 `<标识>_module<纯数字>.csv` 命名,不碰其他文件。"""
-    import config
+    from WY import config
 
     cache_dir = config.ENRICHMENT_CACHE_DIR
     if not os.path.isdir(cache_dir):
@@ -171,7 +171,7 @@ def enrich_modules(
     """批量模块富集：对满足规模条件的模块（取规模最大的前 top_n_modules 个）逐个做 GO/KEGG 富集并汇总为长表。
     label_prefix 为所属分析的"药物_疾病"标识,拼进缓存文件名让模块结果能认出归属;某模块失败时计入 failures 并清除
     该模块可能产生的缓存文件（保证空表不是失败残留）,两链路成功但无显著条目的模块计入 no_sig。"""
-    import config
+    from WY import config
 
     sources = sources or config.ENRICHMENT_SOURCES
     candidates = [m for m in modules if m["size"] >= min_module_size][:top_n_modules]
@@ -245,7 +245,7 @@ def enrich_modules(
 def compute_module_analysis(graph, organism, label_prefix: str = "") -> ModuleAnalysis:
     """Louvain 模块检测 + 模块富集的纯计算部分（不含落盘，便于与保存步骤并发）；
     label_prefix 为"药物_疾病"分析标识,拼进模块富集的缓存文件名以便认出归属。"""
-    import config
+    from WY import config
 
     modules = detect_louvain_modules(
         graph,
@@ -486,7 +486,7 @@ def proximity_zscore(drug_genes: list, disease_genes: list, species: str = "Huma
     """网络邻近度 Z-score 主入口（背景互作组 LCC 内计算，度匹配随机化置换检验）。
     任一基因集入网率低于 config.PROXIMITY_MIN_COVERAGE 或过滤后为空时返回 ok=False,绝不输出不可靠结果;
     背景互作组未构建时抛 InteractomeNotBuiltError,由调用方转为用户提示。"""
-    import config
+    from WY import config
 
     n_perm = int(n_perm if n_perm is not None else config.PROXIMITY_N_PERM)
     seed = int(seed if seed is not None else config.PROXIMITY_SEED)
@@ -550,7 +550,7 @@ def _clean_expired_caches(directory: str) -> None:
     """
     import time
 
-    import config
+    from WY import config
 
     if not os.path.isdir(directory):
         return
@@ -574,7 +574,7 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
     过期缓存文件(含其它分析的)自动删除,结果已在分析结果目录永久保存。"""
     import hashlib
 
-    import config
+    from WY import config
 
     from . import interactome as itx
 
@@ -736,7 +736,7 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
     同名覆盖式缓存:文件名只由标识(label,含药物/疾病侧)决定,命中由文件内缓存键校验,种子/参数变了重算覆盖;过期缓存自动删除,结果已永久保存。"""
     import hashlib
 
-    import config
+    from WY import config
 
     from . import interactome as itx
 

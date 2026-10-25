@@ -19,10 +19,10 @@ from collections.abc import Callable
 
 import pandas as pd
 
-from i18n import t
-from core.enrichment import parse_enrichment_filename
-from core.http_client import clear_http_cache
-from core.text_utils import resolve_original_name, safe_name
+from WY.i18n import t
+from WY.core.enrichment import parse_enrichment_filename
+from WY.core.http_client import clear_http_cache
+from WY.core.text_utils import resolve_original_name, safe_name
 
 # ui_settings.json 的进程内读写锁:齿轮面板与对接页都会高频保存设置
 _ui_settings_lock = threading.Lock()
@@ -37,7 +37,7 @@ def save_ui_settings(overrides: dict) -> None:
     """
     import json
 
-    import config
+    from WY import config
 
     clean: dict = {}
     for k, v in overrides.items():
@@ -72,7 +72,7 @@ def save_ui_settings(overrides: dict) -> None:
         merged.update(clean)
         os.makedirs(os.path.dirname(config.UI_SETTINGS_FILE), exist_ok=True)
         # 原子写(临时文件+替换),中断不会留下半截 JSON
-        from core.caching import save_json_file
+        from WY.core.caching import save_json_file
         save_json_file(config.UI_SETTINGS_FILE, merged)
 
 
@@ -84,7 +84,7 @@ def purge_merged_cache() -> int:
     """
     import glob
 
-    import config
+    from WY import config
 
     n = 0
     for path in glob.glob(os.path.join(config.MERGED_CACHE_DIR, "*.csv")):
@@ -348,7 +348,7 @@ def save_api_env(changes: dict) -> list[str]:
     dotenv 读回时无损还原,与手写单反斜杠的旧行为等价。
     CLI 与 Web 进程共享 API.env:落盘对 CLI 在其下次启动时生效,本进程即时生效。
     日志只记键名不记值,密钥与路径都不应进入日志文件。"""
-    import config
+    from WY import config
     from dotenv import set_key
 
     clean: dict = {}
@@ -369,3 +369,21 @@ def save_api_env(changes: dict) -> list[str]:
     applied = config.apply_api_env(clean)
     logging.info("API.env updated: %s", ", ".join(applied))
     return applied
+
+
+def activate_string_version(version: str) -> str:
+    """切换 STRING 数据版本并使全部派生项即时生效(设置齿轮与 TS 设置页共用):
+    版本常量、版本化子域名 API 地址、互作组运行时缓存(图/度表/LCC 按版本隔离,
+    清一次防旧版本残留),并持久化到 ui_settings.json。
+    调用方负责先做格式校验(normalized_string_version)与下载站探活(string_version_exists)。"""
+    import WY.config as config
+    from WY.core.interactome import clear_runtime_caches
+
+    version = str(version).strip()
+    config.STRING_VERSION = version
+    # 与 config.py 末尾的派生保持同一变换:版本化子域名把 v12.0 写作 version-12-0
+    config.STRING_BASE_URL = (
+        f"https://version-{version[1:].replace('.', '-')}.string-db.org/api/json")
+    clear_runtime_caches()
+    save_ui_settings({"STRING_VERSION": version})
+    return version

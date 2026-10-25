@@ -11,12 +11,11 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-import config
-import core.docking as dock
+from WY import config
+import WY.core.docking as dock
 
 # ---------------- 指标计算(纯函数,可直接被 pytest 复用) ----------------
 

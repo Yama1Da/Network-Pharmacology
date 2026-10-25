@@ -26,7 +26,7 @@ def get_session() -> requests.Session:
                 try:
                     import os
 
-                    import config
+                    from WY import config
                     from requests_cache import CachedSession
 
                     os.makedirs(os.path.dirname(config.HTTP_CACHE_FILE), exist_ok=True)
@@ -53,7 +53,7 @@ def throttle(host_key: str) -> None:
     """控制对同一数据源的请求间隔,避免访问过快被对方限流;没有设置间隔要求的数据源不限速,直接通过。"""
     import time
 
-    import config
+    from WY import config
 
     interval = float(config.HOST_MIN_REQUEST_INTERVAL.get(host_key, 0.0))
     if interval <= 0:
@@ -90,7 +90,7 @@ def request_with_retry(
     (如 STRING 的 404 表示基因全部未识别,属正常业务情况);use_cache=True 走共享缓存会话,cache_ttl_hours 覆盖该请求有效期。"""
     import time
 
-    import config
+    from WY import config
 
     if retry_delay is None:
         retry_delay = config.API_RETRY_DELAY

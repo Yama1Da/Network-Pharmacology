@@ -33,7 +33,7 @@ def safe_name(name: str) -> str:
 
 def _name_map_file() -> str:
     """safe 名 → 原始名 映射文件路径。"""
-    import config
+    from WY import config
 
     return os.path.join(config.CACHE_DIR, "name_map.json")
 
@@ -42,7 +42,7 @@ def remember_name_mapping(original: str) -> None:
     """记录 safe_name(名) → 原始名 的映射,供管理页按文件名还原原始查询名。
     safe_name 是有损转换,管理页按文件名反推名字重新抓取时查不到数据,故各抓取函数存文件时顺带记录映射;无损转换不写盘。
     """
-    import config
+    from WY import config
 
     original = str(original).strip()
     key = safe_name(original)

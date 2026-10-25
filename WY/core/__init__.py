@@ -6,5 +6,5 @@
         → http_client / caching / text_utils / logging_setup
         → config（路径常量统一见 config.py：CACHE_DIR / DRUG_CACHE_DIR 等）
 
-界面层请直接 import 本包与 ui/（界面组件见 ui/widgets.py 与
-ui/source_management.py），没有集中门面。"""
+界面层已迁 TS+Vue(WY/web),经 WY/api.py(FastAPI)访问本包;
+没有集中门面,API 端点即门面。"""

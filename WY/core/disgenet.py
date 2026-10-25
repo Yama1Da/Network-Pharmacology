@@ -20,7 +20,7 @@ def _acquire_disgenet_rate_limit_slot() -> None:
     每分钟配额用满时短暂等待；每天/每月配额用满时直接报错（由调用方返回空表）。本地限额值已按学术计划官方配额(50/分、25,000/天、500,000/月)留余量,见 config。
     """
     import time
-    import config
+    from WY import config
 
     minute_window = 60.0
     day_window = 24 * 3600.0
@@ -108,7 +108,7 @@ def fetch_disease_targets_disgenet(disease_name: str, need_rows: int | None = No
     need_rows 为本次分析至少需要的条数(参与调用方语义,原始缓存行数不足时自动重新抓取)。
     """
     import time
-    import config
+    from WY import config
 
     csv_path, cached = open_named_csv_cache(
         config.DISEASE_CACHE_DIR, "DisGeNET_", disease_name,
@@ -238,7 +238,7 @@ def fetch_disease_targets_refresh(name: str, cache_hours=None) -> tuple[pd.DataF
     密钥缺失是配置错误,不属于"0 靶点":状态带原因缀 failed:no_api_key,
     经 refresh_cache_file 透传到结果 Message,管理页据此显示"未配置密钥"的专用提示;
     该源"查无关联"与"请求失败"都返回空表,无法区分,按 0 靶点(empty)处理。"""
-    import config
+    from WY import config
 
     if not config.DisGeNET_API_KEY:
         return pd.DataFrame(), "failed:no_api_key"

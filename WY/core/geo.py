@@ -57,7 +57,7 @@ def sample_source_label(*texts: str) -> str:
 
 
 def _config():
-    import config
+    from WY import config
     return config
 
 
@@ -146,7 +146,7 @@ def search_geo_datasets(disease: str, organism: str = "Homo sapiens",
       与 shortlist 的 evidence_scope 同一判定):本平台湿实验为细胞模型,
       组织来源数据的表达证据迁移有折扣,检索阶段即需可见。
     """
-    import config
+    from WY import config
     from .http_client import request_with_retry
 
     disease = disease.strip()

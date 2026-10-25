@@ -26,7 +26,7 @@ _RUN_TS = re.compile(r"_(\d{8})_(\d{6})$")
 
 def _roots() -> list[str]:
     """登记的结果根:页面产物(GEOresult,与 MDresult 平级)+ CLI 产物(results/mlscreen)。"""
-    import config
+    from WY import config
     from .ml_pipeline import default_results_root
     return [config.GEO_RESULT_DIR, os.path.join(default_results_root(), "mlscreen")]
 
@@ -144,7 +144,7 @@ def cleanup_keep_per_gse(keep: int | None = None,
     跨 tag 的总量永不自动清 —— 不同数据集的结果是实验记录,治理走管理页手动勾选。
     每次删除 INFO 留痕。返回实际删除的路径列表。
     """
-    import config
+    from WY import config
     keep = int(keep or getattr(config, "ML_RESULTS_KEEP_PER_GSE", 6))
     by_tag: dict[str, list[dict]] = {}
     for r in list_ml_runs(roots):

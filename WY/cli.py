@@ -13,29 +13,27 @@ import sys
 import time
 from datetime import datetime
 
-# 控制台脚本不保证工作目录在本目录:先把本文件所在目录放进 sys.path,
-# 保证任意目录调用(开发期 python cli.py、封装后的 npap 入口点)都能 import config/core
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import i18n
+# 导入统一走 WY 包绝对导入,可见性由可编辑安装(pip install -e .)提供,
+# 全仓不再有 sys.path 补丁(selfcheck_architecture 守护)。入口:npap / python -m WY.cli。
+from WY import i18n
 
 i18n.set_lang_provider(lambda: "en")  # 纪律 1:core 内 t() 输出钉死英文,先于一切 core 调用
 
 import pandas as pd
 
-from core import interactome
-from core.caching import load_json_file, save_json_file
-from core.enrichment import (TRUSTED_REASONS, enrichment_retry_hint_minutes,
+from WY.core import interactome
+from WY.core.caching import load_json_file, save_json_file
+from WY.core.enrichment import (TRUSTED_REASONS, enrichment_retry_hint_minutes,
                              run_enrichment)
-from core.logging_setup import setup_logging
-from core.network_algorithms import run_proximity_cached, run_rwr_cached
-from core.ppi import (build_ppi_graph, compute_mcc_scores, compute_ppi_metrics,
+from WY.core.logging_setup import setup_logging
+from WY.core.network_algorithms import run_proximity_cached, run_rwr_cached
+from WY.core.ppi import (build_ppi_graph, compute_mcc_scores, compute_ppi_metrics,
                       fetch_string_ppi, mark_hub_genes, pick_top_mcc_genes)
-from core.targets import (get_disease_targets_merged, get_drug_targets_merged,
+from WY.core.targets import (get_disease_targets_merged, get_drug_targets_merged,
                           get_targets_concurrent, intersect_target_symbols)
-from core.analysis import expand_targets_with_rwr, pair_prefix
-from core.text_utils import safe_name
-import config
+from WY.core.analysis import expand_targets_with_rwr, pair_prefix
+from WY.core.text_utils import safe_name
+from WY import config
 
 # _slug 结果目录名的最大长度:Windows 路径 260 字符上限下给深层文件名留足余量
 _SLUG_MAX_LEN = 120
@@ -843,9 +841,47 @@ def cmd_batch(args) -> int:
     return 1 if failed_n else 0
 
 
+def _setup_serve(p) -> None:
+    p.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    p.add_argument("--no-browser", action="store_true",
+                   help="do not auto-open the browser after startup")
+
+
+def cmd_serve(args) -> int:
+    """启动 Web 服务:FastAPI(/api)伺服已构建的 TS 前端(WY/web/dist)与 API,
+    可选自动打开浏览器。前端改代码后需在 WY/web 下 npm run build 重建 dist。"""
+    import threading
+    import webbrowser
+
+    import uvicorn
+    from WY.api import app
+
+    url = f"http://{args.host}:{args.port}"
+    # 端口预检:占用时给友好指引而不是 winerror 10048 裸异常
+    # (双击 bat 场景最常见的错误 = 上一个实例还在运行,或别的程序占了端口)。
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((args.host, args.port))
+    except OSError:
+        print(f"[serve] 端口 {args.port} 已被占用 —— 可能已有一个 NPAP 在运行,"
+              f"浏览器打开 {url} 即是;若为其他程序,请关闭它或加 --port 换端口。")
+        return 1
+    finally:
+        probe.close()
+    print(f"[serve] {url}  (Ctrl+C 停止)")
+    if not args.no_browser:
+        threading.Timer(1.5, webbrowser.open, args=[url]).start()
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
 # ======== 命令注册表:名字 → (参数装配, 处理函数) ========
 
 HANDLER_HELP = {
+    "serve": "Launch the local web server (FastAPI API + built TS frontend) and open the browser",
     "targets": "Fetch drug/disease targets from 4 databases (ChEMBL/DGIdb/OpenTargets/DisGeNET)",
     "ppi": "Build STRING PPI network, compute topology metrics and MCC core targets",
     "enrich": "GO/KEGG enrichment (g:Profiler with automatic Enrichr fallback)",
@@ -856,6 +892,7 @@ HANDLER_HELP = {
 }
 
 COMMANDS = {
+    "serve": (_setup_serve, cmd_serve),
     "targets": (_setup_targets, cmd_targets),
     "ppi": (_setup_ppi, cmd_ppi),
     "enrich": (_setup_enrich, cmd_enrich),

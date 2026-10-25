@@ -20,7 +20,7 @@ _GPL_HEADERS = {"User-Agent": "NetworkPharmacologyPlatform/1.0"}
 
 
 def _config():
-    import config
+    from WY import config
     return config
 
 

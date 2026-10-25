@@ -38,7 +38,7 @@ def default_results_root() -> str:
     用 BASE_DIR 而非 cwd 兜底:Streamlit 服务的 cwd 不保证是 WY,锚到项目目录
     后,CLI(文档约定在 WY 下运行)与页面产物才落在同一处,历史列表才能同源。
     """
-    import config
+    from WY import config
     return config.CLI_RESULTS_DIR or os.path.join(config.BASE_DIR, "results")
 
 
@@ -115,7 +115,7 @@ def load_local_expr(expr_path: str, labels_path: str,
     n_case, n_ctrl = int((labels == 1).sum()), int((labels == 0).sum())
     if n_case == 0 or n_ctrl == 0:
         raise RuntimeError(f"分组结果为空(case={n_case}, control={n_ctrl}),标签方向无效")
-    import config
+    from WY import config
     for name, n in (("case", n_case), ("control", n_ctrl)):
         if n < config.ML_MIN_SAMPLES_PER_GROUP:
             raise RuntimeError(
@@ -172,7 +172,7 @@ def run_screen_chain(*, gse: str | None = None,
     <out_base>[/<out_subdir>]/<tag>_<时间戳>/,在全部计算成功后才创建
     (失败语义:不部分落盘,summary.json 最后写入)。
     """
-    import config
+    from WY import config
     from .expression import differential_expression, map_probe_to_symbol, preprocess
     from .geo import assign_groups, fetch_geo_dataset, sample_source_label
     from .ml_screening import build_shortlist, deg_prefilter, run_ml_screening
@@ -436,7 +436,7 @@ def stale_reasons(summary: dict) -> list[dict]:
     ML_SCREENING_VERSION);平台排序 CSV 在结果生成后被重跑(mtime/size 指纹
     对不上)或已删除。页面把原因映射为 i18n 文案,自检直接断言原因类型。
     """
-    import config
+    from WY import config
     reasons: list[dict] = []
     if summary.get("ml_version") != config.ML_SCREENING_VERSION:
         reasons.append({"type": "version", "old": summary.get("ml_version"),
