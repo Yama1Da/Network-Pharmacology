@@ -271,7 +271,53 @@ export const api = {
     sid: string,
     body: { pose: number; caption: string }
   ): Promise<{ path: string; artifact_rel: string; offline_ok: boolean }> =>
-    post(`/api/docking/${sid}/save3d`, body)
+    post(`/api/docking/${sid}/save3d`, body),
+
+  /* ---- GEO 表达谱 + ML 共识筛选(阶段 3c) ---- */
+  mlDiseases: (): Promise<{ diseases: string[]; drugs: string[] }> =>
+    fetch('/api/ml/diseases').then((r) => json(r)),
+
+  mlSearch: (disease: string, limit: number): Promise<{ results: Row[]; disease: string }> =>
+    post('/api/ml/search', { disease, limit }),
+
+  mlProbe: (gse: string, platformInfo: { platform: string; type: string }):
+    Promise<Record<string, any>> =>
+    post('/api/ml/probe', { gse, platform: platformInfo.platform, type_: platformInfo.type }),
+
+  mlOverview: (gse: string): Promise<{ job_id: string }> =>
+    post('/api/ml/overview', { gse }),
+
+  mlRanked: (body: { disease: string; drug: string }): Promise<{
+    files: { label: string; base_disease: string; drug: string }[]
+  }> => post('/api/ml/ranked', body),
+
+  mlRun: (body: Record<string, unknown>): Promise<{ job_id: string }> =>
+    post('/api/ml/run', body),
+
+  mlHistory: (): Promise<{ runs: Record<string, any>[] }> =>
+    fetch('/api/ml/history').then((r) => json(r)),
+
+  mlRuns: (): Promise<{ runs: Record<string, any>[] }> =>
+    fetch('/api/ml/runs').then((r) => json(r)),
+
+  mlRunsDelete: (body: { paths: string[] }): Promise<{ deleted: string[] }> =>
+    post('/api/ml/runs/delete', body),
+
+  mlRunsZip: (paths: string[]): Promise<Blob> =>
+    fetch('/api/ml/runs/zip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths })
+    }).then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      return r.blob()
+    }),
+
+  mlRunsCleanup: (body: { keep: number }): Promise<{ deleted: number }> =>
+    post('/api/ml/runs/cleanup', body),
+
+  mlForceRefresh: (gse: string): Promise<{ job_id: string }> =>
+    post('/api/ml/force-refresh', { gse })
 }
 
 /** 产物直出:downloads 相对路径 → 伺服 URL(download=true 触发附件下载)。 */

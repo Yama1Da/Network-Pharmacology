@@ -29,6 +29,10 @@ from WY.core.management import (enrichment_display_name, save_api_env,
 from WY.core.sources import disease_spec, drug_spec
 from WY.core.text_utils import safe_name
 from WY.core.analysis import run_ppi_analysis
+from WY.core.ml_pipeline import STAGES, run_screen_chain
+from WY.core.ppi import (base_disease_of, list_analyzed_diseases,
+                        list_analyzed_drugs,
+                        list_ranked_csv_candidates)
 from WY.core.sources import file_path as spec_file_path
 
 setup_logging()
@@ -1299,7 +1303,365 @@ def docking_zip(sid: str) -> Response:
                              f'attachment; filename="{os.path.basename(dock["result_dir"])}.zip"'})
 
 
+# ======== GEO 表达谱 + ML 共识筛选(阶段 3c:Expression_ML_Screening + 结果管理) ========
+# 全链编排唯一定义在 core.ml_pipeline.run_screen_chain(CLI/页面/API 共用);
+# 本层只做 HTTP 形态:检索/预检(同步)、总览与运行(job)、结果管理与下载。
+
+
+@app.get("/api/ml/diseases")
+def ml_diseases() -> dict:
+    from WY.core.ppi import list_analyzed_diseases, list_analyzed_drugs
+
+    return {"diseases": list_analyzed_diseases(), "drugs": list_analyzed_drugs()}
+
+
+class MlSearchBody(BaseModel):
+    disease: str
+    limit: int = 15
+
+
+@app.post("/api/ml/search")
+def ml_search(body: MlSearchBody) -> dict:
+    """GEO 数据集检索(同步:NCBI eutils,数秒)。"""
+    from WY.core.geo import search_geo_datasets
+
+    if not body.disease.strip():
+        raise HTTPException(status_code=400, detail="disease is required")
+    try:
+        df = search_geo_datasets(body.disease.strip(), limit=max(5, min(50, int(body.limit))))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"search failed: {exc}")
+    return {"results": df.to_dict(orient="records") if not df.empty else [],
+            "disease": body.disease.strip()}
+
+
+def _ml_progress(cb):
+    """ml_pipeline progress(stage, message) → job 进度(阶段号 + 附加字段)。"""
+    stages = STAGES
+
+    def _p(stage, message=""):
+        if stage in stages:
+            idx = stages.index(stage)
+            cb(fraction=idx / len(stages),
+               text=f"阶段 {idx + 1}/{len(stages)}:{STAGE_ZH.get(stage, stage)}",
+               step=stage, state="running")
+        else:
+            cb(text=str(message)[:120])
+    return _p
+
+
+STAGE_ZH = {"fetch": "获取数据集", "group": "样本分组", "preprocess": "预处理",
+            "deg": "差异表达", "ml": "ML 共识", "shortlist": "shortlist", "save": "落盘"}
+
+
+class MlProbeBody(BaseModel):
+    gse: str
+    platform: str = ""   # 检索结果带出的平台号(芯片型才探注释)
+    type_: str = ""      # 检索结果带出的类型("芯片"/"测序")
+
+
+@app.post("/api/ml/probe")
+def ml_probe(body: MlProbeBody) -> dict:
+    """GSE 预检(同步,小 Range 请求,每 GSE 前端调用一次):
+    体积/速度/ETA + 可用性判定(已缓存→权威;未缓存→元数据条件版)+ counts 补充 + 注释探活。"""
+    from WY.core.expression import (assess_expression_dataset, normalize_gpl,
+                                    probe_platform_annot)
+    from WY.core.geo import _geo_cache_path, fetch_geo_dataset, has_counts_supplement, \
+        probe_series_matrix
+
+    gse = body.gse.strip().upper()
+    if not gse:
+        raise HTTPException(status_code=400, detail="gse is required")
+    out: dict = {"gse": gse, "r": None, "err": "", "assess": None,
+                 "annot_missing": False, "gpl": ""}
+    try:
+        out["r"] = probe_series_matrix(gse)
+    except Exception as exc:
+        out["err"] = str(exc)
+    if body.type_.strip() == "芯片" and body.platform.strip():
+        try:
+            out["annot"] = probe_platform_annot(body.platform.strip())
+            out["gpl"] = normalize_gpl(body.platform.strip())
+            out["annot_missing"] = out["annot"] == "missing"
+        except Exception:
+            pass
+    if os.path.isfile(_geo_cache_path(gse)):
+        try:
+            out["assess"] = assess_expression_dataset(fetch_geo_dataset(gse))
+        except Exception:
+            pass
+    elif out["r"] and out["r"].get("size_bytes", 10 ** 9) < 20 * 1024:
+        # 小体积 series matrix(≈3KB)几乎必然是元数据型空表:预检 counts 可用性
+        out["assess"] = {"matrix_empty": True,
+                         "counts_available": has_counts_supplement(gse),
+                         "symbol_level": None, "annot": None, "gpl": "",
+                         "group_fields": [], "n_samples": None, "usable": False}
+    return out
+
+
+class MlOverviewBody(BaseModel):
+    gse: str
+
+
+@app.post("/api/ml/overview")
+def ml_overview(body: MlOverviewBody) -> dict:
+    """分组总览(经 job:可能触发数据集下载,数秒到数分钟):
+    分组字段分布 + counts 列清单(空矩阵类)+ 可用性权威判定。"""
+    import pandas as pd
+
+    from WY.core.expression import assess_expression_dataset
+    from WY.core.geo import fetch_gse_count_matrix, fetch_geo_dataset, group_fields_overview
+
+    gse = body.gse.strip().upper()
+    if not gse:
+        raise HTTPException(status_code=400, detail="gse is required")
+
+    def task(progress) -> dict:
+        progress(fraction=0.1, text="下载/读取数据集…")
+        ds = fetch_geo_dataset(gse)
+        progress(fraction=0.75, text="分组字段总览…")
+        overview = group_fields_overview(ds)
+        a = assess_expression_dataset(ds)
+        counts_rows: list[dict] = []
+        if ds.issues and ds.table.empty:
+            try:
+                cnt = fetch_gse_count_matrix(gse)
+                grp_cols = [c for c in ds.samples.columns
+                            if c.startswith("characteristics")
+                            and 2 <= ds.samples[c].astype(str).nunique() <= 8
+                            and not any(k in c.lower() for k in
+                                        ("age", "sex", "gender", "date", "batch"))]
+                title = (ds.samples["title"].astype(str)
+                         if "title" in ds.samples.columns else None)
+                for c in [str(c) for c in cnt["counts"].columns]:
+                    row = {"sample": c}
+                    if title is not None:
+                        m = ds.samples[title == c]
+                        if not m.empty:
+                            for gc in grp_cols:
+                                row[gc] = str(m.iloc[0][gc])[:64]
+                    counts_rows.append(row)
+            except Exception as exc:
+                logging.exception("counts overview failed for %s", gse)
+                counts_rows = []
+                return {"overview": overview.to_dict(orient="records"),
+                        "counts_rows": counts_rows, "assess": a,
+                        "issues": list(ds.issues), "counts_error": str(exc)}
+        return {"overview": overview.to_dict(orient="records"),
+                "counts_rows": counts_rows, "assess": a, "issues": list(ds.issues)}
+
+    return {"job_id": jobs.submit(task, f"ml overview {gse}")}
+
+
+class MlRankedBody(BaseModel):
+    disease: str = ""
+    drug: str = ""
+
+
+@app.post("/api/ml/ranked")
+def ml_ranked(body: MlRankedBody) -> dict:
+    """平台排序 CSV 候选(按疾病上下文与药物过滤,规则与原页面一致)。"""
+    from WY.core.ppi import base_disease_of, list_ranked_csv_candidates
+
+    ranked = list_ranked_csv_candidates()
+    ctx = base_disease_of(body.disease).lower() if body.disease.strip() else ""
+    f_drug = body.drug.strip().lower()
+    shown = [rf for rf in ranked
+             if (not ctx or ctx == rf["base_disease"].lower()
+                 or ctx in rf["base_disease"].lower())
+             and (not f_drug or f_drug in rf["drug"].lower())]
+    return {"files": [{"label": rf["label"], "base_disease": rf["base_disease"],
+                       "drug": rf["drug"]} for rf in shown]}
+
+
+class MlRunBody(BaseModel):
+    mode: str                     # "gse" | "local"
+    gse: str = ""
+    case_pattern: str = ""
+    control_pattern: str = ""
+    expr: str = ""
+    labels: str = ""
+    case_label: str = ""
+    ranked_labels: list[str] = []
+    top_k: int | None = None
+    prefilter_top: int | None = None
+    bootstrap_rounds: int | None = None
+
+
+def _rel_downloads(path: str) -> str | None:
+    try:
+        real = os.path.realpath(path)
+        base = os.path.realpath(config.DOWNLOADS_DIR)
+        if real.startswith(base + os.sep):
+            return os.path.relpath(real, base).replace(os.sep, "/")
+    except OSError:
+        pass
+    return None
+
+
+@app.post("/api/ml/run")
+def ml_run(body: MlRunBody) -> dict:
+    """ML 筛选全链(经 job:DEG + ML 共识,本机实测数分钟)。"""
+    if body.mode not in ("gse", "local"):
+        raise HTTPException(status_code=400, detail="mode must be gse|local")
+    if body.mode == "gse" and not (body.gse.strip() and body.case_pattern.strip()
+                                   and body.control_pattern.strip()):
+        raise HTTPException(status_code=400, detail="gse/case/control required in gse mode")
+    if body.mode == "local" and not (body.expr.strip() and body.labels.strip()):
+        raise HTTPException(status_code=400, detail="expr/labels required in local mode")
+    # ranked 标签 → 路径(白名单:只接受 list_ranked_csv_candidates 给出的标签)
+    candidates = {rf["label"]: rf["path"] for rf in list_ranked_csv_candidates()}
+    ranked_csvs = {}
+    for lbl in body.ranked_labels:
+        path = candidates.get(lbl)
+        if not path:
+            raise HTTPException(status_code=400, detail=f"unknown ranked label: {lbl}")
+        ranked_csvs[os.path.splitext(os.path.basename(path))[0]] = path
+
+    def task(progress) -> dict:
+        common = dict(prefilter_top=int(body.prefilter_top or 500),
+                      bootstrap_rounds=int(body.bootstrap_rounds or 30),
+                      ranked_csvs=ranked_csvs, top_k=int(body.top_k or 50),
+                      out_base=config.GEO_RESULT_DIR, out_subdir=None,
+                      progress=_ml_progress(progress))
+        if body.mode == "local":
+            res = run_screen_chain(expr=body.expr.strip(), labels=body.labels.strip(),
+                                   case_label=body.case_label.strip() or None, **common)
+        else:
+            res = run_screen_chain(gse=body.gse.strip().upper(),
+                                   case_pattern=body.case_pattern.strip(),
+                                   control_pattern=body.control_pattern.strip(), **common)
+        out_dir = res["out_dir"]
+        artifacts = {}
+        if os.path.isdir(out_dir):
+            for f in sorted(os.listdir(out_dir)):
+                fp = os.path.join(out_dir, f)
+                if os.path.isfile(fp):
+                    artifacts[f] = _rel_downloads(fp)
+        roc_png_rel = _rel_downloads(res.get("roc_png") or "")
+        curve_rel = _rel_downloads(os.path.join(out_dir, "consensus_curve.png"))
+        return {
+            "gse": res["gse"] or res["tag"], "tag": res["tag"],
+            "out_dir": out_dir, "out_dir_rel": _rel_downloads(out_dir),
+            "artifacts": artifacts,
+            "roc_png_rel": roc_png_rel,
+            "consensus_curve_rel": curve_rel,
+            "elapsed": res["summary"]["elapsed_total_s"],
+            "meta": res["meta"],
+            "geo_fallback": bool(res["summary"].get("geo_cache_fallback")),
+            "geo_cache_date": res["summary"].get("geo_cache_date", ""),
+            "funnel": _df_rows(res["funnel"]),
+            "consensus": _df_rows(res["consensus"].rename_axis("gene").reset_index(), 300),
+            "consensus_total": int(len(res["consensus"])),
+            "shortlist": _df_rows(res["shortlist"]),
+            "shortlist_count": int(res["shortlist"]["in_shortlist"].sum())
+            if "in_shortlist" in res["shortlist"] else None,
+            "deg": _df_rows(res["deg"], 200),
+        }
+
+    return {"job_id": jobs.submit(task, f"ml run {body.gse or 'local'}")}
+
+
+@app.get("/api/ml/history")
+def ml_history() -> dict:
+    """最近 3 次 run 的摘要(原页面历史区)。"""
+    from WY.core.ml_results import list_ml_runs
+
+    runs = []
+    for r in list_ml_runs()[:3]:
+        s = r["summary"] or {}
+        m = s.get("ml_meta", {})
+        runs.append({"name": r["name"], "auc": m.get("cv_auc"),
+                     "n_samples": s.get("n_samples"),
+                     "shortlist_count": s.get("shortlist_count"),
+                     "ml_version": s.get("ml_version"),
+                     "stale": [{"type": x["type"],
+                                "old": x.get("old"), "new": x.get("new"),
+                                "name": x.get("name")} for x in r["stale"]]})
+    return {"runs": runs}
+
+
+def _ml_run_rows() -> list[dict]:
+    from WY.core.ml_results import list_ml_runs
+
+    rows = []
+    for r in list_ml_runs():
+        s = r["summary"] or {}
+        m = s.get("ml_meta", {})
+        rows.append({"name": r["name"], "path": r["path"],
+                     "dir_rel": _rel_downloads(r["path"]),
+                     "size_bytes": r["size_bytes"], "mtime": r["mtime"],
+                     "gse": r["gse"], "source": r["source"],
+                     "n_samples": r["n_samples"], "auc": r["auc"],
+                     "shortlist_count": r["shortlist_count"],
+                     "ml_version": r["ml_version"],
+                     "stale": [{"type": x["type"], "old": x.get("old"),
+                                "new": x.get("new"), "name": x.get("name")}
+                               for x in r["stale"]]})
+    return rows
+
+
+@app.get("/api/ml/runs")
+def ml_runs() -> dict:
+    """全部 ML run 清单(结果管理):新→旧,含陈旧原因与体积。"""
+    return {"runs": _ml_run_rows()}
+
+
+class MlRunsBody(BaseModel):
+    paths: list[str]
+
+
+@app.post("/api/ml/runs/delete")
+def ml_runs_delete(body: MlRunsBody) -> dict:
+    from WY.core.ml_results import delete_ml_runs
+
+    return {"deleted": delete_ml_runs(body.paths)}
+
+
+@app.post("/api/ml/runs/zip")
+def ml_runs_zip(body: MlRunsBody) -> Response:
+    from WY.core.ml_results import zip_ml_runs
+
+    data = zip_ml_runs(body.paths)
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition": "attachment; filename=\"ML_runs.zip\""})
+
+
+class MlCleanupBody(BaseModel):
+    keep: int = 6
+
+
+@app.post("/api/ml/runs/cleanup")
+def ml_runs_cleanup(body: MlCleanupBody) -> dict:
+    from WY.core.ml_results import cleanup_keep_per_gse
+
+    deleted = cleanup_keep_per_gse(keep=max(1, int(body.keep)))
+    return {"deleted": deleted}
+
+
+class MlForceBody(BaseModel):
+    gse: str
+
+
+@app.post("/api/ml/force-refresh")
+def ml_force_refresh(body: MlForceBody) -> dict:
+    """GEO 缓存强制重下(降级场景②,经 job)。"""
+    from WY.core.geo import fetch_geo_dataset
+
+    gse = body.gse.strip().upper()
+    if not gse:
+        raise HTTPException(status_code=400, detail="gse is required")
+
+    def task(progress) -> dict:
+        progress(fraction=None, text=f"强制重下 {gse}…")
+        fetch_geo_dataset(gse, force_refresh=True)
+        return {"ok": True}
+
+    return {"job_id": jobs.submit(task, f"geo force refresh {gse}")}
+
+
 # ======== 前端静态托管(SPA):WY/web/dist 由 npm run build 产出 ========
+
 
 
 _DIST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")

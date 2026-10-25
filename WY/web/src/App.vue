@@ -7,6 +7,8 @@ import AnalysisView from './views/AnalysisView.vue'
 import DataView from './views/DataView.vue'
 import DockingView from './views/DockingView.vue'
 import HomeView from './views/HomeView.vue'
+import MlView from './views/MlView.vue'
+import MlResultsView from './views/MlResultsView.vue'
 import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import SourcesView from './views/SourcesView.vue'
@@ -22,6 +24,8 @@ const NAV = [
   { hash: '#/ppi', label: 'PPI' },
   { hash: '#/enrichment', label: '富集' },
   { hash: '#/stars', label: '收藏' },
+  { hash: '#/ml', label: 'ML' },
+  { hash: '#/ml-results', label: 'ML 结果' },
   { hash: '#/settings', label: '设置' },
 ]
 
@@ -84,6 +88,8 @@ onBeforeUnmount(() => {
       <CollectionView v-else-if="route === 'stars'" kind="stars" kicker="STARRED RESULTS"
                       title="收藏的对接结果" sub="分子对接收藏 · 目录整体打包" />
       <DataView v-else-if="route === 'data'" />
+      <MlView v-else-if="route === 'ml'" />
+      <MlResultsView v-else-if="route === 'ml-results'" />
       <SettingsView v-else-if="route === 'settings'" />
     </main>
 

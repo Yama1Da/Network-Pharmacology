@@ -612,15 +612,12 @@ with st.container(key="top_left_buttons"):
         if st.button(t("app.btn_enrichment_info"), key="enrichment_info_btn", width="stretch",
                      disabled=_analyze_busy):
             st.switch_page("pages/Enrichment_Information.py")
-    # 下拉菜单:主分析(PPI/富集)、分子对接与表达谱 ML 筛选入口。
+    # 下拉菜单:主分析(PPI/富集)、分子对接入口(表达谱 ML 已迁 TS 前端)。
     with st.popover(t("app.popover_docking"), key="docking_mgmt_popover"):
         if st.button(t("app.btn_molecular_docking"), key="molecular_docking_btn", width="stretch",
                      disabled=_analyze_busy):
             st.session_state["_docking_entry"] = True  # 通知对接页:从入口进入并重置状态
             st.switch_page("pages/Molecular_Docking.py")
-        if st.button(t("app.btn_expression_ml"), key="expression_ml_btn", width="stretch",
-                     disabled=_analyze_busy):
-            st.switch_page("pages/Expression_ML_Screening.py")
 
 # 上一次分析被在途点击打断时给出提示(busy 复位后的下一轮才能看到,不能门在 busy 上)
 show_busy_notice("home_analyze_busy")
