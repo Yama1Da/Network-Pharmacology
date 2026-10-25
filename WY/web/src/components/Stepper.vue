@@ -5,16 +5,18 @@ const props = withDefaults(defineProps<{
   min: number
   max: number
   step?: number
-}>(), { step: 1 })
+  /** 数值保留小数位(默认 2;富集 p 值等 3 位小数参数传 3) */
+  digits?: number
+}>(), { step: 1, digits: 2 })
 
 const emit = defineEmits<{ (e: 'update:modelValue', v: number): void }>()
 
 function dec(): void {
-  emit('update:modelValue', Math.max(props.min, +(props.modelValue - props.step).toFixed(2)))
+  emit('update:modelValue', Math.max(props.min, +(props.modelValue - props.step).toFixed(props.digits)))
 }
 
 function inc(): void {
-  emit('update:modelValue', Math.min(props.max, +(props.modelValue + props.step).toFixed(2)))
+  emit('update:modelValue', Math.min(props.max, +(props.modelValue + props.step).toFixed(props.digits)))
 }
 </script>
 

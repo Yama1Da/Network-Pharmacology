@@ -54,6 +54,70 @@ export interface JobState {
 
 export type Row = Record<string, unknown>
 
+/** 网络邻近度检验的落网覆盖(LCC 内命中数 / 集合总数)。 */
+export interface ProximityCoverage {
+  drug_in_lcc?: number
+  drug_total?: number
+  disease_in_lcc?: number
+  disease_total?: number
+}
+
+/** 网络邻近度检验(core.network_algorithms;not_built / 异常哨兵只含部分字段,
+ * 故除 ok/error 外均为可选;z / p_excl 在零分布退化时为 null)。 */
+export interface ProximityResult {
+  ok: boolean
+  error: string | null
+  d_c?: number | null
+  z?: number | null
+  p_empirical?: number | null
+  d_c_excl?: number | null
+  z_excl?: number | null
+  p_excl?: number | null
+  n_excl?: number
+  n_perm?: number
+  seed?: number
+  mean_random?: number | null
+  std_random?: number | null
+  mean_random_excl?: number
+  lcc_nodes?: number
+  cached?: boolean
+  coverage?: ProximityCoverage
+}
+
+/** RWR 单行(基因得分;annotate 启用时非种子行附带 annotated 标注)。 */
+export interface RwrRow {
+  gene: string
+  score: number
+  annotated?: boolean
+}
+
+/** RWR 度匹配校正的富集检验;零分布退化(degenerate)时 z / p 为 null。 */
+export interface RwrEnrichment {
+  n_annotated: number
+  obs_mean: number
+  null_mean?: number | null
+  n_perms: number
+  degenerate: boolean
+  z: number | null
+  p: number | null
+}
+
+/** 单侧 RWR 结果(疾病种子 / 药物种子;not_built 哨兵只含部分字段)。 */
+export interface RwrSideResult {
+  ok: boolean
+  error: string | null
+  alpha?: number
+  n_iter?: number | null
+  converged?: boolean | null
+  n_seeds?: number | null
+  lcc_nodes?: number
+  cached?: boolean
+  coverage?: { seed_in_lcc?: number; seed_total?: number }
+  enrichment?: RwrEnrichment | null
+  seeds?: RwrRow[]
+  top_nonseed?: RwrRow[]
+}
+
 export interface PpiResult {
   prefix: string
   directory_rel: string
@@ -70,8 +134,8 @@ export interface PpiResult {
   artifacts: Record<string, string>
   enrichment: { source: string; reason: string; rows: Row[] }
   gsea: Record<string, { reason: string; stats: Row; rows: Row[] }>
-  proximity: Record<string, unknown> | null
-  rwr: Record<string, Record<string, unknown>> | null
+  proximity: ProximityResult | null
+  rwr: Record<string, RwrSideResult> | null
   modules: { summary: Row[]; failures: unknown[]; no_sig: number[] } | null
 }
 
@@ -96,6 +160,102 @@ export interface InteractomeStatus {
   built_at?: string
   age?: number | null
   stale?: boolean
+}
+
+/* ---- GEO 表达谱 + ML(阶段 3c)共享类型:字段与 core 一一对应 ---- */
+
+/** 数据集可用性判定(core.expression.assess_expression_dataset)。 */
+export interface MlAssess {
+  matrix_empty: boolean
+  symbol_level: boolean | null
+  shape?: [number, number] | null
+  gpl: string
+  annot: string | null
+  group_fields: string[]
+  counts_available: boolean | null
+  n_samples: number | null
+  usable: boolean
+}
+
+/** /api/ml/probe 返回;仅前端请求本身失败时只有 err 字段。 */
+export interface MlProbeResult {
+  gse?: string
+  r?: { size_bytes: number; speed_bps: number; reliable?: boolean } | null
+  err?: string
+  assess?: MlAssess | null
+  annot_missing?: boolean
+  gpl?: string
+  annot?: string
+}
+
+/** /api/ml/overview 的 job result。 */
+export interface MlOverviewResult {
+  overview: Row[]
+  counts_rows?: Row[]
+  assess?: MlAssess
+  issues?: string[]
+  counts_error?: string
+}
+
+/** /api/ml/run 的 job result。 */
+export interface MlRunResult {
+  gse: string
+  tag?: string
+  out_dir?: string
+  out_dir_rel?: string
+  artifacts?: Record<string, string>
+  roc_png_rel?: string
+  consensus_curve_rel?: string
+  elapsed?: number
+  meta?: {
+    n_samples?: number
+    n_genes?: number
+    cv_auc?: number | null
+    algo_spearman_mean?: number | null
+    [k: string]: unknown
+  }
+  geo_fallback?: boolean
+  geo_cache_date?: string
+  funnel?: Row[]
+  consensus?: Row[]
+  consensus_total?: number
+  shortlist?: Row[]
+  shortlist_count?: number | null
+  deg?: Row[]
+}
+
+/** run 陈旧原因(core.ml_pipeline.stale_reasons)。 */
+export interface MlStaleReason {
+  type: string
+  old?: string | null
+  new?: string | null
+  name?: string
+}
+
+/** /api/ml/history 的单行(近 3 次摘要)。 */
+export interface MlHistoryRun {
+  name: string
+  auc?: number | null
+  n_samples?: number | null
+  shortlist_count?: number | null
+  ml_version?: string | null
+  stale?: MlStaleReason[]
+}
+
+/** /api/ml/runs 的单行(结果管理清单)。 */
+export interface MlRunRow {
+  name: string
+  path: string
+  dir_rel?: string
+  size_bytes: number
+  mtime: number
+  gse?: string | null
+  source?: string | null
+  n_samples?: number | null
+  auc?: number | null
+  shortlist_count?: number | null
+  ml_version?: string | null
+  stale?: MlStaleReason[]
 }
 
 async function json<T>(r: Response): Promise<T> {
@@ -196,6 +356,17 @@ export const api = {
     cli_results_dir: string
     string_version: string
     known_versions: string[]
+    ot_top_n: number
+    disgenet_pages: number
+    chembl_blacklist: string[]
+    chembl_blacklist_options: string[]
+    chembl_pchembl_threshold: number
+    dgidb_min_score: number
+    ot_min_score: number
+    chembl_corroboration_required: boolean
+    enrichment_pvalue: number
+    louvain_resolution: number
+    ppi_confidence: number
     pocket_cutoff: number
   }> => fetch('/api/settings').then((r) => json(r)),
 
@@ -205,8 +376,30 @@ export const api = {
   setStringVersion: (version: string): Promise<{ version: string; changed: boolean }> =>
     post('/api/settings/string-version', { version }),
 
-  saveUiSettings: (changes: Record<string, number>): Promise<{ pocket_cutoff: number }> =>
-    post('/api/settings/ui', { changes }),
+  saveUiSettings: (changes: Record<string, number | boolean | string[]>): Promise<{
+    snapshot: {
+      keys: { disgenet: boolean; ncbi: boolean }
+      vina_dir: string
+      obabel_dir: string
+      cli_results_dir: string
+      string_version: string
+      known_versions: string[]
+      ot_top_n: number
+      disgenet_pages: number
+      chembl_blacklist: string[]
+      chembl_blacklist_options: string[]
+      chembl_pchembl_threshold: number
+      dgidb_min_score: number
+      ot_min_score: number
+      chembl_corroboration_required: boolean
+      enrichment_pvalue: number
+      louvain_resolution: number
+      ppi_confidence: number
+      pocket_cutoff: number
+    }
+    changed: string[]
+    purged_merged: number
+  }> => post('/api/settings/ui', { changes }),
 
   /* ---- 分子对接(阶段 3b) ---- */
   dockingSession: (): Promise<{ sid: string }> =>
@@ -289,7 +482,7 @@ export const api = {
     post('/api/ml/search', { disease, limit }),
 
   mlProbe: (gse: string, platformInfo: { platform: string; type: string }):
-    Promise<Record<string, any>> =>
+    Promise<MlProbeResult> =>
     post('/api/ml/probe', { gse, platform: platformInfo.platform, type_: platformInfo.type }),
 
   mlOverview: (gse: string): Promise<{ job_id: string }> =>
@@ -302,10 +495,10 @@ export const api = {
   mlRun: (body: Record<string, unknown>): Promise<{ job_id: string }> =>
     post('/api/ml/run', body),
 
-  mlHistory: (): Promise<{ runs: Record<string, any>[] }> =>
+  mlHistory: (): Promise<{ runs: MlHistoryRun[] }> =>
     fetch('/api/ml/history').then((r) => json(r)),
 
-  mlRuns: (): Promise<{ runs: Record<string, any>[] }> =>
+  mlRuns: (): Promise<{ runs: MlRunRow[] }> =>
     fetch('/api/ml/runs').then((r) => json(r)),
 
   mlRunsDelete: (body: { paths: string[] }): Promise<{ deleted: string[] }> =>

@@ -349,6 +349,9 @@ onBeforeUnmount(() => {
   <p class="sub s3">{{ t('web.docking.sub') }}</p>
 
   <div class="panel wide s4">
+    <div class="xlinks">
+      <a class="bar-btn" href="#/stars">{{ t('web.nav.stars_link') }}</a>
+    </div>
     <Transition name="note">
       <p v-if="notice" class="notice">{{ notice }}</p>
     </Transition>

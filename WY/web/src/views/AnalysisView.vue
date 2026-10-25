@@ -5,7 +5,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  api, artifactsUrl, type PpiAnalyzeBody, type PpiResult, type Row
+  api, artifactsUrl, type PpiAnalyzeBody, type PpiResult, type RwrRow, type Row
 } from '../api'
 import { takePrefill } from '../store'
 import { useJob } from '../composables/useJob'
@@ -112,21 +112,19 @@ function art(key: string): string | null {
   return artifacts.value[key] ?? null
 }
 
-/* 邻近度 */
-const prox = computed<Record<string, any> | null>(() =>
-  (ppi.value?.proximity ?? null) as Record<string, any> | null)
+/* 邻近度(PpiResult.proximity 已是 ProximityResult,无需再转 any) */
+const prox = computed(() => ppi.value?.proximity ?? null)
 
 /* RWR */
-const rwr = computed<Record<string, Record<string, any>> | null>(() =>
-  (ppi.value?.rwr ?? null) as Record<string, Record<string, any>> | null)
+const rwr = computed(() => ppi.value?.rwr ?? null)
 const rwrSide = ref<'disease_seeds' | 'drug_seeds'>('disease_seeds')
-const rwrRes = computed<Record<string, any> | null>(() => rwr.value?.[rwrSide.value] ?? null)
-const rwrTop = computed<Row[]>(() => {
+const rwrRes = computed(() => rwr.value?.[rwrSide.value] ?? null)
+const rwrTop = computed<(RwrRow & { is_seed: boolean })[]>(() => {
   const res = rwrRes.value
   if (!res?.ok) return []
-  const seeds: Row[] = ((res.seeds ?? []) as Row[]).map((r) => ({ ...r, is_seed: true }))
-  const non: Row[] = ((res.top_nonseed ?? []) as Row[]).map((r) => ({ ...r, is_seed: false }))
-  return [...seeds, ...non].sort((a, b) => Number(b.score) - Number(a.score))
+  const seeds = (res.seeds ?? []).map((r) => ({ ...r, is_seed: true }))
+  const non = (res.top_nonseed ?? []).map((r) => ({ ...r, is_seed: false }))
+  return [...seeds, ...non].sort((a, b) => b.score - a.score)
 })
 const rwrNonSeed = computed(() => rwrTop.value.filter((r) => !r.is_seed))
 const rwrSeeds = computed(() => rwrTop.value.filter((r) => r.is_seed))
@@ -205,6 +203,9 @@ onMounted(() => {
 
   <!-- ================= 表单 ================= -->
   <div class="panel wide s4">
+    <div class="xlinks">
+      <a class="bar-btn" href="#/data">{{ t('web.nav.data_link') }}</a>
+    </div>
     <div class="mode-row">
       <span class="ctl-label">{{ t('web.analysis.mode_label') }}</span>
       <span class="lv-group">
@@ -366,7 +367,8 @@ onMounted(() => {
       <template v-if="prox.error === 'not_built'">
         <p class="stale">{{ t('web.analysis.prox_not_built') }}</p>
       </template>
-      <template v-else-if="['low_coverage_drug', 'low_coverage_disease', 'empty_after_filter'].includes(prox.error)">
+      <template v-else-if="prox.error &&
+                           ['low_coverage_drug', 'low_coverage_disease', 'empty_after_filter'].includes(prox.error)">
         <p class="stale">
           {{ t('web.analysis.prox_low_cov', { din: prox.coverage?.drug_in_lcc ?? 0, dtotal: prox.coverage?.drug_total ?? 0,
                                                iin: prox.coverage?.disease_in_lcc ?? 0, itotal: prox.coverage?.disease_total ?? 0 }) }}
@@ -426,7 +428,7 @@ onMounted(() => {
                                               in: rwrRes.coverage?.seed_in_lcc ?? 0, total: rwrRes.coverage?.seed_total ?? 0 }) }}
               {{ rwrRes.cached ? t('web.analysis.cached_hit') : '' }}
             </p>
-            <p v-if="rwrRes.enrichment?.z != null" class="hint-line"
+            <p v-if="rwrRes.enrichment && rwrRes.enrichment.z != null" class="hint-line"
                :class="{ good: rwrRes.enrichment.p != null && rwrRes.enrichment.p < 0.05 }">
               {{ t('web.analysis.rwr_enrich', {
                 n: rwrRes.enrichment.n_annotated, z: fmt(rwrRes.enrichment.z),

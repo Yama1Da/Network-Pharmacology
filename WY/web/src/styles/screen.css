@@ -120,7 +120,7 @@
 /* ---------- 顶栏 ---------- */
 .top {
   position: relative;
-  z-index: 2;
+  z-index: 5;  /* 高于 .center(z-index:2):下拉面板浮在内容之上而非被盖住 */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -155,6 +155,88 @@
 .links a:hover,
 .links a.active {
   color: #1a1a1a;
+}
+
+/* ---------- 下拉导航组(点击开合;分组名/条目名复用旧版 popover 词典) ---------- */
+.dd {
+  position: relative;
+}
+.dd-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  color: #a6a6a6;
+  cursor: pointer;
+  transition: color 0.25s ease;
+  user-select: none;
+}
+.dd-btn:hover,
+.dd-btn[aria-expanded='true'],
+.dd.on .dd-btn {
+  color: #1a1a1a;
+}
+.dd-caret {
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg) translateY(-1px);
+  transition: transform 0.25s ease;
+}
+.dd-btn[aria-expanded='true'] .dd-caret {
+  transform: rotate(-135deg) translateY(-1px);
+}
+.dd-panel {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 210px;
+  padding: 6px 0;
+  z-index: 40;
+  background: #fdfdfd;
+  border: 1px solid #e6e6e4;
+  box-shadow: 0 10px 28px rgba(26, 26, 26, 0.06);
+}
+.links .dd-item {
+  display: block;
+  padding: 9px 18px;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  color: #4a4a48;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+.links .dd-item:hover {
+  color: #1a1a1a;
+  background: #f7f7f5;
+}
+.links .dd-item.active {
+  color: #1a1a1a;
+  font-weight: 500;
+}
+.dd-enter-active,
+.dd-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.dd-enter-from,
+.dd-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-4px);
+}
+
+/* ---------- 页内跨页入口(收藏 / ML 结果管理 / 数据管理,宿主页顶部右侧) ---------- */
+.xlinks {
+  display: flex;
+  justify-content: flex-end;
+  gap: 18px;
+  padding-bottom: 10px;
 }
 
 /* ---------- 中央 ---------- */
@@ -560,6 +642,8 @@
   }
   .links {
     gap: 16px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
   .controls {
     flex-wrap: wrap;

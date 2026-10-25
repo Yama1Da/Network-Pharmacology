@@ -6,7 +6,8 @@
  * 全链编排唯一定义在 core.ml_pipeline.run_screen_chain(CLI/页面/API 共用)。 */
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, artifactsUrl, type Row } from '../api'
+import { api, artifactsUrl, type MlHistoryRun, type MlOverviewResult,
+         type MlProbeResult, type MlRunResult, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
@@ -24,7 +25,7 @@ const searchResults = ref<Row[]>([])
 const searchDisease = ref('')
 const searchBusy = ref(false)
 const gse = ref('')
-const probe = ref<Record<string, any> | null>(null)
+const probe = ref<MlProbeResult | null>(null)
 const probeBusy = ref(false)
 let probedGse = ''
 const exprPath = ref('')
@@ -113,10 +114,10 @@ const fmtEta = (s: number): string =>
 const casePat = ref('')
 const ctrlPat = ref('')
 const overviewJob = useJob((result) => {
-  overview.value = result as Record<string, any>
+  overview.value = result as unknown as MlOverviewResult
   flash(t('web.ml.overview_done_flash'))
 })
-const overview = ref<Record<string, any> | null>(null)
+const overview = ref<MlOverviewResult | null>(null)
 
 async function loadOverview(): Promise<void> {
   const g = gse.value.trim().toUpperCase()
@@ -160,10 +161,10 @@ const bootstrapN = ref(30)
 
 /* ---------------- ③ 运行 ---------------- */
 
-const resultData = ref<Record<string, any> | null>(null)
+const resultData = ref<MlRunResult | null>(null)
 const fallback = ref<{ gse: string; date: string } | null>(null)
 const runJob = useJob((result) => {
-  resultData.value = result as Record<string, any>
+  resultData.value = result as unknown as MlRunResult
   const r = resultData.value
   if (r.geo_fallback) {
     fallback.value = { gse: String(r.gse), date: String(r.geo_cache_date ?? '') }
@@ -206,7 +207,7 @@ async function forceRedownload(): Promise<void> {
 
 /* ---------------- ④ 结果 ---------------- */
 
-const meta = computed<Record<string, any> | null>(() => resultData.value?.meta ?? null)
+const meta = computed(() => resultData.value?.meta ?? null)
 const consensusRows = computed<Row[]>(() => resultData.value?.consensus ?? [])
 const consensusTotal = computed(() => resultData.value?.consensus_total ?? 0)
 const funnelRows = computed<Row[]>(() => resultData.value?.funnel ?? [])
@@ -216,7 +217,7 @@ const artifactsMap = computed<Record<string, string>>(() => resultData.value?.ar
 
 /* ---------------- 历史(近 3 次) ---------------- */
 
-const history = ref<Record<string, any>[]>([])
+const history = ref<MlHistoryRun[]>([])
 const histPick = ref('')
 const histRow = computed(() => history.value.find((r) => r.name === histPick.value) ?? null)
 
@@ -264,6 +265,9 @@ onMounted(() => {
   <p class="sub s3">{{ t('web.ml.sub') }}</p>
 
   <div class="panel wide s4">
+    <div class="xlinks">
+      <a class="bar-btn" href="#/ml-results">{{ t('web.nav.results_link') }}</a>
+    </div>
     <Transition name="note">
       <p v-if="notice" class="notice">{{ notice }}</p>
     </Transition>
@@ -426,7 +430,7 @@ onMounted(() => {
         <template v-if="overview.assess && !overview.assess.matrix_empty">
           <p class="hint-line good">
             {{ t('web.ml.matrix_meta', {
-              r: overview.assess.shape[0], c: overview.assess.shape[1],
+              r: overview.assess.shape?.[0] ?? '—', c: overview.assess.shape?.[1] ?? '—',
               level: overview.assess.symbol_level ? t('web.ml.id_symbol') : t('web.ml.id_probe'),
               annot: overview.assess.symbol_level ? ''
                 : (overview.assess.annot === 'cached' || overview.assess.annot === 'ok'
@@ -438,7 +442,7 @@ onMounted(() => {
           <p v-if="overview.assess.group_fields?.length" class="hint-line">
             {{ t('web.ml.group_fields', { fields: overview.assess.group_fields.slice(0, 3).join('; ') }) }}
           </p>
-          <p v-if="overview.assess.n_samples < 12" class="stale">
+          <p v-if="overview.assess.n_samples != null && overview.assess.n_samples < 12" class="stale">
             {{ t('web.ml.few_samples', { n: overview.assess.n_samples }) }}
           </p>
         </template>

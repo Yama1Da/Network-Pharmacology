@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 应用骨架:顶栏导航 / 入场幕布 / 呼吸细环 / 页脚(家族设计语言,样式见 styles/screen.css)
- * + hash 路由。过渡期 Streamlit(8501)仍是主入口,这里承载逐页迁入的 TS 页面。 */
+ * + hash 路由(未知 hash 走兜底页,不再空白)。 */
 import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { setLang } from './i18n'
@@ -17,20 +17,31 @@ import SourcesView from './views/SourcesView.vue'
 
 const { t, locale } = useI18n()
 
-const NAV = [
-  { hash: '#/home', key: 'web.nav.home' },
-  { hash: '#/analysis', key: 'web.nav.analysis' },
-  { hash: '#/docking', key: 'web.nav.docking' },
-  { hash: '#/data', key: 'web.nav.data' },
-  { hash: '#/logs', key: 'web.nav.logs' },
-  { hash: '#/drug-sources', key: 'web.nav.drug_sources' },
-  { hash: '#/disease-sources', key: 'web.nav.disease_sources' },
-  { hash: '#/ppi', key: 'web.nav.ppi' },
-  { hash: '#/enrichment', key: 'web.nav.enrichment' },
-  { hash: '#/stars', key: 'web.nav.stars' },
-  { hash: '#/ml', key: 'web.nav.ml' },
-  { hash: '#/ml-results', key: 'web.nav.ml_results' },
-  { hash: '#/settings', key: 'web.nav.settings' },
+/* 下拉导航:分组名/条目名复用旧版 popover 词典(app.*),分组方式与 Streamlit 版一致。
+ * 收藏 / ML 结果 / 数据管理三个从属页退出顶栏,入口移到各自宿主页(Docking/Ml/Analysis)。 */
+interface NavItem { route: string; label: string }
+interface NavGroup { key: string; label: string; items: NavItem[] }
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    key: 'source', label: 'app.popover_source', items: [
+      { route: 'drug-sources', label: 'app.btn_drug_mgmt' },
+      { route: 'disease-sources', label: 'app.btn_disease_mgmt' },
+      { route: 'ppi', label: 'app.btn_ppi_info' },
+      { route: 'enrichment', label: 'app.btn_enrichment_info' }
+    ]
+  },
+  {
+    key: 'validation', label: 'app.popover_docking', items: [
+      { route: 'analysis', label: 'app.btn_data_network' },
+      { route: 'docking', label: 'app.btn_molecular_docking' },
+      { route: 'ml', label: 'app.btn_expression_ml' }
+    ]
+  }
+]
+const NAV_DIRECT: NavItem[] = [
+  { route: 'logs', label: 'web.nav.logs' },
+  { route: 'settings', label: 'web.nav.settings' }
 ]
 
 const lang = computed(() => (locale.value === 'zh' ? 'EN' : '中文'))
@@ -48,12 +59,36 @@ const introVisible = ref(true)
 const ready = ref(false)
 let introTimer = 0
 
+/* 下拉开合:点击开合;点击面板外 / Esc / 跳转后关闭 */
+const openMenu = ref('')
+function toggleMenu(key: string): void {
+  openMenu.value = openMenu.value === key ? '' : key
+}
+function closeMenu(): void {
+  openMenu.value = ''
+}
+function groupActive(g: NavGroup): boolean {
+  return g.items.some((it) => it.route === route.value)
+}
+
+function onDocClick(e: MouseEvent): void {
+  if (!openMenu.value) return
+  const el = e.target instanceof Element ? e.target.closest('.dd') : null
+  if (!el) closeMenu()
+}
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') closeMenu()
+}
+
 function onHash(): void {
   route.value = location.hash.replace(/^#\/?/, '') || 'home'
+  closeMenu()
 }
 
 onMounted(() => {
   window.addEventListener('hashchange', onHash)
+  window.addEventListener('click', onDocClick)
+  window.addEventListener('keydown', onKeydown)
   introTimer = window.setTimeout(() => {
     introVisible.value = false
     ready.value = true
@@ -61,6 +96,8 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('hashchange', onHash)
+  window.removeEventListener('click', onDocClick)
+  window.removeEventListener('keydown', onKeydown)
   window.clearTimeout(introTimer)
 })
 </script>
@@ -82,8 +119,22 @@ onBeforeUnmount(() => {
     <header class="top">
       <a class="brand" href="#/home">NPAP<i class="brand-dot"></i></a>
       <nav class="links">
-        <a v-for="n in NAV" :key="n.hash" :href="n.hash"
-           :class="{ active: route === n.hash.slice(2) }">{{ t(n.key) }}</a>
+        <a href="#/home" :class="{ active: route === 'home' }">{{ t('web.nav.home') }}</a>
+        <div v-for="g in NAV_GROUPS" :key="g.key" class="dd" :class="{ on: groupActive(g) }">
+          <button class="dd-btn" type="button" :aria-expanded="openMenu === g.key"
+                  @click.stop="toggleMenu(g.key)">
+            {{ t(g.label) }}<i class="dd-caret" aria-hidden="true"></i>
+          </button>
+          <Transition name="dd">
+            <div v-if="openMenu === g.key" class="dd-panel">
+              <a v-for="it in g.items" :key="it.route" class="dd-item"
+                 :class="{ active: route === it.route }" :href="`#/${it.route}`"
+                 @click="closeMenu">{{ t(it.label) }}</a>
+            </div>
+          </Transition>
+        </div>
+        <a v-for="d in NAV_DIRECT" :key="d.route" :href="`#/${d.route}`"
+           :class="{ active: route === d.route }">{{ t(d.label) }}</a>
         <a @click.prevent="toggleLang">{{ lang }}</a>
       </nav>
     </header>
@@ -106,6 +157,13 @@ onBeforeUnmount(() => {
       <MlView v-else-if="route === 'ml'" />
       <MlResultsView v-else-if="route === 'ml-results'" />
       <SettingsView v-else-if="route === 'settings'" />
+      <!-- 未知 hash 兜底:书签过期 / 手改地址时不至于白屏 -->
+      <div v-else class="notfound">
+        <p class="kicker s1">{{ t('web.notfound.kicker') }}</p>
+        <h1 class="title s2">{{ t('web.notfound.title') }}</h1>
+        <p class="sub s3">{{ t('web.notfound.sub', { hash: `#/${route}` }) }}</p>
+        <a class="bar-btn nf-back s4" href="#/home">{{ t('web.notfound.back') }}</a>
+      </div>
     </main>
 
     <footer class="foot">
@@ -113,3 +171,9 @@ onBeforeUnmount(() => {
     </footer>
   </div>
 </template>
+
+<style scoped>
+.nf-back {
+  margin-top: 34px;
+}
+</style>

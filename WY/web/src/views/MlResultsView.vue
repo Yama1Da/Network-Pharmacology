@@ -4,7 +4,7 @@
  * 勾选删除(两段确认)· ZIP 下载 · keep-N 清理。数据层在 core.ml_results。 */
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api } from '../api'
+import { api, type MlRunRow } from '../api'
 import { useConfirmArm } from '../composables/useConfirmArm'
 import { useNotice } from '../composables/useNotice'
 import { usePager } from '../composables/usePager'
@@ -13,12 +13,12 @@ import Stepper from '../components/Stepper.vue'
 import { downloadBlob } from '../utils/download'
 
 const { t } = useI18n()
-const runs = ref<Record<string, any>[]>([])
+const runs = ref<MlRunRow[]>([])
 const runsLoaded = ref(false)
 const runsQuery = ref('')
 const { notice, flash } = useNotice(4200)
 const { page: runsPage, paged: runsPaged, nPages: runsNPages, goto: runsGoto } =
-  usePager<Record<string, any>>(() => runsFiltered.value)
+  usePager<MlRunRow>(() => runsFiltered.value)
 const { selected: runsSel, toggle: runsToggle, allSelected: runsAllSelected,
         toggleAll: runsToggleAll, retain: runsRetain } = useSelection(
   () => runs.value.map((r) => r.name))

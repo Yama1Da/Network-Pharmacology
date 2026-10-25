@@ -656,15 +656,16 @@ def home_stats() -> dict:
     return _stats_cache["data"]
 
 
-# ======== 设置(App.py 齿轮职责的 TS 化):密钥/工具路径/STRING 版本/口袋阈值 ========
+# ======== 设置(App.py 齿轮职责的 TS 化):四栏侧边栏 ================
+# ① 数据来源(抓取规模/STRING 版本) ② 分析算法(降噪阈值/黑名单)
+# ③ 分子对接(口袋阈值/工具路径) ④ 通用设置(密钥/CLI 产物目录)
 
 class ApiEnvBody(BaseModel):
     changes: dict
 
 
-@app.get("/api/settings")
-def settings_get() -> dict:
-    """设置快照:密钥只回布尔(不回值),路径明文,STRING 版本与已知清单,口袋阈值。"""
+def _settings_snapshot() -> dict:
+    """设置快照:密钥只回布尔(不回值),路径明文,分析参数回当前生效值。"""
     return {
         "keys": {"disgenet": bool(config.DisGeNET_API_KEY),
                  "ncbi": bool(config.NCBI_API_KEY)},
@@ -673,8 +674,24 @@ def settings_get() -> dict:
         "cli_results_dir": config.CLI_RESULTS_DIR,
         "string_version": config.STRING_VERSION,
         "known_versions": list(config.STRING_KNOWN_VERSIONS),
+        "ot_top_n": config.OT_TOP_N,
+        "disgenet_pages": config.DISGENET_PAGES,
+        "chembl_blacklist": list(config.CHEMBL_TARGET_BLACKLIST),
+        "chembl_blacklist_options": list(config.CHEMBL_BLACKLIST_OPTIONS),
+        "chembl_pchembl_threshold": config.CHEMBL_PCHEMBL_THRESHOLD,
+        "dgidb_min_score": config.DGIDB_MIN_SCORE,
+        "ot_min_score": config.OT_MIN_SCORE,
+        "chembl_corroboration_required": config.CHEMBL_CORROBORATION_REQUIRED,
+        "enrichment_pvalue": config.ENRICHMENT_PVALUE,
+        "louvain_resolution": config.LOUVAIN_RESOLUTION,
+        "ppi_confidence": config.PPI_CONFIDENCE,
         "pocket_cutoff": config.POCKET_CUTOFF,
     }
+
+
+@app.get("/api/settings")
+def settings_get() -> dict:
+    return _settings_snapshot()
 
 
 @app.post("/api/settings/api-env")
@@ -709,19 +726,82 @@ class UiSettingsBody(BaseModel):
     changes: dict
 
 
-_ALLOWED_UI_KEYS = ("POCKET_CUTOFF",)  # 段 2 设置页先放开这一项,其余齿轮参数后续逐个开放
+# 放开全部运行时可调分析参数(core.UI_SETTINGS_KEYS 的 UI 子集;LOG_LEVEL/STRING_VERSION 走各自端点)。
+# 值类型在此校验,防垃圾值经 setattr 污染运行时配置(save_ui_settings 只做持久化侧校验)。
+_ALLOWED_UI_KEYS = (
+    "POCKET_CUTOFF", "PPI_CONFIDENCE", "OT_TOP_N", "DISGENET_PAGES",
+    "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
+    "CHEMBL_CORROBORATION_REQUIRED", "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION",
+)
+_BLACKLIST_KEY = "CHEMBL_TARGET_BLACKLIST"
+# 数值范围(与前端 Stepper 的 min/max 一致,双保险)
+_UI_RANGES: dict[str, tuple[float, float]] = {
+    "POCKET_CUTOFF": (3, 6), "PPI_CONFIDENCE": (0.15, 0.9),
+    "OT_TOP_N": (200, 1000), "DISGENET_PAGES": (1, 10),
+    "CHEMBL_PCHEMBL_THRESHOLD": (0, 1), "DGIDB_MIN_SCORE": (0, 1),
+    "OT_MIN_SCORE": (0, 1), "ENRICHMENT_PVALUE": (0.01, 0.2),
+    "LOUVAIN_RESOLUTION": (0.5, 2),
+}
+# 这些键影响降噪/抓取规模,值变化后旧参数算出的 merged 整合表不再可信 → 自动清缓存
+_PURGE_MERGED_KEYS = {
+    "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
+    "CHEMBL_CORROBORATION_REQUIRED", "CHEMBL_TARGET_BLACKLIST",
+    "OT_TOP_N", "DISGENET_PAGES",
+}
+
+
+def settings_ui_save(changes: dict) -> dict:
+    """应用 UI 设置的公共实现:类型/范围校验 → setattr → 持久化 → 值变化时同步派生值并清 merged。"""
+    from WY.core.management import purge_merged_cache
+
+    validated: dict = {}
+    for k, v in changes.items():
+        if k == _BLACKLIST_KEY:
+            if not (isinstance(v, list) and all(isinstance(i, str) and i.strip() for i in v)):
+                raise HTTPException(status_code=400, detail=f"{k} must be a list of gene symbols")
+            validated[k] = [i.strip().upper() for i in v]
+        elif k in _ALLOWED_UI_KEYS:
+            if k in ("CHEMBL_CORROBORATION_REQUIRED",):
+                if not isinstance(v, bool):
+                    raise HTTPException(status_code=400, detail=f"{k} must be a boolean")
+            else:
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    raise HTTPException(status_code=400, detail=f"{k} must be a number")
+                lo, hi = _UI_RANGES[k]
+                if not (lo <= v <= hi):
+                    raise HTTPException(status_code=400,
+                                        detail=f"{k} out of range [{lo}, {hi}]: {v}")
+            validated[k] = v
+        else:
+            raise HTTPException(status_code=400,
+                                detail=f"key not allowed: {k} (allowed: {_ALLOWED_UI_KEYS + (_BLACKLIST_KEY,)})")
+    if not validated:
+        raise HTTPException(status_code=400, detail="no changes")
+
+    def _differs(k: str, v) -> bool:
+        old = getattr(config, k, None)
+        if isinstance(old, tuple) and isinstance(v, list):
+            return list(old) != v
+        if isinstance(v, float) and isinstance(old, (int, float)) and not isinstance(old, bool):
+            return abs(old - v) >= 1e-9
+        return old != v
+
+    changed = {k: v for k, v in validated.items() if _differs(k, v)}
+    for k, v in validated.items():
+        setattr(config, k, v)
+    save_ui_settings(validated)
+    if "PPI_CONFIDENCE" in changed:
+        # 置信度被覆盖后重算背景互作组阈值,保证与 PPI 边筛选始终一致(config 末尾同款派生)
+        config.INTERACTOME_CONFIDENCE = int(config.PPI_CONFIDENCE * 1000)
+    purged = 0
+    if any(k in _PURGE_MERGED_KEYS for k in changed):
+        purged = purge_merged_cache()
+    return {"snapshot": _settings_snapshot(), "changed": sorted(changed), "purged_merged": purged}
 
 
 @app.post("/api/settings/ui")
 def settings_ui(body: UiSettingsBody) -> dict:
-    changes = {k: v for k, v in body.changes.items() if k in _ALLOWED_UI_KEYS}
-    if not changes:
-        raise HTTPException(status_code=400,
-                            detail=f"no allowed keys (allowed: {_ALLOWED_UI_KEYS})")
-    for k, v in changes.items():
-        setattr(config, k, v)
-    save_ui_settings(changes)
-    return {"pocket_cutoff": config.POCKET_CUTOFF}
+    return settings_ui_save(body.changes)
 
 
 # ======== 主页四库检索(App.py 检索职责的 TS 化) ========
