@@ -3,8 +3,10 @@
  * mode "files" 条目为文件,"dirs" 条目为目录(行内也有独立打包下载);
  * kind=enrichment 附加来源筛选与友好展示名。骨架(顶栏/幕布/页脚)由 App 提供。 */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, type CollectionItem, type CollectionKind } from '../api'
 
+const { t } = useI18n()
 const props = defineProps<{
   kind: CollectionKind
   kicker: string
@@ -99,9 +101,9 @@ async function load(): Promise<void> {
 async function refresh(): Promise<void> {
   try {
     await load()
-    flash('已刷新')
+    flash(t('web.common.refreshed'))
   } catch {
-    flash('列表读取失败')
+    flash(t('web.common.list_fail'))
   }
 }
 
@@ -116,7 +118,7 @@ async function download(names: string[], single?: string): Promise<void> {
     a.click()
     URL.revokeObjectURL(url)
   } catch {
-    flash('打包下载失败')
+    flash(t('web.common.zip_fail'))
   }
 }
 
@@ -136,10 +138,10 @@ function deleteSelected(): void {
       selected.value = new Set()
       await load()
       flash(r.failed.length
-        ? `删除 ${r.deleted} 项,失败:${r.failed.join(', ')}`
-        : `已删除 ${r.deleted} 项`)
+        ? t('web.common.deleted_partial', { n: r.deleted, names: r.failed.join(', ') })
+        : t('web.common.deleted', { n: r.deleted }))
     } catch {
-      flash('删除失败')
+      flash(t('web.common.delete_fail'))
     }
   })()
 }
@@ -180,11 +182,12 @@ onBeforeUnmount(() => {
   <div class="panel s4">
     <div class="controls">
       <label class="search">
-        <input v-model="query" spellcheck="false" placeholder="搜索…" @input="goto(1)" />
+        <input v-model="query" spellcheck="false" :placeholder="t('web.common.search_ph')"
+               @input="goto(1)" />
         <i class="line"></i>
       </label>
-      <span class="count">{{ filtered.length }} 项 · 已选 {{ selected.size }}</span>
-      <button class="go" title="刷新" @click="refresh">
+      <span class="count">{{ t('web.common.items_selected', { n: filtered.length, m: selected.size }) }}</span>
+      <button class="go" :title="t('web.common.refresh')" @click="refresh">
         <svg viewBox="0 0 20 20" width="15" height="15">
           <path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6M16.5 2.5v3.4h-3.4" fill="none"
                 stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
@@ -194,12 +197,12 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="kind === 'enrichment'" class="filters">
-      <span class="ctl-label">筛选</span>
-      <label class="chk"><input v-model="flt.gseaDrug" type="checkbox" /> GSEA · 药物侧</label>
-      <label class="chk"><input v-model="flt.gseaDisease" type="checkbox" /> GSEA · 疾病侧</label>
-      <label class="chk"><input v-model="flt.gprofiler" type="checkbox" /> gProfiler</label>
-      <label class="chk"><input v-model="flt.enrichr" type="checkbox" /> Enrichr</label>
-      <span class="ctl-meta">无法识别命名的旧文件始终显示</span>
+      <span class="ctl-label">{{ t('web.collection.flt_label') }}</span>
+      <label class="chk"><input v-model="flt.gseaDrug" type="checkbox" /> {{ t('web.collection.flt_gsea_drug') }}</label>
+      <label class="chk"><input v-model="flt.gseaDisease" type="checkbox" /> {{ t('web.collection.flt_gsea_disease') }}</label>
+      <label class="chk"><input v-model="flt.gprofiler" type="checkbox" /> {{ t('web.collection.flt_gprofiler') }}</label>
+      <label class="chk"><input v-model="flt.enrichr" type="checkbox" /> {{ t('web.collection.flt_enrichr') }}</label>
+      <span class="ctl-meta">{{ t('web.collection.flt_note') }}</span>
     </div>
 
     <Transition name="note">
@@ -208,19 +211,19 @@ onBeforeUnmount(() => {
 
     <div class="bar" :class="{ dim: !selected.size }">
       <button class="bar-btn" @click="toggleAll">
-        {{ allSelected ? '取消全选' : '全选' }}
+        {{ allSelected ? t('web.common.unselect_all') : t('web.common.all') }}
       </button>
-      <span class="bar-label">{{ selected.size ? `已选 ${selected.size} 项` : '勾选条目后可批量操作' }}</span>
-      <button class="bar-btn" :disabled="!selected.size" @click="download([...selected])">下载选中 (ZIP)</button>
+      <span class="bar-label">{{ selected.size ? t('web.common.selected', { n: selected.size }) : t('web.common.batch_hint') }}</span>
+      <button class="bar-btn" :disabled="!selected.size" @click="download([...selected])">{{ t('web.common.download_selected') }}</button>
       <button class="bar-btn danger" :class="{ arm: confirmArm }" :disabled="!selected.size"
               @click="deleteSelected">
-        {{ confirmArm ? `确认删除 ${selected.size} 项?` : '删除选中' }}
+        {{ confirmArm ? t('web.common.confirm_delete', { n: selected.size }) : t('web.common.delete_selected') }}
       </button>
     </div>
 
     <ul class="files">
       <li v-if="loaded && !filtered.length" class="empty">
-        {{ query ? '搜索无匹配。' : '目录为空。' }}
+        {{ query ? t('web.common.no_match') : t('web.common.empty_dir') }}
       </li>
       <li v-for="it in paged" :key="it.name" class="file">
         <div class="row">
@@ -231,7 +234,7 @@ onBeforeUnmount(() => {
             {{ it.display ?? it.name }}<i v-if="it.display" class="raw">{{ it.name }}</i>
           </span>
           <span class="fmeta">{{ fmtSize(it.size) }} · {{ it.modified }}</span>
-          <button class="mini" title="下载" @click="download([it.name], it.name)">⬇</button>
+          <button class="mini" :title="t('web.common.download')" @click="download([it.name], it.name)">⬇</button>
         </div>
       </li>
     </ul>

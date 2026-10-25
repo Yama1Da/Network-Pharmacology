@@ -5,9 +5,12 @@
  * 末段并入 ML_Results_Information(结果管理):run 清单/搜索/删除/ZIP/keep-N 清理。
  * 全链编排唯一定义在 core.ml_pipeline.run_screen_chain(CLI/页面/API 共用)。 */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, artifactsUrl, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
+
+const { t } = useI18n()
 
 /* ---------------- ① 输入 ---------------- */
 
@@ -33,7 +36,7 @@ async function loadDiseases(): Promise<void> {
 }
 
 async function search(): Promise<void> {
-  if (!disease.value.trim()) { flash('请先填写疾病名称'); return }
+  if (!disease.value.trim()) { flash(t('web.ml.need_disease')); return }
   searchBusy.value = true
   try {
     const r = await api.mlSearch(disease.value.trim(), limit.value)
@@ -43,7 +46,7 @@ async function search(): Promise<void> {
     probe.value = null
     probedGse = ''
   } catch (e) {
-    flash('检索失败:' + (e instanceof Error ? e.message : String(e)))
+    flash(t('web.ml.search_fail', { msg: e instanceof Error ? e.message : String(e) }))
   } finally {
     searchBusy.value = false
   }
@@ -101,9 +104,9 @@ const unusable = computed(() => {
 const fmtSize = (n: number): string =>
   n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`
 const fmtEta = (s: number): string =>
-  s < 90 ? `${Math.max(1, Math.round(s))} 秒`
-    : s < 3600 ? `${Math.max(1, Math.round(s / 60))} 分钟`
-      : `${Math.floor(s / 3600)} 小时 ${Math.round(s % 3600 / 60)} 分`
+  s < 90 ? `${Math.max(1, Math.round(s))} ${t('web.ml.unit_sec')}`
+    : s < 3600 ? `${Math.max(1, Math.round(s / 60))} ${t('web.ml.unit_min')}`
+      : `${Math.floor(s / 3600)} ${t('web.ml.unit_hour')} ${Math.round(s % 3600 / 60)} ${t('web.ml.unit_min_short')}`
 
 /* ---------------- ② 配置 ---------------- */
 
@@ -111,14 +114,14 @@ const casePat = ref('')
 const ctrlPat = ref('')
 const overviewJob = useJob((result) => {
   overview.value = result as Record<string, any>
-  flash('总览已生成(可用性判定已更新)')
+  flash(t('web.ml.overview_done_flash'))
 })
 const overview = ref<Record<string, any> | null>(null)
 
 async function loadOverview(): Promise<void> {
   const g = gse.value.trim().toUpperCase()
-  if (!g) { flash('先确认 GSE 编号'); return }
-  await overviewJob.run(api.mlOverview(g), { doneText: '总览完成' })
+  if (!g) { flash(t('web.ml.need_gse')); return }
+  await overviewJob.run(api.mlOverview(g), { doneText: t('web.ml.overview_done_text') })
 }
 
 /* 排序 CSV 候选 */
@@ -167,7 +170,7 @@ const runJob = useJob((result) => {
   } else {
     fallback.value = null
   }
-  flash(`筛选完成:${r.gse} · 用时 ${r.elapsed}s`)
+  flash(t('web.ml.run_done_flash', { gse: r.gse, s: r.elapsed }))
   void loadHistory()
 })
 
@@ -176,8 +179,8 @@ const canRun = computed(() =>
   && !sourceConflict.value && !unusable.value)
 
 async function run(): Promise<void> {
-  if (sourceConflict.value) { flash('GSE 与本地矩阵二选一,不能同时提供'); return }
-  if (localPartial.value) { flash('本地矩阵需要同时填写表达谱与标签路径'); return }
+  if (sourceConflict.value) { flash(t('web.ml.conflict_flash')); return }
+  if (localPartial.value) { flash(t('web.ml.partial_flash')); return }
   await runJob.run(api.mlRun({
     mode: useLocal.value ? 'local' : 'gse',
     gse: gse.value.trim().toUpperCase(),
@@ -185,20 +188,20 @@ async function run(): Promise<void> {
     expr: exprPath.value, labels: labelsPath.value, case_label: localCase.value,
     ranked_labels: [...rankedSel.value],
     top_k: topK.value, prefilter_top: prefilterN.value, bootstrap_rounds: bootstrapN.value
-  }), { doneText: '筛选完成' })
+  }), { doneText: t('web.ml.run_done_text') })
 }
 
 const forceJob = useJob(() => {
   fallback.value = null
   probedGse = ''
   probe.value = null
-  flash('GEO 缓存已强制重下,预检将重新判定')
+  flash(t('web.ml.force_done_flash'))
 })
 
 async function forceRedownload(): Promise<void> {
   const g = fallback.value?.gse ?? gse.value.trim().toUpperCase()
   if (!g) return
-  await forceJob.run(api.mlForceRefresh(g), { doneText: '重下完成' })
+  await forceJob.run(api.mlForceRefresh(g), { doneText: t('web.ml.force_done_text') })
 }
 
 /* ---------------- ④ 结果 ---------------- */
@@ -234,15 +237,21 @@ function flash(msg: string): void {
   noticeTimer = window.setTimeout(() => (notice.value = ''), 4200)
 }
 
-const STAGE_ZH: Record<string, string> = {
-  fetch: '获取数据集', group: '样本分组', preprocess: '预处理',
-  deg: '差异表达', ml: 'ML 共识', shortlist: 'shortlist', save: '落盘'
-}
+/* 阶段顺序与标签(标签走 i18n) */
+const STAGE_ORDER = ['fetch', 'group', 'preprocess', 'deg', 'ml', 'shortlist', 'save'] as const
 const STATE_ICON: Record<string, string> = { pending: '○', running: '◐', done: '●' }
-const stageOrder = Object.keys(STAGE_ZH)
+const stageLabels = computed<Record<string, string>>(() => ({
+  fetch: t('web.ml.stage_fetch'),
+  group: t('web.ml.stage_group'),
+  preprocess: t('web.ml.stage_preprocess'),
+  deg: t('web.ml.stage_deg'),
+  ml: t('web.ml.stage_ml'),
+  shortlist: t('web.ml.stage_shortlist'),
+  save: t('web.ml.stage_save')
+}))
 const stageStates = computed<Record<string, string>>(() => {
   const map: Record<string, string> = {}
-  for (const k of stageOrder) map[k] = 'pending'
+  for (const k of STAGE_ORDER) map[k] = 'pending'
   const p = runJob.extra.value as { step?: string; state?: string }
   if (p?.step && p?.state && p.step in map) map[p.step] = p.state
   return map
@@ -256,9 +265,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <p class="kicker s1">GEO&nbsp;EXPRESSION&nbsp;+&nbsp;ML&nbsp;CONSENSUS</p>
-  <h1 class="title s2">表达谱 ML 共识筛选</h1>
-  <p class="sub s3">检索&nbsp;—&nbsp;分组&nbsp;—&nbsp;DEG&nbsp;—&nbsp;ML&nbsp;—&nbsp;shortlist</p>
+  <p class="kicker s1">{{ t('web.ml.kicker') }}</p>
+  <h1 class="title s2">{{ t('web.ml.title') }}</h1>
+  <p class="sub s3">{{ t('web.ml.sub') }}</p>
 
   <div class="panel wide s4">
     <Transition name="note">
@@ -267,35 +276,35 @@ onMounted(() => {
 
     <!-- ============ ① 输入区 ============ -->
     <section class="sec">
-      <h3 class="sec-title">① 数据来源</h3>
+      <h3 class="sec-title">{{ t('web.ml.sec_input') }}</h3>
       <div class="lv-group">
-        <button class="lv" :class="{ on: tab === 'search' }" @click="tab = 'search'">GEO 检索</button>
+        <button class="lv" :class="{ on: tab === 'search' }" @click="tab = 'search'">{{ t('web.ml.tab_search') }}</button>
         <i class="lv-sep">/</i>
-        <button class="lv" :class="{ on: tab === 'direct' }" @click="tab = 'direct'">直填 GSE</button>
+        <button class="lv" :class="{ on: tab === 'direct' }" @click="tab = 'direct'">{{ t('web.ml.tab_direct') }}</button>
         <i class="lv-sep">/</i>
-        <button class="lv" :class="{ on: tab === 'local' }" @click="tab = 'local'">本地矩阵</button>
+        <button class="lv" :class="{ on: tab === 'local' }" @click="tab = 'local'">{{ t('web.ml.tab_local') }}</button>
       </div>
 
       <template v-if="tab === 'search'">
         <div class="set-row">
-          <label class="set-label">疾病名称</label>
+          <label class="set-label">{{ t('web.ml.disease_label') }}</label>
           <div class="field wide">
             <input v-model="disease" list="ml-diseases" spellcheck="false"
-                   placeholder="从已分析疾病中选择或直接输入" @change="loadRanked" />
+                   :placeholder="t('web.ml.disease_ph')" @change="loadRanked" />
             <i class="line"></i>
             <datalist id="ml-diseases">
               <option v-for="d in diseases" :key="d" :value="d" />
             </datalist>
           </div>
-          <span class="ctl-label">条数</span>
+          <span class="ctl-label">{{ t('web.ml.limit_label') }}</span>
           <Stepper v-model="limit" :min="5" :max="50" />
           <button class="bar-btn strong" :disabled="searchBusy" @click="search">
-            {{ searchBusy ? '检索中…' : '检索 GEO' }}
+            {{ searchBusy ? t('web.ml.searching') : t('web.ml.search_btn') }}
           </button>
         </div>
-        <p v-if="diseases.length" class="hint-line">已带出本机 {{ diseases.length }} 个分析过的疾病,可直接选择。</p>
+        <p v-if="diseases.length" class="hint-line">{{ t('web.ml.diseases_hint', { n: diseases.length }) }}</p>
         <div v-if="searchResults.length" class="tbl-wrap">
-          <p v-if="searchStale" class="stale">当前疾病与检索时({{ searchDisease }})不一致,结果仅供参考。</p>
+          <p v-if="searchStale" class="stale">{{ t('web.ml.search_stale', { d: searchDisease }) }}</p>
           <table class="tbl">
             <thead><tr><th v-for="k in Object.keys(searchResults[0])" :key="k">{{ k }}</th></tr></thead>
             <tbody>
@@ -305,66 +314,65 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
-        <p v-else-if="searchDisease" class="hint-line">检索无结果。</p>
+        <p v-else-if="searchDisease" class="hint-line">{{ t('web.ml.no_results') }}</p>
       </template>
-      <p v-else-if="tab === 'direct'" class="hint-line">直接在下方输入 GSE 编号(如 GSE63067)。</p>
+      <p v-else-if="tab === 'direct'" class="hint-line">{{ t('web.ml.direct_hint') }}</p>
 
       <template v-if="tab === 'local'">
-        <p class="hint-line">本地矩阵模式:表达谱 CSV(行=基因,列=样本)+ 标签 CSV(sample_id, group 两列)。两路都填时优先于 GSE。</p>
+        <p class="hint-line">{{ t('web.ml.local_hint') }}</p>
         <div class="set-row">
-          <label class="set-label">表达谱 CSV</label>
+          <label class="set-label">{{ t('web.ml.expr_label') }}</label>
           <div class="field wide"><input v-model="exprPath" spellcheck="false"
                                          placeholder="D:\data\GSE12345_expr.csv" /><i class="line"></i></div>
         </div>
         <div class="set-row">
-          <label class="set-label">标签 CSV</label>
+          <label class="set-label">{{ t('web.ml.labels_label') }}</label>
           <div class="field wide"><input v-model="labelsPath" spellcheck="false"
                                          placeholder="D:\data\labels.csv" /><i class="line"></i></div>
         </div>
         <div class="set-row">
-          <label class="set-label">case 标签值</label>
+          <label class="set-label">{{ t('web.ml.case_label_value') }}</label>
           <div class="field"><input v-model="localCase" spellcheck="false"
-                                    placeholder="如 disease(留空自动判定)" /><i class="line"></i></div>
+                                    :placeholder="t('web.ml.case_ph')" /><i class="line"></i></div>
         </div>
       </template>
 
       <!-- GSE 确认(检索/直填共用) -->
       <div class="set-row" v-if="tab !== 'local'">
-        <label class="set-label">GSE 编号</label>
+        <label class="set-label">{{ t('web.ml.gse_label') }}</label>
         <select v-if="gseOptions.length" class="sel" v-model="gse" @change="onGseChange">
-          <option value="" disabled>选择 GSE…</option>
+          <option value="" disabled>{{ t('web.ml.sel_gse_ph') }}</option>
           <option v-for="g in gseOptions" :key="g" :value="g">{{ g }}</option>
         </select>
         <div v-else class="field">
           <input v-model="gse" placeholder="GSE63067" spellcheck="false"
                  @change="onGseChange" /><i class="line"></i>
         </div>
-        <span v-if="gse" class="state on">已确认 {{ gse }}</span>
+        <span v-if="gse" class="state on">{{ t('web.ml.confirmed', { gse }) }}</span>
       </div>
 
       <!-- 预检展示 -->
       <template v-if="tab !== 'local' && gse && (probeBusy || probe)">
-        <p v-if="probeBusy" class="hint-line">预检中(测速 + 可用性判定)…</p>
+        <p v-if="probeBusy" class="hint-line">{{ t('web.ml.probing') }}</p>
         <template v-else>
           <p v-if="probeR" class="hint-line">
-            矩阵 {{ fmtSize(probeR.size_bytes) }} · 实测 {{ (probeR.speed_bps / 1024).toFixed(0) }} KB/s ·
-            预计 {{ fmtEta(Math.min(probeR.size_bytes / Math.max(probeR.speed_bps, 1), 5400)) }}
+            {{ t('web.ml.probe_meta', { size: fmtSize(probeR.size_bytes),
+                                        speed: (probeR.speed_bps / 1024).toFixed(0),
+                                        eta: fmtEta(Math.min(probeR.size_bytes / Math.max(probeR.speed_bps, 1), 5400)) }) }}
           </p>
           <p v-if="probeR && (!probeR.reliable || probeR.size_bytes / Math.max(probeR.speed_bps, 1) > 300)"
-             class="stale">带宽不稳或预计超 5 分钟 —— 慢速时数据仍在流动,请耐心等待。</p>
-          <p v-if="probeErr" class="hint-line">预检失败(不影响正式运行):{{ probeErr }}</p>
+             class="stale">{{ t('web.ml.probe_slow') }}</p>
+          <p v-if="probeErr" class="hint-line">{{ t('web.ml.probe_fail', { msg: probeErr }) }}</p>
           <template v-if="probeAssess">
             <p v-if="probeAssess.matrix_empty && probeAssess.counts_available" class="hint-line good">
-              series matrix 为元数据空表 —— 检测到 counts 补充文件,运行时自动回退 DESeq2,可用。
+              {{ t('web.ml.counts_fallback') }}
             </p>
-            <p v-else-if="probeAssess.matrix_empty" class="stale">
-              空矩阵且无 counts 补充 —— 该 GSE 确定性不可用,配置与运行已锁定。
-            </p>
+            <p v-else-if="probeAssess.matrix_empty" class="stale">{{ t('web.ml.empty_unusable') }}</p>
             <p v-else-if="!probeAssess.symbol_level && probeAssess.annot === 'missing'"
-               class="stale">探针级矩阵且平台注释缺失 —— 确定性不可用,已锁定。</p>
+               class="stale">{{ t('web.ml.probe_annot_missing') }}</p>
           </template>
           <p v-else-if="probe?.annot_missing" class="stale">
-            平台 {{ probe?.gpl }} 注释文件不可达 —— 大概率不可用,总览后做权威判定。
+            {{ t('web.ml.annot_unreachable', { gpl: probe?.gpl }) }}
           </p>
         </template>
       </template>
@@ -372,27 +380,27 @@ onMounted(() => {
 
     <!-- ============ ② 配置区 ============ -->
     <section class="sec">
-      <h3 class="sec-title">② 配置</h3>
-      <p v-if="unusable" class="stale">数据集已被判定不可用,配置与运行已锁定。</p>
+      <h3 class="sec-title">{{ t('web.ml.sec_config') }}</h3>
+      <p v-if="unusable" class="stale">{{ t('web.ml.config_locked') }}</p>
       <div class="set-row">
-        <label class="set-label">case 正则</label>
+        <label class="set-label">{{ t('web.ml.case_pat_label') }}</label>
         <div class="field wide"><input v-model="casePat" :disabled="unusable"
                                        placeholder="steatosis|non-alcoholic" spellcheck="false" /><i class="line"></i></div>
       </div>
       <div class="set-row">
-        <label class="set-label">control 正则</label>
+        <label class="set-label">{{ t('web.ml.ctrl_pat_label') }}</label>
         <div class="field wide"><input v-model="ctrlPat" :disabled="unusable"
                                        placeholder="healthy" spellcheck="false" /><i class="line"></i></div>
         <button class="bar-btn" :disabled="!gse || overviewJob.running.value || unusable"
                 @click="loadOverview">
-          {{ overviewJob.running.value ? '总览生成中…' : '生成分组总览(含下载)' }}
+          {{ overviewJob.running.value ? t('web.ml.overview_running') : t('web.ml.overview_btn') }}
         </button>
       </div>
       <div v-if="overviewJob.running.value" class="progress">
         <div class="progress-track"><div class="progress-fill indeterminate"></div></div>
-        <p class="progress-text">{{ overviewJob.text.value || '下载数据集中…' }}</p>
+        <p class="progress-text">{{ overviewJob.text.value || t('web.ml.overview_dl') }}</p>
       </div>
-      <p v-if="overviewJob.error.value" class="stale">总览失败:{{ overviewJob.error.value }}</p>
+      <p v-if="overviewJob.error.value" class="stale">{{ t('web.ml.overview_fail', { msg: overviewJob.error.value }) }}</p>
 
       <template v-if="overview">
         <div class="tbl-wrap">
@@ -406,10 +414,10 @@ onMounted(() => {
           </table>
         </div>
         <p v-if="overview.issues?.length && !overview.counts_rows?.length" class="stale">
-          数据集问题:{{ overview.issues.join('; ') }}
+          {{ t('web.ml.issues', { issues: overview.issues.join('; ') }) }}
         </p>
         <template v-if="overview.counts_rows?.length">
-          <p class="hint-line good">counts 数据集(共 {{ overview.counts_rows.length }} 列)—— 正则的匹配对象是下列样本列名:</p>
+          <p class="hint-line good">{{ t('web.ml.counts_hint', { n: overview.counts_rows.length }) }}</p>
           <div class="tbl-wrap" style="max-height:260px">
             <table class="tbl">
               <thead><tr><th v-for="k in Object.keys(overview.counts_rows[0])" :key="k">{{ k }}</th></tr></thead>
@@ -423,28 +431,31 @@ onMounted(() => {
         </template>
         <template v-if="overview.assess && !overview.assess.matrix_empty">
           <p class="hint-line good">
-            矩阵 {{ overview.assess.shape[0] }}×{{ overview.assess.shape[1] }} ·
-            ID 级别:{{ overview.assess.symbol_level ? '基因符号' : '探针级' }}
-            {{ overview.assess.symbol_level ? '' : (overview.assess.annot === 'cached' || overview.assess.annot === 'ok'
-              ? `· 注释可用(${overview.assess.gpl})`
-              : overview.assess.annot === 'missing' ? `· 注释缺失(${overview.assess.gpl}) —— 不可用`
-                : `· 注释未知(${overview.assess.gpl})`) }}
+            {{ t('web.ml.matrix_meta', {
+              r: overview.assess.shape[0], c: overview.assess.shape[1],
+              level: overview.assess.symbol_level ? t('web.ml.id_symbol') : t('web.ml.id_probe'),
+              annot: overview.assess.symbol_level ? ''
+                : (overview.assess.annot === 'cached' || overview.assess.annot === 'ok'
+                  ? t('web.ml.annot_ok', { gpl: overview.assess.gpl })
+                  : overview.assess.annot === 'missing' ? t('web.ml.annot_missing', { gpl: overview.assess.gpl })
+                    : t('web.ml.annot_unknown', { gpl: overview.assess.gpl }))
+            }) }}
           </p>
           <p v-if="overview.assess.group_fields?.length" class="hint-line">
-            疑似分组字段:{{ overview.assess.group_fields.slice(0, 3).join('; ') }}
+            {{ t('web.ml.group_fields', { fields: overview.assess.group_fields.slice(0, 3).join('; ') }) }}
           </p>
           <p v-if="overview.assess.n_samples < 12" class="stale">
-            样本量偏低:{{ overview.assess.n_samples }}(建议每组 ≥ 6)
+            {{ t('web.ml.few_samples', { n: overview.assess.n_samples }) }}
           </p>
         </template>
       </template>
 
       <!-- 排序 CSV -->
       <div class="set-row" style="margin-top:16px">
-        <label class="set-label">平台排序表</label>
+        <label class="set-label">{{ t('web.ml.ranked_label') }}</label>
         <div class="field"><input v-model="drugFilter" spellcheck="false"
-                                  placeholder="按药物过滤(可留空)" @change="loadRanked" /><i class="line"></i></div>
-        <span class="ctl-meta">{{ rankedShown.length }} 个候选 · 勾选 {{ rankedSel.size }}</span>
+                                  :placeholder="t('web.ml.drug_filter_ph')" @change="loadRanked" /><i class="line"></i></div>
+        <span class="ctl-meta">{{ t('web.ml.ranked_meta', { n: rankedShown.length, m: rankedSel.size }) }}</span>
       </div>
       <div v-if="rankedShown.length" class="filters">
         <label v-for="f in rankedShown" :key="f.label" class="chk">
@@ -452,32 +463,32 @@ onMounted(() => {
                  :disabled="unusable" /> {{ f.label }}
         </label>
       </div>
-      <p v-else-if="disease" class="hint-line">该疾病下没有可用的排序表。</p>
-      <p v-else class="hint-line">填写疾病名称后自动发现平台排序表(本机分析产物)。</p>
+      <p v-else-if="disease" class="hint-line">{{ t('web.ml.ranked_none_disease') }}</p>
+      <p v-else class="hint-line">{{ t('web.ml.ranked_hint') }}</p>
 
       <div class="opt-grid">
         <label class="opt">
-          <span class="opt-label">shortlist Top-K</span>
+          <span class="opt-label">{{ t('web.ml.opt_topk') }}</span>
           <Stepper v-model="topK" :min="5" :max="100" />
         </label>
         <label class="opt">
-          <span class="opt-label">DEG 预过滤 Top-N</span>
+          <span class="opt-label">{{ t('web.ml.opt_prefilter') }}</span>
           <Stepper v-model="prefilterN" :min="50" :max="5000" :step="50" />
         </label>
         <label class="opt">
-          <span class="opt-label">Bootstrap 轮数</span>
+          <span class="opt-label">{{ t('web.ml.opt_bootstrap') }}</span>
           <Stepper v-model="bootstrapN" :min="5" :max="200" :step="5" />
         </label>
       </div>
-      <p class="hint-line">默认 500 基因 × 30 轮:ML 段本机实测约 2 分钟;SVM-RFE 对特征数近平方级,调大会显著变慢。</p>
+      <p class="hint-line">{{ t('web.ml.perf_hint') }}</p>
     </section>
 
     <!-- ============ ③ 运行区 ============ -->
     <section class="sec">
-      <h3 class="sec-title">③ 运行</h3>
-      <p v-if="unusable" class="stale">数据集不可用,运行已锁定。</p>
-      <p v-else-if="sourceConflict" class="stale">GSE 与本地矩阵二选一 —— 请清掉其中一路。</p>
-      <p v-else-if="localPartial" class="stale">本地矩阵:表达谱与标签两路必须同时填写。</p>
+      <h3 class="sec-title">{{ t('web.ml.sec_run') }}</h3>
+      <p v-if="unusable" class="stale">{{ t('web.ml.run_locked') }}</p>
+      <p v-else-if="sourceConflict" class="stale">{{ t('web.ml.conflict') }}</p>
+      <p v-else-if="localPartial" class="stale">{{ t('web.ml.local_partial') }}</p>
       <button class="build" :disabled="!canRun || runJob.running.value || overviewJob.running.value"
               @click="run">
         <svg viewBox="0 0 24 14" width="26" height="15">
@@ -485,7 +496,7 @@ onMounted(() => {
                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </button>
-      <span class="build-hint">开始筛选</span>
+      <span class="build-hint">{{ t('web.ml.run_hint') }}</span>
 
       <div v-if="runJob.running.value" class="prog">
         <div class="progress">
@@ -495,39 +506,39 @@ onMounted(() => {
           </div>
         </div>
         <ul class="stages">
-          <li v-for="k in stageOrder" :key="k" class="stage" :class="stageStates[k]">
-            <i class="stage-icon">{{ STATE_ICON[stageStates[k]] }}</i>{{ STAGE_ZH[k] }}
+          <li v-for="k in STAGE_ORDER" :key="k" class="stage" :class="stageStates[k]">
+            <i class="stage-icon">{{ STATE_ICON[stageStates[k]] }}</i>{{ stageLabels[k] }}
           </li>
         </ul>
         <p v-if="runJob.text.value" class="hint-line">{{ runJob.text.value }}</p>
       </div>
-      <p v-if="runJob.error.value" class="stale">筛选失败:{{ runJob.error.value }}</p>
+      <p v-if="runJob.error.value" class="stale">{{ t('web.ml.run_fail', { msg: runJob.error.value }) }}</p>
 
       <div v-if="fallback" class="set-row" style="margin-top:14px">
-        <span class="stale">⚠ GEO 下载失败,已回退本地缓存(缓存日期 {{ fallback.date }})—— 建议强制重下:</span>
+        <span class="stale">{{ t('web.ml.fallback_warn', { date: fallback.date }) }}</span>
         <button class="bar-btn" :disabled="forceJob.running.value" @click="forceRedownload">
-          {{ forceJob.running.value ? '重下中…' : '强制重下' }}
+          {{ forceJob.running.value ? t('web.ml.forcing') : t('web.ml.force_btn') }}
         </button>
       </div>
-      <p v-if="forceJob.error.value" class="stale">重下失败:{{ forceJob.error.value }}</p>
+      <p v-if="forceJob.error.value" class="stale">{{ t('web.ml.force_fail', { msg: forceJob.error.value }) }}</p>
     </section>
 
     <!-- ============ ④ 结果区 ============ -->
     <section class="sec" v-if="resultData">
-      <h3 class="sec-title">④ 结果({{ resultData.gse }} · {{ resultData.elapsed }}s)</h3>
+      <h3 class="sec-title">{{ t('web.ml.sec_result', { gse: resultData.gse, s: resultData.elapsed }) }}</h3>
       <div class="metrics">
-        <div class="metric"><b>{{ meta?.n_samples }}</b><span>样本</span></div>
-        <div class="metric"><b>{{ meta?.n_genes }}</b><span>基因</span></div>
+        <div class="metric"><b>{{ meta?.n_samples }}</b><span>{{ t('web.ml.m_samples') }}</span></div>
+        <div class="metric"><b>{{ meta?.n_genes }}</b><span>{{ t('web.ml.m_genes') }}</span></div>
         <div class="metric"><b>{{ meta?.cv_auc ?? 'N/A' }}</b><span>CV-AUC</span></div>
-        <div class="metric"><b>{{ meta?.algo_spearman_mean }}</b><span>Spearman 均值</span></div>
+        <div class="metric"><b>{{ meta?.algo_spearman_mean }}</b><span>{{ t('web.ml.m_spearman') }}</span></div>
       </div>
 
       <template v-if="resultData.roc_png_rel">
-        <p class="hint-line" style="margin-top:16px">交叉验证 ROC(产物 PNG,论文可直接取用):</p>
+        <p class="hint-line" style="margin-top:16px">{{ t('web.ml.roc_hint') }}</p>
         <img class="fig-img" :src="artifactsUrl(resultData.roc_png_rel)" alt="ROC" />
       </template>
 
-      <h4 class="sub-sec">共识表(Top {{ Math.min(20, consensusRows.length) }} / 共 {{ consensusTotal }},全量见下方 CSV 下载)</h4>
+      <h4 class="sub-sec">{{ t('web.ml.consensus_head', { n: Math.min(20, consensusRows.length), total: consensusTotal }) }}</h4>
       <div class="tbl-wrap">
         <table class="tbl">
           <thead><tr><th v-for="k in Object.keys(consensusRows[0] ?? {})" :key="k">{{ k }}</th></tr></thead>
@@ -539,7 +550,7 @@ onMounted(() => {
         </table>
       </div>
 
-      <h4 class="sub-sec">漏斗</h4>
+      <h4 class="sub-sec">{{ t('web.ml.funnel_head') }}</h4>
       <div class="tbl-wrap" style="max-height:240px">
         <table class="tbl">
           <thead><tr><th v-for="k in Object.keys(funnelRows[0] ?? {})" :key="k">{{ k }}</th></tr></thead>
@@ -547,7 +558,7 @@ onMounted(() => {
         </table>
       </div>
 
-      <h4 class="sub-sec">Shortlist({{ shortlistCount }} 个)</h4>
+      <h4 class="sub-sec">{{ t('web.ml.shortlist_head', { n: shortlistCount }) }}</h4>
       <div class="tbl-wrap" style="max-height:320px">
         <table class="tbl">
           <thead><tr><th v-for="k in Object.keys(shortlistRows[0] ?? {})" :key="k">{{ k }}</th></tr></thead>
@@ -561,33 +572,33 @@ onMounted(() => {
       </div>
     </section>
     <section class="sec" v-else>
-      <h3 class="sec-title">④ 结果</h3>
-      <p class="hint-line">运行筛选后,这里展示共识表 / ROC / shortlist,产物同时落盘。</p>
+      <h3 class="sec-title">{{ t('web.ml.sec_result_idle') }}</h3>
+      <p class="hint-line">{{ t('web.ml.result_idle_hint') }}</p>
     </section>
 
     <!-- ============ 历史结果(近 3 次) ============ -->
     <section class="sec">
-      <h3 class="sec-title">历史结果(近 3 次)</h3>
-      <p v-if="!history.length" class="hint-line">尚无历史结果;完成一次分析后,这里会显示最近 3 次。</p>
+      <h3 class="sec-title">{{ t('web.ml.history_head') }}</h3>
+      <p v-if="!history.length" class="hint-line">{{ t('web.ml.history_empty') }}</p>
       <div v-else class="set-row">
         <select class="sel inline" v-model="histPick">
           <option v-for="r in history" :key="r.name" :value="r.name">{{ r.name }}</option>
         </select>
         <span v-if="histRow" class="ctl-meta">
-          AUC {{ histRow.auc ?? 'N/A' }} · 样本 {{ histRow.n_samples ?? '?' }} ·
-          shortlist {{ histRow.shortlist_count ?? '?' }} · v{{ histRow.ml_version ?? '?' }}
+          {{ t('web.ml.hist_meta', { auc: histRow.auc ?? 'N/A', n: t('web.common.samples_n', { n: histRow.n_samples ?? '?' }),
+                                     sl: histRow.shortlist_count ?? '?', ver: histRow.ml_version ?? '?' }) }}
         </span>
         <span v-for="s in histRow?.stale ?? []" :key="s.type" class="stale">
-          {{ s.type === 'version' ? `算法版本已更新(${s.old} → ${s.new})`
-            : s.type === 'ranked_changed' ? `排序表已变更:${s.name}`
-              : `排序表缺失:${s.name}` }}
+          {{ s.type === 'version' ? t('web.ml.stale_version', { old: s.old, new: s.new })
+            : s.type === 'ranked_changed' ? t('web.ml.stale_ranked_changed', { name: s.name })
+              : t('web.ml.stale_ranked_missing', { name: s.name }) }}
         </span>
       </div>
     </section>
 
     <p class="hint-line">
-      治理与批量操作(删除 / 打包 / keep-N)在
-      <a class="bar-btn" href="#/ml-results">结果管理页</a>
+      {{ t('web.ml.manage_hint') }}
+      <a class="bar-btn" href="#/ml-results">{{ t('web.ml.manage_link') }}</a>
     </p>
   </div>
 </template>

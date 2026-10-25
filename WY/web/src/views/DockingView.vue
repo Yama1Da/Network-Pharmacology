@@ -3,9 +3,12 @@
  * 会话状态存服务端(core.docking_session),前端持 sid;网络重步骤走 job 轮询;
  * 3D 预览为服务端 py3Dmol 渲染的 HTML,iframe 内嵌。 */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
+
+const { t } = useI18n()
 
 /* ---------------- 会话 ---------------- */
 
@@ -40,7 +43,6 @@ async function loadSources(): Promise<void> {
   ppiDirs.value = s.ppi_dirs
   enrFiles.value = s.enr_files
 }
-
 async function selectSource(name: string): Promise<void> {
   sid.value = await ensureSession()
   const r = await api.dockingSource(sid.value, { mode: srcMode.value, name })
@@ -88,7 +90,7 @@ async function checkStructures(): Promise<void> {
     return
   }
   await structJob.run(api.dockingCheckStructures(sid.value, body) as Promise<{ job_id: string }>,
-    { doneText: '结构检查完成' })
+    { doneText: t('web.docking.check_done_text') })
 }
 
 const candidatePreview = computed(() => {
@@ -127,7 +129,7 @@ const pdbSel = ref('')
 const receptor = ref<{ pdb_id: string; receptor_source: string } | null>(null)
 const recJob = useJob((result) => {
   receptor.value = result as unknown as { pdb_id: string; receptor_source: string }
-  flash('受体已就绪')
+  flash(t('web.docking.receptor_ready'))
 })
 
 async function loadCandidates(): Promise<void> {
@@ -154,7 +156,7 @@ async function prepareReceptor(): Promise<void> {
   if (!pdbSel.value || flagBlocked(selFlag.value)) return
   sid.value = await ensureSession()
   await recJob.run(api.dockingReceptorPrepare(sid.value, { gene: gene.value, pdb_id: pdbSel.value }),
-    { doneText: '受体就绪' })
+    { doneText: t('web.docking.receptor_ready') })
 }
 
 const selFlag = computed(() => candRows.value.find((r) => r.pdb_id === pdbSel.value)?.flag ?? '')
@@ -222,7 +224,7 @@ const canRun = computed(() => !!(
 async function runDock(): Promise<void> {
   sid.value = await ensureSession()
   dockState.value = null
-  await runJob.run(api.dockingRun(sid.value), { doneText: '对接完成' })
+  await runJob.run(api.dockingRun(sid.value), { doneText: t('web.docking.run_done_text') })
 }
 
 /* ---------------- Step 6 结果与归档 ---------------- */
@@ -282,7 +284,7 @@ async function saveResult(): Promise<void> {
     })
     saved.value = { result_dir: r.result_dir }
     starred.value = false
-    flash('已归档')
+    flash(t('web.docking.archived'))
   } catch (e) {
     flash(e instanceof Error ? e.message : String(e))
   } finally {
@@ -295,7 +297,7 @@ async function toggleStar(): Promise<void> {
   try {
     starred.value = (await api.dockingStar(sid.value, !starred.value)).starred
   } catch {
-    flash('收藏操作失败')
+    flash(t('web.docking.star_fail'))
   }
 }
 
@@ -306,7 +308,8 @@ async function save3d(): Promise<void> {
   try {
     const caption = `NPAP · ${drugName.value || '-'} × ${diseaseName.value || '-'} · ${gene.value} · pose ${poseSel.value}`
     const r = await api.dockingSave3d(sid.value, { pose: poseSel.value, caption })
-    flash(`3D 视图已保存:${r.artifact_rel}${r.offline_ok ? '(离线可用)' : '(需在线加载组件)'}`)
+    flash(t('web.docking.saved_3d', { rel: r.artifact_rel,
+                                       offline: r.offline_ok ? t('web.docking.offline_ok') : t('web.docking.offline_no') }))
   } catch (e) {
     flash(e instanceof Error ? e.message : String(e))
   } finally {
@@ -347,9 +350,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <p class="kicker s1">MOLECULAR&nbsp;DOCKING</p>
-  <h1 class="title s2">分子对接</h1>
-  <p class="sub s3">配体&nbsp;—&nbsp;受体&nbsp;—&nbsp;对接盒&nbsp;—&nbsp;Vina&nbsp;—&nbsp;解读</p>
+  <p class="kicker s1">{{ t('web.docking.kicker') }}</p>
+  <h1 class="title s2">{{ t('web.docking.title') }}</h1>
+  <p class="sub s3">{{ t('web.docking.sub') }}</p>
 
   <div class="panel wide s4">
     <Transition name="note">
@@ -358,36 +361,36 @@ onBeforeUnmount(() => {
 
     <!-- ============ Step 1 ============ -->
     <section class="step" :class="{ done: stepDone.s1 }">
-      <h3 class="step-title">Step 1 · 候选基因筛选 <span v-if="stepDone.s1" class="ok-mark">✓ {{ genes.length }} 个基因</span></h3>
+      <h3 class="step-title">{{ t('web.docking.s1_title') }} <span v-if="stepDone.s1" class="ok-mark">{{ t('web.docking.s1_genes_ok', { n: genes.length }) }}</span></h3>
       <div class="lv-group">
-        <button class="lv" :class="{ on: srcMode === 'ppi' }" @click="srcMode = 'ppi'">PPI 分析结果</button>
+        <button class="lv" :class="{ on: srcMode === 'ppi' }" @click="srcMode = 'ppi'">{{ t('web.docking.src_ppi') }}</button>
         <i class="lv-sep">/</i>
-        <button class="lv" :class="{ on: srcMode === 'enr' }" @click="srcMode = 'enr'">富集缓存</button>
+        <button class="lv" :class="{ on: srcMode === 'enr' }" @click="srcMode = 'enr'">{{ t('web.docking.src_enr') }}</button>
       </div>
-      <p v-if="srcMode === 'ppi' && !ppiDirs.length" class="hint-line">尚无 PPI 分析结果目录 —— 先完成一次分析,或用下方手动输入。</p>
+      <p v-if="srcMode === 'ppi' && !ppiDirs.length" class="hint-line">{{ t('web.docking.no_ppi_dirs') }}</p>
       <select v-if="srcMode === 'ppi' && ppiDirs.length" class="sel" v-model="selSource" @change="selectSource(selSource)">
-        <option value="" disabled>选择分析目录…</option>
+        <option value="" disabled>{{ t('web.docking.sel_dir_ph') }}</option>
         <option v-for="d in ppiDirs" :key="d.name" :value="d.name">{{ d.display }}</option>
       </select>
       <select v-if="srcMode === 'enr' && enrFiles.length" class="sel" v-model="selSource" @change="selectSource(selSource)">
-        <option value="" disabled>选择富集缓存文件…</option>
+        <option value="" disabled>{{ t('web.docking.sel_enr_ph') }}</option>
         <option v-for="f in enrFiles" :key="f.name" :value="f.name">{{ f.display }}</option>
       </select>
 
       <template v-if="s1">
         <div class="metrics three">
-          <div class="metric"><b>{{ s1.hub }}</b><span>HUB</span></div>
-          <div class="metric"><b>{{ s1.enr }}</b><span>富集基因</span></div>
-          <div class="metric"><b>{{ s1.candidates.length }}</b><span>候选</span></div>
+          <div class="metric"><b>{{ s1.hub }}</b><span>{{ t('web.docking.m_hub') }}</span></div>
+          <div class="metric"><b>{{ s1.enr }}</b><span>{{ t('web.docking.m_enr') }}</span></div>
+          <div class="metric"><b>{{ s1.candidates.length }}</b><span>{{ t('web.docking.m_cand') }}</span></div>
         </div>
         <p class="hint-line">{{ candidatePreview }}</p>
 
         <div class="filters">
-          <label class="chk"><input v-model="useStruct" type="checkbox" :disabled="!s1.candidates.length" /> 结构可用性筛选</label>
-          <label class="chk"><input v-model="allowAf" type="checkbox" /> 无实验结构时用 AlphaFold 兜底</label>
+          <label class="chk"><input v-model="useStruct" type="checkbox" :disabled="!s1.candidates.length" /> {{ t('web.docking.chk_struct') }}</label>
+          <label class="chk"><input v-model="allowAf" type="checkbox" /> {{ t('web.docking.chk_af') }}</label>
           <button v-if="useStruct && s1.candidates.length" class="bar-btn"
                   :disabled="structJob.running.value" @click="checkStructures">
-            {{ structJob.running.value ? '检查中…' : '检查结构可用性' }}
+            {{ structJob.running.value ? t('web.docking.checking') : t('web.docking.check_struct_btn') }}
           </button>
         </div>
         <div v-if="structJob.running.value" class="progress">
@@ -396,31 +399,33 @@ onBeforeUnmount(() => {
           </div>
           <p class="progress-text">{{ structJob.text.value }}</p>
         </div>
-        <p v-if="structJob.error.value" class="stale">结构检查失败:{{ structJob.error.value }}</p>
+        <p v-if="structJob.error.value" class="stale">{{ t('web.docking.check_fail', { msg: structJob.error.value }) }}</p>
         <template v-if="structResult">
           <p class="hint-line good">
-            有结构的基因 {{ structResult.genes.length }} 个:{{ structResult.genes.slice(0, 40).join(', ') }}
-            {{ structResult.genes.length > 40 ? '…' : '' }}
+            {{ t('web.docking.has_struct', { n: structResult.genes.length,
+                                             list: structResult.genes.slice(0, 40).join(', ') }) }}
           </p>
           <p v-if="structResult.no_struct.length" class="hint-line">
-            无结构剔除 {{ structResult.no_struct.length }} 个:{{ structResult.no_struct.slice(0, 40).join(', ') }}
+            {{ t('web.docking.no_struct_removed', { n: structResult.no_struct.length,
+                                                    list: structResult.no_struct.slice(0, 40).join(', ') }) }}
           </p>
           <p v-if="structResult.hub_no_struct.length" class="stale">
-            ⚠ 被剔除的基因里有 {{ structResult.hub_no_struct.length }} 个 HUB:{{ structResult.hub_no_struct.join(', ') }}
+            {{ t('web.docking.hub_removed_warn', { n: structResult.hub_no_struct.length,
+                                                   names: structResult.hub_no_struct.join(', ') }) }}
           </p>
         </template>
       </template>
 
       <div v-if="!s1 && !ppiDirs.length && !enrFiles.length" class="manual">
-        <p class="hint-line">没有可选数据文件时,可手动粘贴基因列表:</p>
+        <p class="hint-line">{{ t('web.docking.manual_hint') }}</p>
         <textarea v-model="manualGenes" rows="2" class="ta" placeholder="TP53, EGFR, …"></textarea>
-        <button class="bar-btn" @click="useManual">使用该基因列表</button>
+        <button class="bar-btn" @click="useManual">{{ t('web.docking.manual_btn') }}</button>
       </div>
     </section>
 
     <!-- ============ Step 2 ============ -->
     <section class="step" :class="{ done: stepDone.s2 }">
-      <h3 class="step-title">Step 2 · 配体 <span v-if="stepDone.s2" class="ok-mark">✓ 就绪{{ lig?.cid ? ` · CID ${lig.cid}` : ' · SMILES' }}</span></h3>
+      <h3 class="step-title">{{ t('web.docking.s2_title') }} <span v-if="stepDone.s2" class="ok-mark">{{ t('web.docking.s2_ready') }}{{ lig?.cid ? ` · CID ${lig.cid}` : ' · SMILES' }}</span></h3>
       <div class="lv-group">
         <button class="lv" :class="{ on: ligSource === 'pubchem' }" @click="ligSource = 'pubchem'">PubChem</button>
         <i class="lv-sep">/</i>
@@ -428,37 +433,37 @@ onBeforeUnmount(() => {
       </div>
       <template v-if="ligSource === 'pubchem'">
         <div class="set-row">
-          <label class="set-label">药物名 / CID</label>
-          <div class="field"><input v-model="ligQuery" :placeholder="s1?.drug || '药物名'" spellcheck="false" /><i class="line"></i></div>
+          <label class="set-label">{{ t('web.docking.lig_label') }}</label>
+          <div class="field"><input v-model="ligQuery" :placeholder="s1?.drug || t('web.docking.drug_name_ph')" spellcheck="false" /><i class="line"></i></div>
           <button class="bar-btn" :disabled="ligBusy" @click="fetchLigand">
-            {{ ligBusy ? '获取中…' : '获取配体' }}
+            {{ ligBusy ? t('web.docking.fetching') : t('web.docking.fetch_ligand') }}
           </button>
         </div>
-        <p v-if="!s1?.drug && !lig?.ok" class="hint-line">未识别到药物名(手动基因模式),请输入药物名或 CID。</p>
+        <p v-if="!s1?.drug && !lig?.ok" class="hint-line">{{ t('web.docking.no_drug_hint') }}</p>
       </template>
       <template v-else>
-        <textarea v-model="ligSmiles" rows="2" class="ta" placeholder="SMILES,如 CN1C(=O)C(C)=C(C)N(C)C1=O"></textarea>
+        <textarea v-model="ligSmiles" rows="2" class="ta" :placeholder="t('web.docking.smiles_ph')"></textarea>
         <button class="bar-btn" :disabled="ligBusy || !ligSmiles.trim()" @click="fetchLigand">
-          {{ ligBusy ? '生成中…' : '生成 3D 构象' }}
+          {{ ligBusy ? t('web.docking.generating') : t('web.docking.gen_conformer') }}
         </button>
       </template>
-      <p v-if="lig?.ok" class="hint-line good">配体 pdbqt 已就绪。</p>
+      <p v-if="lig?.ok" class="hint-line good">{{ t('web.docking.lig_ok') }}</p>
       <p v-if="lig && !lig.ok" class="stale">{{ lig.error }}</p>
     </section>
 
     <!-- ============ Step 3 ============ -->
     <section class="step" :class="{ done: stepDone.s3 }">
-      <h3 class="step-title">Step 3 · 受体 <span v-if="stepDone.s3" class="ok-mark">✓ {{ receptor?.pdb_id }}</span></h3>
+      <h3 class="step-title">{{ t('web.docking.s3_title') }} <span v-if="stepDone.s3" class="ok-mark">✓ {{ receptor?.pdb_id }}</span></h3>
       <template v-if="genes.length">
         <select class="sel" v-model="gene" @change="loadCandidates">
-          <option value="" disabled>选择靶点基因…</option>
+          <option value="" disabled>{{ t('web.docking.sel_gene_ph') }}</option>
           <option v-for="g in genes" :key="g" :value="g">{{ g }}</option>
         </select>
         <p v-if="candError" class="stale">{{ candError }}</p>
         <template v-if="candRows.length">
           <div class="tbl-wrap">
             <table class="tbl">
-              <thead><tr><th>PDB</th><th>分辨率</th><th>方法</th><th>标题</th><th>备注</th></tr></thead>
+              <thead><tr><th>PDB</th><th>{{ t('web.docking.th_res') }}</th><th>{{ t('web.docking.th_method') }}</th><th>{{ t('web.docking.th_title') }}</th><th>{{ t('web.docking.th_note') }}</th></tr></thead>
               <tbody>
                 <tr v-for="r in candRows" :key="r.pdb_id" :class="{ selrow: pdbSel === r.pdb_id }"
                     @click="!flagBlocked(r.flag) && (pdbSel = r.pdb_id)">
@@ -469,10 +474,10 @@ onBeforeUnmount(() => {
               </tbody>
             </table>
           </div>
-          <p v-if="selFlag === 'dna_only'" class="stale">纯核酸结构不含蛋白,不能作为对接受体 —— 请换一个条目。</p>
+          <p v-if="selFlag === 'dna_only'" class="stale">{{ t('web.docking.dna_only') }}</p>
           <button class="bar-btn" :disabled="!pdbSel || flagBlocked(selFlag) || recJob.running.value"
                   @click="prepareReceptor">
-            {{ recJob.running.value ? '下载并准备中…' : '下载受体并准备' }}
+            {{ recJob.running.value ? t('web.docking.prepping') : t('web.docking.prep_btn') }}
           </button>
           <div v-if="recJob.running.value" class="progress">
             <div class="progress-track">
@@ -481,30 +486,30 @@ onBeforeUnmount(() => {
             <p class="progress-text">{{ recJob.text.value }}</p>
           </div>
           <p v-if="receptor?.receptor_source === 'alphafold'" class="stale">
-            ⚠ 使用 AlphaFold 预测模型({{ receptor.pdb_id.split(':')[1] }})——非实验结构,结果解读需谨慎。
+            {{ t('web.docking.af_warn', { pdb: receptor.pdb_id.split(':')[1] }) }}
           </p>
         </template>
         <p v-else-if="gene && !candError && !recJob.running.value" class="hint-line">
-          RCSB 查无该基因的人类实验结构 —— 可开启 Step 1 的 AlphaFold 兜底。
+          {{ t('web.docking.rcsb_empty') }}
         </p>
       </template>
-      <p v-else class="hint-line">先完成 Step 1。</p>
+      <p v-else class="hint-line">{{ t('web.docking.need_s1') }}</p>
     </section>
 
     <!-- ============ Step 4 ============ -->
     <section class="step" :class="{ done: stepDone.s4 }">
-      <h3 class="step-title">Step 4 · 对接盒 <span v-if="stepDone.s4" class="ok-mark">✓ 已定义</span></h3>
+      <h3 class="step-title">{{ t('web.docking.s4_title') }} <span v-if="stepDone.s4" class="ok-mark">✓</span></h3>
       <button class="bar-btn" :disabled="!receptor || boxBusy" @click="inferBox">
-        {{ boxBusy ? '推断中…' : '从共晶配体推断盒子' }}
+        {{ boxBusy ? t('web.docking.inferring') : t('web.docking.infer_box') }}
       </button>
-      <p v-if="boxMeta?.clamped" class="stale">预测结构无共晶配体,按整蛋白估盒并已收缩到可计算大小。</p>
+      <p v-if="boxMeta?.clamped" class="stale">{{ t('web.docking.clamped_note') }}</p>
       <p v-else-if="boxMeta?.inferred_ligands?.length" class="hint-line">
-        参考配体:{{ boxMeta.inferred_ligands.join(', ') }}
+        {{ t('web.docking.ref_ligands', { names: boxMeta.inferred_ligands.join(', ') }) }}
       </p>
       <template v-if="box">
         <div class="box-grid">
           <div class="box-nums">
-            <p class="ctl-label">中心 / 尺寸(Å)</p>
+            <p class="ctl-label">{{ t('web.docking.box_label') }}</p>
             <div class="num-grid">
               <label v-for="(c, i) in box.center" :key="'c' + i" class="num">
                 <span>c{{ 'xyz'[i] }}</span>
@@ -515,12 +520,12 @@ onBeforeUnmount(() => {
                 <input type="number" step="1" :value="s" @change="editSize(i, $event)" />
               </label>
             </div>
-            <button class="bar-btn" :disabled="boxBusy" @click="applyManualBox">应用微调</button>
+            <button class="bar-btn" :disabled="boxBusy" @click="applyManualBox">{{ t('web.docking.apply_tune') }}</button>
             <p v-if="boxMeta?.residues?.length" class="hint-line">
-              盒内残基 {{ boxMeta.residues.length }} 个:{{ boxMeta.residues.slice(0, 30).join(', ') }}
-              {{ boxMeta.residues.length > 30 ? '…' : '' }}
+              {{ t('web.docking.box_residues', { n: boxMeta.residues.length,
+                                                  list: boxMeta.residues.slice(0, 30).join(', ') }) }}
             </p>
-            <p v-else class="hint-line">盒内无残基 —— 检查盒子位置。</p>
+            <p v-else class="hint-line">{{ t('web.docking.box_empty') }}</p>
           </div>
           <div class="box-view">
             <iframe class="fig-frame" :src="`/api/docking/${sid}/box-3d`" title="box preview" />
@@ -531,23 +536,21 @@ onBeforeUnmount(() => {
 
     <!-- ============ Step 5 ============ -->
     <section class="step" :class="{ done: stepDone.s5 }">
-      <h3 class="step-title">Step 5 · 运行对接 <span v-if="stepDone.s5" class="ok-mark">✓ 完成</span></h3>
-      <p v-if="canRun" class="hint-line">
-        参数:exhaustiveness 8 · num_modes 9 · cpu 4 · seed 固定 · 超时 600s(全局设置见设置页)。
-      </p>
+      <h3 class="step-title">{{ t('web.docking.s5_title') }} <span v-if="stepDone.s5" class="ok-mark">✓</span></h3>
+      <p v-if="canRun" class="hint-line">{{ t('web.docking.run_params') }}</p>
       <button v-if="canRun" class="bar-btn strong" :disabled="runJob.running.value" @click="runDock">
-        {{ runJob.running.value ? 'vina 运行中…' : '运行 Vina 对接' }}
+        {{ runJob.running.value ? t('web.docking.running_vina') : t('web.docking.run_btn') }}
       </button>
-      <p v-else class="hint-line">完成 Step 2–4 后可运行。</p>
+      <p v-else class="hint-line">{{ t('web.docking.need_s234') }}</p>
       <div v-if="runJob.running.value" class="progress">
         <div class="progress-track">
           <div class="progress-fill indeterminate"></div>
         </div>
         <p class="progress-text">{{ runJob.text.value }}</p>
       </div>
-      <p v-if="runJob.error.value" class="stale">对接失败:{{ runJob.error.value }}</p>
+      <p v-if="runJob.error.value" class="stale">{{ t('web.docking.run_fail', { msg: runJob.error.value }) }}</p>
       <template v-if="scores.length">
-        <p class="hint-line">vina 日志(尾部):</p>
+        <p class="hint-line">{{ t('web.docking.log_tail_hint') }}</p>
         <pre class="log">{{ logTail }}</pre>
         <div class="tbl-wrap">
           <table class="tbl">
@@ -565,62 +568,61 @@ onBeforeUnmount(() => {
 
     <!-- ============ Step 6 ============ -->
     <section class="step" :class="{ done: stepDone.s6 }">
-      <h3 class="step-title">Step 6 · 结果解读与归档
+      <h3 class="step-title">{{ t('web.docking.s6_title') }}
         <span v-if="stepDone.s6" class="ok-mark">✓ {{ saved?.result_dir.split('/').pop() || saved?.result_dir }}</span>
       </h3>
       <template v-if="scores.length">
         <div class="set-row">
-          <label class="set-label">构象 (mode)</label>
+          <label class="set-label">{{ t('web.docking.pose_label') }}</label>
           <select class="sel inline" v-model.number="poseSel" @change="scheduleReload">
             <option v-for="r in scores" :key="String(r.mode)" :value="Number(r.mode)">mode {{ r.mode }}</option>
           </select>
-          <span class="ctl-meta">亲和力 {{ scores.find((r) => Number(r.mode) === poseSel)?.affinity }} kcal/mol</span>
+          <span class="ctl-meta">{{ t('web.docking.affinity', { v: scores.find((r) => Number(r.mode) === poseSel)?.affinity }) }}</span>
         </div>
         <div class="set-row">
-          <label class="set-label">结论</label>
+          <label class="set-label">{{ t('web.docking.conclusion_label') }}</label>
           <textarea v-model="conclusion" rows="2" class="ta wide"
-                    :placeholder="`${gene} 最佳亲和力 ${scores[0]?.affinity} kcal/mol 的解读…`"></textarea>
+                    :placeholder="t('web.docking.conclusion_ph', { gene, aff: scores[0]?.affinity })"></textarea>
         </div>
         <div class="set-row">
-          <label class="set-label">归档前缀</label>
-          <div class="field"><input v-model="drugName" :placeholder="s1?.drug || '药物名'" spellcheck="false" /><i class="line"></i></div>
-          <div class="field"><input v-model="diseaseName" :placeholder="s1?.disease || '疾病名'" spellcheck="false" /><i class="line"></i></div>
+          <label class="set-label">{{ t('web.docking.prefix_label') }}</label>
+          <div class="field"><input v-model="drugName" :placeholder="s1?.drug || t('web.docking.drug_name_ph')" spellcheck="false" /><i class="line"></i></div>
+          <div class="field"><input v-model="diseaseName" :placeholder="s1?.disease || t('web.docking.disease_name_ph')" spellcheck="false" /><i class="line"></i></div>
           <button class="bar-btn strong" :disabled="saveBusy" @click="saveResult">
-            {{ saveBusy ? '归档中…' : '归档结果' }}
+            {{ saveBusy ? t('web.docking.archiving') : t('web.docking.archive_btn') }}
           </button>
           <button v-if="saved" class="bar-btn" @click="toggleStar">
-            {{ starred ? '★ 已收藏(点击取消)' : '☆ 收藏' }}
+            {{ starred ? t('web.docking.starred') : t('web.docking.star') }}
           </button>
-          <a v-if="saved" class="bar-btn" :href="`/api/docking/${sid}/zip`">下载 ZIP</a>
+          <a v-if="saved" class="bar-btn" :href="`/api/docking/${sid}/zip`">{{ t('web.docking.dl_zip') }}</a>
         </div>
 
-        <h4 class="sub-sec">3D 预览</h4>
+        <h4 class="sub-sec">{{ t('web.docking.sec_3d') }}</h4>
         <div class="set-row">
-          <label class="set-label">口袋半径</label>
+          <label class="set-label">{{ t('web.docking.pocket_radius') }}</label>
           <Stepper v-model="cutoff" :min="3" :max="6" :step="0.5" />
-          <label class="chk"><input v-model="focus" type="checkbox" @change="scheduleReload" /> 聚焦口袋</label>
-          <button class="bar-btn" :disabled="view3dBusy || !scores.length" @click="load3d">刷新视图</button>
+          <label class="chk"><input v-model="focus" type="checkbox" @change="scheduleReload" /> {{ t('web.docking.focus_chk') }}</label>
+          <button class="bar-btn" :disabled="view3dBusy || !scores.length" @click="load3d">{{ t('web.docking.refresh_view') }}</button>
           <button class="bar-btn" :disabled="save3dBusy || !saved" @click="save3d">
-            {{ save3dBusy ? '保存中…' : '保存交互式 3D 视图' }}
+            {{ save3dBusy ? t('web.docking.saving_3d') : t('web.docking.save_3d_btn') }}
           </button>
         </div>
-        <p class="hint-line">图例:受体=卡通 · 构象=绿棍 · 口袋残基=橙棍 · 共晶配体=灰棍;相互作用 蓝=氢键 紫=盐桥 灰=疏水。</p>
+        <p class="hint-line">{{ t('web.docking.legend') }}</p>
         <iframe v-if="view3dSrc" class="fig-frame" :src="view3dSrc" title="3d preview" />
-        <p v-else class="hint-line">点击"刷新视图"加载 3D 预览。</p>
+        <p v-else class="hint-line">{{ t('web.docking.load_3d_hint') }}</p>
         <p v-if="pocketNames.length" class="hint-line">
-          口袋残基 {{ pocketNames.length }} 个(cutoff {{ cutoff }}):{{ pocketNames.slice(0, 40).join(', ') }}
-          {{ pocketNames.length > 40 ? '…' : '' }}
+          {{ t('web.docking.pocket_list', { n: pocketNames.length, cutoff, list: pocketNames.slice(0, 40).join(', ') }) }}
         </p>
         <template v-if="interRows.length">
           <button class="bar-btn" @click="interOpen = !interOpen">
-            {{ interOpen ? '收起相互作用' : `相互作用(${interRows.length})` }}
+            {{ interOpen ? t('web.docking.inter_collapse') : t('web.docking.inter_btn', { n: interRows.length }) }}
           </button>
           <div v-if="interOpen" class="tbl-wrap">
             <table class="tbl">
-              <thead><tr><th>类型</th><th>残基</th><th>残基原子</th><th>配体原子</th><th>距离(Å)</th></tr></thead>
+              <thead><tr><th>{{ t('web.docking.th_kind') }}</th><th>{{ t('web.docking.th_residue') }}</th><th>{{ t('web.docking.th_res_atom') }}</th><th>{{ t('web.docking.th_lig_atom') }}</th><th>{{ t('web.docking.th_dist') }}</th></tr></thead>
               <tbody>
                 <tr v-for="(r, i) in interRows" :key="i">
-                  <td>{{ r.kind === 'hbond' ? '氢键' : r.kind === 'salt' ? '盐桥' : '疏水' }}</td>
+                  <td>{{ r.kind === 'hbond' ? t('web.docking.kind_hbond') : r.kind === 'salt' ? t('web.docking.kind_salt') : t('web.docking.kind_hydrophobic') }}</td>
                   <td>{{ (r.chain ? r.chain + '/' : '') + String(r.resn) + String(r.resi) }}</td>
                   <td>{{ r.res_atom }}</td><td>{{ r.lig_atom }}</td><td>{{ fmt(r.dist) }}</td>
                 </tr>
@@ -628,9 +630,9 @@ onBeforeUnmount(() => {
             </table>
           </div>
         </template>
-        <p v-else class="hint-line">该构象未检出氢键/盐桥/疏水相互作用。</p>
+        <p v-else class="hint-line">{{ t('web.docking.no_interactions') }}</p>
       </template>
-      <p v-else class="hint-line">运行对接后可在此解读与归档。</p>
+      <p v-else class="hint-line">{{ t('web.docking.archive_idle') }}</p>
     </section>
   </div>
 </template>

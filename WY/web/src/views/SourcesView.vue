@@ -2,25 +2,27 @@
 /** 药物/疾病靶点来源管理(阶段 2):清单 + 来源筛选 + 单文件/批量更新(job)+ 打包/删除。
  * 数据源规格唯一定义在 core.sources;更新编排经 /api/sources/{kind}/refresh 以 job 轮询。 */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, type CollectionItem, type CollectionKind } from '../api'
 import { useJob } from '../composables/useJob'
 
+const { t } = useI18n()
 const props = defineProps<{ kind: 'drug' | 'disease' }>()
 
 const collectionKind = computed<CollectionKind>(
   () => (props.kind === 'drug' ? 'drug_sources' : 'disease_sources'))
 
-const HEAD = {
+const HEAD = computed(() => ({
   drug: {
-    kicker: 'DRUG TARGET SOURCES', title: '药物靶点来源',
-    sub: 'ChEMBL + DGIdb · 更新后自动重建整合表', zip: 'Drug_sources.zip'
+    kicker: t('web.sources.drug_kicker'), title: t('web.sources.drug_title'),
+    sub: t('web.sources.drug_sub'), zip: 'Drug_sources.zip'
   },
   disease: {
-    kicker: 'DISEASE TARGET SOURCES', title: '疾病靶点来源',
-    sub: 'Open Targets + DisGeNET · 更新后自动重建整合表', zip: 'Disease_sources.zip'
+    kicker: t('web.sources.disease_kicker'), title: t('web.sources.disease_title'),
+    sub: t('web.sources.disease_sub'), zip: 'Disease_sources.zip'
   }
-} as const
-const head = computed(() => HEAD[props.kind])
+} as const))
+const head = computed(() => HEAD.value[props.kind])
 
 const items = ref<CollectionItem[]>([])
 const loaded = ref(false)
@@ -78,8 +80,8 @@ const job = useJob((result) => {
   const rows = (result.rows ?? []) as { File: string; Status: string; Message: string }[]
   const failed = rows.filter((r) => r.Status === 'FAILED')
   flash(failed.length
-    ? `更新完成,${failed.length} 个文件失败:${failed.map((r) => r.File).join(', ')}`
-    : `更新完成:${rows.length} 个文件全部成功`)
+    ? t('web.sources.update_done_fail', { n: failed.length, names: failed.map((r) => r.File).join(', ') })
+    : t('web.sources.update_done_ok', { n: rows.length }))
   void load()
 })
 
@@ -92,7 +94,7 @@ function flash(msg: string): void {
 }
 
 async function refreshFiles(kind: 'drug' | 'disease', filenames: string[] | null): Promise<void> {
-  await job.run(api.refreshSources(kind, filenames), { doneText: '更新完成' })
+  await job.run(api.refreshSources(kind, filenames), { doneText: t('web.sources.one_ok') })
 }
 
 const lastUpdate = ref<{ file: string; status: string; message: string } | null>(null)
@@ -118,7 +120,7 @@ async function zipSelected(): Promise<void> {
     a.click()
     URL.revokeObjectURL(url)
   } catch {
-    flash('打包下载失败')
+    flash(t('web.common.zip_fail'))
   }
 }
 
@@ -139,9 +141,11 @@ function deleteSelected(): void {
       const r = await api.remove(collectionKind.value, names)
       selected.value = new Set()
       await load()
-      flash(r.failed.length ? `删除 ${r.deleted} 项,失败:${r.failed.join(', ')}` : `已删除 ${r.deleted} 项`)
+      flash(r.failed.length
+        ? t('web.common.deleted_partial', { n: r.deleted, names: r.failed.join(', ') })
+        : t('web.common.deleted', { n: r.deleted }))
     } catch {
-      flash('删除失败')
+      flash(t('web.common.delete_fail'))
     }
   })()
 }
@@ -183,11 +187,12 @@ const fmtSize = (n: number): string =>
   <div class="panel s4">
     <div class="controls">
       <label class="search">
-        <input v-model="query" spellcheck="false" placeholder="搜索文件名…" @input="goto(1)" />
+        <input v-model="query" spellcheck="false" :placeholder="t('web.sources.search_ph')"
+               @input="goto(1)" />
         <i class="line"></i>
       </label>
-      <span class="count">{{ filtered.length }} 项 · 已选 {{ selected.size }}</span>
-      <button class="go" title="刷新" :disabled="job.running.value" @click="load">
+      <span class="count">{{ t('web.common.items_selected', { n: filtered.length, m: selected.size }) }}</span>
+      <button class="go" :title="t('web.common.refresh')" :disabled="job.running.value" @click="load">
         <svg viewBox="0 0 20 20" width="15" height="15">
           <path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6M16.5 2.5v3.4h-3.4" fill="none"
                 stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
@@ -197,11 +202,11 @@ const fmtSize = (n: number): string =>
     </div>
 
     <div class="filters">
-      <span class="ctl-label">来源</span>
+      <span class="ctl-label">{{ t('web.sources.source_label') }}</span>
       <label v-for="s in sourceNames" :key="s" class="chk">
         <input v-model="srcOn[s]" type="checkbox" /> {{ s }}
       </label>
-      <label class="chk"><input v-model="showMerged" type="checkbox" /> 整合表 (merged)</label>
+      <label class="chk"><input v-model="showMerged" type="checkbox" /> {{ t('web.sources.merged_label') }}</label>
     </div>
 
     <Transition name="note">
@@ -209,25 +214,25 @@ const fmtSize = (n: number): string =>
     </Transition>
 
     <div v-if="lastUpdate" class="lastupd">
-      {{ lastUpdate.file }} — {{ lastUpdate.status === 'OK' ? '更新成功'
-        : lastUpdate.status === 'EMPTY' ? '抓取成功但 0 靶点(检查查询物)'
-        : `失败:${lastUpdate.message}` }}
+      {{ lastUpdate.file }} — {{ lastUpdate.status === 'OK' ? t('web.sources.one_ok')
+        : lastUpdate.status === 'EMPTY' ? t('web.sources.one_empty')
+        : t('web.sources.one_fail', { msg: lastUpdate.message }) }}
     </div>
 
     <div class="bar" :class="{ dim: job.running.value }">
       <button class="bar-btn" :disabled="job.running.value" @click="refreshFiles(props.kind, null)">
-        全部更新
+        {{ t('web.sources.update_all') }}
       </button>
       <button class="bar-btn" :disabled="job.running.value || !selected.size"
               @click="refreshFiles(props.kind, [...selected].filter((n) => !n.startsWith('merged_')))">
-        更新选中
+        {{ t('web.sources.update_selected') }}
       </button>
       <button class="bar-btn" :disabled="job.running.value || !selected.size" @click="zipSelected">
-        下载选中 (ZIP)
+        {{ t('web.common.download_selected') }}
       </button>
       <button class="bar-btn danger" :class="{ arm: confirmArm }"
               :disabled="job.running.value || !selected.size" @click="deleteSelected">
-        {{ confirmArm ? `确认删除 ${selected.size} 项?` : '删除选中' }}
+        {{ confirmArm ? t('web.common.confirm_delete', { n: selected.size }) : t('web.common.delete_selected') }}
       </button>
     </div>
 
@@ -235,13 +240,13 @@ const fmtSize = (n: number): string =>
       <div class="progress-track">
         <div class="progress-fill" :style="{ width: `${((job.fraction.value ?? 0) * 100).toFixed(0)}%` }"></div>
       </div>
-      <p class="progress-text">{{ job.text.value || '更新中…' }}</p>
+      <p class="progress-text">{{ job.text.value || t('web.sources.updating') }}</p>
     </div>
     <p v-if="job.error.value" class="notice">{{ job.error.value }}</p>
 
     <ul class="files">
       <li v-if="loaded && !filtered.length" class="empty">
-        {{ query ? '搜索无匹配。' : '尚无来源文件 —— 完成一次分析后自动生成。' }}
+        {{ query ? t('web.common.no_match') : t('web.sources.empty') }}
       </li>
       <li v-for="it in paged" :key="it.name" class="file">
         <div class="row">
@@ -249,10 +254,10 @@ const fmtSize = (n: number): string =>
             <input type="checkbox" :checked="selected.has(it.name)" @change="toggleSel(it.name)" />
           </label>
           <span class="fname" :title="it.name">
-            <i v-if="it.is_merged" class="merged-tag">整合</i>{{ it.name }}
+            <i v-if="it.is_merged" class="merged-tag">{{ t('web.sources.merged_tag') }}</i>{{ it.name }}
           </span>
           <span class="fmeta">{{ fmtSize(it.size) }} · {{ it.modified }}</span>
-          <button class="mini" title="立即更新" :disabled="job.running.value"
+          <button class="mini" :title="t('web.sources.refresh_one')" :disabled="job.running.value"
                   @click="updateOne(it.name)">↻</button>
         </div>
       </li>

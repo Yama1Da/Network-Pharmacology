@@ -3,9 +3,11 @@
  * 全部 ML run 清单(双根同扫:GEOresult + results/mlscreen)· 关键词筛选 ·
  * 勾选删除(两段确认)· ZIP 下载 · keep-N 清理。数据层在 core.ml_results。 */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import Stepper from '../components/Stepper.vue'
 
+const { t } = useI18n()
 const runs = ref<Record<string, any>[]>([])
 const runsLoaded = ref(false)
 const runsQuery = ref('')
@@ -36,7 +38,7 @@ async function loadRuns(): Promise<void> {
     const names = new Set(runs.value.map((r) => r.name))
     runsSel.value = new Set([...runsSel.value].filter((n) => names.has(n)))
   } catch (e) {
-    flash('清单读取失败:' + (e instanceof Error ? e.message : String(e)))
+    flash(t('web.ml_results.load_fail', { msg: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -82,7 +84,7 @@ async function runsZip(): Promise<void> {
     a.click()
     URL.revokeObjectURL(url)
   } catch {
-    flash('打包下载失败')
+    flash(t('web.common.zip_fail'))
   } finally {
     zipBusy.value = false
   }
@@ -101,7 +103,7 @@ async function runsDelete(): Promise<void> {
   runsDeleteErr.value = ''
   try {
     const r = await api.mlRunsDelete({ paths })
-    flash(`已删除 ${r.deleted.length} 个 run`)
+    flash(t('web.ml_results.delete_done', { n: r.deleted.length }))
     runsSel.value = new Set()
     await loadRuns()
   } catch (e) {
@@ -115,7 +117,7 @@ async function runsCleanup(): Promise<void> {
   cleanupErr.value = ''
   try {
     const r = await api.mlRunsCleanup({ keep: cleanupKeep.value })
-    flash(`keep-N 清理完成,删除 ${r.deleted} 个旧 run`)
+    flash(t('web.ml_results.keepn_done', { n: r.deleted }))
     await loadRuns()
   } catch (e) {
     cleanupErr.value = e instanceof Error ? e.message : String(e)
@@ -133,25 +135,25 @@ onMounted(() => void loadRuns())
 </script>
 
 <template>
-  <p class="kicker s1">ML&nbsp;RESULTS</p>
-  <h1 class="title s2">ML 结果管理</h1>
-  <p class="sub s3">双根同扫（页面 GEOresult + CLI results/mlscreen）· 删除 / 打包 / keep-N 治理</p>
+  <p class="kicker s1">{{ t('web.ml_results.kicker') }}</p>
+  <h1 class="title s2">{{ t('web.ml_results.title') }}</h1>
+  <p class="sub s3">{{ t('web.ml_results.sub') }}</p>
 
   <div class="panel wide s4">
     <Transition name="note">
       <p v-if="notice" class="notice">{{ notice }}</p>
     </Transition>
 
-    <p v-if="runsLoaded && !runs.length" class="empty">尚无 ML 运行记录。</p>
+    <p v-if="runsLoaded && !runs.length" class="empty">{{ t('web.ml_results.empty_runs') }}</p>
 
     <div class="controls">
       <label class="search">
-        <input v-model="runsQuery" spellcheck="false" placeholder="按运行名 / GSE / 来源筛选…"
+        <input v-model="runsQuery" spellcheck="false" :placeholder="t('web.ml_results.search_ph')"
                @input="runsGoto(1)" />
         <i class="line"></i>
       </label>
-      <span class="count">{{ runsFiltered.length }} 个 · 共约 {{ runsTotalMb }} MB · 已选 {{ runsSel.size }}</span>
-      <button class="go" title="刷新" @click="loadRuns">
+      <span class="count">{{ t('web.ml_results.runs_meta', { n: runsFiltered.length, mb: runsTotalMb, k: runsSel.size }) }}</span>
+      <button class="go" :title="t('web.common.refresh')" @click="loadRuns">
         <svg viewBox="0 0 20 20" width="15" height="15">
           <path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6M16.5 2.5v3.4h-3.4" fill="none"
                 stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
@@ -161,35 +163,35 @@ onMounted(() => void loadRuns())
     </div>
 
     <div class="bar" :class="{ dim: !runsSel.size }">
-      <button class="bar-btn" @click="runsToggleAll">{{ runsAllSelected ? '取消全选' : '全选' }}</button>
-      <span class="bar-label">{{ runsSel.size ? `已选 ${runsSel.size} 个` : '勾选后可批量操作' }}</span>
+      <button class="bar-btn" @click="runsToggleAll">{{ runsAllSelected ? t('web.common.unselect_all') : t('web.common.all') }}</button>
+      <span class="bar-label">{{ runsSel.size ? t('web.common.selected', { n: runsSel.size }) : t('web.common.batch_hint') }}</span>
       <button class="bar-btn" :disabled="!runsSel.size || zipBusy" @click="runsZip">
-        {{ zipBusy ? '打包中…' : '下载选中 (ZIP)' }}
+        {{ zipBusy ? t('web.ml_results.zipping') : t('web.common.download_selected') }}
       </button>
       <button class="bar-btn danger" :class="{ arm: runsConfirm }" :disabled="!runsSel.size || runsDeleteBusy"
               @click="runsDelete">
-        {{ runsConfirm ? `确认删除 ${runsSel.size} 个?` : '删除选中' }}
+        {{ runsConfirm ? t('web.common.confirm_delete', { n: runsSel.size }) : t('web.common.delete_selected') }}
       </button>
-      <span class="bar-label">同 GSE 保留</span>
+      <span class="bar-label">{{ t('web.ml_results.keep_label') }}</span>
       <Stepper v-model="cleanupKeep" :min="1" :max="20" />
       <button class="bar-btn" :disabled="cleanupBusy" @click="runsCleanup">
-        {{ cleanupBusy ? '清理中…' : 'keep-N 清理' }}
+        {{ cleanupBusy ? t('web.ml_results.cleaning') : t('web.ml_results.keepn_btn') }}
       </button>
     </div>
-    <p v-if="runsDeleteErr" class="stale">删除失败:{{ runsDeleteErr }}</p>
-    <p v-if="cleanupErr" class="stale">清理失败:{{ cleanupErr }}</p>
+    <p v-if="runsDeleteErr" class="stale">{{ t('web.ml_results.delete_fail', { msg: runsDeleteErr }) }}</p>
+    <p v-if="cleanupErr" class="stale">{{ t('web.ml_results.cleanup_fail', { msg: cleanupErr }) }}</p>
 
     <ul class="files">
-      <li v-if="runsLoaded && !runsFiltered.length" class="empty">筛选无匹配。</li>
+      <li v-if="runsLoaded && !runsFiltered.length" class="empty">{{ t('web.common.no_match') }}</li>
       <li v-for="r in runsPaged" :key="r.name" class="file">
         <div class="row">
           <label class="sel">
             <input type="checkbox" :checked="runsSel.has(r.name)" @change="runsToggle(r.name)" />
           </label>
           <span class="fname" :title="r.name">{{ r.name
-          }}<i v-if="r.stale?.length" class="stale-tag">陈旧</i></span>
+          }}<i v-if="r.stale?.length" class="stale-tag">{{ t('web.ml_results.stale_tag') }}</i></span>
           <span class="fmeta">
-            {{ r.gse || r.source || '-' }} · {{ r.n_samples ?? '?' }} 样本 ·
+            {{ r.gse || r.source || '-' }} · {{ t('web.common.samples_n', { n: r.n_samples ?? '?' }) }} ·
             AUC {{ r.auc ?? 'N/A' }} · shortlist {{ r.shortlist_count ?? '?' }} ·
             {{ fmtMb(r.size_bytes) }} · {{ fmtTime(r.mtime) }}
           </span>

@@ -3,12 +3,15 @@
  * 产物直出:分析图表由后端落盘、经 /api/artifacts 伺服;交互区重跑(模块/GSEA)
  * 无状态化——从落盘 nodes/edges CSV 重建图。行为与 Streamlit 版一致。 */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   api, artifactsUrl, type PpiAnalyzeBody, type PpiResult, type Row
 } from '../api'
 import { takePrefill } from '../store'
 import { useJob } from '../composables/useJob'
 import Stepper from '../components/Stepper.vue'
+
+const { t } = useI18n()
 
 /* ---------------- 表单 ---------------- */
 
@@ -40,11 +43,16 @@ const stages = computed<string[]>(() => {
   return [...base, ...extra, 'modules', 'save']
 })
 
-const STAGE_LABEL: Record<string, string> = {
-  targets: '靶点获取与交集', string: 'STRING 互作查询', graph: '建图 · 拓扑 · Hub',
-  enrichment: '功能富集', gsea: 'GSEA 排序富集', network: '邻近度 + RWR',
-  modules: 'Louvain 模块检测', save: '结果落盘'
-}
+const stageLabels = computed<Record<string, string>>(() => ({
+  targets: t('web.analysis.stage_targets'),
+  string: t('web.analysis.stage_string'),
+  graph: t('web.analysis.stage_graph'),
+  enrichment: t('web.analysis.stage_enrichment'),
+  gsea: t('web.analysis.stage_gsea'),
+  network: t('web.analysis.stage_network'),
+  modules: t('web.analysis.stage_modules'),
+  save: t('web.analysis.stage_save')
+}))
 const STATE_ICON: Record<string, string> = { pending: '○', running: '◐', done: '●' }
 
 const stepStates = computed<Record<string, string>>(() => {
@@ -57,7 +65,7 @@ const stepStates = computed<Record<string, string>>(() => {
 
 function analyze(): void {
   if (mode.value === 'names' && (!drug.value.trim() || !disease.value.trim())) {
-    flash('请填写药物成分与疾病表型(或切换到基因列表模式)')
+    flash(t('web.analysis.need_names'))
     return
   }
   const body: PpiAnalyzeBody = {
@@ -65,7 +73,7 @@ function analyze(): void {
     score: score.value, network_type: networkType.value, rwr_expand: rwrExpand.value,
     hub_top_n: hubTopN.value, hub_method: hubMethod.value
   }
-  void job.run(api.analyzePpi(body), { doneText: '报告已生成' })
+  void job.run(api.analyzePpi(body), { doneText: t('web.analysis.report_done') })
 }
 
 /* ---------------- 结果 ---------------- */
@@ -95,9 +103,12 @@ const effectiveView = computed(() => {
 function setView(v: string): void {
   view.value = v
 }
-const VIEW_LABEL: Record<string, string> = {
-  interactive: '交互式', static: '静态图', string: 'STRING 风格', cytoscape: 'Cytoscape 风格'
-}
+const viewLabels = computed<Record<string, string>>(() => ({
+  interactive: t('web.analysis.view_interactive'),
+  static: t('web.analysis.view_static'),
+  string: t('web.analysis.view_string'),
+  cytoscape: t('web.analysis.view_cytoscape')
+}))
 
 const artifacts = computed(() => ppi.value?.artifacts ?? {})
 function art(key: string): string | null {
@@ -132,7 +143,7 @@ const modsJob = useJob((result) => {
       no_sig: (result.no_sig ?? []) as number[]
     } }
   }
-  flash('模块检测已重跑完成')
+  flash(t('web.analysis.modules_done_flash'))
 })
 const gseaJob = useJob((result) => {
   if (ppi.value && gseaSide.value) {
@@ -144,7 +155,7 @@ const gseaJob = useJob((result) => {
     }
     ppi.value = { ...ppi.value, gsea: g }
   }
-  flash('GSEA 已重跑完成')
+  flash(t('web.analysis.gsea_done_flash'))
 })
 const gseaSide = ref<'drug' | 'disease'>('drug')
 const gseaRes = computed(() => ppi.value?.gsea?.[gseaSide.value] ?? null)
@@ -181,7 +192,7 @@ async function zipWholeDirectory(): Promise<void> {
     a.click()
     URL.revokeObjectURL(url)
   } catch {
-    flash('整包下载失败')
+    flash(t('web.analysis.dl_zip_fail'))
   }
 }
 
@@ -202,76 +213,76 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
 </script>
 
 <template>
-  <p class="kicker s1">PPI&nbsp;ANALYSIS</p>
-  <h1 class="title s2">网络药理学分析</h1>
-  <p class="sub s3">成分&nbsp;—&nbsp;靶点&nbsp;—&nbsp;网络&nbsp;—&nbsp;富集&nbsp;—&nbsp;模块</p>
+  <p class="kicker s1">{{ t('web.analysis.kicker') }}</p>
+  <h1 class="title s2">{{ t('web.analysis.title') }}</h1>
+  <p class="sub s3">{{ t('web.analysis.sub') }}</p>
 
   <!-- ================= 表单 ================= -->
   <div class="panel wide s4">
     <div class="mode-row">
-      <span class="ctl-label">输入模式</span>
+      <span class="ctl-label">{{ t('web.analysis.mode_label') }}</span>
       <span class="lv-group">
-        <button class="lv" :class="{ on: mode === 'names' }" @click="mode = 'names'">药物 + 疾病名称</button>
+        <button class="lv" :class="{ on: mode === 'names' }" @click="mode = 'names'">{{ t('web.analysis.mode_names') }}</button>
         <i class="lv-sep">/</i>
-        <button class="lv" :class="{ on: mode === 'genes' }" @click="mode = 'genes'">基因列表</button>
+        <button class="lv" :class="{ on: mode === 'genes' }" @click="mode = 'genes'">{{ t('web.analysis.mode_genes') }}</button>
       </span>
     </div>
 
     <div v-if="mode === 'names'" class="names-form">
       <label class="field">
-        <input v-model="drug" spellcheck="false" placeholder="药物成分" />
+        <input v-model="drug" spellcheck="false" :placeholder="t('web.common.ph_drug')" />
         <i class="line"></i>
       </label>
       <span class="cross">×</span>
       <label class="field">
-        <input v-model="disease" spellcheck="false" placeholder="疾病表型" />
+        <input v-model="disease" spellcheck="false" :placeholder="t('web.common.ph_disease')" />
         <i class="line"></i>
       </label>
     </div>
     <label v-else class="field genes">
       <textarea v-model="genesText" rows="2" spellcheck="false"
-                placeholder="基因符号,逗号/分号/空格分隔" />
+                :placeholder="t('web.analysis.ph_genes')" />
       <i class="line"></i>
     </label>
 
     <div class="opt-grid">
       <label class="opt">
-        <span class="opt-label">STRING 置信度 {{ score.toFixed(2) }}</span>
+        <span class="opt-label">{{ t('web.analysis.opt_score', { v: score.toFixed(2) }) }}</span>
         <input v-model.number="score" type="range" min="0.15" max="0.9" step="0.05" />
       </label>
       <label class="opt">
-        <span class="opt-label">网络类型</span>
+        <span class="opt-label">{{ t('web.analysis.opt_network') }}</span>
         <select v-model="networkType">
-          <option value="full">功能关联网络 (full)</option>
-          <option value="physical">物理结合网络 (physical)</option>
+          <option value="full">{{ t('web.analysis.net_full') }}</option>
+          <option value="physical">{{ t('web.analysis.net_physical') }}</option>
         </select>
       </label>
       <label class="opt">
-        <span class="opt-label">RWR 扩展靶点数(0 = 关闭)</span>
+        <span class="opt-label">{{ t('web.analysis.opt_rwr') }}</span>
         <Stepper v-model="rwrExpand" :min="0" :max="100" />
       </label>
       <label class="opt">
-        <span class="opt-label">Hub 数量(5–20)</span>
+        <span class="opt-label">{{ t('web.analysis.opt_hub_n') }}</span>
         <Stepper v-model="hubTopN" :min="5" :max="20" />
       </label>
       <label class="opt">
-        <span class="opt-label">Hub 排名依据</span>
+        <span class="opt-label">{{ t('web.analysis.opt_hub_method') }}</span>
         <select v-model="hubMethod">
-          <option value="degree">度数(文献惯例)</option>
-          <option value="mcc">MCC(CytoHubba)</option>
+          <option value="degree">{{ t('web.analysis.hub_degree') }}</option>
+          <option value="mcc">{{ t('web.analysis.hub_mcc') }}</option>
         </select>
       </label>
     </div>
 
     <div class="build-row">
       <button class="build" :disabled="job.running.value || modsJob.running.value || gseaJob.running.value"
-              title="生成报告" aria-label="生成报告" @click="analyze">
+              :title="t('web.analysis.build_title')" :aria-label="t('web.analysis.build_title')" @click="analyze">
         <svg viewBox="0 0 24 14" width="26" height="15">
           <path d="M1 7h20M15.5 1.5 21.5 7l-6 5.5" fill="none" stroke="currentColor"
                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </button>
-      <span class="build-hint">生成报告</span>
+      <span class="build-hint">{{ t('web.analysis.build_title') }}</span>
     </div>
 
     <Transition name="note">
@@ -288,41 +299,38 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
       </div>
       <ul class="stages">
         <li v-for="k in stages" :key="k" class="stage" :class="stepStates[k]">
-          <i class="stage-icon">{{ STATE_ICON[stepStates[k]] }}</i>{{ STAGE_LABEL[k] }}
+          <i class="stage-icon">{{ STATE_ICON[stepStates[k]] }}</i>{{ stageLabels[k] }}
         </li>
       </ul>
     </div>
-    <p v-if="job.error.value" class="notice err">分析失败:{{ job.error.value }}(完整堆栈见日志页)</p>
+    <p v-if="job.error.value" class="notice err">{{ t('web.analysis.err', { msg: job.error.value }) }}</p>
   </div>
 
   <!-- ================= 结果 ================= -->
   <div v-if="ppi" class="panel wide result">
-    <p v-if="paramsStale" class="stale">
-      表单参数已变化 —— 下方结果属于上一次参数;重新点击"生成报告"刷新。
-    </p>
+    <p v-if="paramsStale" class="stale">{{ t('web.analysis.params_stale') }}</p>
 
     <div class="metrics s5">
-      <div class="metric"><b>{{ ppi.genes_count }}</b><span>输入靶点</span></div>
-      <div class="metric"><b>{{ ppi.nodes }}</b><span>网络节点</span></div>
-      <div class="metric"><b>{{ ppi.edges }}</b><span>边</span></div>
-      <div class="metric"><b>{{ ppi.hubs }}</b><span>Hub 基因</span></div>
+      <div class="metric"><b>{{ ppi.genes_count }}</b><span>{{ t('web.analysis.m_input') }}</span></div>
+      <div class="metric"><b>{{ ppi.nodes }}</b><span>{{ t('web.analysis.m_nodes') }}</span></div>
+      <div class="metric"><b>{{ ppi.edges }}</b><span>{{ t('web.analysis.m_edges') }}</span></div>
+      <div class="metric"><b>{{ ppi.hubs }}</b><span>{{ t('web.analysis.m_hubs') }}</span></div>
     </div>
 
     <p v-if="ppi.expansion" class="hint-line">
-      RWR 扩展:种子 {{ ppi.expansion.seeds }} + 扩展 {{ ppi.expansion.expanded }} =
-      {{ ppi.expansion.seeds + ppi.expansion.expanded }} 个查询基因(α=0.85,前缀 {{ ppi.prefix }})
+      {{ t('web.analysis.rwr_expansion', { seeds: ppi.expansion.seeds, expanded: ppi.expansion.expanded,
+                                            total: ppi.expansion.seeds + ppi.expansion.expanded,
+                                            prefix: ppi.prefix }) }}
     </p>
-    <p v-if="!ppi.genes_count" class="stale">无共同靶点 —— 请检查药物/疾病名称。</p>
-    <p v-if="!ppi.edges" class="stale">
-      STRING 未返回高于置信度阈值的互作{{ ppi.views ? '' : '' }}
-      (可尝试降低置信度阈值或改用功能关联网络)。
-    </p>
+    <p v-if="!ppi.genes_count" class="stale">{{ t('web.analysis.no_common') }}</p>
+    <p v-if="!ppi.edges" class="stale">{{ t('web.analysis.no_edges') }}</p>
 
     <!-- Hub 表 -->
     <section v-if="ppi.hub_table.length" class="sec">
       <h3 class="sec-title">
         {{ ppi.hub_rule.startsWith('top')
-          ? `Hub 基因 Top ${ppi.hub_table.length}(${ppi.hub_method_eff} 排名)` : 'Hub 基因' }}
+          ? t('web.analysis.hub_top_title', { n: ppi.hub_table.length, method: ppi.hub_method_eff })
+          : t('web.analysis.hub_title') }}
       </h3>
       <div class="tbl-wrap">
         <table class="tbl">
@@ -340,13 +348,13 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
 
     <!-- 网络图:视图切换 -->
     <section class="sec">
-      <h3 class="sec-title">网络图</h3>
+      <h3 class="sec-title">{{ t('web.analysis.sec_network') }}</h3>
       <div class="lv-group">
         <button v-for="v in ppi.views" :key="v" class="lv"
-                :class="{ on: effectiveView === v }" @click="setView(v)">{{ VIEW_LABEL[v] }}</button>
+                :class="{ on: effectiveView === v }" @click="setView(v)">{{ viewLabels[v] }}</button>
       </div>
-      <p v-if="effectiveView === 'string'" class="hint-line">STRING 数据库原生风格:边粗细 = 证据强度,节点颜色 = 度数。</p>
-      <p v-if="effectiveView === 'cytoscape'" class="hint-line">Cytoscape 风格:度数降序同心圆排布,颜色映射模块归属。</p>
+      <p v-if="effectiveView === 'string'" class="hint-line">{{ t('web.analysis.view_string_hint') }}</p>
+      <p v-if="effectiveView === 'cytoscape'" class="hint-line">{{ t('web.analysis.view_cyto_hint') }}</p>
       <iframe v-if="effectiveView === 'interactive'"
               class="fig-frame" :src="artifactsUrl(art('html') ?? '')" />
       <img v-else-if="effectiveView === 'static'"
@@ -354,58 +362,57 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
       <img v-else-if="effectiveView === 'string'"
            class="fig-img" :src="artifactsUrl(art('string_png') ?? '')" alt="string style" />
       <img v-else class="fig-img" :src="artifactsUrl(art('cyto_png') ?? '')" alt="cytoscape style" />
-      <p class="hint-line">四种视图均已落盘,可在下方下载区取用。</p>
+      <p class="hint-line">{{ t('web.analysis.views_saved_hint') }}</p>
     </section>
 
     <!-- 核心靶点 -->
     <section v-if="art('core_png')" class="sec">
-      <h3 class="sec-title">核心靶点子网络(MCC Top 10)</h3>
+      <h3 class="sec-title">{{ t('web.analysis.sec_core') }}</h3>
       <img class="fig-img" :src="artifactsUrl(art('core_png') ?? '')" alt="core targets" />
     </section>
 
     <!-- 邻近度 -->
     <section v-if="prox && ppi.params[0] === 'names'" class="sec">
-      <h3 class="sec-title">网络邻近度检验</h3>
+      <h3 class="sec-title">{{ t('web.analysis.sec_prox') }}</h3>
       <p class="hint-line">
-        度匹配零分布 {{ prox.n_perm }} 次置换 · 种子 {{ prox.seed ?? '-' }} · 度分箱
-        {{ 100 }}
+        {{ t('web.analysis.prox_setup', { n: prox.n_perm, seed: prox.seed ?? '-' }) }}
       </p>
       <template v-if="prox.error === 'not_built'">
-        <p class="stale">背景互作组未构建 —— 请先到数据管理页构建。</p>
+        <p class="stale">{{ t('web.analysis.prox_not_built') }}</p>
       </template>
       <template v-else-if="['low_coverage_drug', 'low_coverage_disease', 'empty_after_filter'].includes(prox.error)">
         <p class="stale">
-          靶点落入背景网络的比例过低(药物 {{ prox.coverage?.drug_in_lcc ?? 0 }}/{{ prox.coverage?.drug_total ?? 0 }},
-          疾病 {{ prox.coverage?.disease_in_lcc ?? 0 }}/{{ prox.coverage?.disease_total ?? 0 }}),检验不可靠。
+          {{ t('web.analysis.prox_low_cov', { din: prox.coverage?.drug_in_lcc ?? 0, dtotal: prox.coverage?.drug_total ?? 0,
+                                               iin: prox.coverage?.disease_in_lcc ?? 0, itotal: prox.coverage?.disease_total ?? 0 }) }}
         </p>
       </template>
       <template v-else-if="prox.error">
-        <p class="stale">邻近度检验失败:{{ prox.error }}</p>
+        <p class="stale">{{ t('web.analysis.prox_fail', { err: prox.error }) }}</p>
       </template>
       <template v-else-if="prox.ok">
         <div class="metrics three">
-          <div class="metric"><b>{{ fmt(prox.d_c) }}</b><span>d_C(平均最短距离)</span></div>
-          <div class="metric"><b>{{ fmt(prox.z) }}</b><span>Z-score</span></div>
-          <div class="metric"><b>{{ fmt(prox.p_empirical, 4) }}</b><span>p(经验)</span></div>
+          <div class="metric"><b>{{ fmt(prox.d_c) }}</b><span>{{ t('web.analysis.m_dc') }}</span></div>
+          <div class="metric"><b>{{ fmt(prox.z) }}</b><span>{{ t('web.analysis.m_z') }}</span></div>
+          <div class="metric"><b>{{ fmt(prox.p_empirical, 4) }}</b><span>{{ t('web.analysis.m_p') }}</span></div>
         </div>
         <p class="hint-line" :class="{ good: typeof prox.z === 'number' && prox.z < 0 }">
           {{ typeof prox.z === 'number'
-            ? (prox.z < 0 ? '药物靶点与疾病蛋白的网络距离显著近于随机期望 —— 支持二者存在作用关系。'
-               : '网络距离未优于随机期望 —— 不支持存在特异性作用关系。')
-            : '零分布退化,Z 无意义(两靶点集过近)。' }}
+            ? (prox.z < 0 ? t('web.analysis.prox_support') : t('web.analysis.prox_unsupported'))
+            : t('web.analysis.prox_degenerate') }}
         </p>
         <p class="hint-line">
-          背景网络 LCC {{ prox.lcc_nodes }} 节点 ·
-          覆盖:药物 {{ prox.coverage?.drug_in_lcc ?? 0 }}/{{ prox.coverage?.drug_total ?? 0 }},
-          疾病 {{ prox.coverage?.disease_in_lcc ?? 0 }}/{{ prox.coverage?.disease_total ?? 0 }}
-          {{ prox.cached ? '· 缓存命中' : '' }}
+          {{ t('web.analysis.prox_lcc', { nodes: prox.lcc_nodes, din: prox.coverage?.drug_in_lcc ?? 0,
+                                          dtotal: prox.coverage?.drug_total ?? 0,
+                                          iin: prox.coverage?.disease_in_lcc ?? 0,
+                                          itotal: prox.coverage?.disease_total ?? 0 }) }}
+          {{ prox.cached ? t('web.analysis.cached_hit') : '' }}
         </p>
         <template v-if="prox.d_c_excl != null">
-          <p class="hint-line">去交集版本(剔除 {{ prox.n_excl ?? 0 }} 个共同靶点,排除"纯属直接作用"的解释):</p>
+          <p class="hint-line">{{ t('web.analysis.prox_excl', { n: prox.n_excl ?? 0 }) }}</p>
           <div class="metrics three">
-            <div class="metric"><b>{{ fmt(prox.d_c_excl) }}</b><span>d_C(excl)</span></div>
-            <div class="metric"><b>{{ fmt(prox.z_excl) }}</b><span>Z(excl)</span></div>
-            <div class="metric"><b>{{ fmt(prox.p_excl, 4) }}</b><span>p(excl)</span></div>
+            <div class="metric"><b>{{ fmt(prox.d_c_excl) }}</b><span>{{ t('web.analysis.m_dc_excl') }}</span></div>
+            <div class="metric"><b>{{ fmt(prox.z_excl) }}</b><span>{{ t('web.analysis.m_z_excl') }}</span></div>
+            <div class="metric"><b>{{ fmt(prox.p_excl, 4) }}</b><span>{{ t('web.analysis.m_p_excl') }}</span></div>
           </div>
         </template>
       </template>
@@ -414,34 +421,36 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
     <!-- RWR -->
     <section v-if="rwr && ppi.params[0] === 'names'" class="sec">
       <details class="fold">
-        <summary class="sec-title fold-title">靶点优先级排序(RWR)</summary>
-        <p class="hint-line">α = 0.85 重启概率;单侧切换只查看已算结果,不重算。</p>
+        <summary class="sec-title fold-title">{{ t('web.analysis.sec_rwr') }}</summary>
+        <p class="hint-line">{{ t('web.analysis.rwr_hint') }}</p>
         <div class="lv-group">
           <button class="lv" :class="{ on: rwrSide === 'disease_seeds' }"
-                  @click="rwrSide = 'disease_seeds'">疾病种子</button>
+                  @click="rwrSide = 'disease_seeds'">{{ t('web.analysis.rwr_side_disease') }}</button>
           <i class="lv-sep">/</i>
           <button class="lv" :class="{ on: rwrSide === 'drug_seeds' }"
-                  @click="rwrSide = 'drug_seeds'">药物种子</button>
+                  @click="rwrSide = 'drug_seeds'">{{ t('web.analysis.rwr_side_drug') }}</button>
         </div>
         <template v-if="rwrRes">
-          <p v-if="rwrRes.error === 'not_built'" class="stale">背景互作组未构建。</p>
-          <p v-else-if="rwrRes.error" class="stale">RWR 失败:{{ rwrRes.error }}</p>
+          <p v-if="rwrRes.error === 'not_built'" class="stale">{{ t('web.analysis.rwr_not_built') }}</p>
+          <p v-else-if="rwrRes.error" class="stale">{{ t('web.analysis.rwr_fail', { err: rwrRes.error }) }}</p>
           <template v-else-if="rwrRes.ok">
             <p class="hint-line">
-              迭代 {{ rwrRes.n_iter }} 次,{{ rwrRes.converged ? '已收敛' : '未收敛' }} ·
-              种子入网 {{ rwrRes.coverage?.seed_in_lcc ?? 0 }}/{{ rwrRes.coverage?.seed_total ?? 0 }}
-              {{ rwrRes.cached ? '· 缓存命中' : '' }}
+              {{ t('web.analysis.rwr_meta', { n: rwrRes.n_iter,
+                                              conv: rwrRes.converged ? t('web.analysis.converged') : t('web.analysis.not_converged'),
+                                              in: rwrRes.coverage?.seed_in_lcc ?? 0, total: rwrRes.coverage?.seed_total ?? 0 }) }}
+              {{ rwrRes.cached ? t('web.analysis.cached_hit') : '' }}
             </p>
             <p v-if="rwrRes.enrichment?.z != null" class="hint-line"
                :class="{ good: rwrRes.enrichment.p != null && rwrRes.enrichment.p < 0.05 }">
-              度匹配校正:标注集 {{ rwrRes.enrichment.n_annotated }} 个,
-              Z = {{ fmt(rwrRes.enrichment.z) }},
-              p = {{ fmt(rwrRes.enrichment.p, 4) }}
-              {{ rwrRes.enrichment.p != null && rwrRes.enrichment.p < 0.05 ? '(显著富集)' : '(不显著)' }}
+              {{ t('web.analysis.rwr_enrich', {
+                n: rwrRes.enrichment.n_annotated, z: fmt(rwrRes.enrichment.z),
+                p: fmt(rwrRes.enrichment.p, 4),
+                sig: rwrRes.enrichment.p != null && rwrRes.enrichment.p < 0.05
+                  ? t('web.analysis.sig_yes') : t('web.analysis.sig_no') }) }}
             </p>
             <div v-if="rwrNonSeed.length" class="tbl-wrap">
               <table class="tbl">
-                <thead><tr><th>gene</th><th>score</th><th v-if="'annotated' in rwrNonSeed[0]">标注集</th></tr></thead>
+                <thead><tr><th>gene</th><th>score</th><th v-if="'annotated' in rwrNonSeed[0]">{{ t('web.analysis.th_annot') }}</th></tr></thead>
                 <tbody>
                   <tr v-for="r in rwrNonSeed" :key="String(r.gene)">
                     <td>{{ r.gene }}</td><td>{{ fmt(r.score, 6) }}</td>
@@ -450,9 +459,9 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
                 </tbody>
               </table>
             </div>
-            <p v-else class="hint-line">无排序结果。</p>
+            <p v-else class="hint-line">{{ t('web.analysis.rwr_empty') }}</p>
             <details v-if="rwrSeeds.length" class="fold">
-              <summary class="hint-line">种子基因({{ rwrSeeds.length }})</summary>
+              <summary class="hint-line">{{ t('web.analysis.seeds_fold', { n: rwrSeeds.length }) }}</summary>
               <div class="tbl-wrap">
                 <table class="tbl">
                   <thead><tr><th>gene</th><th>score</th></tr></thead>
@@ -467,19 +476,19 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
 
     <!-- 富集 -->
     <section class="sec">
-      <h3 class="sec-title">功能富集</h3>
+      <h3 class="sec-title">{{ t('web.analysis.sec_enrich') }}</h3>
       <p v-if="ppi.enrichment.reason === 'both_sources_down' || ppi.enrichment.reason === 'gprofiler_down_no_fallback'"
          class="stale">
-        富集双源均不可用,结果不可信 —— 稍后自动重试或手动重跑主分析。
+        {{ t('web.analysis.enrich_down') }}
       </p>
-      <p v-else-if="!ppi.enrichment.rows.length" class="hint-line">无显著富集项。</p>
+      <p v-else-if="!ppi.enrichment.rows.length" class="hint-line">{{ t('web.analysis.enrich_empty') }}</p>
       <template v-else>
         <p class="hint-line">
-          数据源 {{ ppi.enrichment.source }} · {{ ppi.enrichment.rows.length }} 项显著通路
+          {{ t('web.analysis.enrich_meta', { src: ppi.enrichment.source, n: ppi.enrichment.rows.length }) }}
         </p>
         <div class="tbl-wrap">
           <table class="tbl">
-            <thead><tr><th>来源</th><th>term_id</th><th>term_name</th><th>adj_p</th><th>交集</th><th>查询集</th></tr></thead>
+            <thead><tr><th>{{ t('web.analysis.th_source') }}</th><th>{{ t('web.analysis.th_term_id') }}</th><th>{{ t('web.analysis.th_term_name') }}</th><th>{{ t('web.analysis.th_adj_p') }}</th><th>{{ t('web.analysis.th_intersection') }}</th><th>{{ t('web.analysis.th_query') }}</th></tr></thead>
             <tbody>
               <tr v-for="(r, i) in ppi.enrichment.rows" :key="i">
                 <td>{{ r.source }}</td><td>{{ r.term_id }}</td><td>{{ r.term_name }}</td>
@@ -489,15 +498,15 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
           </table>
         </div>
         <template v-if="art('enrichment_bar_png')">
-          <p class="hint-line">显著通路柱状图(Top 15):</p>
+          <p class="hint-line">{{ t('web.analysis.enrich_bar_hint') }}</p>
           <img class="fig-img" :src="artifactsUrl(art('enrichment_bar_png') ?? '')" alt="enrichment bar" />
         </template>
         <template v-if="art('enrichment_dot_png')">
-          <p class="hint-line">气泡图:</p>
+          <p class="hint-line">{{ t('web.analysis.enrich_dot_hint') }}</p>
           <img class="fig-img" :src="artifactsUrl(art('enrichment_dot_png') ?? '')" alt="enrichment dot" />
         </template>
         <template v-if="art('dtp_png')">
-          <p class="hint-line">药物-靶点-通路网络图(KEGG):</p>
+          <p class="hint-line">{{ t('web.analysis.dtp_hint') }}</p>
           <img class="fig-img" :src="artifactsUrl(art('dtp_png') ?? '')" alt="drug target pathway" />
         </template>
       </template>
@@ -506,22 +515,22 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
     <!-- GSEA -->
     <section v-if="ppi.params[0] === 'names'" class="sec">
       <details class="fold">
-        <summary class="sec-title fold-title">GSEA 排序富集</summary>
+        <summary class="sec-title fold-title">{{ t('web.analysis.sec_gsea') }}</summary>
         <div class="lv-group">
-          <button class="lv" :class="{ on: gseaSide === 'drug' }" @click="gseaSide = 'drug'">药物侧</button>
+          <button class="lv" :class="{ on: gseaSide === 'drug' }" @click="gseaSide = 'drug'">{{ t('web.analysis.gsea_side_drug') }}</button>
           <i class="lv-sep">/</i>
-          <button class="lv" :class="{ on: gseaSide === 'disease' }" @click="gseaSide = 'disease'">疾病侧</button>
+          <button class="lv" :class="{ on: gseaSide === 'disease' }" @click="gseaSide = 'disease'">{{ t('web.analysis.gsea_side_disease') }}</button>
         </div>
         <button class="bar-btn" :disabled="gseaDone || paramsStale || gseaJob.running.value"
-                @click="gseaSide && gseaJob.run(api.rerunGsea(gseaSide, drug, disease, ppi.prefix), { doneText: 'GSEA 完成' })">
-          {{ gseaJob.running.value ? '重跑中…' : (gseaDone ? '该侧已有结果' : '重跑该侧') }}
+                @click="gseaSide && gseaJob.run(api.rerunGsea(gseaSide, drug, disease, ppi.prefix), { doneText: t('web.analysis.gsea_done_text') })">
+          {{ gseaJob.running.value ? t('web.analysis.rerunning') : (gseaDone ? t('web.analysis.gsea_has_result') : t('web.analysis.gsea_rerun')) }}
         </button>
-        <p v-if="gseaJob.running.value" class="hint-line">{{ gseaJob.text.value || '计算中…' }}</p>
-        <p v-if="gseaJob.error.value" class="notice err">GSEA 失败:{{ gseaJob.error.value }}</p>
+        <p v-if="gseaJob.running.value" class="hint-line">{{ gseaJob.text.value || t('web.analysis.rerunning') }}</p>
+        <p v-if="gseaJob.error.value" class="notice err">{{ t('web.analysis.gsea_done_text') }}:{{ gseaJob.error.value }}</p>
         <template v-if="gseaRes">
-          <p v-if="gseaRes.reason === 'insufficient_input'" class="stale">可用基因数不足,跳过。</p>
-          <p v-else-if="gseaRes.reason === 'request_failed'" class="stale">请求失败 —— 可点击"重跑该侧"重试。</p>
-          <p v-else-if="!gseaRes.rows.length" class="hint-line">无通过 FDR 筛选的通路。</p>
+          <p v-if="gseaRes.reason === 'insufficient_input'" class="stale">{{ t('web.analysis.gsea_insufficient') }}</p>
+          <p v-else-if="gseaRes.reason === 'request_failed'" class="stale">{{ t('web.analysis.gsea_req_failed') }}</p>
+          <p v-else-if="!gseaRes.rows.length" class="hint-line">{{ t('web.analysis.gsea_empty') }}</p>
           <template v-else>
             <div class="tbl-wrap">
               <table class="tbl">
@@ -543,15 +552,15 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
     <!-- 模块 -->
     <section class="sec">
       <details class="fold" open>
-        <summary class="sec-title fold-title">Louvain 模块检测</summary>
+        <summary class="sec-title fold-title">{{ t('web.analysis.sec_modules') }}</summary>
         <button class="bar-btn" :disabled="paramsStale || modsJob.running.value"
-                @click="modsJob.run(api.rerunModules(ppi.directory_rel, ppi.prefix), { doneText: '模块重跑完成' })">
-          {{ modsJob.running.value ? '重跑中…' : '重新运行模块检测与富集' }}
+                @click="modsJob.run(api.rerunModules(ppi.directory_rel, ppi.prefix), { doneText: t('web.analysis.modules_done_text') })">
+          {{ modsJob.running.value ? t('web.analysis.rerunning') : t('web.analysis.modules_rerun') }}
         </button>
-        <p v-if="modsJob.running.value" class="hint-line">{{ modsJob.text.value || '计算中…' }}</p>
-        <p v-if="modsJob.error.value" class="notice err">模块重跑失败:{{ modsJob.error.value }}</p>
+        <p v-if="modsJob.running.value" class="hint-line">{{ modsJob.text.value || t('web.analysis.rerunning') }}</p>
+        <p v-if="modsJob.error.value" class="notice err">{{ t('web.analysis.modules_done_text') }}:{{ modsJob.error.value }}</p>
         <p v-if="ppi.modules && !ppi.modules.summary.length" class="hint-line">
-          无规模达标的功能模块(网络太小或全孤立)。
+          {{ t('web.analysis.modules_empty') }}
         </p>
         <div v-if="ppi.modules?.summary.length" class="tbl-wrap">
           <table class="tbl">
@@ -564,10 +573,10 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
           </table>
         </div>
         <p v-if="ppi.modules?.no_sig?.length" class="hint-line">
-          无显著通路的模块:{{ ppi.modules.no_sig.join(', ') }}
+          {{ t('web.analysis.modules_no_sig', { names: ppi.modules.no_sig.join(', ') }) }}
         </p>
         <p v-if="ppi.modules?.failures?.length" class="stale">
-          富集失败模块:{{ ppi.modules.failures.length }} 个(详情见日志)。
+          {{ t('web.analysis.modules_failures', { n: ppi.modules.failures.length }) }}
         </p>
       </details>
     </section>
@@ -575,15 +584,15 @@ onBeforeUnmount(() => window.clearTimeout(noticeTimer))
     <!-- 下载区 -->
     <section class="sec">
       <details class="fold">
-        <summary class="sec-title fold-title">下载产物(共 {{ downloadItems.length }} 项 + 整包)</summary>
-        <button class="bar-btn" @click="zipWholeDirectory">整包下载 ({{ dirName }}.zip)</button>
+        <summary class="sec-title fold-title">{{ t('web.analysis.dl_title', { n: downloadItems.length }) }}</summary>
+        <button class="bar-btn" @click="zipWholeDirectory">{{ t('web.analysis.dl_whole', { name: `${dirName}.zip` }) }}</button>
         <ul class="dl-list">
           <li v-for="d in downloadItems" :key="d.rel" class="dl-row">
             <span class="dl-name">{{ d.rel }}</span>
-            <a class="mini" :href="artifactsUrl(d.rel, true)">下载</a>
+            <a class="mini" :href="artifactsUrl(d.rel, true)">{{ t('web.common.download') }}</a>
           </li>
         </ul>
-        <p class="hint-line">全部产物位于 {{ ppi.directory_rel }},也可在数据管理页整目录下载。</p>
+        <p class="hint-line">{{ t('web.analysis.dl_hint', { dir: ppi.directory_rel }) }}</p>
       </details>
     </section>
   </div>

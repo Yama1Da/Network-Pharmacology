@@ -4,9 +4,11 @@
  * 密钥与路径走 core.management.save_api_env(白名单+消毒+set_key+运行时回填);
  * 其余齿轮参数(抓取规模/置信度等)暂留 Streamlit 齿轮,换届逐步开放。 */
 import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import Stepper from '../components/Stepper.vue'
 
+const { t } = useI18n()
 const keys = ref({ disgenet: false, ncbi: false })
 const dgKey = ref('')
 const ncbiKey = ref('')
@@ -38,7 +40,7 @@ async function load(): Promise<void> {
   pocketCutoff.value = s.pocket_cutoff
 }
 
-onMounted(() => void load().catch(() => flash('设置读取失败')))
+onMounted(() => void load().catch(() => flash(t('web.settings.read_fail'))))
 
 async function saveKeys(): Promise<void> {
   const changes: Record<string, string> = {}
@@ -47,12 +49,12 @@ async function saveKeys(): Promise<void> {
   if (!Object.keys(changes).length) return
   try {
     const applied = (await api.saveApiEnv(changes)).applied
-    flash(`已写入 API.env:${applied.join(', ')}(即时生效)`)
+    flash(t('web.settings.keys_saved', { names: applied.join(', ') }))
     dgKey.value = ''
     ncbiKey.value = ''
     await load()
   } catch {
-    flash('写入失败')
+    flash(t('web.settings.keys_fail'))
   }
 }
 
@@ -63,10 +65,11 @@ async function savePaths(): Promise<void> {
       OBABEL_DIR: obabelDir.value,
       CLI_RESULTS_DIR: cliResultsDir.value
     })).applied
-    flash(applied.length ? `已生效:${applied.join(', ')}(可执行文件已重探)` : '无变更')
+    flash(applied.length ? t('web.settings.paths_saved', { names: applied.join(', ') })
+                         : t('web.settings.paths_none'))
     await load()
   } catch {
-    flash('保存失败')
+    flash(t('web.settings.save_fail'))
   }
 }
 
@@ -75,10 +78,10 @@ async function applyStringVersion(): Promise<void> {
   if (!target) return
   try {
     const r = await api.setStringVersion(target)
-    flash(r.changed ? `已切换到 ${r.version}(互作组缓存按版本隔离,已清理)` : '版本未变化')
+    flash(r.changed ? t('web.settings.switched', { v: r.version }) : t('web.settings.no_change'))
     stringVersion.value = r.version
   } catch (e) {
-    flash(e instanceof Error ? e.message : '切换失败')
+    flash(e instanceof Error ? e.message : t('web.settings.switch_fail'))
   }
 }
 
@@ -86,9 +89,9 @@ async function savePocket(): Promise<void> {
   try {
     const r = await api.saveUiSettings({ POCKET_CUTOFF: pocketCutoff.value })
     pocketCutoff.value = r.pocket_cutoff
-    flash('口袋判定阈值已保存并即时生效')
+    flash(t('web.settings.pocket_saved'))
   } catch {
-    flash('保存失败')
+    flash(t('web.settings.save_fail'))
   }
 }
 
@@ -98,76 +101,76 @@ function chooseVersion(v: string): void {
 </script>
 
 <template>
-  <p class="kicker s1">SETTINGS</p>
-  <h1 class="title s2">设置</h1>
-  <p class="sub s3">密钥与路径写入 API.env&nbsp;·&nbsp;改动即时生效</p>
+  <p class="kicker s1">{{ t('web.settings.kicker') }}</p>
+  <h1 class="title s2">{{ t('web.settings.title') }}</h1>
+  <p class="sub s3">{{ t('web.settings.sub') }}</p>
 
   <div class="panel s4">
     <!-- API 密钥(write-only) -->
     <section class="sec">
-      <h3 class="sec-title">API 密钥</h3>
-      <p class="hint-line">不回显当前值;输入新值即覆盖,留空 = 不修改。</p>
+      <h3 class="sec-title">{{ t('web.settings.sec_keys') }}</h3>
+      <p class="hint-line">{{ t('web.settings.keys_hint') }}</p>
       <div class="set-row">
         <label class="set-label">DisGeNET API Key</label>
         <div class="field"><input v-model="dgKey" type="password" placeholder="********"
                                   spellcheck="false" /><i class="line"></i></div>
-        <span class="state" :class="{ on: keys.disgenet }">{{ keys.disgenet ? '已配置' : '未配置' }}</span>
+        <span class="state" :class="{ on: keys.disgenet }">{{ keys.disgenet ? t('web.settings.configured') : t('web.settings.not_configured') }}</span>
       </div>
       <div class="set-row">
         <label class="set-label">NCBI API Key</label>
         <div class="field"><input v-model="ncbiKey" type="password" placeholder="********"
                                   spellcheck="false" /><i class="line"></i></div>
-        <span class="state" :class="{ on: keys.ncbi }">{{ keys.ncbi ? '已配置' : '未配置' }}</span>
+        <span class="state" :class="{ on: keys.ncbi }">{{ keys.ncbi ? t('web.settings.configured') : t('web.settings.not_configured') }}</span>
       </div>
-      <button class="bar-btn" :disabled="!dgKey.trim() && !ncbiKey.trim()" @click="saveKeys">保存密钥</button>
+      <button class="bar-btn" :disabled="!dgKey.trim() && !ncbiKey.trim()" @click="saveKeys">{{ t('web.settings.save_keys') }}</button>
     </section>
 
     <!-- 工具路径(明文) -->
     <section class="sec">
-      <h3 class="sec-title">本机工具路径</h3>
-      <p class="hint-line">路径非密钥,可明文查看;留空 = 不修改(回退自动探测请手动编辑 API.env 后重启)。</p>
+      <h3 class="sec-title">{{ t('web.settings.sec_paths') }}</h3>
+      <p class="hint-line">{{ t('web.settings.paths_hint') }}</p>
       <div class="set-row">
-        <label class="set-label">Vina 目录</label>
+        <label class="set-label">{{ t('web.settings.vina_label') }}</label>
         <div class="field wide"><input v-model="vinaDir" spellcheck="false" /><i class="line"></i></div>
       </div>
       <div class="set-row">
-        <label class="set-label">Open Babel 目录</label>
+        <label class="set-label">{{ t('web.settings.obabel_label') }}</label>
         <div class="field wide"><input v-model="obabelDir" spellcheck="false" /><i class="line"></i></div>
       </div>
       <div class="set-row">
-        <label class="set-label">CLI 结果目录</label>
+        <label class="set-label">{{ t('web.settings.cli_label') }}</label>
         <div class="field wide"><input v-model="cliResultsDir" spellcheck="false" /><i class="line"></i></div>
       </div>
-      <button class="bar-btn" @click="savePaths">保存路径</button>
+      <button class="bar-btn" @click="savePaths">{{ t('web.settings.save_paths') }}</button>
     </section>
 
     <!-- STRING 版本 -->
     <section class="sec">
-      <h3 class="sec-title">STRING 数据版本(当前 {{ stringVersion }})</h3>
-      <p class="hint-line">查询 API 与背景互作组按版本同源派生;切换前自动探测下载站可用性。</p>
+      <h3 class="sec-title">{{ t('web.settings.sec_string', { v: stringVersion }) }}</h3>
+      <p class="hint-line">{{ t('web.settings.string_hint') }}</p>
       <div class="ver-row">
         <button v-for="v in knownVersions" :key="v" class="lv" :class="{ on: stringVersion === v }"
                 @click="chooseVersion(v)">{{ v }}</button>
-        <button class="lv" :class="{ on: customMode }" @click="customMode = !customMode">自定义…</button>
+        <button class="lv" :class="{ on: customMode }" @click="customMode = !customMode">{{ t('web.settings.custom_btn') }}</button>
       </div>
       <div v-if="customMode" class="set-row">
-        <label class="set-label">版本号</label>
+        <label class="set-label">{{ t('web.settings.version_label') }}</label>
         <div class="field"><input v-model="customVersion" placeholder="v13.0" spellcheck="false" /><i class="line"></i></div>
-        <button class="bar-btn" :disabled="!customVersion.trim()" @click="applyStringVersion">切换到该版本</button>
+        <button class="bar-btn" :disabled="!customVersion.trim()" @click="applyStringVersion">{{ t('web.settings.switch_custom') }}</button>
       </div>
       <div v-else-if="stringVersion && !knownVersions.includes(stringVersion)" class="ver-row">
-        <span class="hint-line">当前版本 {{ stringVersion }} 不在已知清单:重新选择上面某版即可切换回去。</span>
+        <span class="hint-line">{{ t('web.settings.unknown_version', { v: stringVersion }) }}</span>
       </div>
-      <button v-else class="bar-btn" :disabled="true">当前版本 · 切换请选择上方其他版本</button>
+      <button v-else class="bar-btn" :disabled="true">{{ t('web.settings.current_btn') }}</button>
     </section>
 
     <!-- 口袋阈值 -->
     <section class="sec">
-      <h3 class="sec-title">分子对接</h3>
+      <h3 class="sec-title">{{ t('web.settings.sec_docking') }}</h3>
       <div class="set-row">
-        <label class="set-label">口袋判定阈值(Å)</label>
+        <label class="set-label">{{ t('web.settings.pocket_label') }}</label>
         <Stepper v-model="pocketCutoff" :min="3" :max="6" :step="0.5" />
-        <button class="bar-btn" @click="savePocket">保存</button>
+        <button class="bar-btn" @click="savePocket">{{ t('web.settings.save') }}</button>
       </div>
     </section>
 

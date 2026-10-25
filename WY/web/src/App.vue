@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** 应用骨架:顶栏导航 / 入场幕布 / 呼吸细环 / 页脚(家族设计语言,样式见 styles/screen.css)
  * + hash 路由。过渡期 Streamlit(8501)仍是主入口,这里承载逐页迁入的 TS 页面。 */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { setLang } from './i18n'
 import CollectionView from './views/CollectionView.vue'
@@ -37,6 +37,11 @@ const lang = computed(() => (locale.value === 'zh' ? 'EN' : '中文'))
 function toggleLang(): void {
   setLang(locale.value === 'zh' ? 'en' : 'zh')
 }
+
+/* <html lang> 跟随语言,便于屏幕阅读器与字体渲染 */
+watchEffect(() => {
+  document.documentElement.lang = locale.value === 'zh' ? 'zh-CN' : 'en'
+})
 
 const route = ref(location.hash.replace(/^#\/?/, '') || 'home')
 const introVisible = ref(true)
@@ -90,13 +95,13 @@ onBeforeUnmount(() => {
       <LogsView v-else-if="route === 'logs'" />
       <SourcesView v-else-if="route === 'drug-sources'" kind="drug" />
       <SourcesView v-else-if="route === 'disease-sources'" kind="disease" />
-      <CollectionView v-else-if="route === 'ppi'" kind="ppi" kicker="PPI NETWORK FILES"
-                      title="PPI 文件" sub="STRING 互作缓存 · 可打包可删除" />
+      <CollectionView v-else-if="route === 'ppi'" kind="ppi" :kicker="t('web.collection.ppi_kicker')"
+                      :title="t('web.collection.ppi_title')" :sub="t('web.collection.ppi_sub')" />
       <CollectionView v-else-if="route === 'enrichment'" kind="enrichment"
-                      kicker="ENRICHMENT CACHE" title="富集文件"
-                      sub="g:Profiler · Enrichr · GSEA 缓存" />
-      <CollectionView v-else-if="route === 'stars'" kind="stars" kicker="STARRED RESULTS"
-                      title="收藏的对接结果" sub="分子对接收藏 · 目录整体打包" />
+                      :kicker="t('web.collection.enr_kicker')" :title="t('web.collection.enr_title')"
+                      :sub="t('web.collection.enr_sub')" />
+      <CollectionView v-else-if="route === 'stars'" kind="stars" :kicker="t('web.collection.stars_kicker')"
+                      :title="t('web.collection.stars_title')" :sub="t('web.collection.stars_sub')" />
       <DataView v-else-if="route === 'data'" />
       <MlView v-else-if="route === 'ml'" />
       <MlResultsView v-else-if="route === 'ml-results'" />
@@ -104,7 +109,7 @@ onBeforeUnmount(() => {
     </main>
 
     <footer class="foot">
-      <span>© 2026 NPAP · 仅供科研使用</span>
+      <span>{{ t('web.app.foot') }}</span>
     </footer>
   </div>
 </template>

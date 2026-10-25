@@ -3,10 +3,12 @@
  * 箭头点击 → /api/targets/retrieve job(四库并发检索,写入来源与 merged 缓存),
  * 完成后展示两侧靶点数并可预填跳转分析页。 */
 import { onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import { setPrefill } from '../store'
 import { useJob } from '../composables/useJob'
 
+const { t } = useI18n()
 const drug = ref('metformin')
 const disease = ref('Type 2 diabetes mellitus')
 
@@ -34,7 +36,7 @@ function retrieve(): void {
   }
   done.value = null
   void job.run(api.retrieveTargets(drug.value.trim(), disease.value.trim()),
-    { doneText: '四库检索完成' })
+    { doneText: t('web.home.retrieve_done') })
 }
 
 function goAnalysis(): void {
@@ -75,21 +77,22 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 </script>
 
 <template>
-  <p class="kicker s1">NETWORK&nbsp;PHARMACOLOGY</p>
-  <h1 class="title s2">网络药理学分析平台</h1>
-  <p class="sub s3">成分&nbsp;—&nbsp;靶点&nbsp;—&nbsp;通路&nbsp;—&nbsp;验证</p>
+  <p class="kicker s1">{{ t('web.home.kicker') }}</p>
+  <h1 class="title s2">{{ t('web.home.title') }}</h1>
+  <p class="sub s3">{{ t('web.home.sub') }}</p>
 
   <div class="home-form s4">
     <label class="field">
-      <input v-model="drug" spellcheck="false" placeholder="药物成分" />
+      <input v-model="drug" spellcheck="false" :placeholder="t('web.common.ph_drug')" />
       <i class="line"></i>
     </label>
     <span class="cross">×</span>
     <label class="field">
-      <input v-model="disease" spellcheck="false" placeholder="疾病表型" />
+      <input v-model="disease" spellcheck="false" :placeholder="t('web.common.ph_disease')" />
       <i class="line"></i>
     </label>
-    <button class="go" :disabled="job.running.value" title="四库检索" aria-label="四库检索"
+    <button class="go" :disabled="job.running.value" :title="t('web.home.retrieve_title')"
+            :aria-label="t('web.home.retrieve_title')"
             @click="retrieve">
       <svg v-if="!job.running.value" viewBox="0 0 24 14" width="22" height="13">
         <path d="M1 7h20M15.5 1.5 21.5 7l-6 5.5" fill="none" stroke="currentColor"
@@ -106,43 +109,44 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
           <div class="progress-fill"
                :style="{ width: `${((job.fraction.value ?? 0) * 100).toFixed(0)}%` }"></div>
         </div>
-        <p class="progress-text">{{ job.text.value || '四库检索中…' }}</p>
+        <p class="progress-text">{{ job.text.value || t('web.home.retrieving') }}</p>
       </div>
     </div>
   </Transition>
 
   <p v-if="job.error.value" class="retrieve failed-msg">
-    检索失败:{{ job.error.value }} —— 若刚更新过程序,请重启 npap serve 并强制刷新(Ctrl+F5)后重试。
+    {{ t('web.home.retrieve_failed', { msg: job.error.value }) }}
   </p>
 
   <Transition name="note">
     <div v-if="done" class="retrieve done">
       <p class="done-line">
-        药物 <b>{{ done.drug }}</b> 靶点 · 疾病 <b>{{ done.disease }}</b> 靶点 ·
-        交集 <b>{{ done.common_count }}</b>
-        <span v-if="done.failed.length" class="failed">(失败来源:{{ done.failed.join(', ') }})</span>
+        {{ t('web.home.done_drug') }} <b>{{ done.drug }}</b> ·
+        {{ t('web.home.done_disease') }} <b>{{ done.disease }}</b> ·
+        {{ t('web.home.done_common') }} <b>{{ done.common_count }}</b>
+        <span v-if="done.failed.length" class="failed">{{ t('web.home.failed_sources', { names: done.failed.join(', ') }) }}</span>
       </p>
       <img v-if="job.jobId.value" class="venn" :src="`/api/targets/venn?job_id=${job.jobId.value}`"
-           alt="药物-疾病靶点 Venn 图" />
+           :alt="t('web.home.venn_alt')" />
       <p v-if="done.common_genes.length" class="hint-line">
-        交集靶点:{{ done.common_genes.slice(0, 24).join(', ') }}
-        {{ done.common_genes.length > 24 ? `等 ${done.common_genes.length} 个` : '' }}
+        {{ t('web.home.common_hint', { list: done.common_genes.slice(0, 24).join(', ') }) }}
+        {{ done.common_genes.length > 24 ? t('web.home.common_more', { n: done.common_genes.length }) : '' }}
       </p>
-      <button class="go enter" title="进入分析" @click="goAnalysis">
+      <button class="go enter" :title="t('web.home.enter_title')" @click="goAnalysis">
         <svg viewBox="0 0 24 14" width="22" height="13">
           <path d="M1 7h20M15.5 1.5 21.5 7l-6 5.5" fill="none" stroke="currentColor"
                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </button>
-      <p class="hint-line">来源与整合缓存已就绪,分析页将直接命中。</p>
+      <p class="hint-line">{{ t('web.home.ready_hint') }}</p>
     </div>
   </Transition>
 
   <div class="foot-stats s5">
-    <span><b>{{ fmt(stats[0].v.value) }}</b> 数据库 ·
-      <b>{{ fmt(stats[1].v.value) }}</b> 化合物 ·
-      <b>{{ fmt(stats[2].v.value) }}</b> 靶点 ·
-      <b>{{ fmt(stats[3].v.value) }}</b> 通路</span>
+    <span><b>{{ fmt(stats[0].v.value) }}</b> {{ t('web.home.stat_dbs') }} ·
+      <b>{{ fmt(stats[1].v.value) }}</b> {{ t('web.home.stat_compounds') }} ·
+      <b>{{ fmt(stats[2].v.value) }}</b> {{ t('web.home.stat_targets') }} ·
+      <b>{{ fmt(stats[3].v.value) }}</b> {{ t('web.home.stat_pathways') }}</span>
   </div>
 </template>
 

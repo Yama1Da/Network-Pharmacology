@@ -1,9 +1,12 @@
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { api, type JobState } from '../api'
 
 /** 长任务的提交-轮询:run() 提交后每 0.6s 轮询一次。
- * fraction/text 为总进度;extra 携带后端附加字段(如 PPI 分析的 step/state 阶段状态)。 */
+ * fraction/text 为总进度;extra 携带后端附加字段(如 PPI 分析的 step/state 阶段状态)。
+ * 默认完成/失败文案走 i18n(在 setup 上下文中调用)。 */
 export function useJob(onDone?: (result: Record<string, unknown>) => void) {
+  const { t } = useI18n()
   const jobId = ref('')
   const running = ref(false)
   const fraction = ref<number | null>(null)
@@ -29,20 +32,20 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
         extra.value = { ...state.progress }
         if (state.status === 'done') {
           result.value = state.result
-          text.value = opts.doneText ?? '完成'
+          text.value = opts.doneText ?? t('web.job.done')
           onDone?.(state.result ?? {})
           break
         }
         if (state.status === 'error') {
-          error.value = state.error ?? '未知错误'
-          text.value = opts.failText ?? '失败'
+          error.value = state.error ?? t('web.job.fail')
+          text.value = opts.failText ?? t('web.job.fail')
           break
         }
         await new Promise((r) => setTimeout(r, 600))
       }
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)
-      text.value = opts.failText ?? '失败'
+      text.value = opts.failText ?? t('web.job.fail')
     } finally {
       running.value = false
     }
