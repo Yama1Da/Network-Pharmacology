@@ -191,7 +191,7 @@ onBeforeUnmount(() => {
           <span class="fname" :title="it.name">
             {{ it.display ?? it.name }}<i v-if="it.display" class="raw">{{ it.name }}</i>
           </span>
-          <span class="fmeta">{{ fmtSize(it.size) }} · {{ it.modified }}</span>
+          <span class="fmeta">{{ it.size != null ? `${fmtSize(it.size)} · ` : '' }}{{ it.modified }}</span>
           <button class="mini" :title="t('web.common.download')" @click="download([it.name], it.name)">⬇</button>
         </div>
       </li>

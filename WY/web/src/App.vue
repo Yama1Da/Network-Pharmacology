@@ -3,7 +3,9 @@
  * + hash 路由(未知 hash 走兜底页,不再空白)。 */
 import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { api } from './api'
 import { setLang } from './i18n'
+import { applyScale, persistScale, storedScale } from './utils/fontScale'
 import CollectionView from './views/CollectionView.vue'
 import AnalysisView from './views/AnalysisView.vue'
 import DataView from './views/DataView.vue'
@@ -93,6 +95,11 @@ onMounted(() => {
     introVisible.value = false
     ready.value = true
   }, 1750)
+  /* 界面缩放:localStorage 即时恢复,再以后端设置快照为准校准(另一浏览器保存过的值) */
+  applyScale(storedScale())
+  void api.settings()
+    .then((s) => { persistScale(s.ui_font_scale); applyScale(s.ui_font_scale) })
+    .catch(() => { /* 读取失败维持本地镜像值 */ })
 })
 onBeforeUnmount(() => {
   window.removeEventListener('hashchange', onHash)
