@@ -51,6 +51,15 @@ if errorlevel 1 goto pip_failed
 if errorlevel 1 goto pip_failed
 
 :run
+rem Pre-check: a server (or anything else) already on port 8000 would make the
+rem start crash with a traceback. Catch it with a readable hint instead.
+netstat -ano | findstr ":8000.*LISTENING" >nul
+if not errorlevel 1 (
+    echo [NPAP] Port 8000 is already in use - the server may already be running.
+    echo [NPAP] Open http://127.0.0.1:8000 first, or run stop_npap.bat to restart it.
+    pause
+    exit /b 1
+)
 echo [NPAP] Starting web server (http://127.0.0.1:8000 , Ctrl+C to stop)...
 .venv\Scripts\npap.exe serve
 rem Server exited (port occupied / crash / Ctrl+C): keep the window open so

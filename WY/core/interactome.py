@@ -110,14 +110,14 @@ def _probe_range_support(url: str) -> int:
 
 def string_version_exists(version: str) -> bool:
     """轻量探测下载站是否已提供该版本的数据文件(protein.info 小文件,流式即开即关)。
-    200/206 即认为版本存在(不要求 Range 支持);镜像与官方站任一可用即可。
+    200/206 即认为版本存在(不要求 Range 支持);任一下载源可用即可。
     供设置面板在保存版本切换前拦截拼错/尚未发布的版本号。"""
     import requests
 
     from WY import config
 
     rel = f"/protein.info.{version}/{_taxon('Human')}.protein.info.{version}.txt.gz"
-    for base in (config.STRING_DOWNLOAD_MIRROR_BASE, config.STRING_DOWNLOAD_BASE):
+    for base in config.INTERACTOME_DOWNLOAD_SOURCES:
         try:
             with requests.get(base.rstrip("/") + rel, stream=True,
                               timeout=config.API_TIMEOUT) as resp:
@@ -306,9 +306,7 @@ def _download_gz(url_path: str, dest: str,
             progress_cb(progress_label, hi, "cached")
         return dest
 
-    bases = [getattr(config, "STRING_DOWNLOAD_MIRROR_BASE", None),
-             config.STRING_DOWNLOAD_BASE]
-    bases = [b.rstrip("/") for b in bases if b]
+    bases = [b.rstrip("/") for b in config.INTERACTOME_DOWNLOAD_SOURCES]
     warned_fallback = False  # 提醒每次下载只发一次,两个源都回退时不重复打扰
     last_err: Exception | None = None
     for base in bases:
@@ -515,8 +513,7 @@ def build_interactome(species: str = "Human",
         "n_nodes": int(len(degree_df)),
         "n_edges": int(len(edges)),
         "built_at": datetime.now().isoformat(timespec="seconds"),
-        "source_urls": [config.STRING_DOWNLOAD_MIRROR_BASE + links_rel,
-                        config.STRING_DOWNLOAD_BASE + links_rel],
+        "source_urls": [b + links_rel for b in config.INTERACTOME_DOWNLOAD_SOURCES],
         "files": {
             "edges": os.path.basename(edges_path),
             "degrees": os.path.basename(deg_path),

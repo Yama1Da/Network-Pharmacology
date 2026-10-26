@@ -304,8 +304,13 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   }
 }
 .retrieve {
-  width: min(560px, 90vw);
+  /* 封顶用 % 不用 vw:vw 不随界面缩放(CSS zoom)收缩,放大后会出现横向滚动条 */
+  width: min(560px, 90%);
   margin-top: 34px;
+}
+/* 完成态装得下三页签靶点表,容器独立加宽;.tl 直接 100% 不再反向 breakout */
+.retrieve.done {
+  width: min(880px, 90%);
 }
 .failed-msg {
   margin-left: auto;
@@ -343,11 +348,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   border: 1px solid #f0f0ee;
 }
 .tl {
-  /* 列表比 560px 的检索结果区加宽:交集表 9 列在窄容器会被横向截断 */
-  width: min(880px, 92vw);
-  position: relative;
-  left: 50%;
-  transform: translateX(-50%);
+  width: 100%;
   margin-top: 20px;
 }
 .tl-tabs {

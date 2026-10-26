@@ -378,6 +378,7 @@ export const api = {
     louvain_resolution: number
     ppi_confidence: number
     pocket_cutoff: number
+    ui_font_scale: number
   }> => fetch('/api/settings').then((r) => json(r)),
 
   saveApiEnv: (changes: Record<string, string>): Promise<{ applied: string[] }> =>
@@ -406,6 +407,7 @@ export const api = {
       louvain_resolution: number
       ppi_confidence: number
       pocket_cutoff: number
+      ui_font_scale: number
     }
     changed: string[]
     purged_merged: number

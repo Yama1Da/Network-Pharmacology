@@ -1158,6 +1158,8 @@
  "web.settings.dgidb_label": "DGIdb 互作分数下限(需 PMID)",
  "web.settings.disgenet_pages": "DisGeNET 抓取页数(1–10,每页 100 基因)",
  "web.settings.enrich_p_label": "富集显著性 p 值",
+ "web.settings.font_hint": "整体等比缩放界面(文字、表格、间距同步放大),保存后即时生效并长期保留。",
+ "web.settings.font_title": "字体大小",
  "web.settings.keys_fail": "写入失败",
  "web.settings.keys_hint": "不回显当前值;输入新值即覆盖,留空 = 不修改。",
  "web.settings.keys_saved": "已写入 API.env:{names}(即时生效)",
