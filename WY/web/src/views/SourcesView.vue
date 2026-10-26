@@ -239,14 +239,14 @@ onBeforeUnmount(() => {
   margin: 12px 0 0;
   font-size: 11.5px;
   letter-spacing: 0.06em;
-  color: #8a8a88;
+  color: var(--c-ink2);
 }
 .merged-tag {
   font-style: normal;
   font-size: 10px;
   letter-spacing: 0.2em;
-  color: #c2c2c2;
-  border: 1px solid #e6e6e4;
+  color: var(--c-quiet);
+  border: 1px solid var(--c-line);
   padding: 1px 5px;
   margin-right: 8px;
   vertical-align: 1.5px;

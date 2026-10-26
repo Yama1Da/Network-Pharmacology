@@ -218,3 +218,4 @@ python scripts/lit_pcba_benchmark.py   # LIT-PCBA 基准验证脚本
 本项目仅供科研用途，分析结果请以官方数据库与实验验证为准。
 使用数据时请遵循各数据源（STRING、DisGeNET、ChEMBL、DGIdb、Open Targets）的引用要求。
 若本项目有任何问题，请联系项目作者.
+`NPAP` 为本项目自用缩写，与任何第三方机构、项目或商标无关。
