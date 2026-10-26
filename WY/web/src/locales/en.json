@@ -1158,6 +1158,8 @@
  "web.settings.dgidb_label": "DGIdb interaction score floor (PMID required)",
  "web.settings.disgenet_pages": "DisGeNET pages to fetch (1–10, 100 genes per page)",
  "web.settings.enrich_p_label": "Enrichment significance p-value",
+ "web.settings.font_hint": "Scales the whole interface proportionally — text, tables and spacing grow together. Takes effect immediately after saving and persists.",
+ "web.settings.font_title": "Font size",
  "web.settings.keys_fail": "Failed to write",
  "web.settings.keys_hint": "Current values are never shown; a new value overwrites the old one, empty = unchanged.",
  "web.settings.keys_saved": "Written to API.env: {names} (effective immediately)",

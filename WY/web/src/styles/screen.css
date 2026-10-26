@@ -302,7 +302,8 @@
 
 /* ---------- 内容面板 ---------- */
 .panel {
-  width: min(780px, 92vw);
+  /* 宽度封顶用 % 而非 vw:vw 不随 CSS zoom 缩放,界面放大后面板会溢出视口出横向滚动条 */
+  width: min(780px, 92%);
   margin-top: 42px;
 }
 .controls {
@@ -725,7 +726,7 @@
   font-size: 15px;
 }
 .panel.wide {
-  width: min(1280px, 94vw);
+  width: min(1280px, 94%);
 }
 
 /* ---------- 3D 预览框(全局):满宽,iframe 尺寸不小于 py3Dmol 内容,无滚动条 ---------- */

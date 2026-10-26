@@ -259,7 +259,26 @@ def interactome_status() -> dict:
 @app.post("/api/interactome/build")
 def interactome_build() -> dict:
     def task(progress) -> dict:
-        meta_new = build_interactome(progress_cb=progress)
+        # interactome 的回调签名是 (stage, fraction, detail),适配成 job 进度的 (fraction, text);
+        # 直接透传会因参数个数不符每次抛 TypeError,前端全程看不到构建进度
+        stage_text = {
+            "download_links": "下载 STRING links",
+            "download_info": "下载 STRING info",
+            "mirror_skip": "跳过不可用镜像",
+            "fallback": "并发下载未完成,改用单流(约需 10 分钟以上)",
+            "processing": "解析交互组",
+            "writing": "写入缓存",
+        }
+
+        def cb(stage, fraction=None, detail=""):
+            text = stage_text.get(stage, stage)
+            if detail == "cached":
+                text = f"{text}(已有缓存)"
+            elif detail:
+                text = f"{text} · {detail}"
+            progress(fraction=fraction, text=text)
+
+        meta_new = build_interactome(progress_cb=cb)
         cleaned = clean_old_version_caches("Human")
         return {"nodes": meta_new["n_nodes"], "edges": meta_new["n_edges"],
                 "cleaned": cleaned}
@@ -704,6 +723,7 @@ def _settings_snapshot() -> dict:
         "louvain_resolution": config.LOUVAIN_RESOLUTION,
         "ppi_confidence": config.PPI_CONFIDENCE,
         "pocket_cutoff": config.POCKET_CUTOFF,
+        "ui_font_scale": config.UI_FONT_SCALE,
     }
 
 
@@ -750,6 +770,7 @@ _ALLOWED_UI_KEYS = (
     "POCKET_CUTOFF", "PPI_CONFIDENCE", "OT_TOP_N", "DISGENET_PAGES",
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "CHEMBL_CORROBORATION_REQUIRED", "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION",
+    "UI_FONT_SCALE",
 )
 _BLACKLIST_KEY = "CHEMBL_TARGET_BLACKLIST"
 # 数值范围(与前端 Stepper 的 min/max 一致,双保险)
@@ -759,6 +780,7 @@ _UI_RANGES: dict[str, tuple[float, float]] = {
     "CHEMBL_PCHEMBL_THRESHOLD": (0, 1), "DGIDB_MIN_SCORE": (0, 1),
     "OT_MIN_SCORE": (0, 1), "ENRICHMENT_PVALUE": (0.01, 0.2),
     "LOUVAIN_RESOLUTION": (0.5, 2),
+    "UI_FONT_SCALE": (0.8, 1.5),
 }
 # 这些键影响降噪/抓取规模,值变化后旧参数算出的 merged 整合表不再可信 → 自动清缓存
 _PURGE_MERGED_KEYS = {

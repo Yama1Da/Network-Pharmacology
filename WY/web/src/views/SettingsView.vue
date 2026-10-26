@@ -9,6 +9,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useNotice } from '../composables/useNotice'
+import { applyScale, persistScale, snapScale } from '../utils/fontScale'
 
 const { t } = useI18n()
 const { notice, flash } = useNotice(3600)
@@ -32,6 +33,12 @@ const keys = ref({ disgenet: false, ncbi: false })
 const dgKey = ref('')
 const ncbiKey = ref('')
 const cliResultsDir = ref('')
+
+/* 字体大小(界面等比缩放):滑动条 80%–150%、步长 10%,savedScale 用于保存按钮的未修改判定 */
+const FONT_SCALE_STEP = 0.1
+const fontScale = ref(1)
+const savedScale = ref(1)
+const fontScaleDirty = computed(() => fontScale.value !== savedScale.value)
 
 const otTopN = ref(500)
 const disgenetPages = ref(5)
@@ -58,6 +65,8 @@ const obabelDir = ref('')
 function applySnapshot(s: Snapshot): void {
   keys.value = s.keys
   cliResultsDir.value = s.cli_results_dir
+  fontScale.value = snapScale(s.ui_font_scale)
+  savedScale.value = fontScale.value
   otTopN.value = s.ot_top_n
   disgenetPages.value = s.disgenet_pages
   stringVersion.value = s.string_version
@@ -172,15 +181,22 @@ async function saveDocking(): Promise<void> {
 /* ---------------- ④ 通用设置 ---------------- */
 
 async function saveGeneral(): Promise<void> {
-  const changes: Record<string, string> = { CLI_RESULTS_DIR: cliResultsDir.value }
-  if (dgKey.value.trim()) changes.DisGeNET_API_KEY = dgKey.value
-  if (ncbiKey.value.trim()) changes.NCBI_API_KEY = ncbiKey.value
   try {
+    if (fontScaleDirty.value) {
+      // 缩放即时生效 + 本地镜像,再随快照确认后端值(纯显示偏好,不触发缓存清理)
+      const ui = await api.saveUiSettings({ UI_FONT_SCALE: fontScale.value })
+      applySnapshot(ui.snapshot)
+      persistScale(fontScale.value)
+      applyScale(fontScale.value)
+    }
+    const changes: Record<string, string> = { CLI_RESULTS_DIR: cliResultsDir.value }
+    if (dgKey.value.trim()) changes.DisGeNET_API_KEY = dgKey.value
+    if (ncbiKey.value.trim()) changes.NCBI_API_KEY = ncbiKey.value
     const applied = (await api.saveApiEnv(changes)).applied
     dgKey.value = ''
     ncbiKey.value = ''
     flash(applied.length ? t('web.settings.keys_saved', { names: applied.join(', ') })
-                         : t('web.settings.paths_none'))
+                         : t('web.settings.saved'))
     await load()
   } catch {
     flash(t('web.settings.keys_fail'))
@@ -356,7 +372,17 @@ async function saveGeneral(): Promise<void> {
               <div class="field wide"><input v-model="cliResultsDir" spellcheck="false" /><i class="line"></i></div>
             </div>
           </section>
-          <button class="bar-btn" :disabled="!dgKey.trim() && !ncbiKey.trim() && cliResultsDir === ''"
+          <section class="sec">
+            <h3 class="sec-title">{{ t('web.settings.font_title') }}</h3>
+            <p class="hint-line">{{ t('web.settings.font_hint') }}</p>
+            <div class="range-row">
+              <input v-model.number="fontScale" type="range" min="0.8" max="1.5" step="0.1"
+                     :aria-label="t('web.settings.font_title')" />
+              <span class="range-val">{{ Math.round(fontScale * 100) }}%</span>
+            </div>
+          </section>
+          <button class="bar-btn"
+                  :disabled="!dgKey.trim() && !ncbiKey.trim() && cliResultsDir === '' && !fontScaleDirty"
                   @click="saveGeneral">{{ t('web.settings.save') }}</button>
         </template>
       </div>
@@ -541,6 +567,52 @@ button.chip:hover {
   gap: 12px;
   padding: 6px 0;
   flex-wrap: wrap;
+}
+/* 字体大小滑动条:发丝线轨道 + 圆形黑滑钮,右侧等宽百分比读数 */
+.range-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0 2px;
+  max-width: 380px;
+}
+.range-row input[type="range"] {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 2px;
+  background: #e6e6e4;
+  outline: none;
+  cursor: pointer;
+}
+.range-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #1a1a1a;
+  border: none;
+}
+.range-row input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #1a1a1a;
+  border: none;
+}
+.range-row input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: #e6e6e4;
+}
+.range-val {
+  flex: none;
+  min-width: 44px;
+  text-align: right;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  color: #1a1a1a;
+  font-variant-numeric: tabular-nums;
 }
 .sec {
   margin-top: 26px;
