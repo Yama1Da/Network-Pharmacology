@@ -275,3 +275,5 @@ This project is for research purposes only; analysis results should be verified 
 official databases and experimental validation. When using the data, please follow the citation
 requirements of each data source (STRING, DisGeNET, ChEMBL, DGIdb, Open Targets).
 If you have any questions about this project, please contact the project author.
+`NPAP` is this project's own abbreviation and is not affiliated with any third-party organisation,
+project or trademark.

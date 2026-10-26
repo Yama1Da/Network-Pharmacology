@@ -724,6 +724,7 @@ def _settings_snapshot() -> dict:
         "ppi_confidence": config.PPI_CONFIDENCE,
         "pocket_cutoff": config.POCKET_CUTOFF,
         "ui_font_scale": config.UI_FONT_SCALE,
+        "ui_theme": config.UI_THEME,
     }
 
 
@@ -770,7 +771,7 @@ _ALLOWED_UI_KEYS = (
     "POCKET_CUTOFF", "PPI_CONFIDENCE", "OT_TOP_N", "DISGENET_PAGES",
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "CHEMBL_CORROBORATION_REQUIRED", "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION",
-    "UI_FONT_SCALE",
+    "UI_FONT_SCALE", "UI_THEME",
 )
 _BLACKLIST_KEY = "CHEMBL_TARGET_BLACKLIST"
 # 数值范围(与前端 Stepper 的 min/max 一致,双保险)
@@ -804,6 +805,10 @@ def settings_ui_save(changes: dict) -> dict:
             if k in ("CHEMBL_CORROBORATION_REQUIRED",):
                 if not isinstance(v, bool):
                     raise HTTPException(status_code=400, detail=f"{k} must be a boolean")
+            elif k == "UI_THEME":
+                if not (isinstance(v, str) and v.strip().lower() in ("light", "dark")):
+                    raise HTTPException(status_code=400, detail=f"{k} must be 'light' or 'dark'")
+                validated[k] = v.strip().lower()
             else:
                 if isinstance(v, bool) or not isinstance(v, (int, float)):
                     raise HTTPException(status_code=400, detail=f"{k} must be a number")
@@ -855,27 +860,36 @@ _VENN_CACHE: dict[str, dict] = {}   # job_id → {"png": bytes}(任务线程写�
 _VENN_ORDER: list[str] = []
 
 
-def _render_venn_png(drug_set: set, disease_set: set, drug_name: str, disease_name: str) -> bytes:
+def _render_venn_png(drug_set: set, disease_set: set, drug_name: str, disease_name: str,
+                     dark: bool = False) -> bytes:
     """venn2 服务端渲染(与 App.py 主页同款;线程安全:用 Figure API 而非 pyplot 全局状态)。
-    图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。"""
+    图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。
+    dark=True 按界面深色主题(墨黑)渲染:深底浅字,供深色模式下 venn 不再是刺眼白块。"""
     import io
 
     from matplotlib.figure import Figure
     from matplotlib_venn import venn2
 
-    fig = Figure(figsize=(6, 4))
+    bg = "#0e0e0e" if dark else "white"
+    fg = "#eaeae8" if dark else "black"
+    fig = Figure(figsize=(6, 4), facecolor=bg)
     ax = fig.add_subplot()
+    ax.set_facecolor(bg)
     v = venn2(
         subsets=(len(drug_set - disease_set), len(disease_set - drug_set),
                  len(drug_set & disease_set)),
         set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
         ax=ax,
     )
+    if v:
+        for patch in list(v.set_labels) + [v.get_label_by_id(i) for i in ("10", "01", "11")]:
+            if patch is not None:
+                patch.set_color(fg)
     if v and v.get_label_by_id("11"):
         v.get_label_by_id("11").set_fontsize(12)  # 交集区域字号
-    ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
+    ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14, color=fg)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=bg)
     return buf.getvalue()
 
 
@@ -923,6 +937,9 @@ def targets_retrieve(body: RetrieveBody) -> dict:
         if drug_set or disease_set:
             venn_holder["png"] = _render_venn_png(drug_set, disease_set,
                                                   body.drug.strip(), body.disease.strip())
+            # 深色版按需渲染:留存集合与命名,首次请求 theme=dark 时渲染并缓存
+            venn_holder["args"] = (drug_set, disease_set,
+                                   body.drug.strip(), body.disease.strip())
         common = sorted(drug_set & disease_set)
         drug_rows = _target_rows(drug_df)[:1000]
         disease_rows = _target_rows(disease_df)[:1000]
@@ -951,12 +968,15 @@ def targets_retrieve(body: RetrieveBody) -> dict:
 
 
 @app.get("/api/targets/venn")
-def targets_venn(job_id: str) -> Response:
+def targets_venn(job_id: str, theme: str = "light") -> Response:
     holder = _VENN_CACHE.get(job_id)
-    png = (holder or {}).get("png")
-    if not png:
+    if not holder or not holder.get("png"):
         raise HTTPException(status_code=404, detail="no venn for this job")
-    return Response(content=png, media_type="image/png")
+    if theme == "dark":
+        if "png_dark" not in holder:
+            holder["png_dark"] = _render_venn_png(*holder["args"], dark=True)
+        return Response(content=holder["png_dark"], media_type="image/png")
+    return Response(content=holder["png"], media_type="image/png")
 
 
 # ======== 分子对接(阶段 3b:Molecular_Docking 页) ========
