@@ -1,0 +1,42 @@
+# .github/workflows/ci.yml —— CI 流程单
+# 作用:每次 push 或提 PR,GitHub 免费开一台干净云电脑,从零装环境、跑全部测试、
+# 统计覆盖率。全绿打勾,任何一步失败打红叉并通知。口径与本地完全一致。
+name: CI
+
+on:
+  push:
+    branches: [master, brunch]   # 这两个分支的每次推送都触发(按仓库实际分支名)
+  pull_request:                  # 任何指向本仓库的 PR 也触发
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest       # 在最新的 Ubuntu 云电脑上跑
+    env:
+      MPLBACKEND: Agg            # 无界面环境下的画图后端(conftest 也钉一层,双保险)
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13" # 与 pyproject.toml requires-python 钉的版本一致
+          cache: pip             # 缓存依赖,第二次起安装快得多
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r WY/requirements.txt
+          pip install -e .       # 顺带体检 pyproject 打包配置
+          pip install pytest pytest-cov
+
+      - name: 跑测试并统计覆盖率
+        run: pytest --cov --cov-report=term-missing --cov-report=xml
+        # 覆盖率 75% 门槛写入 pyproject 后,此步自动生效(阶段四)
+
+      - name: 保存覆盖率报告
+        if: always()             # 即使测试失败也把报告传出来供排查
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
