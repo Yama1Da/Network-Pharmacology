@@ -11,7 +11,7 @@ import pytest
 
 # ---- 让 from WY import config / from WY.core.* 生效(与业务代码同款绝对导入)----
 # 可编辑安装(pip install -e .)已提供 WY 可见性时不动 sys.path,
-# 与 selfcheck_architecture 的「sys.path 零容忍」约定保持同一立场。
+# 与 tests/test_architecture.py 的「sys.path 零容忍」约定保持同一立场。
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 try:
     import WY  # noqa: F401

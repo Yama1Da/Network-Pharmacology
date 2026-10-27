@@ -235,18 +235,16 @@ Dependencies are strictly one-way: `web (TS+Vue) / api.py → core/ → i18n, co
 reused, and tested without a UI environment; `cli.py` likewise depends only on `core/`
 and `config`, sharing caches and settings with the web UI.
 
-## Development & Self-Checks
+## Development & Tests
 
 ```bash
-cd WY
-python scripts/selfcheck_docking.py    # molecular docking module self-check
-python scripts/selfcheck_network.py    # network algorithms & enrichment module self-check
+pytest tests/                          # full unit-test suite (120 tests, purely local, external requests stubbed)
 python scripts/build_interactome.py    # download the background interactome if unsure it is already fetched
 python scripts/lit_pcba_benchmark.py   # LIT-PCBA docking-benchmark validation script
 ```
 
-The first two self-check scripts run purely locally (all external requests are stubbed) and
-consume no data-source quota. Run them as a regression after changing anything in `core/`.
+The test suite runs purely locally (all external requests are stubbed) and consumes no
+data-source quota. Run it as a regression after changing anything in `core/`.
 For **build_interactome.py**, prefer clicking "One-click background interactome build" on the
 Data Management page, which ensures the background interactome has been downloaded.
 

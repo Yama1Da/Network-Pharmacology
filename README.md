@@ -187,17 +187,15 @@ WY/
 不依赖任何 UI 框架（Streamlit），可在无界面环境下导入、复用与测试；
 `cli.py` 同样只依赖 `core/` 与 `config`，与网页共享缓存与设置。
 
-## 开发与自检
+## 开发与测试
 
 ```bash
-cd WY
-python scripts/selfcheck_docking.py   # 分子对接模块自检
-python scripts/selfcheck_network.py   # 网络算法与富集模块自检
+pytest tests/                          # 全套单元测试(120 条,纯本地,外部请求全部打桩)
 python scripts/build_interactome.py   # 如果不知道背景互作组是否已下载，可运行此脚本下载
 python scripts/lit_pcba_benchmark.py   # LIT-PCBA 基准验证脚本
 ```
 
-前两个自检脚本均为纯本地运行（外部请求全部打桩），不消耗数据源配额；
+测试套件为纯本地运行（外部请求全部打桩），不消耗数据源配额；
 修改 `core/` 后建议跑一遍作为回归。
 **build_interactome.py**脚本建议在数据管理页面点击「一键构建背景互作组」运行，以确保背景互作组已下载。
 

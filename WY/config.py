@@ -4,7 +4,7 @@ import os
 from dotenv import load_dotenv
 
 # 平级零依赖叶子:Vina/OBABEL 工具链探测逻辑(本文件导入时调用取值,详见该模块 docstring)。
-# 以 WY 包绝对导入(可编辑安装提供可见性,见 selfcheck_architecture)。
+# 以 WY 包绝对导入(可编辑安装提供可见性,分层由 tests/test_architecture.py 守护)。
 from WY import env_discovery
 
 # 项目根目录,即 config.py 所在文件夹
@@ -406,7 +406,7 @@ def apply_ui_settings_overrides() -> None:
     """读取 ui_settings.json,把白名单内的运行时设置覆盖到本模块常量。
 
     设置文件损坏或键值非法时按本文件内置默认值运行,不阻断启动;
-    selfcheck 可改写 UI_SETTINGS_FILE 后重调本函数验证加载逻辑。
+    测试沙箱可改写 UI_SETTINGS_FILE 后重调本函数验证加载逻辑。
     """
     if not os.path.exists(UI_SETTINGS_FILE):
         return

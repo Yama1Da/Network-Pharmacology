@@ -28,7 +28,6 @@ BARE_TO_WY = {
     "config": "WY.config", "core": "WY.core", "ui": "WY.ui", "i18n": "WY.i18n",
     "pages": "WY.pages", "App": "WY.App", "cli": "WY.cli", "scripts": "WY.scripts",
     "env_discovery": "WY.env_discovery",
-    "selfcheck_common": "WY.scripts.selfcheck_common",
 }
 
 
@@ -138,10 +137,9 @@ def test_lower_not_upper():
 
 def test_sys_path_zero():
     """检查 3:sys.path 补丁零容忍——只允许独立入口脚本的条件 bootstrap。
-    与 selfcheck_architecture.t_sys_path_zero 同一份白名单,两处须同步修改。"""
+    本检查是全仓唯一的 sys.path 白名单,新增独立入口脚本时在此登记。"""
     allowed = {
-        "WY/scripts/selfcheck_architecture.py",
-        # 独立工具入口(与自检脚本同类的直接运行场景):
+        # 独立工具入口(直接运行场景的条件 bootstrap):
         "WY/scripts/export_i18n_json.py",
         "WY/scripts/ml_scale_benchmark.py",
         "WY/scripts/cross_dataset_robustness.py",

@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 
 # 导入统一走 WY 包绝对导入,可见性由可编辑安装(pip install -e .)提供,
-# 全仓不再有 sys.path 补丁(selfcheck_architecture 守护)。入口:npap / python -m WY.cli。
+# 全仓不再有 sys.path 补丁(tests/test_architecture.py 守护)。入口:npap / python -m WY.cli。
 from WY import i18n
 
 i18n.set_lang_provider(lambda: "en")  # 纪律 1:core 内 t() 输出钉死英文,先于一切 core 调用
