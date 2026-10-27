@@ -48,7 +48,7 @@ onMounted(() => {
         {{ t('web.data.itx_built', { nodes: itx.nodes, edges: itx.edges, version: itx.version,
                                      conf: itx.confidence, at: itx.built_at, age: itx.age ?? '-' }) }}
       </span>
-      <span v-else-if="loaded" class="count" style="color:#b3261e">
+      <span v-else-if="loaded" class="count" style="color:var(--c-danger)">
         {{ t('web.data.itx_missing') }}
       </span>
       <button class="go" :title="t('web.data.rebuild_title')" :disabled="job.running.value" @click="build">

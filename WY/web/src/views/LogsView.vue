@@ -128,19 +128,19 @@ onMounted(() => {
   font-family: inherit;
   font-size: 12.5px;
   letter-spacing: 0.12em;
-  color: #cfcfcd;
+  color: var(--c-faint);
   cursor: pointer;
   transition: color 0.25s ease;
 }
 .lv:hover {
-  color: #8a8a88;
+  color: var(--c-ink2);
 }
 .lv.on {
-  color: #1a1a1a;
+  color: var(--c-ink);
   font-weight: 500;
 }
 .lv-sep {
-  color: #dedede;
+  color: var(--c-ghost);
   font-size: 12px;
 }
 .row.as-btn {
@@ -155,7 +155,7 @@ onMounted(() => {
   transition: color 0.25s ease;
 }
 .row:hover .fname {
-  color: #000000;
+  color: var(--c-ink);
 }
 .fname.open {
   font-weight: 500;
@@ -165,7 +165,7 @@ onMounted(() => {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #1a1a1a;
+  background: var(--c-accent);
   margin-right: 9px;
   vertical-align: 2.5px;
 }
@@ -177,7 +177,7 @@ onMounted(() => {
   font-family: 'SF Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
   font-size: 11.5px;
   line-height: 1.75;
-  color: #6e6e6c;
+  color: var(--c-mid);
   white-space: pre-wrap;
   word-break: break-all;
   tab-size: 4;
@@ -186,12 +186,12 @@ onMounted(() => {
   margin: 10px 0 0;
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: #c6c6c4;
+  color: var(--c-ink4);
 }
 .trunc {
   margin: 10px 0 0;
   font-size: 10.5px;
   letter-spacing: 0.06em;
-  color: #c6c6c4;
+  color: var(--c-ink4);
 }
 </style>

@@ -37,16 +37,16 @@ function inc(): void {
 .st-btn {
   width: 26px;
   height: 26px;
-  border: 1px solid #e6e6e4;
+  border: 1px solid var(--c-line);
   background: none;
   border-radius: 50%;
   font-size: 14px;
-  color: #1a1a1a;
+  color: var(--c-ink);
   cursor: pointer;
   transition: border-color 0.25s ease, opacity 0.25s ease;
 }
 .st-btn:hover:not(:disabled) {
-  border-color: #1a1a1a;
+  border-color: var(--c-ink);
 }
 .st-btn:disabled {
   opacity: 0.35;
@@ -58,6 +58,6 @@ function inc(): void {
   font-size: 14px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 </style>

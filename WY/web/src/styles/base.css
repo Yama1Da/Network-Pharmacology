@@ -6,6 +6,11 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 深色主题原生化滚动条/表单控件(screen.css 的变量表随 html[data-theme] 切换) */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
 *,
 *::before,
 *::after {
@@ -23,7 +28,7 @@ body,
 
 body {
   overflow: hidden;
-  background: #0d1117;
+  background: var(--c-paper);
 }
 
 button,

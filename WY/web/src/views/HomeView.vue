@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import { setPrefill } from '../store'
 import { useJob } from '../composables/useJob'
+import { theme } from '../utils/theme'
 
 const { t } = useI18n()
 const drug = ref('metformin')
@@ -171,7 +172,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
         {{ t('web.home.done_common') }} <b>{{ done.common_count }}</b>
         <span v-if="done.failed.length" class="failed">{{ t('web.home.failed_sources', { names: done.failed.join(', ') }) }}</span>
       </p>
-      <img v-if="job.jobId.value" class="venn" :src="`/api/targets/venn?job_id=${job.jobId.value}`"
+      <img v-if="job.jobId.value" class="venn" :src="`/api/targets/venn?job_id=${job.jobId.value}&theme=${theme}`"
            :alt="t('web.home.venn_alt')" />
       <div class="tl">
         <div class="tl-tabs">
@@ -239,16 +240,16 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   border: none;
   outline: none;
   background: transparent;
-  border-bottom: 1px solid #e6e6e4;
+  border-bottom: 1px solid var(--c-line);
   padding: 10px 2px;
   font-size: 15.5px;
   font-family: inherit;
-  color: #1a1a1a;
+  color: var(--c-ink);
   letter-spacing: 0.02em;
   border-radius: 0;
 }
 .field input::placeholder {
-  color: #cfcfcd;
+  color: var(--c-faint);
   letter-spacing: 0.08em;
 }
 .line {
@@ -257,7 +258,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   right: 0;
   bottom: 0;
   height: 1px;
-  background: #1a1a1a;
+  background: var(--c-accent);
   transform: scaleX(0);
   transition: transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
@@ -266,7 +267,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 }
 .cross {
   padding-bottom: 12px;
-  color: #d7d7d5;
+  color: var(--c-faint2);
   font-size: 15px;
 }
 .go {
@@ -275,8 +276,8 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   margin-bottom: 1px;
   border: none;
   border-radius: 50%;
-  background: #1a1a1a;
-  color: #fdfdfd;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -293,8 +294,8 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 .spin {
   width: 14px;
   height: 14px;
-  border: 1.6px solid rgba(253, 253, 253, 0.35);
-  border-top-color: #fdfdfd;
+  border: 1.6px solid color-mix(in srgb, var(--c-on-accent) 35%, transparent);
+  border-top-color: var(--c-on-accent);
   border-radius: 50%;
   animation: rot 0.8s linear infinite;
 }
@@ -317,7 +318,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   margin-right: auto;
   font-size: 12px;
   letter-spacing: 0.05em;
-  color: #b3261e;
+  color: var(--c-danger);
   text-align: center;
 }
 .done {
@@ -327,7 +328,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   margin: 0 0 14px;
   font-size: 13.5px;
   letter-spacing: 0.06em;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .done-line b {
   font-weight: 600;
@@ -335,7 +336,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 }
 .failed {
   font-size: 11px;
-  color: #b3261e;
+  color: var(--c-danger);
 }
 .enter {
   margin: 0 auto;
@@ -344,8 +345,8 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   max-width: min(520px, 90%);
   margin: 6px auto 0;
   display: block;
-  background: #ffffff;
-  border: 1px solid #f0f0ee;
+  background: var(--c-panel);
+  border: 1px solid var(--c-line-soft);
 }
 .tl {
   width: 100%;
@@ -360,7 +361,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 .tl-scroll {
   max-height: 280px;
   overflow: auto;
-  border: 1px solid #f0f0ee;
+  border: 1px solid var(--c-line-soft);
   padding: 0 14px;
 }
 .tl-scroll .tbl th,
@@ -369,38 +370,38 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 }
 .tl-scroll td.sym {
   font-weight: 500;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .tl-scroll td.flag {
-  color: #d4d4d2;
+  color: var(--c-flag-off);
 }
 .tl-scroll td.flag.on {
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .tl-scroll td.score {
-  color: #6a6a68;
+  color: var(--c-mid2);
 }
 .tl-empty {
   margin: 20px 0;
   font-size: 11.5px;
   letter-spacing: 0.05em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .foot-stats {
   margin-top: 48px;
   font-size: 11px;
   letter-spacing: 0.1em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .foot-stats b {
   font-weight: 500;
-  color: #a3a3a3;
+  color: var(--c-num2);
   font-variant-numeric: tabular-nums;
 }
 .hint-line {
   margin: 10px 0 0;
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: #c6c6c4;
+  color: var(--c-ink4);
 }
 </style>
