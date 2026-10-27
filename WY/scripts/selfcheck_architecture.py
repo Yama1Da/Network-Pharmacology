@@ -176,8 +176,17 @@ def t_sys_path_whitelist():
 
 
 def t_sys_path_zero():
-    """(段 2)检查 4:sys.path 补丁零容忍,全仓只允许本脚本自身的条件 bootstrap。"""
-    allowed = {"WY/scripts/selfcheck_architecture.py"}
+    """(段 2)检查 4:sys.path 补丁零容忍——只允许独立入口脚本的条件 bootstrap。
+    这些脚本支持未安装环境下直接 python scripts/xxx.py 运行,引导是兜底;
+    可编辑安装环境下条件都不命中,等效于零操作。新入口脚本入库时须同步登记。"""
+    allowed = {
+        "WY/scripts/selfcheck_architecture.py",
+        # 独立工具入口(与自检脚本同类的直接运行场景):
+        "WY/scripts/export_i18n_json.py",
+        "WY/scripts/ml_scale_benchmark.py",
+        "WY/scripts/cross_dataset_robustness.py",
+        "WY/scripts/recovery_benchmark.py",
+    }
     bad = []
     for rel, abs_path in _py_files():
         if rel in allowed:
