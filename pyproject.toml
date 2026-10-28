@@ -47,8 +47,8 @@ omit = [                       # 口径:入口编排层与脚本不计入分母
 
 [tool.coverage.report]
 show_missing = true            # 报告里列出哪些行没被测到
-fail_under = 60                # 底线:低于该值命令直接失败(CI 同样生效);
-                               # 先行值 60,阶段三补测跨过 75 后上调(目标 75)
+fail_under = 75                # 底线:低于该值命令直接失败(CI 同样生效);
+                               # 2026-10-29 达成(75.22%),由先行值 60 上调
 exclude_lines = [
     "pragma: no cover",        # 标了这行注释的代码不计入
     "if __name__ == .__main__.:",  # 脚本入口不计入
