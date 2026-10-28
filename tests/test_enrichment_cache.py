@@ -78,8 +78,7 @@ def test_normalize_enrichment_gprofiler():
     # 实现契约:source 必有;其余列按优先级取,genes 取自 intersection(缺失置空)
     assert list(out["source"]) == ["KEGG"]
     assert "term_id" in out.columns and "p_value" in out.columns
-    # ⚠ 现状锁定:source 列被实现直接引用(不走 _pick 回退),缺列会 KeyError
-    # 而非返回空表——真实 g:Profiler 响应恒带 source 列,故不构成线上问题;
-    # 若未来放宽为"缺列回退",此处同步更新为断言空表。
-    with pytest.raises(KeyError, match="source"):
-        en._normalize_enrichment_gprofiler(pd.DataFrame({"foo": [1]}))
+    # 缺列回退契约:source 与其他列一样走 _pick,缺 p 值列 → 全行被 dropna 剔除,
+    # 返回空表而不是 KeyError(2026-10 修复:source 曾被直接引用)
+    bad = en._normalize_enrichment_gprofiler(pd.DataFrame({"foo": [1]}))
+    assert bad.empty
