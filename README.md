@@ -2,6 +2,8 @@
 
 # 网络药理学分析平台
 
+[![CI](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml/badge.svg)](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml)
+
 基于 Streamlit 的一站式网络药理学分析工具：输入药物与疾病名称，自动完成
 「靶点获取 → 靶点整合 → PPI 网络构建 → 富集分析 → 分子对接」的完整流程
 也支持使用CLI批量处理（但不会获取图片）。
@@ -219,6 +221,21 @@ python scripts/lit_pcba_benchmark.py   # LIT-PCBA 基准验证脚本
 - **命令行结果没落在预期目录？** 不带 `--out` 时的落点优先级为：`--out` 参数 >
   `CLI_RESULTS_DIR`（`WY/API.env` 或同名系统环境变量）> 当前目录的 `results`；
   `--out` 仍可单次覆盖，无需删除已配置的 `CLI_RESULTS_DIR`。
+
+## 开发与自检
+
+```bash
+pytest                            # 跑全部测试(约 290 项,纯本地打桩,不联网)
+pytest --cov --cov-report=html    # 带覆盖率报告(生成 htmlcov/,浏览器打开逐行红绿图)
+```
+
+- 测试与覆盖率口径见 `pyproject.toml`(coverage 段):统计 `WY` 包,不含 `api.py` 与
+  `scripts/`;**覆盖率低于 75% 时测试直接判失败**(本地与 CI 同一口径);
+- 每次 push / PR,GitHub Actions 自动在干净环境从零装依赖并跑全部测试
+  (`.github/workflows/ci.yml`),失败打红叉并邮件通知;
+- 全部测试离线可跑:外部数据源(DGIdb / DisGeNET / ChEMBL / Open Targets / STRING /
+  g:Profiler / Enrichr)一律打桩,写盘路径由 `tests/conftest.py` 的沙箱接管,
+  不消耗 API 配额、不触碰真实 `Static/` 缓存。
 
 ## 免责声明
 

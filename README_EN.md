@@ -2,6 +2,8 @@
 
 # Network Pharmacology Analysis Platform
 
+[![CI](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml/badge.svg)](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml)
+
 A one-stop network pharmacology analysis tool built on Streamlit: enter a drug and a disease
 name, and it automatically completes the full workflow of
 "target acquisition → target integration → PPI network construction → enrichment analysis → molecular docking".
@@ -279,6 +281,23 @@ Data Management page, which ensures the background interactome has been download
 - **Docker container won't start or the page won't open?** Check `docker compose ps` and
   `docker logs network-pharmacy` first; on a remote server open `http://<server IP>:8000`
   (not localhost) and make sure port 8000 is allowed through the firewall/security group.
+
+## Development & Testing
+
+```bash
+pytest                            # run the full suite (~290 tests, fully offline)
+pytest --cov --cov-report=html    # coverage report (open htmlcov/ for line-by-line view)
+```
+
+- Coverage policy lives in `pyproject.toml` (coverage section): measures the `WY` package,
+  excluding `api.py` and `scripts/`; **the suite fails below 75% coverage** (identical
+  policy locally and in CI);
+- Every push / PR triggers GitHub Actions to install dependencies from scratch and run the
+  whole suite (`.github/workflows/ci.yml`);
+- All tests run offline: external services (DGIdb / DisGeNET / ChEMBL / Open Targets /
+  STRING / g:Profiler / Enrichr) are stubbed, and writes are sandboxed by
+  `tests/conftest.py` — no API quota is consumed and the real `Static/` caches are
+  untouched.
 
 ## Disclaimer
 
