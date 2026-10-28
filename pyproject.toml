@@ -28,3 +28,28 @@ packages = ["WY", "WY.core", "WY.i18n", "WY.scripts"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["WY/requirements.txt"] }
+
+# ======== pytest 与覆盖率口径(CI 与本地共用同一份,改动需人工过目)========
+[tool.pytest.ini_options]
+testpaths = ["tests"]          # 只到 tests/ 找测试
+addopts = "-ra"                # 结尾汇总显示跳过/失败原因
+filterwarnings = [
+    "ignore::UserWarning",     # 第三方库噪音(sklearn/joblib/pandas),非本项目代码问题
+    "ignore::FutureWarning",
+]
+
+[tool.coverage.run]
+source = ["WY"]                # 统计 WY 包
+omit = [                       # 口径:入口编排层与脚本不计入分母
+    "WY/api.py",               # FastAPI 入口(业务语义与 cli.py 重叠,2026-10 拍板不进分母)
+    "WY/scripts/*",            # 独立工具/基准脚本,不是被测对象
+]
+
+[tool.coverage.report]
+show_missing = true            # 报告里列出哪些行没被测到
+fail_under = 60                # 底线:低于该值命令直接失败(CI 同样生效);
+                               # 先行值 60,阶段三补测跨过 75 后上调(目标 75)
+exclude_lines = [
+    "pragma: no cover",        # 标了这行注释的代码不计入
+    "if __name__ == .__main__.:",  # 脚本入口不计入
+]
