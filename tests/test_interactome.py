@@ -84,9 +84,13 @@ class _FakeResp:
             yield self._body[i:i + chunk_size]
 
 
-def _fake_string_get(payload, fail_ranges=False):
+def _fake_string_get(payload, fail_ranges=False, delay=0.0):
     """伪装 STRING 下载源:带 Range 头按区间切片回 206,Range 探测回总大小,
-    不带 Range 回 200 全量(模拟不支持分段的源);fail_ranges=True 时区间请求一律失败。"""
+    不带 Range 回 200 全量(模拟不支持分段的源);fail_ranges=True 时区间请求一律失败;
+    delay>0 时每段响应前等待(把下载时长拖过 _download_gz_ranged 的 0.5 秒进度轮询窗口,
+    使进度事件触发成为确定性——真实 GB 级文件必然跨过,内存切片的假下载否则瞬时完成)。"""
+    import time
+
     def fake_get(url, headers=None, stream=True, timeout=None, **kw):
         rng = (headers or {}).get("Range", "")
         if rng == "bytes=0-0":
@@ -95,6 +99,8 @@ def _fake_string_get(payload, fail_ranges=False):
         if rng.startswith("bytes="):
             if fail_ranges:
                 raise IOError("simulated segment failure")
+            if delay:
+                time.sleep(delay)
             s, e = rng[6:].split("-")
             return _FakeResp(206, {}, payload[int(s):int(e) + 1])
         return _FakeResp(200, {}, payload)
@@ -106,7 +112,9 @@ def test_interactome_ranged_download(monkeypatch, tmp_path):
     """Range 可用时按段并发下载并拼接出与原文件一致的产物,无 .part 残留。"""
     payload = bytes(range(256)) * 64  # 16 KiB,把分段下限调小以便离线测试
     events = []
-    monkeypatch.setattr(requests, "get", _fake_string_get(payload))
+    # delay=0.3:分段下载跨越 0.5s 进度轮询窗口,进度事件至少触发一次(CI 曾因
+    # 假下载瞬时完成而零事件,属时序侥幸翻车)
+    monkeypatch.setattr(requests, "get", _fake_string_get(payload, delay=0.3))
     monkeypatch.setattr(itx, "_RANGE_MIN_SIZE", 4096)
     monkeypatch.setattr(itx, "_RANGE_SEG_MIN_SIZE", 4096)
     dest = os.path.join(str(tmp_path), "links.txt.gz")
