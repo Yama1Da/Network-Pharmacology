@@ -16,6 +16,7 @@ GEOparse,采用 requests 下载(重试 + gzip 完整性校验 + 永久缓存)+ �
 import csv
 import glob
 import gzip
+import zlib
 import io
 import logging
 import os
@@ -219,13 +220,15 @@ def _geo_cache_path(gse: str) -> str:
 
 
 def _gzip_intact(path: str) -> bool:
-    """gzip 完整性全量校验(第 0 步 GEOparse 的翻车点:截断文件必须视为失败)。"""
+    """gzip 完整性全量校验(第 0 步 GEOparse 的翻车点:截断文件必须视为失败)。
+    除 I/O 错误外,两类数据损坏也必须按"不完整"处理而非异常炸穿调用方:
+    截断流抛 EOFError、损坏的 deflate 数据体抛 zlib.error(均非 OSError 子类)。"""
     try:
         with gzip.open(path, "rb") as f:
             while f.read(1 << 20):
                 pass
         return True
-    except OSError:
+    except (OSError, EOFError, zlib.error):
         return False
 
 

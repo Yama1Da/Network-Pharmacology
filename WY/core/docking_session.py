@@ -14,12 +14,17 @@ _TTL = 4 * 3600  # 会话保留 4 小时,过期在新建时清扫
 def create() -> str:
     _sweep()
     sid = uuid.uuid4().hex[:12]
-    _SESSIONS[sid] = {}
+    # _touched 必须在创建时落地:sweep 按 d.get("_touched", 0) 判过期,
+    # 缺了它新会话会被下一次 create 立即清掉(2026-10 API 冒烟发现)
+    _SESSIONS[sid] = {"_touched": time.time()}
     return sid
 
 
 def get(sid: str) -> dict | None:
-    return _SESSIONS.get(sid)
+    dock = _SESSIONS.get(sid)
+    if dock is not None:
+        dock["_touched"] = time.time()   # 摸一次续命:按最后访问计时
+    return dock
 
 
 def drop(sid: str) -> None:

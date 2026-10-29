@@ -19,9 +19,45 @@ npap = "WY.cli:main"
 
 [tool.setuptools]
 # 显式列出包:根目录还有 .venv 等与发布无关的顶层目录,禁止 setuptools 自动发现乱吸。
-# scripts 按包安装(自检脚本走 WY. 绝对导入);ui 已随 Streamlit 退场删除,不再列出,
-# 误列不存在的目录会让可编辑安装直接构建失败。
-packages = ["WY", "WY.core", "WY.i18n", "WY.scripts"]
+# CLI 只依赖 WY 本体(config.py/cli.py)与 core、i18n 三个包;pages 属网页端,
+# 依旧按就地运行方式使用,不参与安装。
+# tools/benchmark 也按包安装(入口脚本经 WY.tools/WY.benchmark 绝对导入);
+# ui 已随前端 TS 迁移退役,仓库中不再有该目录,列入清单会使干净环境下的
+# editable 构建直接报错(package directory 'WY/ui' does not exist)
+packages = ["WY", "WY.core", "WY.i18n", "WY.tools", "WY.benchmark"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["WY/requirements.txt"] }
+
+# ======== pytest 与覆盖率口径(CI 与本地共用同一份,改动需人工过目)========
+[tool.pytest.ini_options]
+testpaths = ["tests"]          # 只到 tests/ 找测试
+addopts = "-ra"                # 结尾汇总显示跳过/失败原因
+markers = [
+    # 配合 NPAP_TEST_REAL_INTERACTOME=1 使用(见 tests/conftest.py):
+    # 双条件齐全时豁免互作组目录沙箱,读真实 Static 数据;无数据时自动跳过。
+    # 只有显式标记的测试允许触真实目录——缓存治理类测试默认在空沙箱里演练,
+    # 若让它们见到真实数据会覆盖/删除真文件(2026-10 事故教训)。
+    "real_interactome: 本测试读取本机已构建的真实互作组数据",
+]
+filterwarnings = [
+    "ignore::UserWarning",     # 第三方库噪音(sklearn/joblib/pandas),非本项目代码问题
+    "ignore::FutureWarning",
+]
+
+[tool.coverage.run]
+source = ["WY"]                # 统计 WY 包
+omit = [                       # 口径:入口编排层与脚本不计入分母
+    "WY/api.py",               # FastAPI 入口(业务语义与 cli.py 重叠,2026-10 拍板不进分母)
+    "WY/tools/*",              # 独立工具/基准脚本,不是被测对象
+    "WY/benchmark/*",
+]
+
+[tool.coverage.report]
+show_missing = true            # 报告里列出哪些行没被测到
+fail_under = 75                # 底线:低于该值命令直接失败(CI 同样生效);
+                               # 2026-10-29 达成(75.22%),由先行值 60 上调
+exclude_lines = [
+    "pragma: no cover",        # 标了这行注释的代码不计入
+    "if __name__ == .__main__.:",  # 脚本入口不计入
+]

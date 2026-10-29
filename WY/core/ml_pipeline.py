@@ -24,7 +24,7 @@ STAGES = ("fetch", "group", "preprocess", "deg", "ml", "shortlist", "save")
 
 # shortlist.csv 首行定位注释(方案 §11"表头带定位注释行"):CSV 会单独流传,
 # 离开 docstring 与 summary.json 后须自带定位声明,防被误读为交叉验证/预测结论。
-# 行首 "#" 是刻意选择:pd.read_csv(comment="#") 可干净跳过(见 selfcheck 回归),
+# 行首 "#" 是刻意选择:pd.read_csv(comment="#") 可干净跳过(tests/test_ml_pipeline.py 有回归),
 # Excel 打开仅多一行说明,不会混入数据
 SHORTLIST_POSITIONING_NOTE = (
     "定位:湿实验优先级证据(多算法共识特征筛选),非交叉验证结论、非预测金标准;"
