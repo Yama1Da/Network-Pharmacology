@@ -239,10 +239,12 @@ def _read_manifest(zf: zipfile.ZipFile) -> dict:
 
 
 def _copy_capped(src, dst, cap: int) -> None:
-    """限长拷贝:实际解压超出中央目录声明大小即判定谎报(zip 炸弹的另一种形态)。"""
+    """限长拷贝:最多写 cap+1 字节,写满后仍探得到数据即判定谎报
+    (zipfile 自身对"声明大小≠实际"会先炸 CRC,这里是不依赖其行为的兜底)。"""
     remaining = cap + 1
     while True:
-        chunk = src.read(min(256 * 1024, remaining))
+        n = min(256 * 1024, remaining)
+        chunk = src.read(n if n > 0 else 1)  # 写满限额后仍探 1 字节,不留静默截断
         if not chunk:
             return
         remaining -= len(chunk)
@@ -330,18 +332,29 @@ def analyze_bundle(zip_path: str, staging_dir: str) -> dict:
             plan.append((info, target, parts))
 
         os.makedirs(staging_dir, exist_ok=True)
+        # manifest 登记的每个条目先把目录立起来:空目录(导出时 zip 里没有任何文件)
+        # 也要能原样导回,否则 commit 会因暂存缺目录而报 not found
+        for kind, name in manifest_items:
+            os.makedirs(os.path.join(staging_dir, "items", kind, name), exist_ok=True)
         stat: dict[tuple[str, str], dict] = {}
-        for info, target, parts in plan:
-            if info.is_dir():
-                os.makedirs(target, exist_ok=True)
-                continue
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            with zf.open(info) as src, open(target, "wb") as dst:
-                _copy_capped(src, dst, info.file_size)
-            if len(parts) >= 4 and parts[0] == "items":
-                s = stat.setdefault((parts[1], parts[2]), {"files": 0, "bytes": 0})
-                s["files"] += 1
-                s["bytes"] += info.file_size
+        try:
+            for info, target, parts in plan:
+                if info.is_dir():
+                    os.makedirs(target, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with zf.open(info) as src, open(target, "wb") as dst:
+                    _copy_capped(src, dst, info.file_size)
+                if len(parts) >= 4 and parts[0] == "items":
+                    s = stat.setdefault((parts[1], parts[2]), {"files": 0, "bytes": 0})
+                    s["files"] += 1
+                    s["bytes"] += info.file_size
+        except TransferError:
+            raise
+        except Exception as exc:
+            # 中途损坏/系统层失败(截断包 BadZipFile、CRC 不符、Windows 路径超长等):
+            # 归一为 TransferError,api 层转 400,而不是裸异常变 500
+            raise TransferError(f"bundle is corrupted or unreadable: {exc}") from exc
 
     return _build_report(manifest, stat, staging_dir)
 
@@ -402,6 +415,9 @@ def _filter_ui_settings(raw: dict) -> dict:
                 out[k] = float(v)
         elif k == "UI_THEME":
             if isinstance(v, str) and v.strip().lower() in ("light", "dark"):
+                out[k] = v.strip().lower()
+        elif k == "UI_LANG":
+            if isinstance(v, str) and v.strip().lower() in config.UI_LANG_VALUES:
                 out[k] = v.strip().lower()
         elif k == "LOG_LEVEL":
             if isinstance(v, str) and v.strip().upper() in (
@@ -502,6 +518,9 @@ def create_import_session(zip_path: str) -> tuple[str, dict]:
     staging = os.path.join(config.TRANSFER_DIR, f"import_{sid}")
     try:
         report = analyze_bundle(zip_path, staging)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)  # 失败不留半截暂存等 TTL
+        raise
     finally:
         remove_quietly(zip_path)  # 无论成败,zip 都已不再需要
     _SESSIONS[sid] = {"_touched": time.time(), "staging": staging, "report": report}

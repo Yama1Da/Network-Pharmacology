@@ -404,6 +404,7 @@ UI_SETTINGS_KEYS = (
     "STRING_VERSION",  # STRING 数据版本:查询 API/下载路径/各缓存键随版本派生或隔离
     "UI_FONT_SCALE",  # 前端界面等比缩放(1.0=100%):纯显示偏好,不影响任何分析计算
     "UI_THEME",  # 前端颜色主题 light/dark(深色=样品「墨黑」):纯显示偏好
+    "UI_LANG",  # 前端界面语言 zh/en:纯显示偏好,随 ui_settings.json 参与数据迁移
 )
 # UI_FONT_SCALE 允许范围:加载设置文件时校验,坏值按内置默认运行
 _UI_FONT_SCALE_RANGE = (0.8, 1.5)
@@ -411,6 +412,10 @@ _UI_FONT_SCALE_RANGE = (0.8, 1.5)
 UI_FONT_SCALE = 1.0
 # 颜色主题默认浅色;实际生效值由 ui_settings.json 覆盖
 UI_THEME = "light"
+# 界面语言默认中文;实际生效值由 ui_settings.json 覆盖
+UI_LANG = "zh"
+# UI_LANG 允许的取值:加载/保存/迁移导入过滤共用同一取值表,坏值按内置中文运行
+UI_LANG_VALUES = ("zh", "en")
 # LOG_LEVEL 允许的取值:加载设置文件时校验,坏值按内置默认运行
 _LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
@@ -446,6 +451,10 @@ def apply_ui_settings_overrides() -> None:
             elif _k == "UI_THEME":
                 # 颜色主题只认 light/dark,坏值按内置浅色运行;先于通用字符串分支
                 if isinstance(_v, str) and _v.strip().lower() in ("light", "dark"):
+                    globals()[_k] = _v.strip().lower()
+            elif _k == "UI_LANG":
+                # 界面语言只认 zh/en,坏值按内置中文运行;先于通用字符串分支
+                if isinstance(_v, str) and _v.strip().lower() in UI_LANG_VALUES:
                     globals()[_k] = _v.strip().lower()
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, bool):
                 globals()[_k] = _v

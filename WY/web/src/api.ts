@@ -291,6 +291,7 @@ export interface SettingsSnapshot {
   pocket_cutoff: number
   ui_font_scale: number
   ui_theme: string
+  ui_lang: 'zh' | 'en'
 }
 
 /* ---- 数据迁移(设置页:结果导出 / 两段式导入) ---- */

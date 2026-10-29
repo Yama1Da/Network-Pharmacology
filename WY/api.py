@@ -15,6 +15,7 @@ import time
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -283,7 +284,8 @@ async def transfer_import(request: Request) -> dict:
         transfer.remove_quietly(upload)
         raise HTTPException(status_code=400, detail="empty upload")
     try:
-        sid, report = transfer.create_import_session(upload)
+        # 解压安检放线程池:大包秒级耗时,同步做会阻塞事件循环拖慢其他请求
+        sid, report = await run_in_threadpool(transfer.create_import_session, upload)
     except transfer.TransferError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"sid": sid, "report": report}
@@ -848,6 +850,7 @@ def _settings_snapshot() -> dict:
         "pocket_cutoff": config.POCKET_CUTOFF,
         "ui_font_scale": config.UI_FONT_SCALE,
         "ui_theme": config.UI_THEME,
+        "ui_lang": config.UI_LANG,
     }
 
 
@@ -894,7 +897,7 @@ _ALLOWED_UI_KEYS = (
     "POCKET_CUTOFF", "PPI_CONFIDENCE", "OT_TOP_N", "DISGENET_PAGES",
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "CHEMBL_CORROBORATION_REQUIRED", "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION",
-    "UI_FONT_SCALE", "UI_THEME",
+    "UI_FONT_SCALE", "UI_THEME", "UI_LANG",
 )
 _BLACKLIST_KEY = "CHEMBL_TARGET_BLACKLIST"
 # 数值范围(与前端 Stepper 的 min/max 一致,双保险)
@@ -931,7 +934,12 @@ def settings_ui_save(changes: dict) -> dict:
             elif k == "UI_THEME":
                 if not (isinstance(v, str) and v.strip().lower() in ("light", "dark")):
                     raise HTTPException(status_code=400, detail=f"{k} must be 'light' or 'dark'")
-                validated[k] = v.strip().lower()
+                v = v.strip().lower()
+            elif k == "UI_LANG":
+                if not (isinstance(v, str) and v.strip().lower() in config.UI_LANG_VALUES):
+                    raise HTTPException(status_code=400,
+                                        detail=f"{k} must be one of {config.UI_LANG_VALUES}")
+                v = v.strip().lower()
             else:
                 if isinstance(v, bool) or not isinstance(v, (int, float)):
                     raise HTTPException(status_code=400, detail=f"{k} must be a number")

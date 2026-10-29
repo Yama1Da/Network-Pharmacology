@@ -4,7 +4,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from './api'
-import { setLang } from './i18n'
+import { normalizeLang, setLang } from './i18n'
 import { applyScale, persistScale, storedScale } from './utils/fontScale'
 import { applyTheme, normalizeTheme, persistTheme, storedTheme } from './utils/theme'
 import CollectionView from './views/CollectionView.vue'
@@ -49,7 +49,10 @@ const NAV_DIRECT: NavItem[] = [
 
 const lang = computed(() => (locale.value === 'zh' ? 'EN' : '中文'))
 function toggleLang(): void {
-  setLang(locale.value === 'zh' ? 'en' : 'zh')
+  const next = locale.value === 'zh' ? 'en' : 'zh'
+  setLang(next)
+  void api.saveUiSettings({ UI_LANG: next })
+    .catch(() => { /* 后端不可达时保留本地镜像,待下次校准 */ })
 }
 
 /* <html lang> 跟随语言,便于屏幕阅读器与字体渲染 */
@@ -96,7 +99,7 @@ onMounted(() => {
     introVisible.value = false
     ready.value = true
   }, 1750)
-  /* 界面缩放与颜色主题:localStorage 即时恢复,再以后端设置快照为准校准(另一浏览器保存过的值) */
+  /* 界面缩放/颜色主题/语言:localStorage 即时恢复,再以后端设置快照为准校准(另一浏览器保存过的值) */
   applyScale(storedScale())
   applyTheme(storedTheme())
   void api.settings()
@@ -104,6 +107,7 @@ onMounted(() => {
       persistScale(s.ui_font_scale); applyScale(s.ui_font_scale)
       const t = normalizeTheme(s.ui_theme)
       persistTheme(t); applyTheme(t)
+      setLang(normalizeLang(s.ui_lang))
     })
     .catch(() => { /* 读取失败维持本地镜像值 */ })
 })

@@ -261,7 +261,7 @@ def test_stats_shape(client):
 def test_settings_snapshot_shape(client):
     body = client.get("/api/settings").json()
     for key in ("keys", "vina_dir", "string_version", "known_versions",
-                "chembl_blacklist", "pocket_cutoff"):
+                "chembl_blacklist", "pocket_cutoff", "ui_lang"):
         assert key in body, f"设置快照缺 {key}"
     assert set(body["keys"]) == {"disgenet", "ncbi"}  # 密钥只回布尔不回值
 
@@ -284,6 +284,20 @@ def test_settings_ui_validation_and_noop(client):
     r = client.post("/api/settings/ui", json={"changes": {"POCKET_CUTOFF": current}})
     assert r.status_code == 200 and r.json()["changed"] == []
     assert r.json()["snapshot"]["pocket_cutoff"] == current
+
+
+def test_settings_ui_lang_normalizes_and_restores(client):
+    """UI_LANG:合法值归一小写并进快照与落盘,非法值 400;测后恢复原值。"""
+    original = config.UI_LANG
+    try:
+        r = client.post("/api/settings/ui", json={"changes": {"UI_LANG": " EN "}})
+        assert r.status_code == 200
+        assert r.json()["changed"] == ["UI_LANG"]
+        assert client.get("/api/settings").json()["ui_lang"] == "en"
+        assert client.post("/api/settings/ui",
+                           json={"changes": {"UI_LANG": "fr"}}).status_code == 400
+    finally:
+        client.post("/api/settings/ui", json={"changes": {"UI_LANG": original}})
 
 
 def test_settings_ui_blacklist_normalizes_and_restores(client):

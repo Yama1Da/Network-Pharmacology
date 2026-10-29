@@ -11,6 +11,7 @@ import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
 import { applyScale, persistScale, snapScale } from '../utils/fontScale'
+import { normalizeLang, setLang } from '../i18n'
 import { applyTheme, normalizeTheme, persistTheme, type Theme } from '../utils/theme'
 import { downloadBlob } from '../utils/download'
 
@@ -304,8 +305,9 @@ async function uploadImport(f: File): Promise<void> {
       dec(it.kind, it.name).action = it.conflict || it.invalid ? 'skip' : 'import'
     }
     if (r.report.ui_settings.present) {
-      const ui = dec('ui_settings', 'ui_settings.json')
-      ui.action = r.report.ui_settings.conflict ? 'skip' : 'import'
+      // 界面设置无害(白名单过滤,覆盖的只是阈值/主题类偏好),默认直接接入,
+      // 重名只作提示;结果目录的冲突才默认跳过(覆盖会动真实数据)
+      dec('ui_settings', 'ui_settings.json').action = 'import'
     }
   } catch (e) {
     flash(e instanceof Error ? e.message : t('web.transfer.import_fail'))
@@ -318,17 +320,16 @@ async function commitImport(): Promise<void> {
   if (!importSid.value) return
   importing.value = true
   try {
-    const payload = Object.entries(decisions.value)
-      .filter(([, d]) => d.action !== 'skip')
-      .map(([key, d]) => {
-        const idx = key.indexOf('/')
-        return {
-          kind: key.slice(0, idx),
-          name: key.slice(idx + 1),
-          action: d.action === 'import' ? ('overwrite' as const) : d.action,
-          new_name: d.new_name
-        }
-      })
+    // skip 决策也发后端:由 skipped 回执统一收账,本地不做过滤
+    const payload = Object.entries(decisions.value).map(([key, d]) => {
+      const idx = key.indexOf('/')
+      return {
+        kind: key.slice(0, idx),
+        name: key.slice(idx + 1),
+        action: d.action === 'import' ? ('overwrite' as const) : d.action,
+        new_name: d.new_name
+      }
+    })
     const r = await api.transferCommit(importSid.value, payload)
     const rep = r.report
     const parts = [
@@ -361,7 +362,7 @@ async function commitImport(): Promise<void> {
   }
 }
 
-/* 导入的界面设置(主题/字号)回填:后端已生效,前端同步本地镜像与当前显示 */
+/* 导入的界面设置(主题/字号/语言)回填:后端已生效,前端同步本地镜像与当前显示 */
 function applyImportedUi(snap: SettingsSnapshot): void {
   themeSel.value = normalizeTheme(snap.ui_theme)
   persistTheme(themeSel.value)
@@ -370,6 +371,7 @@ function applyImportedUi(snap: SettingsSnapshot): void {
   savedScale.value = fontScale.value
   persistScale(fontScale.value)
   applyScale(fontScale.value)
+  setLang(normalizeLang(snap.ui_lang))
 }
 
 async function cancelImport(): Promise<void> {

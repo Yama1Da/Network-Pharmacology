@@ -61,6 +61,10 @@ def save_ui_settings(overrides: dict) -> None:
             # 颜色主题只认 light/dark,统一小写落盘;必须先于通用字符串分支(该分支会转大写)
             if isinstance(v, str) and v.strip().lower() in ("light", "dark"):
                 clean[k] = v.strip().lower()
+        elif k == "UI_LANG":
+            # 界面语言只认 zh/en,统一小写落盘;必须先于通用字符串分支(该分支会转大写)
+            if isinstance(v, str) and v.strip().lower() in config.UI_LANG_VALUES:
+                clean[k] = v.strip().lower()
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, str):
             clean[k] = v.strip().upper()  # 日志级别等枚举字符串,统一大写
     if not clean:

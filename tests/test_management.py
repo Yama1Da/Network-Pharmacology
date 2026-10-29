@@ -28,6 +28,13 @@ def test_ui_settings_roundtrip():
     save_ui_settings({"CHEMBL_TARGET_BLACKLIST": ["alb", "spike ", "", "ALB"]})
     with open(config.UI_SETTINGS_FILE, encoding="utf-8") as f:
         assert json.load(f)["CHEMBL_TARGET_BLACKLIST"] == ["ALB", "SPIKE"]
+    # 界面语言(枚举字符串):统一小写落盘;非法取值不落盘
+    save_ui_settings({"UI_LANG": "EN"})
+    with open(config.UI_SETTINGS_FILE, encoding="utf-8") as f:
+        assert json.load(f)["UI_LANG"] == "en"
+    save_ui_settings({"UI_LANG": "fr"})
+    with open(config.UI_SETTINGS_FILE, encoding="utf-8") as f:
+        assert json.load(f)["UI_LANG"] == "en"
 
 
 def test_api_env_roundtrip(monkeypatch, tmp_path):

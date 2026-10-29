@@ -199,20 +199,29 @@ def test_import_commit_conflict_overwrite_and_rename_collision():
 
 def test_import_commit_ui_settings_applies_whitelist_and_runtime(monkeypatch):
     """ui_settings 导入:白名单过滤后整体替换,运行时同步生效(EVIL_KEY 绝不落地)。"""
-    _mk_ui_settings({"UI_THEME": "dark", "EVIL_KEY": "x"})
+    _mk_ui_settings({"UI_THEME": "dark", "UI_LANG": "en", "EVIL_KEY": "x"})
     zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
     transfer.build_export_bundle(("ui_settings",), zip_path)
     staging = os.path.join(config.TRANSFER_DIR, "import_test")
     transfer.analyze_bundle(zip_path, staging)
 
     monkeypatch.setattr(config, "UI_THEME", "light")  # 导入后应变 dark,测后自动还原
+    monkeypatch.setattr(config, "UI_LANG", "zh")      # 导入后应变 en,测后自动还原
     result = transfer.commit_import(staging, [
         {"kind": "ui_settings", "name": "ui_settings.json", "action": "overwrite"}])
     assert result["failed"] == []
-    assert result["applied"][0]["keys"] == ["UI_THEME"]
+    assert result["applied"][0]["keys"] == ["UI_LANG", "UI_THEME"]
     assert config.UI_THEME == "dark"
+    assert config.UI_LANG == "en"
     with open(config.UI_SETTINGS_FILE, encoding="utf-8") as f:
-        assert json.load(f) == {"UI_THEME": "dark"}
+        assert json.load(f) == {"UI_THEME": "dark", "UI_LANG": "en"}
+
+
+def test_ui_settings_filter_normalizes_and_drops_bad_values():
+    """导入过滤:合法枚举归一小写保留(语言/主题),坏值与未知键直接丢弃。"""
+    out = transfer._filter_ui_settings(
+        {"UI_LANG": "EN", "UI_THEME": "DARK", "UI_LANG_BAD": "fr", "EVIL": 1})
+    assert out == {"UI_LANG": "en", "UI_THEME": "dark"}
 
 
 def test_import_commit_invalid_geo_rejected():
@@ -330,14 +339,64 @@ def test_import_rejects_zip_bomb(tmp_path, monkeypatch):
         transfer.analyze_bundle(zip_path, str(tmp_path / "s1"))
 
     monkeypatch.setattr(config, "TRANSFER_MAX_EXTRACT_BYTES", 1 << 30)
+    # 同一会话内构造并篡改:append 重开再改 infolist 不会触发中央目录重写(_didModify 为假)
     lie = os.path.join(str(tmp_path), "lie.zip")
     with zipfile.ZipFile(lie, "w", zipfile.ZIP_DEFLATED) as zf:
-        info = zipfile.ZipInfo("items/analysis/a_data/x.csv")
-        zf.writestr(info, "12345678", compress_type=zipfile.ZIP_DEFLATED)
-        # 直接改写中央目录声明大小,模拟"小声明大内容"
-        zf.infolist()[0].file_size = 1
+        zf.writestr("items/analysis/a_data/x.csv", "12345678",
+                    compress_type=zipfile.ZIP_DEFLATED)
+        zf.writestr(transfer.MANIFEST_NAME,
+                    json.dumps(_valid_manifest([{"kind": "analysis", "name": "a_data"}]),
+                               ensure_ascii=False))
+        zf.infolist()[0].file_size = 1  # 中央目录声明 1 字节,实际 8 字节
     with pytest.raises(TransferError):
         transfer.analyze_bundle(lie, str(tmp_path / "s2"))
+
+
+def test_import_normalizes_mid_extract_failures(tmp_path, monkeypatch):
+    """解压中途的异常(BadZipFile/OSError,对应截断包、CRC 不符、Windows 路径超长等)
+    统一归一为 TransferError,不让裸异常漏出去(api 层会变 500)。"""
+    _mk_analysis()
+    zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
+    transfer.build_export_bundle(("analysis",), zip_path)
+
+    monkeypatch.setattr(transfer, "_copy_capped",
+                        lambda src, dst, cap: (_ for _ in ()).throw(
+                            zipfile.BadZipFile("Bad CRC-32 for file 'x.csv'")))
+    with pytest.raises(TransferError):
+        transfer.analyze_bundle(zip_path, str(tmp_path / "s1"))
+
+    monkeypatch.setattr(transfer, "_copy_capped",
+                        lambda src, dst, cap: (_ for _ in ()).throw(
+                            OSError("[WinError 206] 文件名或扩展名太长")))
+    with pytest.raises(TransferError):
+        transfer.analyze_bundle(zip_path, str(tmp_path / "s2"))
+
+    # 截断上传(尾部中央目录缺失):识别为损坏包而非裸异常
+    with open(zip_path, "rb") as f:
+        raw = f.read()
+    truncated = os.path.join(config.TRANSFER_DIR, "truncated.zip")
+    with open(truncated, "wb") as f:
+        f.write(raw[:-30])
+    with pytest.raises(TransferError):
+        transfer.analyze_bundle(truncated, str(tmp_path / "s3"))
+
+
+def test_import_empty_item_roundtrip():
+    """空目录条目(zip 内没有任何文件)也能原样导回,不再报 not found in bundle。"""
+    import shutil
+
+    os.makedirs(os.path.join(config.DOWNLOADS_DIR, "empty_data"))
+    zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
+    transfer.build_export_bundle(("analysis",), zip_path)
+    shutil.rmtree(os.path.join(config.DOWNLOADS_DIR, "empty_data"))  # 模拟新机器
+
+    staging = os.path.join(config.TRANSFER_DIR, "import_empty")
+    report = transfer.analyze_bundle(zip_path, staging)
+    assert report["items"][0]["files"] == 0
+    result = transfer.commit_import(staging, [
+        {"kind": "analysis", "name": "empty_data", "action": "overwrite"}])
+    assert result["failed"] == []
+    assert os.path.isdir(os.path.join(config.DOWNLOADS_DIR, "empty_data"))
 
 
 def test_import_not_a_zip(tmp_path):
