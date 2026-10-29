@@ -8,8 +8,8 @@
 - 指标:Top-K 回收率 + 经验 p 值(与随机排名比较)。
 
 用法(在 WY 目录下):
-    python scripts/recovery_benchmark.py --drug metformin --disease "type 2 diabetes mellitus"
-    python scripts/recovery_benchmark.py --drug aspirin --disease "cardiovascular disease"
+    python benchmark/recovery_benchmark.py --drug metformin --disease "type 2 diabetes mellitus"
+    python benchmark/recovery_benchmark.py --drug aspirin --disease "cardiovascular disease"
 """
 
 import argparse

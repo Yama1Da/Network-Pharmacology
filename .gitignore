@@ -27,8 +27,7 @@ results/
 /_video2/
 /_video/
 /_video_probe/
-
-# 测试/覆盖率本地产物(按需重新生成,不进仓库)
 .coverage
 htmlcov/
 coverage.xml
+/.acl-recovery-docking/

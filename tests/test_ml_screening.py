@@ -2,6 +2,10 @@
 自动切换/方向防御,以及 bootstrap 分母回归。
 
 迁移自 selfcheck_ml.py(17 项中的 6 项)。纯本地合成数据,不联网。
+
+耗时口径:数据规模与 bootstrap 轮数按「足以支撑各断言」的下限取值;
+Boruta 迭代由 conftest._ml_slim_boruta 统一降档(NPAP_ML_TEST_FULL=1 恢复全参)。
+本文件的断言全部是行为语义,与这些规模参数无关——改统计参数后请跑一次全参档。
 """
 import numpy as np
 import pandas as pd
@@ -21,9 +25,12 @@ def _make_synthetic(n_ctrl=10, n_case=10, n_genes=200, n_planted=10, seed=42):
 
 
 def test_signal_recall():
-    """合成数据信号:共识 top15 应召回 ≥8 个植入基因,方向正确。"""
-    X, y, genes, planted = _make_synthetic()
-    res = ml.run_ml_screening(X, y, bootstrap_rounds=20)
+    """合成数据信号:共识 top15 应召回 ≥8 个植入基因,方向正确。
+
+    100 基因中植入 10(shift=2.0):信号强度足够,共识召回与 200 基因口径一致
+    (2026-10 瘦身时全参档对照验证过,阈值未动)。"""
+    X, y, genes, planted = _make_synthetic(n_genes=100)
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=10)
     top15 = res["consensus"].head(15).index.tolist()
     recall = len(set(planted) & set(top15))
     assert recall >= 8, f"信号召回不足: {recall}/15 (期望 ≥8)"
@@ -33,18 +40,25 @@ def test_signal_recall():
 
 
 def test_seed_consistency():
-    """种子一致性:同种子两次运行逐基因一致。"""
-    X1, y, _, _ = _make_synthetic(seed=42)
-    X2, _, _, _ = _make_synthetic(seed=42)
-    r1 = ml.run_ml_screening(X1, y, bootstrap_rounds=10, seed=0)
-    r2 = ml.run_ml_screening(X2, y, bootstrap_rounds=10, seed=0)
+    """种子一致性:同种子两次运行逐基因一致。
+
+    确定性只依赖固定 seed 贯穿全部算法,与规模/轮数无关——50 基因 3 轮足矣。"""
+    X1, y, _, _ = _make_synthetic(n_genes=50, seed=42)
+    X2, _, _, _ = _make_synthetic(n_genes=50, seed=42)
+    r1 = ml.run_ml_screening(X1, y, bootstrap_rounds=3, seed=0)
+    r2 = ml.run_ml_screening(X2, y, bootstrap_rounds=3, seed=0)
     cs1 = r1["consensus"]["consensus_score"].round(6).to_dict()
     cs2 = r2["consensus"]["consensus_score"].round(6).to_dict()
     assert cs1 == cs2, "同种子两次运行结果不一致"
 
 
 def test_label_shuffle():
-    """打乱标签:AUC 应回落 ~0.5,植入基因不再富集于 top15。"""
+    """打乱标签:AUC 应回落 ~0.5,植入基因不再富集于 top15。
+
+    规模与轮数保持原口径(200 基因 / 10 轮):全参档对照(2026-10)实测,
+    该断言对这两者敏感——100 基因或 5 轮时,打乱后植入基因随机混入 top15 的
+    方差在生产 Boruta 参数下会击穿阈值 ≤4;本测试的稳定性本身就依赖足够的
+    基因池与频率粒度,故不参与瘦身,只吃 conftest 的 Boruta 降档。"""
     X, y, _, planted = _make_synthetic(seed=99)
     rng = np.random.default_rng(77)
     y_shuf = pd.Series(rng.permutation(y.to_numpy()))
@@ -57,16 +71,18 @@ def test_label_shuffle():
 
 
 def test_loocv_auto():
-    """LOOCV 自动切换:最小类 ≤6 时 cv_mode 应为 loocv。"""
-    X, y, _, _ = _make_synthetic(n_ctrl=6, n_case=6, n_genes=50, seed=42)
-    res = ml.run_ml_screening(X, y, bootstrap_rounds=5)
+    """LOOCV 自动切换:最小类 ≤6 时 cv_mode 应为 loocv。
+
+    4+4 样本仍在切换阈值内(≤6),LOOCV 折数 12→8 进一步省时。"""
+    X, y, _, _ = _make_synthetic(n_ctrl=4, n_case=4, n_genes=50, seed=42)
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=3)
     assert res["meta"]["cv_mode"] == "loocv", f"期望 loocv,实际 {res['meta']['cv_mode']}"
 
 
 def test_direction_defense():
     """方向防御:传入转置矩阵应报错(行数≠标签数 或 行>列)。"""
-    X, y, _, _ = _make_synthetic(n_genes=200, seed=42)
-    X_t = X.T  # 故意传反:基因×样本 (200行 × 20列)
+    X, y, _, _ = _make_synthetic(n_genes=100, seed=42)
+    X_t = X.T  # 故意传反:基因×样本 (100行 × 20列)
     try:
         ml.run_ml_screening(X_t, y, bootstrap_rounds=1)
         raise AssertionError("方向防御未触发(传反矩阵未报错)")

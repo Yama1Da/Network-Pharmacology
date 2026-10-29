@@ -5,7 +5,7 @@ WY/web/src/locales/{zh,en}.json 由本脚本生成(勿手改,重跑即刷新);
 同时并入 TS 前端自己的 web.* 命名空间(导航 / 通用控件 / 各视图文案),
 zh 与 en 各有独立取值 —— 新增或修改前端文案先改这里,再重跑本脚本。
 运行方式(在 WY 目录下):
-    python scripts/export_i18n_json.py
+    python tools/export_i18n_json.py
 """
 
 import json

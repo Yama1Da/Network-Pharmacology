@@ -6,7 +6,7 @@
 Jaccard 重叠,回答"换个数据集结论还成立吗"。
 
 用法(在 WY 目录下):
-    python scripts/cross_dataset_robustness.py \\
+    python benchmark/cross_dataset_robustness.py \\
         --gse-a GSE1297 --case-a "group: Severe|group: Incipient|group: Moderate" \\
         --control-a "group: Control" \\
         --gse-b GSE63067 --case-b "steatosis|non-alcoholic" \\

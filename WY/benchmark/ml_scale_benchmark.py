@@ -3,9 +3,9 @@
 """ML 引擎规模扩展基准:逐级放大合成数据规模,记录引擎耗时/内存/AUC。
 
 用法(在 WY 目录下):
-    python scripts/ml_scale_benchmark.py                          # 默认 5 级
-    python scripts/ml_scale_benchmark.py --levels "20x200,50x500,100x2000"
-    python scripts/ml_scale_benchmark.py --levels "50x500" --bootstrap 20
+    python benchmark/ml_scale_benchmark.py                          # 默认 5 级
+    python benchmark/ml_scale_benchmark.py --levels "20x200,50x500,100x2000"
+    python benchmark/ml_scale_benchmark.py --levels "50x500" --bootstrap 20
 
 输出 results/ml_scale/ 下:scale_results.csv + summary.json。
 """

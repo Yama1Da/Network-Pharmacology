@@ -159,8 +159,14 @@ def _sel_xgboost(X, y, seed):
     return imp, None
 
 
-def _select_all(X, y, seed, boruta_iter=_BORUTA_ITER_FULL):
-    """全量数据跑六个选择器;返回 {算法名: 重要性 Series}。"""
+def _select_all(X, y, seed, boruta_iter=None):
+    """全量数据跑六个选择器;返回 {算法名: 重要性 Series}。
+
+    boruta_iter 缺省在调用时读模块常量(而非定义期绑定):测试的瘦身开关
+    (NPAP_ML_TEST_FULL=0 时的降档)要能整体下调它,生产路径行为不变。
+    """
+    if boruta_iter is None:
+        boruta_iter = _BORUTA_ITER_FULL
     out = {}
     out["lasso"], _ = _sel_lasso(X, y, seed)
     out["enet"], _ = _sel_enet(X, y, seed)

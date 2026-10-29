@@ -28,7 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r WY/requirements.txt
           pip install -e .       # 顺带体检 pyproject 打包配置
-          pip install pytest pytest-cov
+          pip install -r WY/requirements-dev.txt   # 测试工具链(pytest/pytest-cov/httpx),钉版见该文件
 
       - name: 跑测试并统计覆盖率
         run: pytest --cov --cov-report=term-missing --cov-report=xml

@@ -21,12 +21,13 @@ LOWER_PREFIXES = ("WY/core/", "WY/i18n/")
 LOWER_FILES = {"WY/config.py", "WY/env_discovery.py", "WY/__init__.py"}
 
 # 上层(界面/入口)的规范模块名:下层引用任何一个都算越界
-UPPER = ("WY.pages", "WY.ui", "WY.App", "WY.cli", "WY.scripts")
+UPPER = ("WY.pages", "WY.ui", "WY.App", "WY.cli", "WY.tools", "WY.benchmark")
 
 # 裸名 → WY.* 规范名(导入统一后裸名不再出现,映射保留无害)
 BARE_TO_WY = {
     "config": "WY.config", "core": "WY.core", "ui": "WY.ui", "i18n": "WY.i18n",
-    "pages": "WY.pages", "App": "WY.App", "cli": "WY.cli", "scripts": "WY.scripts",
+    "pages": "WY.pages", "App": "WY.App", "cli": "WY.cli",
+    "tools": "WY.tools", "benchmark": "WY.benchmark",
     "env_discovery": "WY.env_discovery",
 }
 
@@ -124,7 +125,7 @@ def test_core_no_streamlit():
 
 
 def test_lower_not_upper():
-    """检查 2:下层文件不得引用 pages/ui/App/cli/scripts。依赖方向是单行道
+    """检查 2:下层文件不得引用 pages/ui/App/cli/tools/benchmark。依赖方向是单行道
     (上层→下层),反向引用会把业务层反向绑定到某个界面上,是分层瓦解的第一步。"""
     imports, errors = _lower_imports(_py_files())
     assert not errors, "; ".join(errors)
@@ -140,10 +141,10 @@ def test_sys_path_zero():
     本检查是全仓唯一的 sys.path 白名单,新增独立入口脚本时在此登记。"""
     allowed = {
         # 独立工具入口(直接运行场景的条件 bootstrap):
-        "WY/scripts/export_i18n_json.py",
-        "WY/scripts/ml_scale_benchmark.py",
-        "WY/scripts/cross_dataset_robustness.py",
-        "WY/scripts/recovery_benchmark.py",
+        "WY/tools/export_i18n_json.py",
+        "WY/benchmark/ml_scale_benchmark.py",
+        "WY/benchmark/cross_dataset_robustness.py",
+        "WY/benchmark/recovery_benchmark.py",
     }
     bad = []
     for rel, abs_path in _py_files():

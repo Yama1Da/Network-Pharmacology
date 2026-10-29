@@ -4,15 +4,15 @@ M1:geo(数据集检索)/ deg(下载→解析→分组→预处理→DEG)两个�
 M2:screen 子命令(在 deg 产物之上叠加六算法共识与 shortlist)。
 
 用法(在 WY 目录下):
-    python scripts/geo_ml_screen.py geo --disease "type 2 diabetes" --limit 20
-    python scripts/geo_ml_screen.py deg --gse GSE63067 --case-pattern "steatosis" --control-pattern "healthy"
-    python scripts/geo_ml_screen.py deg --gse GSE63067            # 不带分组:仅打印分组字段总览
-    python scripts/geo_ml_screen.py screen --gse GSE63067 --case-pattern "steatosis" --control-pattern "healthy"
+    python tools/geo_ml_screen.py geo --disease "type 2 diabetes" --limit 20
+    python tools/geo_ml_screen.py deg --gse GSE63067 --case-pattern "steatosis" --control-pattern "healthy"
+    python tools/geo_ml_screen.py deg --gse GSE63067            # 不带分组:仅打印分组字段总览
+    python tools/geo_ml_screen.py screen --gse GSE63067 --case-pattern "steatosis" --control-pattern "healthy"
         --ranked-csv "path/to/rwr_output.csv" --top-k 20
-    python scripts/geo_ml_screen.py screen --expr expr.csv --labels labels.csv --case-label disease
+    python tools/geo_ml_screen.py screen --expr expr.csv --labels labels.csv --case-label disease
         # 自备数据直跑(方案 §6,不经 GEO):expr.csv 首列为基因符号,样本轴自动识别;
         # labels 两列(样本ID, 分组),分组写法宽松(disease/control、case/ctrl、1/0)
-    python scripts/geo_ml_screen.py screen --gse GSE239512 --counts --case-pattern "PA" --control-pattern "CTL"
+    python tools/geo_ml_screen.py screen --gse GSE239512 --counts --case-pattern "PA" --control-pattern "CTL"
         # RNA-seq 模式(二期):从补充文件取 raw counts 走 DESeq2;
         # case/control 正则匹配 counts 的样本列名(如 PA*/CTL*)
 """

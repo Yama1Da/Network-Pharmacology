@@ -16,7 +16,9 @@ from WY.core.ml_pipeline import run_screen_chain, stale_reasons
 
 def test_pipeline_counts_local(monkeypatch, tmp_path):
     """二期管线 counts 分支(桩替 fetch_gse_count_matrix,纯本地):
-    全链 7 产物 + source=suppl-counts + DESeq2 DEG 表同构。"""
+    全链 7 产物 + source=suppl-counts + DESeq2 DEG 表同构。
+
+    轮数 5→3(2026-10 瘦身):分支持的全链产物结构不受轮数影响。"""
     from WY.core import geo, ml_pipeline
 
     rng = np.random.default_rng(5)
@@ -32,7 +34,7 @@ def test_pipeline_counts_local(monkeypatch, tmp_path):
                             "candidates": [], "transposed": False})
     res = ml_pipeline.run_screen_chain(
         gse="SYNTHC", counts_mode=True, case_pattern="PA",
-        control_pattern="CTL", bootstrap_rounds=5, prefilter_top=20,
+        control_pattern="CTL", bootstrap_rounds=3, prefilter_top=20,
         top_k=8, out_base=str(tmp_path))
     assert res["summary"]["source"] == "suppl-counts", "source 标注错误"
     assert set(res["deg"].columns) == {"gene", "log2FC", "stat", "p",
@@ -44,23 +46,26 @@ def test_pipeline_counts_local(monkeypatch, tmp_path):
 
 
 def test_pipeline_roundtrip(tmp_path):
-    """共用管线(方案 §M4):本地矩阵全链 → 落盘产物齐全 → summary 可读 → 陈旧判定。"""
+    """共用管线(方案 §M4):本地矩阵全链 → 落盘产物齐全 → summary 可读 → 陈旧判定。
+
+    规模按断言所需下限取值(2026-10 瘦身):30 基因 × 4+4 样本(仍走 LOOCV 折内
+    全选择路径),产物结构/注释行/漏斗/陈旧判定的断言与规模无关。"""
     tmp = str(tmp_path)
     rng = np.random.default_rng(3)
-    genes = [f"G{i:03d}" for i in range(40)]
-    cols = [f"S{i:02d}" for i in range(12)]
-    X = rng.normal(0, 1, (40, 12))
-    X[:6, 6:] += 1.5  # 前 6 个基因在 case(S06..S11) 抬升
+    genes = [f"G{i:03d}" for i in range(30)]
+    cols = [f"S{i:02d}" for i in range(8)]
+    X = rng.normal(0, 1, (30, 8))
+    X[:6, 4:] += 1.5  # 前 6 个基因在 case(S04..S07) 抬升
     expr_p = os.path.join(tmp, "expr.csv")
     pd.DataFrame(X, index=genes, columns=cols).to_csv(expr_p, encoding="utf-8-sig")
     lab_p = os.path.join(tmp, "labels.csv")
     pd.DataFrame({"sample_id": cols,
-                  "group": ["control"] * 6 + ["disease"] * 6}).to_csv(lab_p, index=False)
+                  "group": ["control"] * 4 + ["disease"] * 4}).to_csv(lab_p, index=False)
     prox_p = os.path.join(tmp, "prox.csv")
-    pd.DataFrame({"gene": genes[:20], "score": rng.random(20)}).to_csv(prox_p, index=False)
+    pd.DataFrame({"gene": genes[:15], "score": rng.random(15)}).to_csv(prox_p, index=False)
 
-    res = run_screen_chain(expr=expr_p, labels=lab_p, bootstrap_rounds=5,
-                           prefilter_top=30, ranked_csvs={"prox": prox_p},
+    res = run_screen_chain(expr=expr_p, labels=lab_p, bootstrap_rounds=3,
+                           prefilter_top=20, ranked_csvs={"prox": prox_p},
                            top_k=10, out_base=tmp)
     out_dir = res["out_dir"]
     for fname in ("ml_consensus_scores.csv", "shortlist.csv", "funnel.csv",
@@ -72,7 +77,7 @@ def test_pipeline_roundtrip(tmp_path):
         summary = json.load(f)
     assert summary["source"] == "local-expr", "source 标注错误"
     assert summary["ml_version"] == config.ML_SCREENING_VERSION, "算法版本未记录"
-    assert summary["groups"]["case"] == 6 and summary["groups"]["control"] == 6
+    assert summary["groups"]["case"] == 4 and summary["groups"]["control"] == 4
     assert "evidence_scope" in res["shortlist"].columns, "shortlist 缺 evidence_scope 列"
     assert res["shortlist"]["evidence_scope"].iloc[0] == "未标注(本地矩阵)", \
         f"本地矩阵 evidence_scope 应为未标注,实际 {res['shortlist']['evidence_scope'].iloc[0]}"

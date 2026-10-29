@@ -602,7 +602,7 @@ def require_meta(species: str = "Human") -> dict:
     if meta is None:
         raise InteractomeNotBuiltError(
             f"Interactome cache not built for {species}. "
-            "Run: python scripts/build_interactome.py")
+            "Run: python tools/build_interactome.py")
     return meta
 
 
