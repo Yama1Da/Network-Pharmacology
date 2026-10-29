@@ -24,6 +24,10 @@ results/
 /Front-end-screen-options/
 /.acl-recovery/
 /文件/
-/_video_probe/
-/_video/
 /_video2/
+/_video/
+/_video_probe/
+.coverage
+htmlcov/
+coverage.xml
+/.acl-recovery-docking/

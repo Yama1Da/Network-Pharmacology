@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """LIT-PCBA 基准验证脚本。
-本脚本与 build_interactome.py为计划长期保留的两个 scripts/ 脚本。
+本脚本为计划长期保留的基准验证入口(与 tools/build_interactome.py 同辈)。
 """
 
 import argparse

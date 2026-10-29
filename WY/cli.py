@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 
 # 导入统一走 WY 包绝对导入,可见性由可编辑安装(pip install -e .)提供,
-# 全仓不再有 sys.path 补丁(selfcheck_architecture 守护)。入口:npap / python -m WY.cli。
+# 全仓不再有 sys.path 补丁(tests/test_architecture.py 守护)。入口:npap / python -m WY.cli。
 from WY import i18n
 
 i18n.set_lang_provider(lambda: "en")  # 纪律 1:core 内 t() 输出钉死英文,先于一切 core 调用
@@ -271,7 +271,7 @@ def _proximity_step(drug_syms: list[str], disease_syms: list[str],
     if not interactome.is_built():
         return {"ok": False, "status": "skipped",
                 "detail": "background interactome not built; build it in the web UI "
-                          "or via scripts/build_interactome.py, then rerun"}
+                          "or via tools/build_interactome.py, then rerun"}
     result = run_proximity_cached(drug_syms, disease_syms, label=label)
     if not result.get("ok"):
         return {"ok": False, "status": "failed",
@@ -308,7 +308,7 @@ def _rwr_both_sides_step(drug_syms: list[str], disease_syms: list[str],
     if not interactome.is_built():
         return {"ok": False, "status": "skipped",
                 "detail": "background interactome not built; build it in the web UI "
-                          "or via scripts/build_interactome.py, then rerun"}
+                          "or via tools/build_interactome.py, then rerun"}
     res_d = run_rwr_cached(list(disease_syms), label=f"{label}_disease_seeds",
                            annotate=set(drug_syms))
     res_g = run_rwr_cached(list(drug_syms), label=f"{label}_drug_seeds",
@@ -620,7 +620,7 @@ def cmd_proximity(args) -> int:
           f"output directory: {out_dir}")
     if not interactome.is_built():
         _warn("background interactome not built; build it in the web UI or via "
-              "scripts/build_interactome.py, then rerun")
+              "tools/build_interactome.py, then rerun")
         return 1
     t0 = time.monotonic()
     drug_df = get_drug_targets_merged(args.drug)
@@ -665,7 +665,7 @@ def cmd_rwr(args) -> int:
           f"output directory: {out_dir}")
     if not interactome.is_built():
         _warn("background interactome not built; build it in the web UI or via "
-              "scripts/build_interactome.py, then rerun")
+              "tools/build_interactome.py, then rerun")
         return 1
 
     t0 = time.monotonic()

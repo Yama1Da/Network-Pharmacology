@@ -3,10 +3,10 @@
 """命令行脚本:从 STRING 数据库下载并构建全蛋白背景互作网络的本地缓存。
 
 用法（在 WY 目录下）：
-    python scripts/build_interactome.py                 # 构建 Human（默认参数）
-    python scripts/build_interactome.py --force         # 已构建也强制重建
-    python scripts/build_interactome.py --confidence 700
-    python scripts/build_interactome.py --keep-raw      # 保留原始下载文件（调试用）
+    python tools/build_interactome.py                 # 构建 Human（默认参数）
+    python tools/build_interactome.py --force         # 已构建也强制重建
+    python tools/build_interactome.py --confidence 700
+    python tools/build_interactome.py --keep-raw      # 保留原始下载文件（调试用）
 
 产物为背景网络的边表(基因对 + 互作得分)、基因连接数表和构建记录。
 同参数重跑会覆盖原文件;构建成功后默认删除原始下载文件。

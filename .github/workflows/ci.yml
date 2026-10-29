@@ -1,0 +1,54 @@
+# .github/workflows/ci.yml —— CI 流程单
+# 作用:每次 push 或提 PR,GitHub 免费开一台干净云电脑,从零装环境、跑全部测试、
+# 统计覆盖率。全绿打勾,任何一步失败打红叉并通知。口径与本地完全一致。
+# 另有每周定时档:同一套流程以 NPAP_ML_TEST_FULL=1(全参)跑一遍,兜住"没人改
+# 代码时"的统计行为漂移(依赖升级/runner 镜像更新改变算法数值行为)。
+# 注意:schedule 只认默认分支上的本文件——本文件合入 master 后定时才会注册生效。
+name: CI
+
+on:
+  push:
+    branches: [master, brunch]   # 这两个分支的每次推送都触发(按仓库实际分支名)
+  pull_request:                  # 任何指向本仓库的 PR 也触发
+  schedule:
+    - cron: "17 20 * * 1"        # 每周一 20:17 UTC(周二 04:17 北京时间,错开整点)
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest       # 在最新的 Ubuntu 云电脑上跑
+    env:
+      MPLBACKEND: Agg            # 无界面环境下的画图后端(conftest 也钉一层,双保险)
+      # 日常 push/PR 跑瘦身档(见 tests/conftest.py 的降耗开关);
+      # 每周定时档置 1 → 全参,验证统计参数与生产一致下的行为语义。
+      NPAP_ML_TEST_FULL: ${{ github.event_name == 'schedule' && '1' || '0' }}
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+        with:
+          # push/PR 用事件自带的 ref(PR 才能测到合并结果);仅定时档固定检
+          # 出 brunch——schedule 只会检默认分支,不钉住就会测陈旧的 master
+          ref: ${{ github.event_name == 'schedule' && 'brunch' || github.ref }}
+
+      - name: 安装 Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13" # 与 pyproject.toml requires-python 钉的版本一致
+          cache: pip             # 缓存依赖,第二次起安装快得多
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r WY/requirements.txt
+          pip install -e .       # 顺带体检 pyproject 打包配置
+          pip install -r WY/requirements-dev.txt   # 测试工具链(pytest/pytest-cov/httpx),钉版见该文件
+
+      - name: 跑测试并统计覆盖率
+        run: pytest --cov --cov-report=term-missing --cov-report=xml
+        # 覆盖率 75% 门槛写入 pyproject 后,此步自动生效(阶段四)
+
+      - name: 保存覆盖率报告
+        if: always()             # 即使测试失败也把报告传出来供排查
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml

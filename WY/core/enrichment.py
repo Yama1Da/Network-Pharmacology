@@ -577,13 +577,14 @@ def _normalize_enrichment_gprofiler(df: pd.DataFrame) -> pd.DataFrame:
         return pd.Series(pd.NA, index=df.index, dtype=object)
 
     out = pd.DataFrame({
-        "source": df["source"].astype(str),
+        # 全部列走 _pick 回退:上游响应缺列时返回空表(经下方 dropna)而不是 KeyError
+        "source": _pick("source").fillna("").astype(str),
         "term_id": _pick("term_id", "native"),
         "term_name": _pick("term_name", "name"),
-        "p_value": pd.to_numeric(df["p_value"], errors="coerce"),
-        "adjusted_p_value": pd.to_numeric(df["p_value"], errors="coerce"),
-        "intersection_size": pd.to_numeric(df["intersection_size"], errors="coerce"),
-        "query_size": pd.to_numeric(df["query_size"], errors="coerce"),
+        "p_value": pd.to_numeric(_pick("p_value"), errors="coerce"),
+        "adjusted_p_value": pd.to_numeric(_pick("p_value"), errors="coerce"),
+        "intersection_size": pd.to_numeric(_pick("intersection_size"), errors="coerce"),
+        "query_size": pd.to_numeric(_pick("query_size"), errors="coerce"),
         "genes": _pick("intersection", "intersections").fillna(""),
     })
     out = out.dropna(subset=["term_id", "p_value"]).sort_values("p_value")
