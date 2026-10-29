@@ -111,11 +111,17 @@ def test_sources_refresh_job_flow(client, monkeypatch):
     assert job["status"] == "done"
 
 
-def test_interactome_status_not_built(client):
-    r = client.get("/api/interactome")
-    assert r.status_code == 200
-    assert r.json()["built"] is False
-    assert r.json()["version"] == config.STRING_VERSION
+def test_interactome_status_payload(client):
+    """状态端点按真实状态返回对应形态:默认沙箱必为未构建;设
+    NPAP_TEST_REAL_INTERACTOME=1 且本机已构建时为已构建形态(字段齐全)。"""
+    body = client.get("/api/interactome").json()
+    if not body["built"]:
+        assert body["version"] == config.STRING_VERSION
+    else:
+        for key in ("nodes", "edges", "version", "confidence",
+                    "built_at", "age", "stale"):
+            assert key in body, f"已构建形态缺字段 {key}"
+        assert body["nodes"] >= 10000 and body["edges"] >= 0
 
 
 def test_interactome_build_job_flow(client, monkeypatch):
@@ -311,8 +317,12 @@ def test_targets_retrieve_validation(client):
 
 
 def test_targets_retrieve_and_venn(client, monkeypatch):
-    drug_df = pd.DataFrame({"approvedSymbol": ["TP53", "BRCA1"]})
-    disease_df = pd.DataFrame({"approvedSymbol": ["TP53", "EGFR"]})
+    # 假表带 source_count 列(2026-10 合并 master 后,端点对交集表做
+    # drop(columns=["source_count"]) 无条件消费,假数据必须满足新契约)
+    drug_df = pd.DataFrame({"approvedSymbol": ["TP53", "BRCA1"],
+                            "score": [0.9, 0.8], "source_count": [2, 1]})
+    disease_df = pd.DataFrame({"approvedSymbol": ["TP53", "EGFR"],
+                               "score": [0.7, 0.6], "source_count": [3, 1]})
     monkeypatch.setattr("WY.core.targets.get_targets_concurrent",
                         lambda *a, **k: (drug_df, disease_df, []))
     r = client.post("/api/targets/retrieve",
@@ -322,11 +332,19 @@ def test_targets_retrieve_and_venn(client, monkeypatch):
     body = job["result"]
     assert (body["drug_count"], body["disease_count"], body["common_count"]) == (2, 2, 1)
     assert body["common_genes"] == ["TP53"] and body["failed"] == []
+    # 行载荷契约:三张行表齐全,交集行已去掉 source_count 冗余列
+    assert len(body["drug_rows"]) == 2 and len(body["disease_rows"]) == 2
+    assert [row["approvedSymbol"] for row in body["common_rows"]] == ["TP53"]
+    assert "source_count" not in body["common_rows"][0]
 
     venn = client.get("/api/targets/venn", params={"job_id": r.json()["job_id"]})
     assert venn.status_code == 200
     assert venn.headers["content-type"] == "image/png"
     assert venn.content[:4] == b"\x89PNG"
+    # 暗色版按需渲染并缓存:同 job 二次请求不再画图,但同样出 PNG
+    dark = client.get("/api/targets/venn",
+                      params={"job_id": r.json()["job_id"], "theme": "dark"})
+    assert dark.status_code == 200 and dark.content[:4] == b"\x89PNG"
 
 
 def test_targets_venn_unknown_job_404(client):

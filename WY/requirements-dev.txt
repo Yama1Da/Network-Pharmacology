@@ -1,11 +1,5 @@
 # ===== 测试工具链依赖（开发/CI 专用，不进运行时） =====
-# 与 WY/requirements.txt 的分工：那份是运行时权威清单（被 pyproject 动态引用，
-# 随包安装）；本文件只服务「跑测试」这件事，pyproject 不读它，最终用户装不到。
-# CI 在 .github/workflows/ci.yml 安装本文件；本地跑测试前同样装一次：
-#   pip install -r WY/requirements-dev.txt
-# 历史背景：pytest/pytest-cov 曾只写在 ci.yml 的安装步里，本地环境与 CI 不同源，
-# 新机器要靠口口相传才知道缺什么——2026-10 收编为本文件（httpx 为 FastAPI
-# TestClient 的硬依赖，属测试工具，故放这里而非运行时清单）。
+# 与 WY/requirements.txt 的分工：那份是运行时权威清单（被 pyproject 动态引用，随包安装）；本文件只服务「跑测试」这件事，pyproject 不读它，最终用户装不到。
 
 pytest==9.1.1
 pytest-cov==7.1.0

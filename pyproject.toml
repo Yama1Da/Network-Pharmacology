@@ -33,6 +33,13 @@ dependencies = { file = ["WY/requirements.txt"] }
 [tool.pytest.ini_options]
 testpaths = ["tests"]          # 只到 tests/ 找测试
 addopts = "-ra"                # 结尾汇总显示跳过/失败原因
+markers = [
+    # 配合 NPAP_TEST_REAL_INTERACTOME=1 使用(见 tests/conftest.py):
+    # 双条件齐全时豁免互作组目录沙箱,读真实 Static 数据;无数据时自动跳过。
+    # 只有显式标记的测试允许触真实目录——缓存治理类测试默认在空沙箱里演练,
+    # 若让它们见到真实数据会覆盖/删除真文件(2026-10 事故教训)。
+    "real_interactome: 本测试读取本机已构建的真实互作组数据",
+]
 filterwarnings = [
     "ignore::UserWarning",     # 第三方库噪音(sklearn/joblib/pandas),非本项目代码问题
     "ignore::FutureWarning",

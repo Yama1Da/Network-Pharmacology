@@ -194,8 +194,12 @@ def test_interactome_segment_resume(monkeypatch, tmp_path):
     assert calls["range"] > 4, calls  # 每段都要多次续传才能补完
 
 
+@pytest.mark.real_interactome
 def test_interactome_load_or_skip():
-    """互作组未构建时跳过;已构建时正常加载并检查基因覆盖情况。"""
+    """互作组未构建时跳过;已构建时正常加载并检查基因覆盖情况。
+
+    默认跳过(conftest 沙箱把缓存目录指到空临时目录);设
+    NPAP_TEST_REAL_INTERACTOME=1 且本机已构建互作组时才真正运行。"""
     if not itx.is_built("Human"):
         pytest.skip("Human 背景互作组未构建")
     graph = itx.load_interactome("Human")
@@ -207,9 +211,13 @@ def test_interactome_load_or_skip():
     assert set(deg.columns) == {"gene", "degree"} and len(deg) == graph.number_of_nodes()
 
 
+@pytest.mark.real_interactome
 def test_interactome_staleness():
     """检查互作组数据的"过期"判断:未构建时 age 为 None;已构建时 age 为非负整数,
-    且 is_stale 的阈值比较是严格大于。"""
+    且 is_stale 的阈值比较是严格大于。
+
+    默认跳过(同 load_or_skip 的沙箱机制);NPAP_TEST_REAL_INTERACTOME=1
+    且本机已构建互作组时才真正运行。"""
     if not itx.is_built("Human"):
         pytest.skip("Human 背景互作组未构建")
     age = itx.interactome_age_days("Human")

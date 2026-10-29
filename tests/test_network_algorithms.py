@@ -281,8 +281,13 @@ def test_prox_excl_overlap():
     assert res2["ok"] and res2["d_c_excl"] is None and res2["n_excl"] == 0
 
 
+@pytest.mark.real_interactome
 def test_prox_real_and_cached():
-    """真实互作组完整流程(未构建则跳过):结果结构完整,第二次调用命中缓存。"""
+    """真实互作组完整流程(未构建则跳过):结果结构完整,第二次调用命中缓存。
+
+    默认跳过(conftest 沙箱);设 NPAP_TEST_REAL_INTERACTOME=1 且本机已
+    构建互作组时才真正运行。豁免沙箱后会把 selfcheck_prox 前缀的缓存
+    文件写进真实邻近度缓存目录(下次运行前自清理)。"""
     if not itx.is_built("Human"):
         pytest.skip("Human 背景互作组未构建")
     drug = ["TP53", "EGFR", "AKT1", "MYC", "STAT3"]
@@ -382,8 +387,13 @@ def test_rwr_enrich_synthetic():
         assert r.get("annotated") == (r["gene"] in ann), r
 
 
+@pytest.mark.real_interactome
 def test_rwr_real_and_cached():
-    """真实互作组完整流程(未构建则跳过):检查种子/非种子分列表、收敛与缓存。"""
+    """真实互作组完整流程(未构建则跳过):检查种子/非种子分列表、收敛与缓存。
+
+    默认跳过(conftest 沙箱);设 NPAP_TEST_REAL_INTERACTOME=1 且本机已
+    构建互作组时才真正运行。豁免沙箱后会把 selfcheck_rwr 前缀的缓存
+    文件写进真实 RWR 缓存目录(运行开头自清理)。"""
     if not itx.is_built("Human"):
         pytest.skip("Human 背景互作组未构建")
     # 先删除旧测试缓存,保证第一次是全新计算
