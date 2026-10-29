@@ -184,8 +184,8 @@ onMounted(() => void loadRuns())
   font-style: normal;
   font-size: 10px;
   letter-spacing: 0.2em;
-  color: #b3261e;
-  border: 1px solid #b3261e;
+  color: var(--c-danger);
+  border: 1px solid var(--c-danger);
   padding: 0 5px;
   margin-left: 10px;
   vertical-align: 1.5px;
@@ -193,6 +193,6 @@ onMounted(() => void loadRuns())
 .stale {
   font-size: 12px;
   letter-spacing: 0.05em;
-  color: #b3261e;
+  color: var(--c-danger);
 }
 </style>

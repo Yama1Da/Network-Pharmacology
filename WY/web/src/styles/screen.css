@@ -1,14 +1,78 @@
 /* 全局骨架与共享样式:家族设计语言唯一定义(源自 Front-end-screen-options 极简主义样本)。
    App.vue 提供 screen 骨架(顶栏/幕布/页脚/呼吸环),各视图只写内容区。 */
 
+/* ---------- 调色板:浅色为基准(值=历史硬编码,逐像素不变);深色=样品「墨黑」。
+   切换:html[data-theme="dark"](设置页·通用设置·颜色变换,UI_THEME 持久化)。 ---------- */
+:root {
+  --c-paper: #fdfdfd;      /* 页面底 */
+  --c-panel: #ffffff;      /* 白面板(venn 图/3D 框/白底输入) */
+  --c-ink: #1a1a1a;        /* 主文字 */
+  --c-accent: #1a1a1a;     /* 强调面:黑按钮/下划线/标记(深色下白反转) */
+  --c-on-accent: #fdfdfd;  /* 强调面上的文字 */
+  --c-line: #e6e6e4;       /* 主发丝线(输入下划线/表头分隔) */
+  --c-line-soft: #f0f0ee;  /* 软发丝线(边框/页脚分隔) */
+  --c-rowline: #f4f4f2;    /* 表格行分隔 */
+  --c-hover: #f7f7f5;      /* 行悬停填充 */
+  --c-sel: #ececea;        /* 选中行填充 */
+  --c-ring: #f6f6f4;       /* 外呼吸细环 */
+  --c-danger: #b3261e;     /* 危险红 */
+  --c-ink2: #8a8a88;       /* 次文字/悬停 */
+  --c-ink3: #bcbcbc;       /* 弱标签(页脚/kicker) */
+  --c-ink4: #c6c6c4;       /* 极弱文字(hint/placeholder) */
+  --c-faint: #cfcfcd;      /* 未选文字/placeholder */
+  --c-faint2: #d7d7d5;     /* 分隔符 × */
+  --c-flag-off: #d4d4d2;   /* 来源标记未命中 – */
+  --c-ghost: #dedede;      /* 分隔点/禁用边 */
+  --c-dot: #c9c9c7;        /* 侧栏圆点边框 */
+  --c-quiet: #c2c2c2;      /* 眉标 */
+  --c-sub: #a6a6a6;        /* 导航/表头 */
+  --c-sub2: #adadad;       /* 副标 */
+  --c-num2: #a3a3a3;       /* 页脚统计数字 */
+  --c-dim: #9a9a98;        /* notice */
+  --c-mid: #6e6e6c;        /* 中灰说明文字 */
+  --c-mid2: #6a6a68;       /* 分数列 */
+  --c-body: #4a4a48;       /* 表格正文 */
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --c-paper: #0e0e0e;
+  --c-panel: #151515;
+  --c-ink: #eaeae8;
+  --c-accent: #f2f2f0;
+  --c-on-accent: #0e0e0e;
+  --c-line: #272727;
+  --c-line-soft: #1e1e1e;
+  --c-rowline: #1c1c1c;
+  --c-hover: #161616;
+  --c-sel: #202020;
+  --c-ring: #1a1a1a;
+  --c-danger: #cf6679;
+  --c-ink2: #8f8f8d;
+  --c-ink3: #6c6c6a;
+  --c-ink4: #5d5d5b;
+  --c-faint: #545452;
+  --c-faint2: #494947;
+  --c-flag-off: #4c4c4a;
+  --c-ghost: #424240;
+  --c-dot: #575755;
+  --c-quiet: #636361;
+  --c-sub: #797977;
+  --c-sub2: #747472;
+  --c-num2: #7c7c7a;
+  --c-dim: #83837f;
+  --c-mid: #a0a09e;
+  --c-mid2: #a0a09e;
+  --c-body: #b5b5b3;
+}
+
 /* ---------- 容器 ---------- */
 .screen {
   position: relative;
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #fdfdfd;
-  color: #1a1a1a;
+  background: var(--c-paper);
+  color: var(--c-ink);
   font-family: 'Helvetica Neue', Helvetica, Arial, 'Microsoft YaHei', sans-serif;
   display: flex;
   flex-direction: column;
@@ -19,7 +83,7 @@
   position: absolute;
   top: 50%;
   left: 50%;
-  border: 1px solid #f0f0ee;
+  border: 1px solid var(--c-line-soft);
   border-radius: 50%;
   transform: translate(-50%, -54%);
   pointer-events: none;
@@ -32,7 +96,7 @@
 .w2 {
   width: min(88vmin, 860px);
   height: min(88vmin, 860px);
-  border-color: #f6f6f4;
+  border-color: var(--c-ring);
   animation: breathe 15s ease-in-out infinite alternate-reverse;
 }
 @keyframes breathe {
@@ -57,7 +121,7 @@
   height: 5px;
   margin-left: -2.5px;
   border-radius: 50%;
-  background: #1a1a1a;
+  background: var(--c-accent);
 }
 @keyframes orbit {
   to {
@@ -70,7 +134,7 @@
   position: absolute;
   inset: 0;
   z-index: 50;
-  background: #fdfdfd;
+  background: var(--c-paper);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -79,7 +143,7 @@
 }
 .intro-ring-path {
   fill: none;
-  stroke: #1a1a1a;
+  stroke: var(--c-accent);
   stroke-width: 1;
   stroke-dasharray: 188.5;
   animation: ring-draw 1.15s cubic-bezier(0.4, 0, 0.2, 1) 0.15s both;
@@ -97,7 +161,7 @@
   font-weight: 600;
   letter-spacing: 0.55em;
   text-indent: 0.55em;
-  color: #1a1a1a;
+  color: var(--c-ink);
   animation: word-in 1s ease 0.35s both;
 }
 @keyframes word-in {
@@ -130,13 +194,13 @@
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.3em;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .brand-dot {
   display: inline-block;
   width: 4px;
   height: 4px;
-  background: #1a1a1a;
+  background: var(--c-accent);
   margin-left: 7px;
   vertical-align: 2px;
 }
@@ -147,14 +211,14 @@
 .links a {
   font-size: 11.5px;
   letter-spacing: 0.14em;
-  color: #a6a6a6;
+  color: var(--c-sub);
   cursor: pointer;
   transition: color 0.25s ease;
   user-select: none;
 }
 .links a:hover,
 .links a.active {
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 
 /* ---------- 下拉导航组(点击开合;分组名/条目名复用旧版 popover 词典) ---------- */
@@ -171,7 +235,7 @@
   font-family: inherit;
   font-size: 11.5px;
   letter-spacing: 0.14em;
-  color: #a6a6a6;
+  color: var(--c-sub);
   cursor: pointer;
   transition: color 0.25s ease;
   user-select: none;
@@ -179,7 +243,7 @@
 .dd-btn:hover,
 .dd-btn[aria-expanded='true'],
 .dd.on .dd-btn {
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .dd-caret {
   width: 5px;
@@ -200,9 +264,9 @@
   min-width: 210px;
   padding: 6px 0;
   z-index: 40;
-  background: #fdfdfd;
-  border: 1px solid #e6e6e4;
-  box-shadow: 0 10px 28px rgba(26, 26, 26, 0.06);
+  background: var(--c-paper);
+  border: 1px solid var(--c-line);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--c-accent) 6%, transparent);
 }
 .links .dd-item {
   display: block;
@@ -210,15 +274,15 @@
   font-size: 11.5px;
   letter-spacing: 0.1em;
   white-space: nowrap;
-  color: #4a4a48;
+  color: var(--c-body);
   transition: color 0.2s ease, background 0.2s ease;
 }
 .links .dd-item:hover {
-  color: #1a1a1a;
-  background: #f7f7f5;
+  color: var(--c-ink);
+  background: var(--c-hover);
 }
 .links .dd-item.active {
-  color: #1a1a1a;
+  color: var(--c-ink);
   font-weight: 500;
 }
 .dd-enter-active,
@@ -279,7 +343,7 @@
   font-size: 10px;
   letter-spacing: 0.62em;
   text-indent: 0.62em;
-  color: #c2c2c2;
+  color: var(--c-quiet);
   text-align: center;
 }
 .title {
@@ -288,7 +352,7 @@
   font-weight: 300;
   letter-spacing: 0.18em;
   text-indent: 0.18em;
-  color: #1a1a1a;
+  color: var(--c-ink);
   text-align: center;
 }
 .sub {
@@ -296,13 +360,14 @@
   font-size: 12px;
   letter-spacing: 0.3em;
   text-indent: 0.3em;
-  color: #adadad;
+  color: var(--c-sub2);
   text-align: center;
 }
 
 /* ---------- 内容面板 ---------- */
 .panel {
-  width: min(780px, 92vw);
+  /* 宽度封顶用 % 而非 vw:vw 不随 CSS zoom 缩放,界面放大后面板会溢出视口出横向滚动条 */
+  width: min(780px, 92%);
   margin-top: 42px;
 }
 .controls {
@@ -310,7 +375,7 @@
   align-items: baseline;
   gap: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #e6e6e4;
+  border-bottom: 1px solid var(--c-line);
 }
 .search {
   position: relative;
@@ -322,16 +387,16 @@
   border: none;
   outline: none;
   background: transparent;
-  border-bottom: 1px solid #e6e6e4;
+  border-bottom: 1px solid var(--c-line);
   padding: 8px 2px;
   font-size: 13.5px;
   font-family: inherit;
-  color: #1a1a1a;
+  color: var(--c-ink);
   letter-spacing: 0.02em;
   border-radius: 0;
 }
 .search input::placeholder {
-  color: #cfcfcd;
+  color: var(--c-faint);
   letter-spacing: 0.08em;
 }
 .line {
@@ -340,7 +405,7 @@
   right: 0;
   bottom: 0;
   height: 1px;
-  background: #1a1a1a;
+  background: var(--c-accent);
   transform: scaleX(0);
   transition: transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
@@ -350,23 +415,23 @@
 .count {
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .ctl-label {
   font-size: 11px;
   letter-spacing: 0.3em;
-  color: #c2c2c2;
+  color: var(--c-quiet);
 }
 .ctl-meta {
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .dot {
   width: 3px;
   height: 3px;
   border-radius: 50%;
-  background: #dedede;
+  background: var(--c-ghost);
   align-self: center;
 }
 .go {
@@ -376,8 +441,8 @@
   height: 38px;
   border: none;
   border-radius: 50%;
-  background: #1a1a1a;
-  color: #fdfdfd;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -400,7 +465,7 @@
   margin: 14px 0 0;
   font-size: 11px;
   letter-spacing: 0.1em;
-  color: #9a9a98;
+  color: var(--c-dim);
 }
 .note-enter-active,
 .note-leave-active {
@@ -425,7 +490,7 @@
 .bar-label {
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .bar-btn {
   border: none;
@@ -433,28 +498,28 @@
   font-family: inherit;
   font-size: 12px;
   letter-spacing: 0.08em;
-  color: #1a1a1a;
+  color: var(--c-ink);
   cursor: pointer;
   padding: 4px 0;
-  border-bottom: 1px solid #1a1a1a;
+  border-bottom: 1px solid var(--c-accent);
   transition: opacity 0.25s ease;
 }
 .bar-btn:disabled {
   cursor: default;
-  border-bottom-color: #dedede;
-  color: #c6c6c4;
+  border-bottom-color: var(--c-ghost);
+  color: var(--c-ink4);
 }
 .bar-btn.danger {
-  color: #b3261e;
-  border-bottom-color: #b3261e;
+  color: var(--c-danger);
+  border-bottom-color: var(--c-danger);
 }
 .bar-btn.danger:disabled {
-  border-bottom-color: #dedede;
-  color: #c6c6c4;
+  border-bottom-color: var(--c-ghost);
+  color: var(--c-ink4);
 }
 .bar-btn.danger.arm {
-  background: #b3261e;
-  color: #fdfdfd;
+  background: var(--c-danger);
+  color: var(--c-on-accent);
   padding: 4px 10px;
 }
 
@@ -465,7 +530,7 @@
   padding: 0;
 }
 .file {
-  border-bottom: 1px solid #f0f0ee;
+  border-bottom: 1px solid var(--c-line-soft);
 }
 .row {
   display: flex;
@@ -480,13 +545,13 @@
 }
 .sel input,
 .chk input {
-  accent-color: #1a1a1a;
+  accent-color: var(--c-ink);
 }
 .fname {
   flex: 1;
   font-size: 13px;
   letter-spacing: 0.04em;
-  color: #1a1a1a;
+  color: var(--c-ink);
   font-variant-numeric: tabular-nums;
   min-width: 0;
   overflow: hidden;
@@ -496,14 +561,14 @@
 .raw {
   font-style: normal;
   font-size: 10.5px;
-  color: #c6c6c4;
+  color: var(--c-ink4);
   margin-left: 10px;
   letter-spacing: 0.04em;
 }
 .fmeta {
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -511,19 +576,19 @@
   border: none;
   background: none;
   font-size: 13px;
-  color: #a6a6a6;
+  color: var(--c-sub);
   cursor: pointer;
   padding: 0 4px;
   transition: color 0.25s ease;
 }
 .mini:hover {
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .empty {
   padding: 30px 2px;
   font-size: 12px;
   letter-spacing: 0.06em;
-  color: #c6c6c4;
+  color: var(--c-ink4);
   text-align: center;
 }
 
@@ -538,7 +603,7 @@
 .chk {
   font-size: 11.5px;
   letter-spacing: 0.06em;
-  color: #8a8a88;
+  color: var(--c-ink2);
   cursor: pointer;
   user-select: none;
 }
@@ -555,13 +620,13 @@
   border: none;
   background: none;
   font-size: 16px;
-  color: #a6a6a6;
+  color: var(--c-sub);
   cursor: pointer;
   padding: 2px 8px;
   transition: color 0.25s ease;
 }
 .pager-btn:hover:not(:disabled) {
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .pager-btn:disabled {
   opacity: 0.35;
@@ -570,7 +635,7 @@
 .pager-num {
   font-size: 11px;
   letter-spacing: 0.14em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
   font-variant-numeric: tabular-nums;
 }
 
@@ -580,19 +645,19 @@
 }
 .progress-track {
   height: 2px;
-  background: #ececea;
+  background: var(--c-sel);
   overflow: hidden;
 }
 .progress-fill {
   height: 100%;
-  background: #1a1a1a;
+  background: var(--c-accent);
   transition: width 0.5s ease;
 }
 .progress-text {
   margin: 6px 0 0;
   font-size: 10.5px;
   letter-spacing: 0.08em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 
 /* ---------- 底部 ---------- */
@@ -604,21 +669,21 @@
   justify-content: center;
   gap: 16px;
   padding: 20px 24px;
-  border-top: 1px solid #f0f0ee;
+  border-top: 1px solid var(--c-line-soft);
   font-size: 10.5px;
   letter-spacing: 0.1em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .foot-stats b {
   font-weight: 500;
-  color: #a3a3a3;
+  color: var(--c-num2);
   font-variant-numeric: tabular-nums;
 }
 .foot-dot {
   width: 3px;
   height: 3px;
   border-radius: 50%;
-  background: #dedede;
+  background: var(--c-ghost);
 }
 
 /* ---------- 弱动效与窄屏 ---------- */
@@ -666,19 +731,19 @@
   font-family: inherit;
   font-size: 12.5px;
   letter-spacing: 0.12em;
-  color: #cfcfcd;
+  color: var(--c-faint);
   cursor: pointer;
   transition: color 0.25s ease;
 }
 .lv:hover {
-  color: #8a8a88;
+  color: var(--c-ink2);
 }
 .lv.on {
-  color: #1a1a1a;
+  color: var(--c-ink);
   font-weight: 500;
 }
 .lv-sep {
-  color: #dedede;
+  color: var(--c-ghost);
   font-size: 12px;
 }
 .field {
@@ -692,18 +757,18 @@
   border: none;
   outline: none;
   background: transparent;
-  border-bottom: 1px solid #e6e6e4;
+  border-bottom: 1px solid var(--c-line);
   padding: 10px 2px;
   font-size: 15px;
   font-family: inherit;
-  color: #1a1a1a;
+  color: var(--c-ink);
   letter-spacing: 0.02em;
   border-radius: 0;
   resize: vertical;
 }
 .field input::placeholder,
 .field textarea::placeholder {
-  color: #cfcfcd;
+  color: var(--c-faint);
   letter-spacing: 0.08em;
 }
 .line {
@@ -712,7 +777,7 @@
   right: 0;
   bottom: 0;
   height: 1px;
-  background: #1a1a1a;
+  background: var(--c-accent);
   transform: scaleX(0);
   transition: transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
@@ -721,19 +786,19 @@
 }
 .cross {
   padding-bottom: 12px;
-  color: #d7d7d5;
+  color: var(--c-faint2);
   font-size: 15px;
 }
 .panel.wide {
-  width: min(1280px, 94vw);
+  width: min(1280px, 94%);
 }
 
 /* ---------- 3D 预览框(全局):满宽,iframe 尺寸不小于 py3Dmol 内容,无滚动条 ---------- */
 .fig-frame {
   width: 100%;
   height: 560px;
-  border: 1px solid #f0f0ee;
-  background: #ffffff;
+  border: 1px solid var(--c-line-soft);
+  background: var(--c-panel);
 }
 .box-view {
   flex: 1;
@@ -747,18 +812,18 @@
 .step {
   margin-top: 30px;
   padding-top: 18px;
-  border-top: 1px solid #f0f0ee;
+  border-top: 1px solid var(--c-line-soft);
 }
 .step-title {
   margin: 0 0 12px;
   font-size: 14px;
   font-weight: 500;
   letter-spacing: 0.14em;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .ok-mark {
   font-size: 11px;
-  color: #8a8a88;
+  color: var(--c-ink2);
   font-weight: 400;
   margin-left: 10px;
   letter-spacing: 0.06em;
@@ -767,18 +832,18 @@
   border: none;
   outline: none;
   background: transparent;
-  border-bottom: 1px solid #e6e6e4;
+  border-bottom: 1px solid var(--c-line);
   padding: 8px 2px;
   font-family: inherit;
   font-size: 13.5px;
-  color: #1a1a1a;
+  color: var(--c-ink);
   border-radius: 0;
   max-width: 100%;
   margin-bottom: 8px;
 }
 .sel option {
-  background: #fdfdfd;
-  color: #1a1a1a;
+  background: var(--c-paper);
+  color: var(--c-ink);
 }
 .ta {
   width: 100%;
@@ -786,11 +851,11 @@
   border: none;
   outline: none;
   background: transparent;
-  border-bottom: 1px solid #e6e6e4;
+  border-bottom: 1px solid var(--c-line);
   padding: 8px 2px;
   font-family: inherit;
   font-size: 13px;
-  color: #1a1a1a;
+  color: var(--c-ink);
   border-radius: 0;
   resize: vertical;
   margin-bottom: 8px;
@@ -827,16 +892,16 @@
 .num span {
   font-size: 10px;
   letter-spacing: 0.14em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .num input {
   border: none;
   outline: none;
   background: transparent;
-  border-bottom: 1px solid #e6e6e4;
+  border-bottom: 1px solid var(--c-line);
   padding: 5px 2px;
   font-size: 13px;
-  color: #1a1a1a;
+  color: var(--c-ink);
   width: 100%;
   box-sizing: border-box;
   font-family: inherit;
@@ -847,7 +912,7 @@
   font-size: 12.5px;
   font-weight: 500;
   letter-spacing: 0.12em;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .log {
   max-height: 220px;
@@ -855,7 +920,7 @@
   font-family: 'SF Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
   font-size: 11px;
   line-height: 1.6;
-  color: #6e6e6c;
+  color: var(--c-mid);
   white-space: pre-wrap;
   word-break: break-all;
   margin: 6px 0 0;
@@ -878,14 +943,14 @@ tr.selrow {
   cursor: pointer;
 }
 .tbl tbody tr:hover td {
-  background: #f7f7f5;
+  background: var(--c-hover);
 }
 /* 选中行:底色加深 + 首列左缘黑色竖线,与悬停浅灰明确区分 */
 .tbl tbody tr.selrow td {
-  background: #ececea;
+  background: var(--c-sel);
 }
 .tbl tbody tr.selrow td:first-child {
-  box-shadow: inset 2px 0 0 #1a1a1a;
+  box-shadow: inset 2px 0 0 var(--c-accent);
   font-weight: 500;
 }
 td.ttl {
@@ -895,7 +960,7 @@ td.ttl {
   white-space: nowrap;
 }
 td.warn {
-  color: #b3261e;
+  color: var(--c-danger);
 }
 
 /* ---------- 结果指标与表单行(全局:Analysis / Docking / Ml 共用) ---------- */
@@ -920,27 +985,27 @@ td.warn {
   font-size: 30px;
   font-weight: 300;
   font-variant-numeric: tabular-nums;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .metric span {
   font-size: 10.5px;
   letter-spacing: 0.2em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .hint-line {
   margin: 10px 0 0;
   font-size: 11.5px;
   letter-spacing: 0.05em;
-  color: #8a8a88;
+  color: var(--c-ink2);
 }
 .hint-line.good {
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .stale {
   margin: 10px 0 0;
   font-size: 12px;
   letter-spacing: 0.05em;
-  color: #b3261e;
+  color: var(--c-danger);
 }
 .set-row {
   display: flex;
@@ -954,7 +1019,7 @@ td.warn {
   width: 130px;
   font-size: 11.5px;
   letter-spacing: 0.1em;
-  color: #8a8a88;
+  color: var(--c-ink2);
 }
 .sel.inline {
   width: auto;
@@ -970,21 +1035,21 @@ td.warn {
   width: 100%;
   border-collapse: collapse;
   font-size: 11.5px;
-  color: #4a4a48;
+  color: var(--c-body);
 }
 .tbl th {
   text-align: left;
   font-weight: 500;
   letter-spacing: 0.08em;
-  color: #a6a6a6;
-  border-bottom: 1px solid #e6e6e4;
+  color: var(--c-sub);
+  border-bottom: 1px solid var(--c-line);
   padding: 6px 10px 6px 0;
   position: sticky;
   top: 0;
-  background: #fdfdfd;
+  background: var(--c-paper);
 }
 .tbl td {
-  border-bottom: 1px solid #f4f4f2;
+  border-bottom: 1px solid var(--c-rowline);
   padding: 6px 10px 6px 0;
   font-variant-numeric: tabular-nums;
 }
@@ -1001,7 +1066,7 @@ td.warn {
   justify-content: space-between;
   gap: 14px;
   padding: 8px 2px;
-  border-bottom: 1px solid #f4f4f2;
+  border-bottom: 1px solid var(--c-rowline);
 }
 .dl-main {
   flex: 1;
@@ -1011,13 +1076,13 @@ td.warn {
   display: block;
   font-size: 12.5px;
   letter-spacing: 0.04em;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .dl-name {
   display: block;
   margin-top: 2px;
   font-family: 'SF Mono', Consolas, monospace;
   font-size: 10.5px;
-  color: #a6a6a6;
+  color: var(--c-sub);
   word-break: break-all;
 }

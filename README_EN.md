@@ -2,9 +2,7 @@
 
 # Network Pharmacology Analysis Platform
 
-[![CI](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml/badge.svg)](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml)
-
-A one-stop network pharmacology analysis tool built on Streamlit: enter a drug and a disease
+A one-stop network pharmacology analysis tool: enter a drug and a disease
 name, and it automatically completes the full workflow of
 "target acquisition → target integration → PPI network construction → enrichment analysis → molecular docking".
 Batch processing via the CLI is also supported (figures are not generated in CLI mode).
@@ -33,14 +31,15 @@ Batch processing via the CLI is also supported (figures are not generated in CLI
 
 ## Requirements
 
-The requirements below apply to the local conda / pip routes; with Docker deployment, the host
-only needs Docker and a DisGeNET key (see Docker Deployment below).
+The requirements below are what a local run needs at minimum; Python dependencies need no
+manual installation — the launcher scripts (double-click `start_npap.bat` on Windows,
+`./start_npap.sh` on Linux/macOS) create the virtual environment and install them on first run.
 
 - Python >= 3.13, < 3.14 (development baseline 3.13.x; the pinned dependencies do not
   ship prebuilt wheels for 3.14 yet)
 - [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) executable (per-platform
-  install steps in Quick Start step 3; set `VINA_DIR` in `WY/API.env` — rename
-  `API.env.example` to `API.env` first — or add its folder to PATH)
+  install steps in Quick Start step 3; set `VINA_DIR` on the web Settings page or in
+  `WY/API.env`, or add its folder to PATH)
 - The `obabel` command line from [Open Babel](https://openbabel.org/) (receptor conversion
   in molecular docking runs it as a subprocess; per-platform install steps in Quick Start
   step 3; set `OBABEL_DIR` or add its folder to PATH)
@@ -50,49 +49,38 @@ only needs Docker and a DisGeNET key (see Docker Deployment below).
 ## Quick Start
 
 ```bash
-# 1. Install dependencies (choose one)
+# 1. Install Python 3.13 (the project requires >=3.13,<3.14; the pinned dependencies do not
+#    ship prebuilt wheels for 3.14 yet)
+#    Windows: https://www.python.org/downloads/ — tick "Add python.exe to PATH" in the installer
+#    macOS:   brew install python@3.13
+#    Linux:   Debian/Ubuntu: sudo apt install python3.13 python3.13-venv; Fedora: sudo dnf install python3.13
 
-# Option A (recommended): one-shot conda environment for dependencies (installs obabel;
-# works on Windows/Linux/macOS). Keys and local paths are NOT part of the env —
-# steps 2 and 3 below are still required.
-cd WY
-conda env create -f environment.yml
-conda activate npy
+# 2. One-click launch (first run creates the .venv and installs dependencies, a few minutes;
+#    the Tsinghua PyPI mirror is used by default)
+Windows: double-click start_npap.bat          # stop: double-click stop_npap.bat
+Linux/macOS: ./start_npap.sh                  # stop: ./stop_npap.sh
+#    When the server is up it opens http://127.0.0.1:8000 in your browser automatically
+#    (open that address manually if it does not)
 
-# Option B: pip + venv
-cd WY
-python -m venv .venv
-.venv\Scripts\activate        # Windows (Linux/macOS: source .venv/bin/activate)
-pip install -r requirements.txt
-# Receptor conversion additionally needs the obabel command line (invoked as a
-# subprocess, not the Python bindings): install the official Open Babel installer on
-# Windows, or openbabel via apt/dnf on Linux, or `conda install -c conda-forge openbabel`;
-# make sure obabel is on PATH, or point OBABEL_DIR in API.env to its folder
+# 3. Install the external docking tools (only the "Molecular Docking" feature needs them;
+#    they are discovered via Settings page/API.env first, then PATH)
+#    Windows: download vina_1.2.7_win.exe (vina_split optional — a built-in Python splitter
+#             takes over when it is missing) from https://github.com/ccsb-scripps/AutoDock-Vina/releases;
+#             install Open Babel from https://openbabel.org/ (let it add itself to PATH).
+#             Both can also stay off PATH: after launch, fill in VINA_DIR / OBABEL_DIR
+#             on the web Settings page.
+#    Linux/macOS: conda install -c conda-forge vina openbabel
+#             (on Linux, openbabel can also come from apt/dnf; anything on PATH is found)
 
-# 2. Configure API.env (identical for conda and pip: keys are runtime config, not part
-#    of any environment)
-Copy API.env.example to API.env (keep the template so future updates still arrive),
-edit it and fill in DisGeNET_API_KEY
+# 4. First use: enter your DisGeNET API key on the web Settings page (free application at
+#    https://www.disgenet.org/). Saving writes WY/API.env automatically (the file is created
+#    on demand — no manual setup needed). The app also works without a key; only the
+#    DisGeNET target table stays empty, all other sources are unaffected.
 
-# 3. Install AutoDock Vina and Open Babel (conda-forge has no win-64 vina build; obabel
-#    is needed for receptor conversion)
-Windows: download vina_1.2.7_win.exe (optionally together with vina_split_1.2.7_win.exe) 
-#          from https://github.com/ccsb-scripps/AutoDock-Vina/releases into any folder,
-#          then point VINA_DIR in API.env to that folder (or add it to PATH);
-#          vina_split is optional — the app falls back to a Python splitter.
-#          For Open Babel, grab the Windows installer (includes obabel.exe) from
-#          https://openbabel.org/ and let it add itself to PATH; otherwise point
-#          OBABEL_DIR in API.env to its folder.
-Linux/macOS: conda install -c conda-forge vina   # installs vina and vina_split    
-#          obabel: conda install -c conda-forge openbabel (or install openbabel via apt/dnf)
-
-# 4. Launch
-start_npap.bat  (or npap serve)
-
-# 5. (Optional) install the command-line batch analysis as a global `npap` command
-#    (see "Command-Line Batch Analysis (CLI)")
-pip install -e ..        # run inside the WY directory; -e (editable) is required
-npap --help              # usable from any directory while the environment is active
+# 5. (Optional) command-line batch analysis: the launcher already installed the project in
+#    editable mode — activate .venv and npap is available everywhere
+#    Windows: .venv\Scripts\activate      Linux/macOS: source .venv/bin/activate
+#    npap --help                          # see "Command-Line Batch Analysis (CLI)" below
 ```
 
 ## Usage Workflow
@@ -139,7 +127,7 @@ produces pure data output.
 
 ```bash
 cd WY
-conda activate npy        # or activate .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate (the launcher created the env)
 
 # Single-step commands: each writes CSV/JSON files into --out (default ./results;
 # set CLI_RESULTS_DIR in API.env once for a permanent output directory)
@@ -181,7 +169,7 @@ python cli.py batch --pairs D:\cases\pairs.csv --out D:\cases\results --resume  
 
 ```bash
 cd WY
-pip install -e ..        # conda users: conda activate npy first; -e (editable) is required, see below
+pip install -e ..        # -e (editable) is required, see below
 npap --help              # the entry script lands in the env's Scripts\ (Windows) or bin/ (Linux/macOS)
 ```
 
@@ -194,8 +182,8 @@ npap --help              # the entry script lands in the env's Scripts\ (Windows
 - Windows-only install-free transitional script: copy `npap.bat.example` as `npap.bat` and
   put its folder on PATH (machine-specific paths, kept out of git like `API.env`; the default
   works unmodified for the standard layout, conda and other layouts should replace the python
-  path inside with an absolute one). On Linux/macOS, skip the local environment entirely with
-  Docker (see Docker Deployment below).
+  path inside with an absolute one). Linux/macOS needs no equivalent: once `./start_npap.sh`
+  has set up the environment, `source .venv/bin/activate` and `npap` is ready to use.
 - For global use, set `CLI_RESULTS_DIR` in `API.env` once: without `--out`, results land in
   the `results` folder under the **current directory**.
 
@@ -217,7 +205,7 @@ WY/
 ├── api.py                  # FastAPI: /api endpoints + built frontend hosting
 ├── cli.py                  # Command-line batch analysis entry (targets/ppi/enrich/proximity/rwr/analyze/batch)
 ├── config.py               # All tunable parameters (paths, rate limits/retries, cache TTL, filter thresholds)
-├── API.env                 # Secrets and local paths (not committed; see API.env.example)
+├── API.env                 # Secrets and local paths (not committed; auto-created on first save from the web Settings page)
 ├── pages/                  # Streamlit subpages (target management, data network, enrichment, docking, logs, etc.)
 ├── core/                   # Domain & orchestration layer: data-source fetching, PPI, enrichment, docking, cache-file management
 │   ├── management.py       #   Target data file refresh orchestration, settings persistence, cache-name display
@@ -278,9 +266,6 @@ Data Management page, which ensures the background interactome has been download
   the `--out` argument > `CLI_RESULTS_DIR` (in `WY/API.env` or an environment variable of the
   same name) > the `results` folder in the current directory; `--out` still overrides for a
   single run — no need to remove a configured `CLI_RESULTS_DIR`.
-- **Docker container won't start or the page won't open?** Check `docker compose ps` and
-  `docker logs network-pharmacy` first; on a remote server open `http://<server IP>:8000`
-  (not localhost) and make sure port 8000 is allowed through the firewall/security group.
 
 ## Development & Testing
 
@@ -305,3 +290,5 @@ This project is for research purposes only; analysis results should be verified 
 official databases and experimental validation. When using the data, please follow the citation
 requirements of each data source (STRING, DisGeNET, ChEMBL, DGIdb, Open Targets).
 If you have any questions about this project, please contact the project author.
+`NPAP` is this project's own abbreviation and is not affiliated with any third-party organisation,
+project or trademark.

@@ -2,15 +2,21 @@
 /** 主页(App.py 职责的 TS 化):四库检索落地页,1:1 复刻 Front-end-screen-options 极简主义样本。
  * 箭头点击 → /api/targets/retrieve job(四库并发检索,写入来源与 merged 缓存),
  * 完成后展示两侧靶点数并可预填跳转分析页。 */
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import { setPrefill } from '../store'
 import { useJob } from '../composables/useJob'
+import { theme } from '../utils/theme'
 
 const { t } = useI18n()
 const drug = ref('metformin')
 const disease = ref('Type 2 diabetes mellitus')
+
+/* 检索结果三张靶点表:药物 / 疾病 / 交集,页签切换(merged 表的行,来源标记 + 各库分数) */
+type TargetRow = Record<string, string | number | null>
+type ListTab = 'drug' | 'disease' | 'common'
+const listTab = ref<ListTab>('common')
 
 const job = useJob((result) => {
   done.value = {
@@ -18,8 +24,14 @@ const job = useJob((result) => {
     disease: Number(result.disease_count ?? 0),
     common_count: Number(result.common_count ?? 0),
     common_genes: (result.common_genes ?? []) as string[],
-    failed: (result.failed ?? []) as string[]
+    failed: (result.failed ?? []) as string[],
+    rows: {
+      drug: (result.drug_rows ?? []) as TargetRow[],
+      disease: (result.disease_rows ?? []) as TargetRow[],
+      common: (result.common_rows ?? []) as TargetRow[]
+    }
   }
+  listTab.value = 'common'
 })
 
 const done = ref<{
@@ -28,7 +40,37 @@ const done = ref<{
   common_count: number
   common_genes: string[]
   failed: string[]
+  rows: Record<ListTab, TargetRow[]>
 } | null>(null)
+
+type ColKind = 'sym' | 'flag' | 'score'
+interface ListCol { key: string; label: string; kind: ColKind }
+
+const listCols = computed<Record<ListTab, ListCol[]>>(() => {
+  const drug: ListCol[] = [
+    { key: 'approvedSymbol', label: t('web.home.col_gene'), kind: 'sym' },
+    { key: 'source_chmbl', label: 'ChEMBL', kind: 'flag' },
+    { key: 'source_dgidb', label: 'DGIdb', kind: 'flag' },
+    { key: 'score_pchembl', label: 'pChEMBL', kind: 'score' },
+    { key: 'score_dgidb', label: t('web.home.col_dgidb_score'), kind: 'score' }
+  ]
+  const disease: ListCol[] = [
+    { key: 'approvedSymbol', label: t('web.home.col_gene'), kind: 'sym' },
+    { key: 'source_ot', label: 'Open Targets', kind: 'flag' },
+    { key: 'source_disgenet', label: 'DisGeNET', kind: 'flag' },
+    { key: 'score_ot', label: t('web.home.col_ot_score'), kind: 'score' },
+    { key: 'score_disgenet', label: t('web.home.col_disgenet_score'), kind: 'score' }
+  ]
+  return { drug, disease, common: [...drug, ...disease.slice(1)] }
+})
+
+const activeRows = computed<TargetRow[]>(() => done.value?.rows[listTab.value] ?? [])
+
+function fmtCell(v: string | number | null | undefined, kind: ColKind): string {
+  if (kind === 'flag') return v ? '✓' : '–'
+  if (kind === 'score') return v == null ? '—' : Number(v).toFixed(3)
+  return String(v ?? '')
+}
 
 function retrieve(): void {
   if (!drug.value.trim() || !disease.value.trim()) {
@@ -130,12 +172,37 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
         {{ t('web.home.done_common') }} <b>{{ done.common_count }}</b>
         <span v-if="done.failed.length" class="failed">{{ t('web.home.failed_sources', { names: done.failed.join(', ') }) }}</span>
       </p>
-      <img v-if="job.jobId.value" class="venn" :src="`/api/targets/venn?job_id=${job.jobId.value}`"
+      <img v-if="job.jobId.value" class="venn" :src="`/api/targets/venn?job_id=${job.jobId.value}&theme=${theme}`"
            :alt="t('web.home.venn_alt')" />
-      <p v-if="done.common_genes.length" class="hint-line">
-        {{ t('web.home.common_hint', { list: done.common_genes.slice(0, 24).join(', ') }) }}
-        {{ done.common_genes.length > 24 ? t('web.home.common_more', { n: done.common_genes.length }) : '' }}
-      </p>
+      <div class="tl">
+        <div class="tl-tabs">
+          <button class="lv" :class="{ on: listTab === 'drug' }" @click="listTab = 'drug'">
+            {{ t('web.home.tab_drug') }}&nbsp;{{ done.drug }}</button>
+          <span class="lv-sep">/</span>
+          <button class="lv" :class="{ on: listTab === 'disease' }" @click="listTab = 'disease'">
+            {{ t('web.home.tab_disease') }}&nbsp;{{ done.disease }}</button>
+          <span class="lv-sep">/</span>
+          <button class="lv" :class="{ on: listTab === 'common' }" @click="listTab = 'common'">
+            {{ t('web.home.tab_common') }}&nbsp;{{ done.common_count }}</button>
+        </div>
+        <div class="tl-scroll">
+          <table v-if="activeRows.length" class="tbl">
+            <thead>
+              <tr>
+                <th v-for="c in listCols[listTab]" :key="c.key">{{ c.label }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(r, i) in activeRows" :key="i">
+                <td v-for="c in listCols[listTab]" :key="c.key"
+                    :class="c.kind === 'sym' ? 'sym' : c.kind === 'flag' ? { flag: true, on: !!r[c.key] } : 'score'">
+                  {{ fmtCell(r[c.key], c.kind) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="tl-empty">{{ t('web.home.list_empty') }}</p>
+        </div>
+      </div>
       <button class="go enter" :title="t('web.home.enter_title')" @click="goAnalysis">
         <svg viewBox="0 0 24 14" width="22" height="13">
           <path d="M1 7h20M15.5 1.5 21.5 7l-6 5.5" fill="none" stroke="currentColor"
@@ -173,16 +240,16 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   border: none;
   outline: none;
   background: transparent;
-  border-bottom: 1px solid #e6e6e4;
+  border-bottom: 1px solid var(--c-line);
   padding: 10px 2px;
   font-size: 15.5px;
   font-family: inherit;
-  color: #1a1a1a;
+  color: var(--c-ink);
   letter-spacing: 0.02em;
   border-radius: 0;
 }
 .field input::placeholder {
-  color: #cfcfcd;
+  color: var(--c-faint);
   letter-spacing: 0.08em;
 }
 .line {
@@ -191,7 +258,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   right: 0;
   bottom: 0;
   height: 1px;
-  background: #1a1a1a;
+  background: var(--c-accent);
   transform: scaleX(0);
   transition: transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
@@ -200,7 +267,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 }
 .cross {
   padding-bottom: 12px;
-  color: #d7d7d5;
+  color: var(--c-faint2);
   font-size: 15px;
 }
 .go {
@@ -209,8 +276,8 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   margin-bottom: 1px;
   border: none;
   border-radius: 50%;
-  background: #1a1a1a;
-  color: #fdfdfd;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -227,8 +294,8 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 .spin {
   width: 14px;
   height: 14px;
-  border: 1.6px solid rgba(253, 253, 253, 0.35);
-  border-top-color: #fdfdfd;
+  border: 1.6px solid color-mix(in srgb, var(--c-on-accent) 35%, transparent);
+  border-top-color: var(--c-on-accent);
   border-radius: 50%;
   animation: rot 0.8s linear infinite;
 }
@@ -238,15 +305,20 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   }
 }
 .retrieve {
-  width: min(560px, 90vw);
+  /* 封顶用 % 不用 vw:vw 不随界面缩放(CSS zoom)收缩,放大后会出现横向滚动条 */
+  width: min(560px, 90%);
   margin-top: 34px;
+}
+/* 完成态装得下三页签靶点表,容器独立加宽;.tl 直接 100% 不再反向 breakout */
+.retrieve.done {
+  width: min(880px, 90%);
 }
 .failed-msg {
   margin-left: auto;
   margin-right: auto;
   font-size: 12px;
   letter-spacing: 0.05em;
-  color: #b3261e;
+  color: var(--c-danger);
   text-align: center;
 }
 .done {
@@ -256,7 +328,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   margin: 0 0 14px;
   font-size: 13.5px;
   letter-spacing: 0.06em;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .done-line b {
   font-weight: 600;
@@ -264,7 +336,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
 }
 .failed {
   font-size: 11px;
-  color: #b3261e;
+  color: var(--c-danger);
 }
 .enter {
   margin: 0 auto;
@@ -273,24 +345,63 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   max-width: min(520px, 90%);
   margin: 6px auto 0;
   display: block;
-  background: #ffffff;
-  border: 1px solid #f0f0ee;
+  background: var(--c-panel);
+  border: 1px solid var(--c-line-soft);
+}
+.tl {
+  width: 100%;
+  margin-top: 20px;
+}
+.tl-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.tl-scroll {
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--c-line-soft);
+  padding: 0 14px;
+}
+.tl-scroll .tbl th,
+.tl-scroll .tbl td {
+  padding-right: 12px;
+}
+.tl-scroll td.sym {
+  font-weight: 500;
+  color: var(--c-ink);
+}
+.tl-scroll td.flag {
+  color: var(--c-flag-off);
+}
+.tl-scroll td.flag.on {
+  color: var(--c-ink);
+}
+.tl-scroll td.score {
+  color: var(--c-mid2);
+}
+.tl-empty {
+  margin: 20px 0;
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  color: var(--c-ink3);
 }
 .foot-stats {
   margin-top: 48px;
   font-size: 11px;
   letter-spacing: 0.1em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .foot-stats b {
   font-weight: 500;
-  color: #a3a3a3;
+  color: var(--c-num2);
   font-variant-numeric: tabular-nums;
 }
 .hint-line {
   margin: 10px 0 0;
   font-size: 11px;
   letter-spacing: 0.06em;
-  color: #c6c6c4;
+  color: var(--c-ink4);
 }
 </style>

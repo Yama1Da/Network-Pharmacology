@@ -259,7 +259,26 @@ def interactome_status() -> dict:
 @app.post("/api/interactome/build")
 def interactome_build() -> dict:
     def task(progress) -> dict:
-        meta_new = build_interactome(progress_cb=progress)
+        # interactome 的回调签名是 (stage, fraction, detail),适配成 job 进度的 (fraction, text);
+        # 直接透传会因参数个数不符每次抛 TypeError,前端全程看不到构建进度
+        stage_text = {
+            "download_links": "下载 STRING links",
+            "download_info": "下载 STRING info",
+            "mirror_skip": "跳过不可用镜像",
+            "fallback": "并发下载未完成,改用单流(约需 10 分钟以上)",
+            "processing": "解析交互组",
+            "writing": "写入缓存",
+        }
+
+        def cb(stage, fraction=None, detail=""):
+            text = stage_text.get(stage, stage)
+            if detail == "cached":
+                text = f"{text}(已有缓存)"
+            elif detail:
+                text = f"{text} · {detail}"
+            progress(fraction=fraction, text=text)
+
+        meta_new = build_interactome(progress_cb=cb)
         cleaned = clean_old_version_caches("Human")
         return {"nodes": meta_new["n_nodes"], "edges": meta_new["n_edges"],
                 "cleaned": cleaned}
@@ -704,6 +723,8 @@ def _settings_snapshot() -> dict:
         "louvain_resolution": config.LOUVAIN_RESOLUTION,
         "ppi_confidence": config.PPI_CONFIDENCE,
         "pocket_cutoff": config.POCKET_CUTOFF,
+        "ui_font_scale": config.UI_FONT_SCALE,
+        "ui_theme": config.UI_THEME,
     }
 
 
@@ -750,6 +771,7 @@ _ALLOWED_UI_KEYS = (
     "POCKET_CUTOFF", "PPI_CONFIDENCE", "OT_TOP_N", "DISGENET_PAGES",
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "CHEMBL_CORROBORATION_REQUIRED", "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION",
+    "UI_FONT_SCALE", "UI_THEME",
 )
 _BLACKLIST_KEY = "CHEMBL_TARGET_BLACKLIST"
 # 数值范围(与前端 Stepper 的 min/max 一致,双保险)
@@ -759,6 +781,7 @@ _UI_RANGES: dict[str, tuple[float, float]] = {
     "CHEMBL_PCHEMBL_THRESHOLD": (0, 1), "DGIDB_MIN_SCORE": (0, 1),
     "OT_MIN_SCORE": (0, 1), "ENRICHMENT_PVALUE": (0.01, 0.2),
     "LOUVAIN_RESOLUTION": (0.5, 2),
+    "UI_FONT_SCALE": (0.8, 1.5),
 }
 # 这些键影响降噪/抓取规模,值变化后旧参数算出的 merged 整合表不再可信 → 自动清缓存
 _PURGE_MERGED_KEYS = {
@@ -782,6 +805,10 @@ def settings_ui_save(changes: dict) -> dict:
             if k in ("CHEMBL_CORROBORATION_REQUIRED",):
                 if not isinstance(v, bool):
                     raise HTTPException(status_code=400, detail=f"{k} must be a boolean")
+            elif k == "UI_THEME":
+                if not (isinstance(v, str) and v.strip().lower() in ("light", "dark")):
+                    raise HTTPException(status_code=400, detail=f"{k} must be 'light' or 'dark'")
+                validated[k] = v.strip().lower()
             else:
                 if isinstance(v, bool) or not isinstance(v, (int, float)):
                     raise HTTPException(status_code=400, detail=f"{k} must be a number")
@@ -833,28 +860,56 @@ _VENN_CACHE: dict[str, dict] = {}   # job_id → {"png": bytes}(任务线程写�
 _VENN_ORDER: list[str] = []
 
 
-def _render_venn_png(drug_set: set, disease_set: set, drug_name: str, disease_name: str) -> bytes:
+def _render_venn_png(drug_set: set, disease_set: set, drug_name: str, disease_name: str,
+                     dark: bool = False) -> bytes:
     """venn2 服务端渲染(与 App.py 主页同款;线程安全:用 Figure API 而非 pyplot 全局状态)。
-    图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。"""
+    图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。
+    dark=True 按界面深色主题(墨黑)渲染:深底浅字,供深色模式下 venn 不再是刺眼白块。"""
     import io
 
     from matplotlib.figure import Figure
     from matplotlib_venn import venn2
 
-    fig = Figure(figsize=(6, 4))
+    bg = "#0e0e0e" if dark else "white"
+    fg = "#eaeae8" if dark else "black"
+    fig = Figure(figsize=(6, 4), facecolor=bg)
     ax = fig.add_subplot()
+    ax.set_facecolor(bg)
     v = venn2(
         subsets=(len(drug_set - disease_set), len(disease_set - drug_set),
                  len(drug_set & disease_set)),
         set_labels=(f"{drug_name} targets", f"{disease_name} targets"),
         ax=ax,
     )
+    if v:
+        for patch in list(v.set_labels) + [v.get_label_by_id(i) for i in ("10", "01", "11")]:
+            if patch is not None:
+                patch.set_color(fg)
     if v and v.get_label_by_id("11"):
         v.get_label_by_id("11").set_fontsize(12)  # 交集区域字号
-    ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14)
+    ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14, color=fg)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=bg)
     return buf.getvalue()
+
+
+def _target_rows(df) -> list[dict]:
+    """merged 靶点表 → 主页列表行(JSON 安全:NaN→None,分数保留 4 位;去掉 source_count 冗余列)。"""
+    if df is None or df.empty:
+        return []
+    cols = [c for c in df.columns if c != "source_count"]
+    rows: list[dict] = []
+    for rec in df[cols].to_dict("records"):
+        out: dict = {}
+        for k, v in rec.items():
+            if v is None or v != v:  # v != v 即 NaN
+                out[k] = None
+            elif isinstance(v, float):
+                out[k] = round(v, 4)
+            else:
+                out[k] = v
+        rows.append(out)
+    return rows
 
 
 @app.post("/api/targets/retrieve")
@@ -882,10 +937,25 @@ def targets_retrieve(body: RetrieveBody) -> dict:
         if drug_set or disease_set:
             venn_holder["png"] = _render_venn_png(drug_set, disease_set,
                                                   body.drug.strip(), body.disease.strip())
+            # 深色版按需渲染:留存集合与命名,首次请求 theme=dark 时渲染并缓存
+            venn_holder["args"] = (drug_set, disease_set,
+                                   body.drug.strip(), body.disease.strip())
         common = sorted(drug_set & disease_set)
+        drug_rows = _target_rows(drug_df)[:1000]
+        disease_rows = _target_rows(disease_df)[:1000]
+        common_rows: list[dict] = []
+        if drug_rows and disease_rows:
+            import pandas as pd
+
+            common_df = drug_df.drop(columns=["source_count"]).merge(
+                disease_df.drop(columns=["source_count"]),
+                on="approvedSymbol", how="inner")
+            common_rows = _target_rows(common_df)[:1000]
         return {"drug_count": len(drug_set), "disease_count": len(disease_set),
                 "common_count": len(common),
                 "common_genes": common[:200],
+                "drug_rows": drug_rows, "disease_rows": disease_rows,
+                "common_rows": common_rows,
                 "failed": list(failed)}
 
     job_id = jobs.submit(task, f"targets retrieve {body.drug}/{body.disease}")
@@ -898,12 +968,15 @@ def targets_retrieve(body: RetrieveBody) -> dict:
 
 
 @app.get("/api/targets/venn")
-def targets_venn(job_id: str) -> Response:
+def targets_venn(job_id: str, theme: str = "light") -> Response:
     holder = _VENN_CACHE.get(job_id)
-    png = (holder or {}).get("png")
-    if not png:
+    if not holder or not holder.get("png"):
         raise HTTPException(status_code=404, detail="no venn for this job")
-    return Response(content=png, media_type="image/png")
+    if theme == "dark":
+        if "png_dark" not in holder:
+            holder["png_dark"] = _render_venn_png(*holder["args"], dark=True)
+        return Response(content=holder["png_dark"], media_type="image/png")
+    return Response(content=holder["png"], media_type="image/png")
 
 
 # ======== 分子对接(阶段 3b:Molecular_Docking 页) ========

@@ -378,6 +378,8 @@ export const api = {
     louvain_resolution: number
     ppi_confidence: number
     pocket_cutoff: number
+    ui_font_scale: number
+    ui_theme: string
   }> => fetch('/api/settings').then((r) => json(r)),
 
   saveApiEnv: (changes: Record<string, string>): Promise<{ applied: string[] }> =>
@@ -386,7 +388,7 @@ export const api = {
   setStringVersion: (version: string): Promise<{ version: string; changed: boolean }> =>
     post('/api/settings/string-version', { version }),
 
-  saveUiSettings: (changes: Record<string, number | boolean | string[]>): Promise<{
+  saveUiSettings: (changes: Record<string, number | boolean | string | string[]>): Promise<{
     snapshot: {
       keys: { disgenet: boolean; ncbi: boolean }
       vina_dir: string
@@ -406,6 +408,8 @@ export const api = {
       louvain_resolution: number
       ppi_confidence: number
       pocket_cutoff: number
+      ui_font_scale: number
+      ui_theme: string
     }
     changed: string[]
     purged_merged: number

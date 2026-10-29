@@ -9,6 +9,8 @@ import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useNotice } from '../composables/useNotice'
+import { applyScale, persistScale, snapScale } from '../utils/fontScale'
+import { applyTheme, normalizeTheme, persistTheme, type Theme } from '../utils/theme'
 
 const { t } = useI18n()
 const { notice, flash } = useNotice(3600)
@@ -32,6 +34,17 @@ const keys = ref({ disgenet: false, ncbi: false })
 const dgKey = ref('')
 const ncbiKey = ref('')
 const cliResultsDir = ref('')
+
+/* 字体大小(界面等比缩放):滑动条 80%–150%、步长 10%,savedScale 用于保存按钮的未修改判定 */
+const FONT_SCALE_STEP = 0.1
+const fontScale = ref(1)
+const savedScale = ref(1)
+const fontScaleDirty = computed(() => fontScale.value !== savedScale.value)
+
+/* 颜色变换:浅色/深色(样品「墨黑」),savedTheme 用于保存按钮的未修改判定 */
+const themeSel = ref<Theme>('light')
+const savedTheme = ref<Theme>('light')
+const themeDirty = computed(() => themeSel.value !== savedTheme.value)
 
 const otTopN = ref(500)
 const disgenetPages = ref(5)
@@ -58,6 +71,10 @@ const obabelDir = ref('')
 function applySnapshot(s: Snapshot): void {
   keys.value = s.keys
   cliResultsDir.value = s.cli_results_dir
+  fontScale.value = snapScale(s.ui_font_scale)
+  savedScale.value = fontScale.value
+  themeSel.value = normalizeTheme(s.ui_theme)
+  savedTheme.value = themeSel.value
   otTopN.value = s.ot_top_n
   disgenetPages.value = s.disgenet_pages
   stringVersion.value = s.string_version
@@ -172,15 +189,27 @@ async function saveDocking(): Promise<void> {
 /* ---------------- ④ 通用设置 ---------------- */
 
 async function saveGeneral(): Promise<void> {
-  const changes: Record<string, string> = { CLI_RESULTS_DIR: cliResultsDir.value }
-  if (dgKey.value.trim()) changes.DisGeNET_API_KEY = dgKey.value
-  if (ncbiKey.value.trim()) changes.NCBI_API_KEY = ncbiKey.value
   try {
+    if (fontScaleDirty.value || themeDirty.value) {
+      // 缩放/主题即时生效 + 本地镜像,再随快照确认后端值(纯显示偏好,不触发缓存清理)
+      const ui = await api.saveUiSettings({
+        ...(fontScaleDirty.value ? { UI_FONT_SCALE: fontScale.value } : {}),
+        ...(themeDirty.value ? { UI_THEME: themeSel.value } : {})
+      })
+      applySnapshot(ui.snapshot)
+      persistScale(fontScale.value)
+      applyScale(fontScale.value)
+      persistTheme(themeSel.value)
+      applyTheme(themeSel.value)
+    }
+    const changes: Record<string, string> = { CLI_RESULTS_DIR: cliResultsDir.value }
+    if (dgKey.value.trim()) changes.DisGeNET_API_KEY = dgKey.value
+    if (ncbiKey.value.trim()) changes.NCBI_API_KEY = ncbiKey.value
     const applied = (await api.saveApiEnv(changes)).applied
     dgKey.value = ''
     ncbiKey.value = ''
     flash(applied.length ? t('web.settings.keys_saved', { names: applied.join(', ') })
-                         : t('web.settings.paths_none'))
+                         : t('web.settings.saved'))
     await load()
   } catch {
     flash(t('web.settings.keys_fail'))
@@ -356,7 +385,28 @@ async function saveGeneral(): Promise<void> {
               <div class="field wide"><input v-model="cliResultsDir" spellcheck="false" /><i class="line"></i></div>
             </div>
           </section>
-          <button class="bar-btn" :disabled="!dgKey.trim() && !ncbiKey.trim() && cliResultsDir === ''"
+          <section class="sec">
+            <h3 class="sec-title">{{ t('web.settings.font_title') }}</h3>
+            <p class="hint-line">{{ t('web.settings.font_hint') }}</p>
+            <div class="range-row">
+              <input v-model.number="fontScale" type="range" min="0.8" max="1.5" step="0.1"
+                     :aria-label="t('web.settings.font_title')" />
+              <span class="range-val">{{ Math.round(fontScale * 100) }}%</span>
+            </div>
+          </section>
+          <section class="sec">
+            <h3 class="sec-title">{{ t('web.settings.theme_title') }}</h3>
+            <p class="hint-line">{{ t('web.settings.theme_hint') }}</p>
+            <div class="ver-row">
+              <button class="lv" :class="{ on: themeSel === 'light' }"
+                      @click="themeSel = 'light'">{{ t('web.settings.theme_light') }}</button>
+              <span class="lv-sep">/</span>
+              <button class="lv" :class="{ on: themeSel === 'dark' }"
+                      @click="themeSel = 'dark'">{{ t('web.settings.theme_dark') }}</button>
+            </div>
+          </section>
+          <button class="bar-btn"
+                  :disabled="!dgKey.trim() && !ncbiKey.trim() && cliResultsDir === '' && !fontScaleDirty && !themeDirty"
                   @click="saveGeneral">{{ t('web.settings.save') }}</button>
         </template>
       </div>
@@ -393,16 +443,16 @@ async function saveGeneral(): Promise<void> {
   font-family: inherit;
   font-size: 12.5px;
   letter-spacing: 0.1em;
-  color: #cfcfcd;
+  color: var(--c-faint);
   cursor: pointer;
   transition: color 0.25s ease;
   text-align: left;
 }
 .side-item:hover {
-  color: #8a8a88;
+  color: var(--c-ink2);
 }
 .side-item.on {
-  color: #1a1a1a;
+  color: var(--c-ink);
   font-weight: 500;
 }
 .side-dot {
@@ -410,12 +460,12 @@ async function saveGeneral(): Promise<void> {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  border: 1px solid #c9c9c7;
+  border: 1px solid var(--c-dot);
   transition: background 0.25s ease, border-color 0.25s ease;
 }
 .side-item.on .side-dot {
-  background: #1a1a1a;
-  border-color: #1a1a1a;
+  background: var(--c-accent);
+  border-color: var(--c-ink);
 }
 .content {
   flex: 1;
@@ -437,7 +487,7 @@ async function saveGeneral(): Promise<void> {
 .opt-label {
   font-size: 10.5px;
   letter-spacing: 0.14em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
 }
 .corro-row {
   margin-top: 16px;
@@ -454,21 +504,21 @@ async function saveGeneral(): Promise<void> {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid #e6e6e4;
+  border: 1px solid var(--c-line);
   padding: 3px 9px;
   font-size: 11.5px;
   letter-spacing: 0.06em;
-  color: #1a1a1a;
+  color: var(--c-ink);
   font-variant-numeric: tabular-nums;
 }
 button.chip {
   cursor: pointer;
-  color: #8a8a88;
+  color: var(--c-ink2);
   transition: color 0.25s ease, border-color 0.25s ease;
 }
 button.chip:hover {
-  color: #1a1a1a;
-  border-color: #1a1a1a;
+  color: var(--c-ink);
+  border-color: var(--c-ink);
 }
 .chip-x {
   border: none;
@@ -476,12 +526,12 @@ button.chip:hover {
   padding: 0;
   font-size: 13px;
   line-height: 1;
-  color: #a6a6a6;
+  color: var(--c-sub);
   cursor: pointer;
   transition: color 0.25s ease;
 }
 .chip-x:hover {
-  color: #b3261e;
+  color: var(--c-danger);
 }
 .add-row {
   display: flex;
@@ -507,11 +557,11 @@ button.chip:hover {
   border: none;
   outline: none;
   background: transparent;
-  border-bottom: 1px solid #e6e6e4;
+  border-bottom: 1px solid var(--c-line);
   padding: 8px 2px;
   font-size: 13.5px;
   font-family: inherit;
-  color: #1a1a1a;
+  color: var(--c-ink);
   border-radius: 0;
 }
 .line {
@@ -520,7 +570,7 @@ button.chip:hover {
   right: 0;
   bottom: 0;
   height: 1px;
-  background: #1a1a1a;
+  background: var(--c-accent);
   transform: scaleX(0);
   transition: transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
@@ -530,10 +580,10 @@ button.chip:hover {
 .state {
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: #c6c6c4;
+  color: var(--c-ink4);
 }
 .state.on {
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .ver-row {
   display: flex;
@@ -542,17 +592,63 @@ button.chip:hover {
   padding: 6px 0;
   flex-wrap: wrap;
 }
+/* 字体大小滑动条:发丝线轨道 + 圆形黑滑钮,右侧等宽百分比读数 */
+.range-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 0 2px;
+  max-width: 380px;
+}
+.range-row input[type="range"] {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 2px;
+  background: var(--c-line);
+  outline: none;
+  cursor: pointer;
+}
+.range-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  border: none;
+}
+.range-row input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  border: none;
+}
+.range-row input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: var(--c-line);
+}
+.range-val {
+  flex: none;
+  min-width: 44px;
+  text-align: right;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  color: var(--c-ink);
+  font-variant-numeric: tabular-nums;
+}
 .sec {
   margin-top: 26px;
   padding-top: 18px;
-  border-top: 1px solid #f0f0ee;
+  border-top: 1px solid var(--c-line-soft);
 }
 .sec-title {
   margin: 0 0 8px;
   font-size: 14px;
   font-weight: 500;
   letter-spacing: 0.14em;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .bar-btn {
   margin-top: 18px;
@@ -561,10 +657,10 @@ button.chip:hover {
   font-family: inherit;
   font-size: 12px;
   letter-spacing: 0.08em;
-  color: #1a1a1a;
+  color: var(--c-ink);
   cursor: pointer;
   padding: 4px 0;
-  border-bottom: 1px solid #1a1a1a;
+  border-bottom: 1px solid var(--c-accent);
   transition: opacity 0.25s ease;
 }
 .add-row .bar-btn,
@@ -573,8 +669,8 @@ button.chip:hover {
 }
 .bar-btn:disabled {
   cursor: default;
-  border-bottom-color: #dedede;
-  color: #c6c6c4;
+  border-bottom-color: var(--c-ghost);
+  color: var(--c-ink4);
 }
 .lv {
   border: none;
@@ -583,22 +679,22 @@ button.chip:hover {
   font-family: inherit;
   font-size: 12.5px;
   letter-spacing: 0.12em;
-  color: #cfcfcd;
+  color: var(--c-faint);
   cursor: pointer;
   transition: color 0.25s ease;
 }
 .lv:hover {
-  color: #8a8a88;
+  color: var(--c-ink2);
 }
 .lv.on {
-  color: #1a1a1a;
+  color: var(--c-ink);
   font-weight: 500;
 }
 .notice {
   margin: 0 0 14px;
   font-size: 11px;
   letter-spacing: 0.08em;
-  color: #9a9a98;
+  color: var(--c-dim);
 }
 
 @media (max-width: 760px) {

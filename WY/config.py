@@ -254,12 +254,17 @@ def normalized_string_version(value) -> str | None:
 
 # 官方下载站
 STRING_DOWNLOAD_BASE = "https://stringdb-downloads.org/download"
-# 国内镜像:优先使用,不可用时自动改用官方站。
+# 官方静态备用站(与主站同数据,支持 Range 分段)
+STRING_DOWNLOAD_STATIC_BASE = "https://stringdb-static.org/download"
+# 国内镜像:2026-10 起下载直链已全面停用(仅保留网页门户,页面文件链接也指向官方站),
+# 留在链尾作哨兵——官方若恢复镜像直链,把它在 STRING_DOWNLOAD_SOURCES 里挪回首 位即可。
 STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"
-# 全网络大文件下载并发分段数(仅对支持 HTTP Range 的源生效):镜像单连接限速时
-# 多段并行可成倍提速;不支持 Range 或分段失败自动回退单流下载并提醒用户(慢)。
-# 官方站 stringdb-downloads.org 实测单连接仅 ~10KB/s,镜像未同步新版本回退官方源时,
-# 调大此值可近似线性提速(官方站对多连接无明显聚合限速)。
+# 下载源尝试顺序:官方站优先(国内无 STRING 数据镜像,清华 TUNA 等仅镜像 Bioconductor
+# 的 R 包,不含数据文件);官方站单连接实测仅 ~10KB/s,多段并行可近似线性提速。
+INTERACTOME_DOWNLOAD_SOURCES = (
+    STRING_DOWNLOAD_BASE, STRING_DOWNLOAD_STATIC_BASE, STRING_DOWNLOAD_MIRROR_BASE)
+# 全网络大文件下载并发分段数(仅对支持 HTTP Range 的源生效);不支持 Range 或分段
+# 失败自动回退单流下载并提醒用户(慢,约 10 分钟以上)。
 INTERACTOME_DOWNLOAD_CONCURRENCY = 6
 # 背景互作组缓存目录
 INTERACTOME_CACHE_DIR = os.path.join(CACHE_DIR, "interactome")
@@ -397,7 +402,15 @@ UI_SETTINGS_KEYS = (
     "PPI_CONFIDENCE",  # STRING 置信度阈值:PPI 边筛选与背景互作组共用
     "LOG_LEVEL",  # Logs 页的 DEBUG 开关:持久化后重启按此级别初始化日志
     "STRING_VERSION",  # STRING 数据版本:查询 API/下载路径/各缓存键随版本派生或隔离
+    "UI_FONT_SCALE",  # 前端界面等比缩放(1.0=100%):纯显示偏好,不影响任何分析计算
+    "UI_THEME",  # 前端颜色主题 light/dark(深色=样品「墨黑」):纯显示偏好
 )
+# UI_FONT_SCALE 允许范围:加载设置文件时校验,坏值按内置默认运行
+_UI_FONT_SCALE_RANGE = (0.8, 1.5)
+# 界面等比缩放默认 100%;实际生效值由 ui_settings.json 覆盖(下方 apply_ui_settings_overrides)
+UI_FONT_SCALE = 1.0
+# 颜色主题默认浅色;实际生效值由 ui_settings.json 覆盖
+UI_THEME = "light"
 # LOG_LEVEL 允许的取值:加载设置文件时校验,坏值按内置默认运行
 _LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
@@ -425,6 +438,15 @@ def apply_ui_settings_overrides() -> None:
                 _sv = normalized_string_version(_v)
                 if _sv:
                     globals()[_k] = _sv
+            elif _k == "UI_FONT_SCALE":
+                # 缩放比例限范围,越界/坏值按内置默认 1.0 运行;先于通用数值分支
+                if isinstance(_v, (int, float)) and not isinstance(_v, bool) \
+                        and _UI_FONT_SCALE_RANGE[0] <= _v <= _UI_FONT_SCALE_RANGE[1]:
+                    globals()[_k] = float(_v)
+            elif _k == "UI_THEME":
+                # 颜色主题只认 light/dark,坏值按内置浅色运行;先于通用字符串分支
+                if isinstance(_v, str) and _v.strip().lower() in ("light", "dark"):
+                    globals()[_k] = _v.strip().lower()
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, bool):
                 globals()[_k] = _v
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, (int, float)) \

@@ -718,7 +718,7 @@ onMounted(() => {
 
 <style scoped>
 .state.on {
-  color: #1a1a1a;
+  color: var(--c-ink);
   font-weight: 500;
 }
 .build {
@@ -726,8 +726,8 @@ onMounted(() => {
   height: 52px;
   border: none;
   border-radius: 50%;
-  background: #1a1a1a;
-  color: #fdfdfd;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -743,7 +743,7 @@ onMounted(() => {
 .build-hint {
   font-size: 11px;
   letter-spacing: 0.3em;
-  color: #bcbcbc;
+  color: var(--c-ink3);
   margin-left: 14px;
 }
 .prog {
@@ -760,13 +760,13 @@ onMounted(() => {
 .stage {
   font-size: 12px;
   letter-spacing: 0.06em;
-  color: #c6c6c4;
+  color: var(--c-ink4);
 }
 .stage.running {
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .stage.done {
-  color: #8a8a88;
+  color: var(--c-ink2);
 }
 .stage-icon {
   margin-right: 6px;
@@ -775,22 +775,22 @@ onMounted(() => {
 .fig-img {
   max-width: 420px;
   margin-top: 10px;
-  border: 1px solid #f0f0ee;
-  background: #ffffff;
+  border: 1px solid var(--c-line-soft);
+  background: var(--c-panel);
 }
 .sub-sec {
   margin: 22px 0 8px;
   font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.12em;
-  color: #1a1a1a;
+  color: var(--c-ink);
 }
 .stale-tag {
   font-style: normal;
   font-size: 10px;
   letter-spacing: 0.2em;
-  color: #b3261e;
-  border: 1px solid #b3261e;
+  color: var(--c-danger);
+  border: 1px solid var(--c-danger);
   padding: 0 5px;
   margin-left: 10px;
   vertical-align: 1.5px;
@@ -800,17 +800,17 @@ onMounted(() => {
   margin-top: 10px;
   max-height: 176px;
   overflow-y: auto;
-  border: 1px solid #f0f0ee;
+  border: 1px solid var(--c-line-soft);
 }
 .ranked-item {
   display: flex;
   align-items: baseline;
   gap: 10px;
   padding: 7px 12px;
-  border-bottom: 1px solid #f4f4f2;
+  border-bottom: 1px solid var(--c-rowline);
   font-size: 12px;
   letter-spacing: 0.04em;
-  color: #4a4a48;
+  color: var(--c-body);
   cursor: pointer;
   user-select: none;
 }
@@ -818,10 +818,10 @@ onMounted(() => {
   border-bottom: none;
 }
 .ranked-item:hover {
-  background: #f7f7f5;
+  background: var(--c-hover);
 }
 .ranked-item input {
-  accent-color: #1a1a1a;
+  accent-color: var(--c-ink);
   flex: none;
 }
 .ranked-name {
@@ -844,7 +844,7 @@ onMounted(() => {
 }
 .fold2::before {
   content: '› ';
-  color: #c2c2c2;
+  color: var(--c-quiet);
 }
 .fold[open] .fold2::before {
   content: '⌄ ';

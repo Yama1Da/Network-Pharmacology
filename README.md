@@ -2,9 +2,7 @@
 
 # 网络药理学分析平台
 
-[![CI](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml/badge.svg)](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml)
-
-基于 Streamlit 的一站式网络药理学分析工具：输入药物与疾病名称，自动完成
+一站式网络药理学分析工具：输入药物与疾病名称，自动完成
 「靶点获取 → 靶点整合 → PPI 网络构建 → 富集分析 → 分子对接」的完整流程
 也支持使用CLI批量处理（但不会获取图片）。
 
@@ -25,52 +23,42 @@
 
 ## 环境要求
 
-以下要求针对 conda / pip 两种本地方式；用 Docker 部署时，宿主机只需 Docker 与 DisGeNET 密钥（见下方「Docker 部署」）。
+以下为本机运行的最低要求；Python 依赖无需手动安装——启动脚本（Windows 双击 `start_npap.bat`，
+Linux/macOS 执行 `./start_npap.sh`）首次运行会自动创建虚拟环境并安装。
 
 - Python >= 3.13, < 3.14（开发基准 3.13.x；依赖钉版尚未提供 3.14 的预编译轮子）
-- [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) 可执行文件（按平台安装方式见「快速开始」第 3 步；在 `WY/API.env`（请将API.env.example重命名为API.env）中指定 `VINA_DIR`，或将其所在目录加入 PATH）
+- [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina) 可执行文件（按平台安装方式见「快速开始」第 3 步；在网页「设置」页或 `WY/API.env` 中指定 `VINA_DIR`，或将其所在目录加入 PATH）
 - [Open Babel](https://openbabel.org/) 的 `obabel` 命令行（分子对接受体转换以子进程调用；按平台安装方式见「快速开始」第 3 步；可指定 `OBABEL_DIR`，或将其所在目录加入 PATH）
 - [DisGeNET](https://www.disgenet.org/) 学术账号 API Key（免费申请）/ 其他级别账号 API Key
 
 ## 快速开始
 
 ```bash
-# 1. 安装依赖（二选一）
+# 1. 安装 Python 3.13（项目要求 >=3.13,<3.14；依赖钉版尚未提供 3.14 的预编译轮子）
+#    Windows:https://www.python.org/downloads/ 安装时勾选 "Add python.exe to PATH"
+#    macOS:  brew install python@3.13
+#    Linux:  Debian/Ubuntu: sudo apt install python3.13 python3.13-venv；Fedora: sudo dnf install python3.13
 
-# 方式 A（推荐）：conda 一条命令建依赖环境（obabel 由此安装，三平台通用；
-#               密钥与本机路径不属于环境，仍需下面第 2、3 步配置）
-cd WY
-conda env create -f environment.yml
-conda activate npy
+# 2. 一键启动（首次运行自动创建 .venv 并安装依赖，需几分钟；默认走清华 PyPI 镜像）
+Windows:双击 start_npap.bat          # 停止:双击 stop_npap.bat
+Linux/macOS:./start_npap.sh          # 停止:./stop_npap.sh
+#    启动完成后自动打开浏览器 http://127.0.0.1:8000（没有自动打开就手动访问）
 
-# 方式 B：pip + venv
-cd WY
-python -m venv .venv
-.venv\Scripts\activate        # Windows（Linux/macOS: source .venv/bin/activate）
-pip install -r requirements.txt
-# 受体转换还需要 obabel 命令行（子进程调用，非 Python 绑定）：Windows 去官方网站装 Open Babel 官方安装包、
-# Linux 用 apt/dnf 安装 openbabel，或 conda install -c conda-forge openbabel；
-# 保证 obabel 在 PATH，或在 API.env 里用 OBABEL_DIR 指向其所在目录
+# 3. 安装分子对接外部工具（仅「分子对接」功能需要；程序按 设置页/API.env → PATH 的顺序自动发现）
+#    Windows:Vina 到 https://github.com/ccsb-scripps/AutoDock-Vina/releases 下载
+#            vina_1.2.7_win.exe（vina_split 可选，缺失时程序内置 python 分割兜底）；
+#            Open Babel 到 https://openbabel.org/ 装官方安装包（勾选加入 PATH）。
+#            两者也可不进 PATH：启动后在网页「设置」页把目录填入 VINA_DIR / OBABEL_DIR。
+#    Linux/macOS:conda install -c conda-forge vina openbabel
+#            （Linux 亦可用 apt/dnf 安装 openbabel；装完在 PATH 即被自动发现）
 
-# 2. 配置 API.env（conda / pip 两种方式完全相同：密钥是运行时配置，不属于任何环境）
-复制 API.env.example 为 API.env（保留模板便于日后接收更新），编辑并填入 DisGeNET_API_KEY
+# 4. 首次使用：在网页「设置」页填入 DisGeNET API Key（免费申请 https://www.disgenet.org/），
+#    保存后自动写入 WY/API.env（文件不存在会自动创建，无需手动建）；
+#    不填也能用，仅 DisGeNET 靶点表为空，其余数据源不受影响
 
-# 3. 安装 AutoDock Vina 与 Open Babel（vina 在 conda-forge 无 win-64 构建；obabel 供受体转换）
-Windows：到 https://github.com/ccsb-scripps/AutoDock-Vina/releases 下载
-#          vina_1.2.7_win.exe（可连同 vina_split_1.2.7_win.exe 一起）放入任意目录，
-#          在 API.env 中将 VINA_DIR 指向该目录（或将该目录加入 PATH）；
-#          不装 vina_split 亦可，程序已内置 python 分割兜底。
-#          Open Babel 到 https://openbabel.org/ 下载 Windows 安装包（含 obabel.exe），
-#          勾选加入 PATH 后即可；否则在 API.env 中将 OBABEL_DIR 指向其所在目录。
-Linux/macOS：conda install -c conda-forge vina   # 同时安装 vina 与 vina_split
-#          obabel：conda install -c conda-forge openbabel（或 apt/dnf 安装 openbabel）
-
-# 4. 启动
-start_npap.bat  (或 npap serve)
-
-# 5. （可选）把命令行批量分析装成全局命令 npap（详见「命令行批量分析（CLI）」一节）
-pip install -e ..        # 在 WY 目录下执行；必须带 -e（可编辑安装）
-npap --help              # 在已激活的环境中任意目录可用
+# 5. （可选）命令行批量分析：启动器已完成可编辑安装，激活 .venv 后 npap 即全局可用
+#    Windows: .venv\Scripts\activate      Linux/macOS: source .venv/bin/activate
+#    npap --help                          # 详见下方「命令行批量分析（CLI）」一节
 ```
 
 ## 使用流程
@@ -103,7 +91,7 @@ Open Targets / DisGeNET）的拉取缓存统一 60 天：四库上游发版间�
 
 ```bash
 cd WY
-conda activate npy        # 或激活.venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate（启动脚本已建好环境）
 
 # 单步命令：每个环节产出 CSV/JSON 到 --out 目录（默认 ./results；
 # 可在 API.env 里用 CLI_RESULTS_DIR 配置一次永久输出目录）
@@ -139,7 +127,7 @@ python cli.py batch --pairs D:\cases\pairs.csv --out D:\cases\results --resume  
 
 ```bash
 cd WY
-pip install -e ..        # conda 用户先 conda activate npy；必须带 -e（可编辑安装），见下
+pip install -e ..        # 必须带 -e（可编辑安装），见下
 npap --help              # 入口脚本装进当前环境的 Scripts\（Windows）或 bin/（Linux/macOS）
 ```
 
@@ -149,7 +137,8 @@ npap --help              # 入口脚本装进当前环境的 Scripts\（Windows�
   直接用，需把该环境的 `Scripts\`（Windows）或 `bin/`（Linux/macOS）目录加入 PATH。
 - Windows 专属的免安装过渡：复制 `npap.bat.example` 为 `npap.bat`，把所在目录加入 PATH
   即可（含本机路径，与 `API.env` 同类不入库；标准布局零修改可用，conda 等其他布局把其中
-  的 python 路径改成绝对路径）。Linux/macOS 免装环境可用 Docker 直接跑（见下方「Docker 部署」）。
+  的 python 路径改成绝对路径）。Linux/macOS 无需等价物：`./start_npap.sh` 建好环境后，
+  `source .venv/bin/activate` 即可直接使用 `npap`。
 - 全局使用建议先在 `API.env` 里配一次 `CLI_RESULTS_DIR`（结果输出目录）：否则不带 `--out`
   时结果会落到**当前目录**的 `results` 目录。
 
@@ -170,7 +159,7 @@ WY/
 ├── api.py                  # FastAPI：/api 端点 + 前端静态托管（TS 迁移后入口）
 ├── cli.py                  # 命令行批量分析入口（targets/ppi/enrich/proximity/rwr/analyze/batch）
 ├── config.py               # 全部可调参数（路径、限流/重试、缓存 TTL、过滤阈值）
-├── API.env                 # 密钥与本机路径（不入库，模板见 API.env.example）
+├── API.env                 # 密钥与本机路径（不入库；首次在网页「设置」页保存后自动生成）
 ├── pages/                  # Streamlit 子页面（靶点管理、数据网络、富集、对接、日志等）
 ├── core/                   # 领域与编排层：数据源抓取、PPI、富集、对接、缓存文件管理
 │   ├── management.py       #   靶点数据文件刷新编排、设置持久化、缓存文件名可读化
@@ -242,3 +231,4 @@ pytest --cov --cov-report=html    # 带覆盖率报告(生成 htmlcov/,浏览器
 本项目仅供科研用途，分析结果请以官方数据库与实验验证为准。
 使用数据时请遵循各数据源（STRING、DisGeNET、ChEMBL、DGIdb、Open Targets）的引用要求。
 若本项目有任何问题，请联系项目作者.
+`NPAP` 为本项目自用缩写，与任何第三方机构、项目或商标无关。
