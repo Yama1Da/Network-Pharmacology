@@ -2,6 +2,10 @@
 
 # 网络药理学分析平台（NPAP）
 
+[![CI](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-%E2%89%A53.13%2C%20%3C3.14-blue)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 一站式网络药理学分析平台：输入药物与疾病名称，自动完成
 「靶点获取 → 靶点整合 → PPI 网络构建 → 富集分析 → 分子对接」完整流程，
 并可结合 GEO 表达谱与多算法机器学习共识，收缩值得湿实验验证的靶点清单。
@@ -32,7 +36,7 @@
 Python 依赖无需手动安装：启动脚本（Windows 双击 `start_npap.bat`，Linux/macOS
 执行 `./start_npap.sh`）首次运行会自动创建虚拟环境并安装。最低要求：
 
-- Python >= 3.13, < 3.14（依赖钉版尚未提供 3.14 的预编译轮子）
+- Python 3.13（精确版本范围见顶部 Python 徽章）
 - [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina/releases) 与
   [Open Babel](https://openbabel.org/)：仅「分子对接」功能需要。装完在 PATH 即被
   自动发现，也可在设置页或 `WY/API.env` 中指定 `VINA_DIR` / `OBABEL_DIR`

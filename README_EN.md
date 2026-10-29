@@ -2,6 +2,10 @@
 
 # Network Pharmacology Analysis Platform (NPAP)
 
+[![CI](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-%E2%89%A53.13%2C%20%3C3.14-blue)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 A one-stop network pharmacology platform: enter a drug and disease name and it
 automatically runs the full pipeline of
 "target acquisition → target integration → PPI network construction → enrichment analysis → molecular docking",
@@ -46,7 +50,7 @@ Python dependencies need no manual installation: the launcher scripts (double-cl
 `start_npap.bat` on Windows, run `./start_npap.sh` on Linux/macOS) create the virtual
 environment and install them on first run. Minimum requirements:
 
-- Python >= 3.13, < 3.14 (the pinned dependencies do not ship prebuilt wheels for 3.14 yet)
+- Python 3.13 (exact version range in the Python badge above)
 - [AutoDock Vina](https://github.com/ccsb-scripps/AutoDock-Vina/releases) and
   [Open Babel](https://openbabel.org/): only the "Molecular Docking" feature needs them.
   They are discovered automatically once on PATH, or can be specified via
