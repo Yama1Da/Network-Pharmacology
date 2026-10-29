@@ -594,3 +594,120 @@ def test_spa_root_and_fallback(client):
     else:
         # dist 未构建的兜底分支
         assert "前端未构建" in text
+
+
+# ======== 数据迁移:导出 job / 下载端点 / 两段式导入 ========
+
+def _mk_analysis_dir(name: str = "aspirin_cancer_data") -> None:
+    d = os.path.join(config.DOWNLOADS_DIR, name)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "nodes.csv"), "w", encoding="utf-8") as f:
+        f.write("gene\nTP53\n")
+
+
+def test_transfer_export_job_and_download(client):
+    """导出:提交 job → 打包 done → 下载端点取回 zip;空范围/未知范围 400。"""
+    assert client.post("/api/transfer/export",
+                       json={"scopes": ["analysis"]}).status_code == 400  # 空库
+    assert client.post("/api/transfer/export",
+                       json={"scopes": ["md"]}).status_code == 400  # 未知范围
+    assert client.post("/api/transfer/export",
+                       json={"scopes": []}).status_code == 400
+
+    _mk_analysis_dir()
+    r = client.post("/api/transfer/export", json={"scopes": ["analysis", "ui_settings"]})
+    assert r.status_code == 200
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done"
+    result = job["result"]
+    assert result["counts"]["analysis"] == 1
+    filename = result["filename"]
+
+    z = client.get(f"/api/transfer/export/{filename}")
+    assert z.status_code == 200 and z.content[:2] == b"PK"
+    # 下载端点防线:固定命名形态之外一律 400,未知文件 404
+    # (含 ../ 的多段路径在 httpx 侧已被归一,到不了本端点,测的是单段坏名)
+    assert client.get("/api/transfer/export/evil.zip").status_code == 400
+    assert client.get("/api/transfer/export/npap_export_20260101_000000.zip").status_code == 404
+    assert client.get("/api/transfer/export/npap_export_20260101_0000_extra.zip").status_code == 400
+
+
+def test_transfer_import_two_stage_flow(client):
+    """导入两段式:上传有效包 → 预览报告 → commit 全 skip → 会话自动销毁。"""
+    from WY.core import transfer as tr
+
+    _mk_analysis_dir()
+    export = client.post("/api/transfer/export", json={"scopes": ["analysis"]})
+    job = _wait_job(client, export.json()["job_id"])
+    zip_path = os.path.join(config.TRANSFER_DIR, job["result"]["filename"])
+    with open(zip_path, "rb") as f:
+        zip_bytes = f.read()
+
+    up = client.post("/api/transfer/import", content=zip_bytes,
+                     headers={"Content-Type": "application/zip"})
+    assert up.status_code == 200
+    body = up.json()
+    sid, report = body["sid"], body["report"]
+    assert report["items"][0]["name"] == "aspirin_cancer_data"
+    assert report["items"][0]["conflict"] is True  # 本机原件还在
+
+    commit = client.post(f"/api/transfer/import/{sid}/commit", json={
+        "decisions": [{"kind": "analysis", "name": "aspirin_cancer_data",
+                       "action": "skip"}]})
+    assert commit.status_code == 200
+    assert commit.json()["report"]["skipped"] == [
+        {"kind": "analysis", "name": "aspirin_cancer_data"}]
+    # 无失败项 → 会话已销毁;再 commit 404
+    assert client.post(f"/api/transfer/import/{sid}/commit", json={
+        "decisions": []}).status_code == 404
+    assert client.delete(f"/api/transfer/import/{sid}").status_code == 404
+
+
+def test_transfer_import_rejects_bad_bundles(client, tmp_path):
+    """导入防线:非 zip / 缺 manifest 的包 400;空上传 400;未知会话 404。"""
+    assert client.post("/api/transfer/import", content=b"",
+                       headers={"Content-Type": "application/zip"}).status_code == 400
+    assert client.post("/api/transfer/import", content=b"not a zip",
+                       headers={"Content-Type": "application/zip"}).status_code == 400
+
+    import zipfile
+
+    nomanifest = tmp_path / "nomanifest.zip"
+    with zipfile.ZipFile(nomanifest, "w") as zf:
+        zf.writestr("evil.txt", "x")
+    r = client.post("/api/transfer/import", content=nomanifest.read_bytes(),
+                    headers={"Content-Type": "application/zip"})
+    assert r.status_code == 400 and "manifest" in r.json()["detail"]
+
+    assert client.post("/api/transfer/import/nosid/commit",
+                       json={"decisions": []}).status_code == 404
+    assert client.delete("/api/transfer/import/nosid").status_code == 404
+
+
+def test_transfer_import_commit_failure_keeps_session(client):
+    """commit 有失败项时保留会话,用户可调整决策重试。"""
+    from WY.core import transfer as tr
+
+    _mk_analysis_dir()
+    export = client.post("/api/transfer/export", json={"scopes": ["analysis"]})
+    job = _wait_job(client, export.json()["job_id"])
+    zip_path = os.path.join(config.TRANSFER_DIR, job["result"]["filename"])
+    with open(zip_path, "rb") as f:
+        zip_bytes = f.read()
+    sid = client.post("/api/transfer/import", content=zip_bytes,
+                      headers={"Content-Type": "application/zip"}).json()["sid"]
+
+    # rename 撞现有名 → failed,会话保留
+    r = client.post(f"/api/transfer/import/{sid}/commit", json={
+        "decisions": [{"kind": "analysis", "name": "aspirin_cancer_data",
+                       "action": "rename", "new_name": "aspirin_cancer_data"}]})
+    assert r.status_code == 200 and r.json()["report"]["failed"]
+    assert tr.get_import_session(sid) is not None
+
+    # 改用 overwrite → 成功,会话销毁
+    r2 = client.post(f"/api/transfer/import/{sid}/commit", json={
+        "decisions": [{"kind": "analysis", "name": "aspirin_cancer_data",
+                       "action": "overwrite"}]})
+    assert r2.json()["report"]["applied"] == [
+        {"kind": "analysis", "name": "aspirin_cancer_data"}]
+    assert tr.get_import_session(sid) is None

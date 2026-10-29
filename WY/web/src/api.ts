@@ -268,8 +268,84 @@ export interface MlRunRow {
   stale?: MlStaleReason[]
 }
 
+/* ---- 设置快照(GET /api/settings 与保存/导入设置后的回填共用) ---- */
+
+export interface SettingsSnapshot {
+  keys: { disgenet: boolean; ncbi: boolean }
+  vina_dir: string
+  obabel_dir: string
+  cli_results_dir: string
+  string_version: string
+  known_versions: string[]
+  ot_top_n: number
+  disgenet_pages: number
+  chembl_blacklist: string[]
+  chembl_blacklist_options: string[]
+  chembl_pchembl_threshold: number
+  dgidb_min_score: number
+  ot_min_score: number
+  chembl_corroboration_required: boolean
+  enrichment_pvalue: number
+  louvain_resolution: number
+  ppi_confidence: number
+  pocket_cutoff: number
+  ui_font_scale: number
+  ui_theme: string
+}
+
+/* ---- 数据迁移(设置页:结果导出 / 两段式导入) ---- */
+
+export type TransferScope = 'analysis' | 'star' | 'geo' | 'ui_settings'
+
+/** 导入预览的单条目(kind 为目录类范围时含文件数/体积/冲突标记)。 */
+export interface TransferItemReport {
+  kind: Exclude<TransferScope, 'ui_settings'>
+  name: string
+  files: number
+  bytes: number
+  conflict: boolean
+  invalid?: boolean
+  invalid_reason?: string
+}
+
+/** 上传解包后的预览报告;warnings 为导出端与本机算法/数据版本差异提示。 */
+export interface TransferImportReport {
+  manifest: { app_version: string; created_at: string; schema: Record<string, unknown> }
+  items: TransferItemReport[]
+  ui_settings: { present: boolean; keys?: number; conflict?: boolean }
+  warnings: string[]
+}
+
+/** commit 的落盘报告;失败项留在会话里可调整决策重试。 */
+export interface TransferCommitReport {
+  applied: { kind: string; name: string; keys?: string[] }[]
+  skipped: { kind: string; name: string }[]
+  failed: { kind: string; name: string; reason: string }[]
+}
+
+export interface TransferDecisionBody {
+  kind: string
+  name: string
+  action: 'overwrite' | 'skip' | 'rename'
+  new_name?: string
+}
+
 async function json<T>(r: Response): Promise<T> {
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  return (await r.json()) as T
+}
+
+/** 同 json(),但把后端 400/413 的 detail 文本带出来(导入包校验错误要给用户看)。 */
+async function jsonWithDetail<T>(r: Response): Promise<T> {
+  if (!r.ok) {
+    let detail = ''
+    try {
+      detail = ((await r.json()) as { detail?: string })?.detail ?? ''
+    } catch {
+      /* 响应体不是 JSON 时退回状态码 */
+    }
+    throw new Error(detail || `HTTP ${r.status}`)
+  }
   return (await r.json()) as T
 }
 
@@ -359,28 +435,7 @@ export const api = {
     pathways: number
   }> => fetch('/api/stats').then((r) => json(r)),
 
-  settings: (): Promise<{
-    keys: { disgenet: boolean; ncbi: boolean }
-    vina_dir: string
-    obabel_dir: string
-    cli_results_dir: string
-    string_version: string
-    known_versions: string[]
-    ot_top_n: number
-    disgenet_pages: number
-    chembl_blacklist: string[]
-    chembl_blacklist_options: string[]
-    chembl_pchembl_threshold: number
-    dgidb_min_score: number
-    ot_min_score: number
-    chembl_corroboration_required: boolean
-    enrichment_pvalue: number
-    louvain_resolution: number
-    ppi_confidence: number
-    pocket_cutoff: number
-    ui_font_scale: number
-    ui_theme: string
-  }> => fetch('/api/settings').then((r) => json(r)),
+  settings: (): Promise<SettingsSnapshot> => fetch('/api/settings').then((r) => json(r)),
 
   saveApiEnv: (changes: Record<string, string>): Promise<{ applied: string[] }> =>
     post('/api/settings/api-env', { changes }),
@@ -389,31 +444,38 @@ export const api = {
     post('/api/settings/string-version', { version }),
 
   saveUiSettings: (changes: Record<string, number | boolean | string | string[]>): Promise<{
-    snapshot: {
-      keys: { disgenet: boolean; ncbi: boolean }
-      vina_dir: string
-      obabel_dir: string
-      cli_results_dir: string
-      string_version: string
-      known_versions: string[]
-      ot_top_n: number
-      disgenet_pages: number
-      chembl_blacklist: string[]
-      chembl_blacklist_options: string[]
-      chembl_pchembl_threshold: number
-      dgidb_min_score: number
-      ot_min_score: number
-      chembl_corroboration_required: boolean
-      enrichment_pvalue: number
-      louvain_resolution: number
-      ppi_confidence: number
-      pocket_cutoff: number
-      ui_font_scale: number
-      ui_theme: string
-    }
+    snapshot: SettingsSnapshot
     changed: string[]
     purged_merged: number
   }> => post('/api/settings/ui', { changes }),
+
+  /* ---- 数据迁移(设置页) ---- */
+  transferExport: (scopes: TransferScope[]): Promise<{ job_id: string }> =>
+    post('/api/transfer/export', { scopes }),
+
+  transferDownload: async (filename: string): Promise<Blob> => {
+    const r = await fetch(`/api/transfer/export/${encodeURIComponent(filename)}`)
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.blob()
+  },
+
+  transferImport: (file: File): Promise<{ sid: string; report: TransferImportReport }> =>
+    fetch('/api/transfer/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: file
+    }).then((r) => jsonWithDetail<{ sid: string; report: TransferImportReport }>(r)),
+
+  transferCommit: (
+    sid: string,
+    decisions: TransferDecisionBody[]
+  ): Promise<{ report: TransferCommitReport; ui_snapshot: SettingsSnapshot | null }> =>
+    post(`/api/transfer/import/${encodeURIComponent(sid)}/commit`, { decisions }),
+
+  transferCancel: (sid: string): Promise<{ cancelled: boolean }> =>
+    fetch(`/api/transfer/import/${encodeURIComponent(sid)}`, { method: 'DELETE' }).then(
+      (r) => json(r)
+    ),
 
   /* ---- 分子对接(阶段 3b) ---- */
   dockingSession: (): Promise<{ sid: string }> =>

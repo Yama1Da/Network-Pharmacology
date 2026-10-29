@@ -507,6 +507,19 @@ ML_RESULTS_KEEP_PER_GSE = 6           # 结果保留语义(§10 增补):同 tag 
 # ======== API.env 可视化设置(齿轮面板:数据源板块的密钥 + 分子对接板块的本机工具路径) ========
 # 键名与 API.env 文件内一致;落盘由 core.management.save_api_env 负责(set_key 保留注释与其他行),
 # 落盘后经 apply_api_env 回填运行时,免重启生效。密钥类键不回显当前值,输入新值即覆盖。
+# ======== 数据迁移(设置页导出/导入结果文件) ========
+# 暂存目录:导出包与导入会话的解压暂存都在 CACHE_DIR 下,过期由启动/新建会话时清扫
+TRANSFER_DIR = os.path.join(CACHE_DIR, "transfer")
+# 导入会话与导出包的保留时长(秒):过期在新建会话与启动时清扫(覆盖崩溃残留)
+TRANSFER_SESSION_TTL = 2 * 3600
+TRANSFER_EXPORT_TTL = 2 * 3600
+# 上传 zip 大小上限与解压未压缩总量上限(字节):后者防 zip 炸弹(包小内容大)
+TRANSFER_MAX_UPLOAD_BYTES = 8 * 1024**3
+TRANSFER_MAX_EXTRACT_BYTES = 8 * 1024**3
+
+# API.env 可视化设置(齿轮面板:数据源板块的密钥 + 分子对接板块的本机工具路径)
+# 键名与 API.env 文件内一致;落盘由 core.management.save_api_env 负责(set_key 保留注释与其他行),
+# 落盘后经 apply_api_env 回填运行时,免重启生效。密钥类键不回显当前值,输入新值即覆盖。
 API_ENV_KEYS = ("DisGeNET_API_KEY", "NCBI_API_KEY", "VINA_DIR", "OBABEL_DIR", "CLI_RESULTS_DIR")
 
 
