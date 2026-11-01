@@ -4,7 +4,7 @@
  * ③ 分子对接(口袋阈值/Vina·Open Babel 路径) ④ 通用设置(密钥/CLI 产物目录)。
  * 密钥与路径走 save_api_env(白名单+消毒+set_key+运行时回填);分析参数走
  * /api/settings/ui(后端值变化时自动清 merged 整合缓存并同步互作组置信度)。 */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, type SettingsSnapshot, type TransferImportReport, type TransferItemReport } from '../api'
 import Stepper from '../components/Stepper.vue'
@@ -17,6 +17,21 @@ import { downloadBlob } from '../utils/download'
 
 const { t } = useI18n()
 const { notice, flash } = useNotice(3600)
+
+/* 保存结果内联提示:页面长,顶部 notice 在内容区外看不见,随保存按钮就地显示。
+ * 切换板块即清空,避免上一板块的结果串场;transfer 的导出/导入流程仍走顶部 notice。 */
+const saveNote = ref<{ ok: boolean; text: string } | null>(null)
+let saveNoteTimer = 0
+function noteFlash(ok: boolean, text: string): void {
+  saveNote.value = { ok, text }
+  window.clearTimeout(saveNoteTimer)
+  saveNoteTimer = window.setTimeout(() => (saveNote.value = null), 4000)
+}
+function savedNote(purged: number): string {
+  return purged > 0
+    ? `${t('web.settings.saved')} ${t('web.settings.purged', { n: purged })}`
+    : t('web.settings.saved')
+}
 
 type Snapshot = Awaited<ReturnType<typeof api.settings>>
 
@@ -67,7 +82,23 @@ const enrichP = ref(0.055)
 const louvain = ref(1.0)
 const ppiConf = ref(0.4)
 
+/* 统计稳健性/研究语义参数(缓存键均含这些值,改动后旧缓存自动重算) */
+const rwrAlpha = ref(0.7)
+const gseaPerms = ref(1000)
+const proxPerms = ref(200)
+const rwrNullPerms = ref(200)
+const gseaMinSize = ref(15)
+const gseaMaxSize = ref(500)
+const gseaFdr = ref(0.25)
+const enrichSources = ref<string[]>([])
+const ENRICHMENT_SOURCE_VALUES = ['GO:BP', 'GO:MF', 'GO:CC', 'KEGG']
+/* 交叉校验:规模窗不允许倒挂、富集类别不允许空集(后端同款校验,前端先行拦截) */
+const gseaSizeBad = computed(() => gseaMinSize.value >= gseaMaxSize.value)
+const sourcesEmpty = computed(() => enrichSources.value.length === 0)
+
 const pocketCutoff = ref(4.0)
+const exhaustiveness = ref(8)
+const dockingCpu = ref(4)
 const vinaDir = ref('')
 const obabelDir = ref('')
 
@@ -91,7 +122,17 @@ function applySnapshot(s: Snapshot): void {
   enrichP.value = s.enrichment_pvalue
   louvain.value = s.louvain_resolution
   ppiConf.value = s.ppi_confidence
+  rwrAlpha.value = s.rwr_alpha
+  gseaPerms.value = s.gsea_permutation_num
+  proxPerms.value = s.proximity_n_perm
+  rwrNullPerms.value = s.rwr_null_perms
+  gseaMinSize.value = s.gsea_set_min_size
+  gseaMaxSize.value = s.gsea_set_max_size
+  gseaFdr.value = s.gsea_fdr_screen
+  enrichSources.value = [...s.enrichment_sources]
   pocketCutoff.value = s.pocket_cutoff
+  exhaustiveness.value = s.exhaustiveness
+  dockingCpu.value = s.docking_cpu
   vinaDir.value = s.vina_dir
   obabelDir.value = s.obabel_dir
 }
@@ -102,12 +143,14 @@ async function load(): Promise<void> {
 
 onMounted(() => void load().catch(() => flash(t('web.settings.read_fail'))))
 
-/* 保存后的统一提示:基础文案 + 整合缓存清理说明 */
+/* 保存后的统一提示:基础文案 + 整合缓存清理说明(随保存按钮就地显示) */
 function flashSaved(purged: number): void {
-  flash(purged > 0
+  noteFlash(true, purged > 0
     ? `${t('web.settings.saved')} ${t('web.settings.purged', { n: purged })}`
     : t('web.settings.saved'))
 }
+
+watch(active, () => (saveNote.value = null))
 
 /* ---------------- ① 数据来源 ---------------- */
 
@@ -119,7 +162,7 @@ async function saveSources(): Promise<void> {
     applySnapshot(r.snapshot)
     flashSaved(r.purged_merged)
   } catch (e) {
-    flash(e instanceof Error ? e.message : t('web.settings.save_fail'))
+    noteFlash(false, e instanceof Error ? e.message : t('web.settings.save_fail'))
   }
 }
 
@@ -128,10 +171,10 @@ async function applyStringVersion(): Promise<void> {
   if (!target) return
   try {
     const r = await api.setStringVersion(target)
-    flash(r.changed ? t('web.settings.switched', { v: r.version }) : t('web.settings.no_change'))
+    noteFlash(true, r.changed ? t('web.settings.switched', { v: r.version }) : t('web.settings.no_change'))
     stringVersion.value = r.version
   } catch (e) {
-    flash(e instanceof Error ? e.message : t('web.settings.switch_fail'))
+    noteFlash(false, e instanceof Error ? e.message : t('web.settings.switch_fail'))
   }
 }
 
@@ -155,6 +198,14 @@ function removeGene(gene: string): void {
 }
 
 async function saveAlgo(): Promise<void> {
+  if (sourcesEmpty.value) {
+    noteFlash(false, t('web.settings.sources_empty'))
+    return
+  }
+  if (gseaSizeBad.value) {
+    noteFlash(false, t('web.settings.gsea_size_bad'))
+    return
+  }
   try {
     const r = await api.saveUiSettings({
       CHEMBL_TARGET_BLACKLIST: blacklist.value,
@@ -164,12 +215,20 @@ async function saveAlgo(): Promise<void> {
       OT_MIN_SCORE: otMin.value,
       ENRICHMENT_PVALUE: enrichP.value,
       LOUVAIN_RESOLUTION: louvain.value,
-      PPI_CONFIDENCE: ppiConf.value
+      PPI_CONFIDENCE: ppiConf.value,
+      RWR_ALPHA: rwrAlpha.value,
+      GSEA_PERMUTATION_NUM: gseaPerms.value,
+      PROXIMITY_N_PERM: proxPerms.value,
+      RWR_NULL_PERMS: rwrNullPerms.value,
+      GSEA_SET_MIN_SIZE: gseaMinSize.value,
+      GSEA_SET_MAX_SIZE: gseaMaxSize.value,
+      GSEA_FDR_SCREEN: gseaFdr.value,
+      ENRICHMENT_SOURCES: enrichSources.value
     })
     applySnapshot(r.snapshot)
     flashSaved(r.purged_merged)
   } catch (e) {
-    flash(e instanceof Error ? e.message : t('web.settings.save_fail'))
+    noteFlash(false, e instanceof Error ? e.message : t('web.settings.save_fail'))
   }
 }
 
@@ -177,15 +236,19 @@ async function saveAlgo(): Promise<void> {
 
 async function saveDocking(): Promise<void> {
   try {
-    const ui = await api.saveUiSettings({ POCKET_CUTOFF: pocketCutoff.value })
+    const ui = await api.saveUiSettings({
+      POCKET_CUTOFF: pocketCutoff.value,
+      EXHAUSTIVENESS: exhaustiveness.value,
+      DOCKING_CPU: dockingCpu.value
+    })
     applySnapshot(ui.snapshot)
     const applied = (await api.saveApiEnv({
       VINA_DIR: vinaDir.value, OBABEL_DIR: obabelDir.value
     })).applied
     flashSaved(0)
-    if (applied.length) flash(`${t('web.settings.saved')} · ${applied.join(', ')}`)
+    if (applied.length) noteFlash(true, `${t('web.settings.saved')} · ${applied.join(', ')}`)
   } catch (e) {
-    flash(e instanceof Error ? e.message : t('web.settings.save_fail'))
+    noteFlash(false, e instanceof Error ? e.message : t('web.settings.save_fail'))
   }
 }
 
@@ -211,11 +274,11 @@ async function saveGeneral(): Promise<void> {
     const applied = (await api.saveApiEnv(changes)).applied
     dgKey.value = ''
     ncbiKey.value = ''
-    flash(applied.length ? t('web.settings.keys_saved', { names: applied.join(', ') })
-                         : t('web.settings.saved'))
+    noteFlash(true, applied.length ? t('web.settings.keys_saved', { names: applied.join(', ') })
+                                   : t('web.settings.saved'))
     await load()
   } catch {
-    flash(t('web.settings.keys_fail'))
+    noteFlash(false, t('web.settings.keys_fail'))
   }
 }
 
@@ -458,6 +521,9 @@ const kindLabel = (it: TransferItemReport): string => t(KIND_LABEL[it.kind] ?? i
           </section>
 
           <button class="bar-btn" @click="saveSources">{{ t('web.settings.save') }}</button>
+          <Transition name="note">
+            <span v-if="saveNote" class="save-note" :class="{ fail: !saveNote.ok }">{{ saveNote.text }}</span>
+          </Transition>
         </template>
 
         <!-- ============ ② 分析算法 ============ -->
@@ -520,7 +586,54 @@ const kindLabel = (it: TransferItemReport): string => t(KIND_LABEL[it.kind] ?? i
             </label>
           </div>
 
-          <button class="bar-btn" @click="saveAlgo">{{ t('web.settings.save') }}</button>
+          <section class="sec">
+            <h3 class="sec-title">{{ t('web.settings.sec_stats') }}</h3>
+            <p class="hint-line">{{ t('web.settings.stats_hint') }}</p>
+            <div class="opt-grid">
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.rwr_alpha_label') }}</span>
+                <Stepper v-model="rwrAlpha" :min="0.1" :max="0.9" :step="0.05" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.gsea_perms_label') }}</span>
+                <Stepper v-model="gseaPerms" :min="100" :max="5000" :step="100" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.prox_perms_label') }}</span>
+                <Stepper v-model="proxPerms" :min="50" :max="2000" :step="50" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.rwr_null_label') }}</span>
+                <Stepper v-model="rwrNullPerms" :min="50" :max="2000" :step="50" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.gsea_min_label') }}</span>
+                <Stepper v-model="gseaMinSize" :min="5" :max="100" :step="5" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.gsea_max_label') }}</span>
+                <Stepper v-model="gseaMaxSize" :min="100" :max="1000" :step="100" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.gsea_fdr_label') }}</span>
+                <Stepper v-model="gseaFdr" :min="0.05" :max="0.5" :step="0.05" />
+              </label>
+            </div>
+            <p class="hint-line">{{ t('web.settings.gsea_size_hint') }}</p>
+
+            <p class="hint-line">{{ t('web.settings.sources_label') }}</p>
+            <div class="tf-scopes">
+              <label v-for="s in ENRICHMENT_SOURCE_VALUES" :key="s" class="chk">
+                <input v-model="enrichSources" type="checkbox" :value="s" /> {{ s }}
+              </label>
+            </div>
+          </section>
+
+          <button class="bar-btn" :disabled="sourcesEmpty || gseaSizeBad"
+                  @click="saveAlgo">{{ t('web.settings.save') }}</button>
+          <Transition name="note">
+            <span v-if="saveNote" class="save-note" :class="{ fail: !saveNote.ok }">{{ saveNote.text }}</span>
+          </Transition>
         </template>
 
         <!-- ============ ③ 分子对接 ============ -->
@@ -530,7 +643,17 @@ const kindLabel = (it: TransferItemReport): string => t(KIND_LABEL[it.kind] ?? i
               <span class="opt-label">{{ t('web.settings.pocket_label') }}</span>
               <Stepper v-model="pocketCutoff" :min="3" :max="6" :step="0.5" />
             </label>
+            <label class="opt">
+              <span class="opt-label">{{ t('web.settings.exhaust_label') }}</span>
+              <Stepper v-model="exhaustiveness" :min="1" :max="32" :step="1" :digits="0" />
+            </label>
+            <label class="opt">
+              <span class="opt-label">{{ t('web.settings.cpu_label') }}</span>
+              <Stepper v-model="dockingCpu" :min="0" :max="64" :step="1" :digits="0" />
+            </label>
           </div>
+          <p class="hint-line">{{ t('web.settings.exhaust_hint') }}</p>
+          <p class="hint-line">{{ t('web.settings.cpu_hint') }}</p>
           <section class="sec">
             <h3 class="sec-title">{{ t('web.settings.sec_paths') }}</h3>
             <p class="hint-line">{{ t('web.settings.paths_hint') }}</p>
@@ -544,6 +667,9 @@ const kindLabel = (it: TransferItemReport): string => t(KIND_LABEL[it.kind] ?? i
             </div>
           </section>
           <button class="bar-btn" @click="saveDocking">{{ t('web.settings.save') }}</button>
+          <Transition name="note">
+            <span v-if="saveNote" class="save-note" :class="{ fail: !saveNote.ok }">{{ saveNote.text }}</span>
+          </Transition>
         </template>
 
         <!-- ============ ④ 通用设置 ============ -->
@@ -594,6 +720,9 @@ const kindLabel = (it: TransferItemReport): string => t(KIND_LABEL[it.kind] ?? i
           <button class="bar-btn"
                   :disabled="!dgKey.trim() && !ncbiKey.trim() && cliResultsDir === '' && !fontScaleDirty && !themeDirty"
                   @click="saveGeneral">{{ t('web.settings.save') }}</button>
+            <Transition name="note">
+              <span v-if="saveNote" class="save-note" :class="{ fail: !saveNote.ok }">{{ saveNote.text }}</span>
+            </Transition>
 
           <!-- ======== 数据迁移:导出 / 两段式导入(独立操作区,与上方保存按钮无关) ======== -->
           <section class="sec">
@@ -648,10 +777,10 @@ const kindLabel = (it: TransferItemReport): string => t(KIND_LABEL[it.kind] ?? i
                   <span class="tf-action">
                     <select v-model="dec(it.kind, it.name).action" class="tf-select"
                             :disabled="it.invalid">
-                      <option v-if="!it.conflict" value="import">{{ t('web.transfer.act_import') }}</option>
-                      <option value="overwrite">{{ t('web.transfer.act_overwrite') }}</option>
+                      <option value="import">{{ t('web.transfer.act_import') }}</option>
+                      <option v-if="it.conflict" value="overwrite">{{ t('web.transfer.act_overwrite') }}</option>
                       <option value="skip">{{ t('web.transfer.act_skip') }}</option>
-                      <option v-if="!it.invalid" value="rename">{{ t('web.transfer.act_rename') }}</option>
+                      <option v-if="it.conflict && !it.invalid" value="rename">{{ t('web.transfer.act_rename') }}</option>
                     </select>
                     <input v-if="dec(it.kind, it.name).action === 'rename'"
                            v-model="dec(it.kind, it.name).new_name" class="tf-new"
@@ -1062,6 +1191,17 @@ button.chip:hover {
 }
 .tf-ghost:disabled {
   color: var(--c-ink4);
+}
+
+/* 保存按钮右侧的内联结果提示(页面长,顶部 notice 不可见) */
+.save-note {
+  margin-left: 16px;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--c-dim);
+}
+.save-note.fail {
+  color: var(--c-danger);
 }
 
 @media (max-width: 760px) {

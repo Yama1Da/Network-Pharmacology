@@ -303,3 +303,38 @@ def test_activate_string_version_updates_derived(tmp_path, monkeypatch):
     finally:
         config.STRING_VERSION = orig_version
         config.STRING_BASE_URL = orig_url
+
+
+def test_ui_settings_stats_and_sources():
+    """新增的研究语义参数:数值键直接落盘;ENRICHMENT_SOURCES(列表型)按取值表
+    归一(去重保序、统一大写、丢非法项),空集/全非法整键不落盘。"""
+    save_ui_settings({"RWR_ALPHA": 0.65, "GSEA_PERMUTATION_NUM": 2000,
+                      "EXHAUSTIVENESS": 16, "DOCKING_CPU": 0})
+    save_ui_settings({"ENRICHMENT_SOURCES": ["kegg", "GO:CC", "go:cc", "bogus"]})
+    with open(config.UI_SETTINGS_FILE, encoding="utf-8") as f:
+        saved = json.load(f)
+    assert saved["RWR_ALPHA"] == 0.65
+    assert saved["GSEA_PERMUTATION_NUM"] == 2000
+    assert saved["EXHAUSTIVENESS"] == 16
+    assert saved["DOCKING_CPU"] == 0
+    assert saved["ENRICHMENT_SOURCES"] == ["KEGG", "GO:CC"]  # 去重保序、统一大写、丢非法
+    save_ui_settings({"ENRICHMENT_SOURCES": []})
+    save_ui_settings({"ENRICHMENT_SOURCES": "KEGG"})  # 非列表整键丢弃
+    with open(config.UI_SETTINGS_FILE, encoding="utf-8") as f:
+        assert json.load(f)["ENRICHMENT_SOURCES"] == ["KEGG", "GO:CC"]
+
+
+def test_apply_ui_settings_overrides_sources(monkeypatch):
+    """加载侧:ui_settings.json 里的 SOURCES 归一成元组套用;坏值按内置默认运行。"""
+    from WY.core.caching import save_json_file
+
+    monkeypatch.setattr(config, "ENRICHMENT_SOURCES", config.ENRICHMENT_SOURCE_VALUES)
+    monkeypatch.setattr(config, "RWR_ALPHA", config.RWR_ALPHA)  # 登记还原,防污染后续测试
+    save_json_file(config.UI_SETTINGS_FILE,
+                   {"ENRICHMENT_SOURCES": ["KEGG", "GO:BP"], "RWR_ALPHA": 0.9})
+    config.apply_ui_settings_overrides()
+    assert config.ENRICHMENT_SOURCES == ("KEGG", "GO:BP")
+    assert config.RWR_ALPHA == 0.9
+    save_json_file(config.UI_SETTINGS_FILE, {"ENRICHMENT_SOURCES": []})
+    config.apply_ui_settings_overrides()
+    assert config.ENRICHMENT_SOURCES == ("KEGG", "GO:BP")  # 空集不套用,保持原值

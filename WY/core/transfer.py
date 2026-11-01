@@ -419,6 +419,11 @@ def _filter_ui_settings(raw: dict) -> dict:
         elif k == "UI_LANG":
             if isinstance(v, str) and v.strip().lower() in config.UI_LANG_VALUES:
                 out[k] = v.strip().lower()
+        elif k == "ENRICHMENT_SOURCES":
+            # 富集条目类型是列表:按取值表校验归一(空集/非法整键丢弃,绝不写入空列表)
+            srcs = config.normalized_enrichment_sources(v)
+            if srcs:
+                out[k] = srcs
         elif k == "LOG_LEVEL":
             if isinstance(v, str) and v.strip().upper() in (
                     "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):

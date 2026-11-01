@@ -828,6 +828,8 @@ class ApiEnvBody(BaseModel):
 
 def _settings_snapshot() -> dict:
     """设置快照:密钥只回布尔(不回值),路径明文,分析参数回当前生效值。"""
+    from WY.core.docking import docking_timeout
+
     return {
         "keys": {"disgenet": bool(config.DisGeNET_API_KEY),
                  "ncbi": bool(config.NCBI_API_KEY)},
@@ -848,6 +850,20 @@ def _settings_snapshot() -> dict:
         "louvain_resolution": config.LOUVAIN_RESOLUTION,
         "ppi_confidence": config.PPI_CONFIDENCE,
         "pocket_cutoff": config.POCKET_CUTOFF,
+        # 统计稳健性/研究语义参数(面板可调,随 ui_settings.json 迁移)
+        "rwr_alpha": config.RWR_ALPHA,
+        "gsea_permutation_num": config.GSEA_PERMUTATION_NUM,
+        "proximity_n_perm": config.PROXIMITY_N_PERM,
+        "rwr_null_perms": config.RWR_NULL_PERMS,
+        "gsea_set_min_size": config.GSEA_SET_MIN_SIZE,
+        "gsea_set_max_size": config.GSEA_SET_MAX_SIZE,
+        "gsea_fdr_screen": config.GSEA_FDR_SCREEN,
+        "enrichment_sources": list(config.ENRICHMENT_SOURCES),
+        "exhaustiveness": config.EXHAUSTIVENESS,
+        "docking_cpu": config.DOCKING_CPU,
+        "num_modes": config.NUM_MODES,
+        # 对接页参数行展示用:随搜索深度放宽的有效超时
+        "docking_timeout": docking_timeout(),
         "ui_font_scale": config.UI_FONT_SCALE,
         "ui_theme": config.UI_THEME,
         "ui_lang": config.UI_LANG,
@@ -898,8 +914,14 @@ _ALLOWED_UI_KEYS = (
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "CHEMBL_CORROBORATION_REQUIRED", "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION",
     "UI_FONT_SCALE", "UI_THEME", "UI_LANG",
+    # 统计稳健性/研究语义参数(缓存键均含这些值,改动后旧缓存自动失效重算)
+    "RWR_ALPHA", "GSEA_PERMUTATION_NUM", "PROXIMITY_N_PERM", "RWR_NULL_PERMS",
+    "GSEA_SET_MIN_SIZE", "GSEA_SET_MAX_SIZE", "GSEA_FDR_SCREEN",
+    # 分子对接
+    "EXHAUSTIVENESS", "DOCKING_CPU",
 )
 _BLACKLIST_KEY = "CHEMBL_TARGET_BLACKLIST"
+_SOURCES_KEY = "ENRICHMENT_SOURCES"
 # 数值范围(与前端 Stepper 的 min/max 一致,双保险)
 _UI_RANGES: dict[str, tuple[float, float]] = {
     "POCKET_CUTOFF": (3, 6), "PPI_CONFIDENCE": (0.15, 0.9),
@@ -908,6 +930,13 @@ _UI_RANGES: dict[str, tuple[float, float]] = {
     "OT_MIN_SCORE": (0, 1), "ENRICHMENT_PVALUE": (0.01, 0.2),
     "LOUVAIN_RESOLUTION": (0.5, 2),
     "UI_FONT_SCALE": (0.8, 1.5),
+    # α→0 只剩种子、α→1 近乎不收敛,必须卡在退化区间之外
+    "RWR_ALPHA": (0.1, 0.9), "GSEA_FDR_SCREEN": (0.05, 0.5),
+    # 置换数/搜索深度:上限即耗时上限(满档单次分析十余分钟级),不开放更高档位
+    "GSEA_PERMUTATION_NUM": (100, 5000), "PROXIMITY_N_PERM": (50, 2000),
+    "RWR_NULL_PERMS": (50, 2000),
+    "GSEA_SET_MIN_SIZE": (5, 100), "GSEA_SET_MAX_SIZE": (100, 1000),
+    "EXHAUSTIVENESS": (1, 32), "DOCKING_CPU": (0, 64),
 }
 # 这些键影响降噪/抓取规模,值变化后旧参数算出的 merged 整合表不再可信 → 自动清缓存
 _PURGE_MERGED_KEYS = {
@@ -927,6 +956,14 @@ def settings_ui_save(changes: dict) -> dict:
             if not (isinstance(v, list) and all(isinstance(i, str) and i.strip() for i in v)):
                 raise HTTPException(status_code=400, detail=f"{k} must be a list of gene symbols")
             validated[k] = [i.strip().upper() for i in v]
+        elif k == _SOURCES_KEY:
+            # 富集条目类型:取值表校验归一;空集会让 g:Profiler/Enrichr 请求非法,必须拒绝
+            srcs = config.normalized_enrichment_sources(v)
+            if not srcs:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{k} must be a non-empty subset of {config.ENRICHMENT_SOURCE_VALUES}")
+            validated[k] = srcs
         elif k in _ALLOWED_UI_KEYS:
             if k in ("CHEMBL_CORROBORATION_REQUIRED",):
                 if not isinstance(v, bool):
@@ -950,9 +987,16 @@ def settings_ui_save(changes: dict) -> dict:
             validated[k] = v
         else:
             raise HTTPException(status_code=400,
-                                detail=f"key not allowed: {k} (allowed: {_ALLOWED_UI_KEYS + (_BLACKLIST_KEY,)})")
+                                detail=f"key not allowed: {k} (allowed: {_ALLOWED_UI_KEYS + (_BLACKLIST_KEY, _SOURCES_KEY)})")
     if not validated:
         raise HTTPException(status_code=400, detail="no changes")
+
+    # GSEA 基因集规模窗成对校验:单改一边时与当前另一边比,夹逼区间不允许倒挂/相撞
+    _lo = validated.get("GSEA_SET_MIN_SIZE", config.GSEA_SET_MIN_SIZE)
+    _hi = validated.get("GSEA_SET_MAX_SIZE", config.GSEA_SET_MAX_SIZE)
+    if _lo >= _hi:
+        raise HTTPException(status_code=400,
+                            detail=f"GSEA_SET_MIN_SIZE({_lo}) must be < GSEA_SET_MAX_SIZE({_hi})")
 
     def _differs(k: str, v) -> bool:
         old = getattr(config, k, None)
@@ -1492,10 +1536,10 @@ def docking_run(sid: str, body: DockRunBody) -> dict:
         raise HTTPException(status_code=400, detail="ligand/receptor/box not ready")
 
     def task(progress) -> dict:
-        from WY.core.docking import parse_vina_scores, run_vina, split_vina
+        from WY.core.docking import docking_timeout, parse_vina_scores, run_vina, split_vina
 
         progress(fraction=None, text=f"vina 运行中(exhaustiveness={config.EXHAUSTIVENESS},"
-                                     f" 最长 {config.DOCKING_TIMEOUT}s)…")
+                                     f" 最长 {docking_timeout()}s)…")
         out_pdbqt = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                  f"vina_out_{datetime.now():%Y%m%d_%H%M%S}.pdbqt")
         proc = run_vina(dock["rec_pdbqt"], dock["lig_pdbqt"], dock["box"], out_path=out_pdbqt)

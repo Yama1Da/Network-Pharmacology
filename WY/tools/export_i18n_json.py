@@ -376,7 +376,7 @@ WEB_ZH = {
     "web.docking.box_residues": "盒内残基 {n} 个:{list}",
     "web.docking.box_empty": "盒内无残基 —— 检查盒子位置。",
     "web.docking.s5_title": "Step 5 · 运行对接",
-    "web.docking.run_params": "参数:exhaustiveness 8 · num_modes 9 · cpu 4 · seed 固定 · 超时 600s(全局设置见设置页)。",
+    "web.docking.run_params": "参数:exhaustiveness {e} · num_modes {m} · cpu {c} · seed 固定 · 超时 {timeout}s(全局设置见设置页)。",
     "web.docking.run_btn": "运行 Vina 对接",
     "web.docking.running_vina": "vina 运行中…",
     "web.docking.need_s234": "完成 Step 2–4 后可运行。",
@@ -608,6 +608,24 @@ WEB_ZH = {
     "web.settings.paths_saved": "已生效:{names}(可执行文件已重探)",
     "web.settings.paths_none": "无变更",
     "web.settings.save_fail": "保存失败",
+    # ---- 统计稳健性/研究语义参数(分析算法/分子对接板块) ----
+    "web.settings.sec_stats": "统计稳健性(RWR/GSEA/邻近度)",
+    "web.settings.stats_hint": "这些参数都参与结果缓存键,改动后旧缓存自动失效重算;置换数越大越稳、越慢。",
+    "web.settings.rwr_alpha_label": "RWR 重启概率 α",
+    "web.settings.gsea_perms_label": "GSEA 置换次数",
+    "web.settings.prox_perms_label": "邻近度置换次数",
+    "web.settings.rwr_null_label": "RWR 校正置换次数",
+    "web.settings.gsea_min_label": "基因集规模下限",
+    "web.settings.gsea_max_label": "基因集规模上限",
+    "web.settings.gsea_fdr_label": "GSEA 展示 FDR 阈值",
+    "web.settings.gsea_size_hint": "规模窗必须下限<上限;FDR 只影响页面展示,完整结果始终在 CSV。",
+    "web.settings.sources_label": "富集条目类型(至少选一):",
+    "web.settings.sources_empty": "请至少勾选一种富集条目类型",
+    "web.settings.gsea_size_bad": "基因集规模下限必须小于上限",
+    "web.settings.exhaust_label": "搜索深度(EXHAUSTIVENESS)",
+    "web.settings.exhaust_hint": "耗时随深度成倍增长;对接超时会随深度自动放宽(上限 8 倍基线),调大后请耐心等待。",
+    "web.settings.cpu_label": "Vina 并行核数",
+    "web.settings.cpu_hint": "0 = 自动使用全部核心;低配机器可调小,给其他程序让路。",
     # ---- 数据迁移(通用设置页底部的导出/导入) ----
     "web.transfer.title": "数据迁移",
     "web.transfer.hint": "把本机实验结果打包为 zip,换电脑时导入。密钥与缓存不进包;"
@@ -1010,7 +1028,7 @@ WEB_EN = {
     "web.docking.box_residues": "Residues in the box ({n}): {list}",
     "web.docking.box_empty": "No residues inside the box — check its position.",
     "web.docking.s5_title": "Step 5 · Run docking",
-    "web.docking.run_params": "Parameters: exhaustiveness 8 · num_modes 9 · cpu 4 · fixed seed · 600 s timeout (global settings on the Settings page).",
+    "web.docking.run_params": "Parameters: exhaustiveness {e} · num_modes {m} · cpu {c} · fixed seed · timeout {timeout}s (global settings on the Settings page).",
     "web.docking.run_btn": "Run Vina docking",
     "web.docking.running_vina": "vina running…",
     "web.docking.need_s234": "Available once Steps 2–4 are complete.",
@@ -1241,6 +1259,28 @@ WEB_EN = {
     "web.settings.paths_saved": "Applied: {names} (executables re-probed)",
     "web.settings.paths_none": "No changes",
     "web.settings.save_fail": "Failed to save",
+    # ---- Statistical robustness / research-semantic parameters (algo & docking tabs) ----
+    "web.settings.sec_stats": "Statistical robustness (RWR / GSEA / proximity)",
+    "web.settings.stats_hint": "These parameters are part of the result cache keys; changing them"
+                               " invalidates old caches automatically. More permutations = more"
+                               " stable but slower.",
+    "web.settings.rwr_alpha_label": "RWR restart probability α",
+    "web.settings.gsea_perms_label": "GSEA permutations",
+    "web.settings.prox_perms_label": "Proximity permutations",
+    "web.settings.rwr_null_label": "RWR null permutations",
+    "web.settings.gsea_min_label": "Gene set size min",
+    "web.settings.gsea_max_label": "Gene set size max",
+    "web.settings.gsea_fdr_label": "GSEA display FDR cutoff",
+    "web.settings.gsea_size_hint": "Min must stay below max; the FDR cutoff only filters the"
+                                   " page display — full results are always in the CSV.",
+    "web.settings.sources_label": "Enrichment source categories (at least one):",
+    "web.settings.sources_empty": "Select at least one enrichment source category",
+    "web.settings.gsea_size_bad": "Gene set size min must be smaller than max",
+    "web.settings.exhaust_label": "Search depth (EXHAUSTIVENESS)",
+    "web.settings.exhaust_hint": "Runtime grows proportionally; the docking timeout scales with"
+                                 " depth automatically (up to 8x baseline), so be patient at high values.",
+    "web.settings.cpu_label": "Vina CPU cores",
+    "web.settings.cpu_hint": "0 = use all cores automatically; lower it to keep the machine responsive.",
     # ---- Data transfer (export/import at the bottom of the general tab) ----
     "web.transfer.title": "Data transfer",
     "web.transfer.hint": "Pack local experiment results into a zip and import them on another"

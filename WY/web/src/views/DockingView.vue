@@ -15,6 +15,9 @@ const { t } = useI18n()
 
 const sid = ref('')
 const dockError = ref('')
+/* Step5 参数行的实时值;拉取失败时用内置默认兜底 */
+const dockParams = ref<{ e: number; m: number; c: number; timeout: number }>(
+  { e: 8, m: 9, c: 4, timeout: 600 })
 
 async function ensureSession(): Promise<string> {
   if (sid.value) return sid.value
@@ -371,6 +374,14 @@ onMounted(async () => {
   } catch (e) {
     flash(e instanceof Error ? e.message : String(e))
   }
+  // Step5 参数行取实时值(exhaustiveness/cpu 面板可调,超时随深度放宽);失败退回内置默认
+  try {
+    const s = await api.settings()
+    dockParams.value = { e: s.exhaustiveness, m: s.num_modes, c: s.docking_cpu,
+                         timeout: s.docking_timeout }
+  } catch {
+    /* 保持内置默认显示 */
+  }
 })
 onBeforeUnmount(() => {
   window.clearTimeout(reloadTimer)
@@ -568,7 +579,7 @@ onBeforeUnmount(() => {
     <!-- ============ Step 5 ============ -->
     <section class="step" :class="{ done: stepDone.s5 }">
       <h3 class="step-title">{{ t('web.docking.s5_title') }} <span v-if="stepDone.s5" class="ok-mark">✓</span></h3>
-      <p v-if="canRun" class="hint-line">{{ t('web.docking.run_params') }}</p>
+      <p v-if="canRun" class="hint-line">{{ t('web.docking.run_params', dockParams) }}</p>
       <button v-if="canRun" class="bar-btn strong" :disabled="runJob.running.value" @click="runDock">
         {{ runJob.running.value ? t('web.docking.running_vina') : t('web.docking.run_btn') }}
       </button>

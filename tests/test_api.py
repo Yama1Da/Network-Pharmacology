@@ -725,3 +725,59 @@ def test_transfer_import_commit_failure_keeps_session(client):
     assert r2.json()["report"]["applied"] == [
         {"kind": "analysis", "name": "aspirin_cancer_data"}]
     assert tr.get_import_session(sid) is None
+
+
+def test_settings_ui_stats_sources_and_gsea_pair(client):
+    """新参数面板:快照含全部新字段;SOURCES 取值表校验(空集/非法 400);
+    数值范围双保险;GSEA 规模窗成对校验(min<max,含单改一边与当前值比对)。"""
+    body = client.get("/api/settings").json()
+    for key in ("rwr_alpha", "gsea_permutation_num", "proximity_n_perm",
+                "rwr_null_perms", "gsea_set_min_size", "gsea_set_max_size",
+                "gsea_fdr_screen", "enrichment_sources", "exhaustiveness",
+                "docking_cpu"):
+        assert key in body, f"设置快照缺 {key}"
+
+    originals = {k: getattr(config, k) for k in
+                 ("RWR_ALPHA", "GSEA_PERMUTATION_NUM", "ENRICHMENT_SOURCES",
+                  "GSEA_SET_MIN_SIZE", "GSEA_SET_MAX_SIZE", "EXHAUSTIVENESS")}
+    try:
+        r = client.post("/api/settings/ui", json={"changes": {
+            "ENRICHMENT_SOURCES": ["kegg", "GO:CC"], "RWR_ALPHA": 0.85,
+            "EXHAUSTIVENESS": 16}})
+        assert r.status_code == 200
+        snap = r.json()["snapshot"]
+        assert snap["enrichment_sources"] == ["KEGG", "GO:CC"]  # 归一:大写、去重、保序
+        assert snap["rwr_alpha"] == 0.85 and snap["exhaustiveness"] == 16
+        assert config.ENRICHMENT_SOURCES == ("KEGG", "GO:CC")  # 运行时为元组,下游迭代安全
+
+        for bad in ({"ENRICHMENT_SOURCES": []},                    # 空集
+                    {"ENRICHMENT_SOURCES": ["bogus"]},             # 全非法
+                    {"ENRICHMENT_SOURCES": "KEGG"},                # 非列表
+                    {"RWR_ALPHA": 2},                              # 范围外(α 退化区)
+                    {"EXHAUSTIVENESS": 99},                        # 范围外
+                    {"DOCKING_CPU": -1},                           # 范围外
+                    {"GSEA_SET_MIN_SIZE": 1000}):                  # 单改下限撞当前上限
+            assert client.post("/api/settings/ui",
+                               json={"changes": bad}).status_code == 400, bad
+        # 成对修改仍倒挂 → 400;合法配对 → 200
+        assert client.post("/api/settings/ui", json={"changes": {
+            "GSEA_SET_MIN_SIZE": 600, "GSEA_SET_MAX_SIZE": 100}}).status_code == 400
+        assert client.post("/api/settings/ui", json={"changes": {
+            "GSEA_SET_MIN_SIZE": 20, "GSEA_SET_MAX_SIZE": 600}}).status_code == 200
+    finally:
+        client.post("/api/settings/ui", json={"changes": {
+            "RWR_ALPHA": originals["RWR_ALPHA"],
+            "GSEA_PERMUTATION_NUM": originals["GSEA_PERMUTATION_NUM"],
+            "ENRICHMENT_SOURCES": list(originals["ENRICHMENT_SOURCES"]),
+            "GSEA_SET_MIN_SIZE": originals["GSEA_SET_MIN_SIZE"],
+            "GSEA_SET_MAX_SIZE": originals["GSEA_SET_MAX_SIZE"],
+            "EXHAUSTIVENESS": originals["EXHAUSTIVENESS"]}})
+
+
+def test_settings_snapshot_docking_params(client):
+    """快照携带对接参数行所需的实时值:num_modes 常量与随深度放宽的有效超时。"""
+    body = client.get("/api/settings").json()
+    assert body["num_modes"] == config.NUM_MODES
+    expected = max(config.DOCKING_TIMEOUT,
+                   config.DOCKING_TIMEOUT * config.EXHAUSTIVENESS // 8)
+    assert body["docking_timeout"] == expected

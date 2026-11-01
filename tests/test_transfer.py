@@ -469,3 +469,23 @@ def test_cleanup_transfer_staging_sweeps_orphans_and_exports():
     assert not os.path.exists(stale_export)
     assert os.path.exists(keep_export)  # 未过期导出包保留
     assert os.path.isdir(live_dir)      # 在册会话暂存保留
+
+
+def test_import_ui_settings_sources_roundtrip(monkeypatch):
+    """ENRICHMENT_SOURCES(列表型)迁移:导出原样进包,导入按取值表归一、空集/非法整键丢弃,
+    落盘并回填运行时为元组(下游迭代安全)。"""
+    _mk_ui_settings({"ENRICHMENT_SOURCES": ["kegg", "GO:CC", "go:cc", "bogus"]})
+    zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
+    transfer.build_export_bundle(("ui_settings",), zip_path)
+    staging = os.path.join(config.TRANSFER_DIR, "import_test")
+    report = transfer.analyze_bundle(zip_path, staging)
+    assert report["ui_settings"]["keys"] == 1  # 归一后只剩 KEGG/GO:CC 两值一键
+
+    monkeypatch.setattr(config, "ENRICHMENT_SOURCES", config.ENRICHMENT_SOURCE_VALUES)
+    result = transfer.commit_import(staging, [
+        {"kind": "ui_settings", "name": "ui_settings.json", "action": "overwrite"}])
+    assert result["failed"] == []
+    assert result["applied"][0]["keys"] == ["ENRICHMENT_SOURCES"]
+    assert config.ENRICHMENT_SOURCES == ("KEGG", "GO:CC")  # 元组:下游 for 迭代/拼接安全
+    with open(config.UI_SETTINGS_FILE, encoding="utf-8") as f:
+        assert json.load(f)["ENRICHMENT_SOURCES"] == ["KEGG", "GO:CC"]

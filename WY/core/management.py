@@ -65,6 +65,12 @@ def save_ui_settings(overrides: dict) -> None:
             # 界面语言只认 zh/en,统一小写落盘;必须先于通用字符串分支(该分支会转大写)
             if isinstance(v, str) and v.strip().lower() in config.UI_LANG_VALUES:
                 clean[k] = v.strip().lower()
+        elif k == "ENRICHMENT_SOURCES":
+            # 富集条目类型是列表:按取值表校验归一(去重保序),空集/非法不落盘;
+            # JSON 无元组,落盘为列表,加载侧归一回元组
+            srcs = config.normalized_enrichment_sources(v)
+            if srcs:
+                clean[k] = list(srcs)
         elif k in config.UI_SETTINGS_KEYS and isinstance(v, str):
             clean[k] = v.strip().upper()  # 日志级别等枚举字符串,统一大写
     if not clean:

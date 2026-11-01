@@ -289,6 +289,20 @@ export interface SettingsSnapshot {
   louvain_resolution: number
   ppi_confidence: number
   pocket_cutoff: number
+  /* 统计稳健性/研究语义参数(面板可调,随 ui_settings.json 迁移) */
+  rwr_alpha: number
+  gsea_permutation_num: number
+  proximity_n_perm: number
+  rwr_null_perms: number
+  gsea_set_min_size: number
+  gsea_set_max_size: number
+  gsea_fdr_screen: number
+  enrichment_sources: string[]
+  exhaustiveness: number
+  docking_cpu: number
+  num_modes: number
+  /* 随搜索深度放宽的有效对接超时(秒),对接页参数行展示用 */
+  docking_timeout: number
   ui_font_scale: number
   ui_theme: string
   ui_lang: 'zh' | 'en'
