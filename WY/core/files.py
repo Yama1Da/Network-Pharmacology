@@ -81,6 +81,14 @@ def make_ppi_zip(file_paths: dict) -> bytes:
     return _zip_bytes(write)
 
 
+def make_bytes_zip(files: dict) -> bytes:
+    """把内存中的若干文件（文件名 → 字节）打包为 zip,供不落盘的数据(如主页检索结果)直接下载。"""
+    def write(zf):
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return _zip_bytes(write)
+
+
 def make_fig_zip(png_path: str, svg_path: str) -> bytes:
     """把一张图的 PNG + SVG 两个文件打包为小 zip,供下载面板"一图一钮"同时带走位图与矢量版
     （Streamlit 一个按钮只能携带一个文件）。"""

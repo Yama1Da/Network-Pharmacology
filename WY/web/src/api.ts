@@ -442,6 +442,14 @@ export const api = {
   retrieveTargets: (drug: string, disease: string): Promise<{ job_id: string }> =>
     post('/api/targets/retrieve', { drug, disease }),
 
+  /* 主页检索结果下载:多项后端打 zip,单项直接回对应文件(items 键见 api.py _EXPORT_ITEMS) */
+  targetsExport: async (jobId: string, items: string[]): Promise<Blob> => {
+    const r = await fetch(`/api/targets/export?job_id=${encodeURIComponent(jobId)}` +
+      `&items=${encodeURIComponent(items.join(','))}`)
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.blob()
+  },
+
   /* ---- 主页页脚统计(本机缓存实数) ---- */
   homeStats: (): Promise<{
     databases: number

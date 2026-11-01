@@ -24,7 +24,7 @@ from WY import config
 from WY.core import jobs, transfer
 from WY.core.enrichment import parse_enrichment_filename
 from WY.core.files import (list_cache_files, list_download_dirs, list_log_files,
-                           make_dirs_zip, make_ppi_zip)
+                           make_bytes_zip, make_dirs_zip, make_ppi_zip)
 from WY.core.interactome import (build_interactome, clean_old_version_caches,
                                  interactome_age_days, is_built, is_stale,
                                  require_meta)
@@ -1035,11 +1035,12 @@ _VENN_CACHE: dict[str, dict] = {}   # job_id → {"png": bytes}(任务线程写�
 _VENN_ORDER: list[str] = []
 
 
-def _render_venn_png(drug_set: set, disease_set: set, drug_name: str, disease_name: str,
-                     dark: bool = False) -> bytes:
+def _render_venn_image(drug_set: set, disease_set: set, drug_name: str, disease_name: str,
+                       dark: bool = False, fmt: str = "png") -> bytes:
     """venn2 服务端渲染(与 App.py 主页同款;线程安全:用 Figure API 而非 pyplot 全局状态)。
     图内文字保持英文:matplotlib 默认字体不支持中文,中文会显示成方框。
-    dark=True 按界面深色主题(墨黑)渲染:深底浅字,供深色模式下 venn 不再是刺眼白块。"""
+    dark=True 按界面深色主题(墨黑)渲染:深底浅字,供深色模式下 venn 不再是刺眼白块。
+    fmt 支持 png / svg(svg 供论文排版二次编辑,matplotlib 文字默认转路径,通用软件可正常显示)。"""
     import io
 
     from matplotlib.figure import Figure
@@ -1064,7 +1065,7 @@ def _render_venn_png(drug_set: set, disease_set: set, drug_name: str, disease_na
         v.get_label_by_id("11").set_fontsize(12)  # 交集区域字号
     ax.set_title(f"{drug_name} vs {disease_name} — Venn Diagram", fontsize=14, color=fg)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=bg)
+    fig.savefig(buf, format=fmt, dpi=150, bbox_inches="tight", facecolor=bg)
     return buf.getvalue()
 
 
@@ -1110,14 +1111,15 @@ def targets_retrieve(body: RetrieveBody) -> dict:
         disease_set = (set(disease_df["approvedSymbol"].dropna().astype(str))
                        if disease_df is not None and not disease_df.empty else set())
         if drug_set or disease_set:
-            venn_holder["png"] = _render_venn_png(drug_set, disease_set,
-                                                  body.drug.strip(), body.disease.strip())
+            venn_holder["png"] = _render_venn_image(drug_set, disease_set,
+                                                    body.drug.strip(), body.disease.strip())
             # 深色版按需渲染:留存集合与命名,首次请求 theme=dark 时渲染并缓存
             venn_holder["args"] = (drug_set, disease_set,
                                    body.drug.strip(), body.disease.strip())
         common = sorted(drug_set & disease_set)
         drug_rows = _target_rows(drug_df)[:1000]
         disease_rows = _target_rows(disease_df)[:1000]
+        common_df = None
         common_rows: list[dict] = []
         if drug_rows and disease_rows:
             import pandas as pd
@@ -1126,6 +1128,10 @@ def targets_retrieve(body: RetrieveBody) -> dict:
                 disease_df.drop(columns=["source_count"]),
                 on="approvedSymbol", how="inner")
             common_rows = _target_rows(common_df)[:1000]
+        # 完整表 CSV 留存,供 /api/targets/export 下载(展示行截断到 1000,导出不截断)
+        venn_holder["drug_csv"] = _targets_csv_bytes(drug_df)
+        venn_holder["disease_csv"] = _targets_csv_bytes(disease_df)
+        venn_holder["common_csv"] = _targets_csv_bytes(common_df)
         return {"drug_count": len(drug_set), "disease_count": len(disease_set),
                 "common_count": len(common),
                 "common_genes": common[:200],
@@ -1149,9 +1155,78 @@ def targets_venn(job_id: str, theme: str = "light") -> Response:
         raise HTTPException(status_code=404, detail="no venn for this job")
     if theme == "dark":
         if "png_dark" not in holder:
-            holder["png_dark"] = _render_venn_png(*holder["args"], dark=True)
+            holder["png_dark"] = _render_venn_image(*holder["args"], dark=True)
         return Response(content=holder["png_dark"], media_type="image/png")
     return Response(content=holder["png"], media_type="image/png")
+
+
+_EXPORT_ITEMS = {
+    "drug_csv": "{d}_drug_targets.csv",
+    "disease_csv": "{p}_disease_targets.csv",
+    "common_csv": "{d}_{p}_common_targets.csv",
+    "venn_png": "venn_{d}_{p}.png",
+    "venn_svg": "venn_{d}_{p}.svg",
+}
+
+
+def _attachment(fname: str) -> str:
+    """Content-Disposition: attachment 头。文件名含非 ASCII(中文药名等)时补 RFC 5987 的
+    filename*:FastAPI 响应头按 latin-1 编码,直接放中文会 500。"""
+    if fname.isascii():
+        return f'attachment; filename="{fname}"'
+    from urllib.parse import quote
+
+    fallback = fname.encode("ascii", "replace").decode().replace('"', "_")
+    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(fname)}'
+
+
+def _targets_csv_bytes(df) -> bytes:
+    """merged 靶点表 → CSV 字节(UTF-8 BOM,Excel 直开;去 source_count 冗余列)。空表回空字节。"""
+    if df is None or df.empty:
+        return b""
+    return df.drop(columns=["source_count"], errors="ignore").to_csv(
+        index=False, float_format="%.4g").encode("utf-8-sig")
+
+
+@app.get("/api/targets/export")
+def targets_export(job_id: str, items: str) -> Response:
+    """主页检索结果下载:items 逗号分隔(drug_csv/disease_csv/common_csv/venn_png/venn_svg)。
+    单项直接回文件,多项打 zip(core.files.make_bytes_zip 内存打包)。
+    CSV 为完整 merged 表(不受主页 1000 行展示截断);venn 取浅色版(论文用途),svg 首次请求时渲染进缓存。"""
+    holder = _VENN_CACHE.get(job_id)
+    if not holder:
+        raise HTTPException(status_code=404, detail="no retrieve result for this job")
+    want = [s.strip() for s in items.split(",") if s.strip()]
+    if not want or any(w not in _EXPORT_ITEMS for w in want):
+        raise HTTPException(status_code=400, detail="items must be a comma list of: "
+                            + ", ".join(sorted(_EXPORT_ITEMS)))
+    resolved: dict[str, bytes] = {}
+    for w in want:
+        if w == "venn_png":
+            data = holder.get("png")
+        elif w == "venn_svg":
+            if "svg" not in holder and "args" in holder:
+                holder["svg"] = _render_venn_image(*holder["args"], fmt="svg")
+            data = holder.get("svg")
+        else:
+            data = holder.get(w)
+        if not data:
+            raise HTTPException(status_code=404, detail=f"{w} is empty for this job")
+        resolved[w] = data
+    if "args" not in holder:
+        raise HTTPException(status_code=404, detail="no targets for this job")
+    d, p = safe_name(holder["args"][2]), safe_name(holder["args"][3])
+    if len(resolved) == 1:
+        w, data = next(iter(resolved.items()))
+        fname = _EXPORT_ITEMS[w].format(d=d, p=p)
+        media = {"png": "image/png", "svg": "image/svg+xml"}.get(
+            fname.rsplit(".", 1)[1], "text/csv")
+    else:
+        fname = f"{d}_{p}_targets.zip"
+        data = make_bytes_zip({_EXPORT_ITEMS[w].format(d=d, p=p): b for w, b in resolved.items()})
+        media = "application/zip"
+    return Response(content=data, media_type=media,
+                    headers={"Content-Disposition": _attachment(fname)})
 
 
 # ======== 分子对接(阶段 3b:Molecular_Docking 页) ========
