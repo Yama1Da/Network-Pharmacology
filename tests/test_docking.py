@@ -327,3 +327,17 @@ def test_clean_docking_cache_exempts_permanent():
     removed0 = dock.clean_docking_cache(ttl_days=0)
     assert removed0 == 2, removed0  # new_lig / new_rec 此时全部过期
     assert os.path.exists(uniprot_map) and os.path.exists(threedmol)
+
+
+def test_docking_timeout_scales_with_exhaustiveness(monkeypatch):
+    """有效超时随搜索深度线性放宽:默认档(8)零行为变化,16/32 翻倍/四倍,
+    低档钳到基线,手改文件写出天文数字时钳在基线 8 倍。"""
+    monkeypatch.setattr(config, "DOCKING_TIMEOUT", 600)
+    monkeypatch.setattr(config, "EXHAUSTIVENESS", 8)
+    assert dock.docking_timeout() == 600
+    monkeypatch.setattr(config, "EXHAUSTIVENESS", 32)
+    assert dock.docking_timeout() == 2400
+    monkeypatch.setattr(config, "EXHAUSTIVENESS", 1)
+    assert dock.docking_timeout() == 600
+    monkeypatch.setattr(config, "EXHAUSTIVENESS", 999)
+    assert dock.docking_timeout() == 4800

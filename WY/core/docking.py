@@ -773,6 +773,17 @@ def infer_box_from_cofactor(pdb_path: str, padding: float = 8.0) -> dict:
 # -------------------- 执行链 --------------------
 
 
+def docking_timeout() -> int:
+    """vina 有效超时(秒):随搜索深度线性放宽——EXHAUSTIVENESS 每放大,墙钟预算同比增加,
+    单条采样链的预算不变。EXHAUSTIVENESS<=8 时即基线 DOCKING_TIMEOUT(默认行为不变,
+    16→2 倍,32→4 倍);钳制在基线的 8 倍,防手改设置文件把超时写成天文数字。"""
+    from WY import config
+
+    base = max(int(config.DOCKING_TIMEOUT), 1)
+    exh = max(int(config.EXHAUSTIVENESS), 1)
+    return min(max(base, base * exh // 8), base * 8)
+
+
 def run_vina(
     receptor_pdbqt: str,
     ligand_pdbqt: str,
@@ -806,14 +817,17 @@ def run_vina(
         "--out", out_path,
     ]
     logging.info("Running vina: %s", " ".join(cmd))
+    timeout = docking_timeout()
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True,
-            timeout=config.DOCKING_TIMEOUT,
+            timeout=timeout,
             encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"vina timed out after {config.DOCKING_TIMEOUT}s")
+        raise RuntimeError(
+            f"vina 对接超时（>{timeout} 秒，搜索深度 {config.EXHAUSTIVENESS}）；"
+            "可在设置页调低搜索深度后重试")
     if proc.returncode == 3221225786:  # 0xC000013A:Ctrl+C 经控制台进程组杀死了 vina
         raise VinaInterrupted(f"vina 被控制台 Ctrl+C 终止(rc={proc.returncode})")
     if proc.returncode != 0:

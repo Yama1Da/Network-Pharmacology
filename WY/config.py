@@ -404,6 +404,19 @@ UI_SETTINGS_KEYS = (
     "STRING_VERSION",  # STRING 数据版本:查询 API/下载路径/各缓存键随版本派生或隔离
     "UI_FONT_SCALE",  # 前端界面等比缩放(1.0=100%):纯显示偏好,不影响任何分析计算
     "UI_THEME",  # 前端颜色主题 light/dark(深色=样品「墨黑」):纯显示偏好
+    "UI_LANG",  # 前端界面语言 zh/en:纯显示偏好,随 ui_settings.json 参与数据迁移
+    # ---- 统计稳健性/研究语义参数(全部在各自缓存键里,改动后旧缓存自动失效重算) ----
+    "RWR_ALPHA",  # RWR 重启概率:越大游走越远越全局,越小越贴已知靶点
+    "GSEA_PERMUTATION_NUM",  # GSEA 置换次数:越大 p 值越稳,耗时线性增长
+    "PROXIMITY_N_PERM",  # 网络邻近度随机置换次数:同上
+    "RWR_NULL_PERMS",  # RWR 度匹配校正的置换次数:同上
+    "GSEA_SET_MIN_SIZE",  # GSEA 基因集规模下限(与上限配对,保存时校验 min<max)
+    "GSEA_SET_MAX_SIZE",  # GSEA 基因集规模上限
+    "GSEA_FDR_SCREEN",  # GSEA 页面展示的 FDR 筛选阈值(完整结果在 CSV,不影响落盘)
+    "ENRICHMENT_SOURCES",  # 富集条目类型:GO:BP/MF/CC+KEGG 的非空子集(列表型特判)
+    # ---- 分子对接 ----
+    "EXHAUSTIVENESS",  # vina 搜索深度:耗时成倍增长,有效超时随此值线性放宽(docking.docking_timeout)
+    "DOCKING_CPU",  # vina 并行核数:0 表示自动用全部核心
 )
 # UI_FONT_SCALE 允许范围:加载设置文件时校验,坏值按内置默认运行
 _UI_FONT_SCALE_RANGE = (0.8, 1.5)
@@ -411,8 +424,27 @@ _UI_FONT_SCALE_RANGE = (0.8, 1.5)
 UI_FONT_SCALE = 1.0
 # 颜色主题默认浅色;实际生效值由 ui_settings.json 覆盖
 UI_THEME = "light"
+# 界面语言默认中文;实际生效值由 ui_settings.json 覆盖
+UI_LANG = "zh"
+# UI_LANG 允许的取值:加载/保存/迁移导入过滤共用同一取值表,坏值按内置中文运行
+UI_LANG_VALUES = ("zh", "en")
 # LOG_LEVEL 允许的取值:加载设置文件时校验,坏值按内置默认运行
 _LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+# ENRICHMENT_SOURCES 允许的取值:加载/保存/迁移导入过滤共用同一取值表
+ENRICHMENT_SOURCE_VALUES = ("GO:BP", "GO:MF", "GO:CC", "KEGG")
+
+
+def normalized_enrichment_sources(value) -> tuple[str, ...] | None:
+    """校验并归一富集条目类型列表:只认取值表内的类型、去重保序、统一大写;
+    空集/全非法/非列表返回 None(空集会把 g:Profiler/Enrichr 请求发成非法形态,必须拒绝)。"""
+    if not isinstance(value, (list, tuple)):
+        return None
+    seen: list[str] = []
+    for item in value:
+        s = str(item).strip().upper()
+        if s in ENRICHMENT_SOURCE_VALUES and s not in seen:
+            seen.append(s)
+    return tuple(seen) if seen else None
 
 
 def apply_ui_settings_overrides() -> None:
@@ -447,6 +479,16 @@ def apply_ui_settings_overrides() -> None:
                 # 颜色主题只认 light/dark,坏值按内置浅色运行;先于通用字符串分支
                 if isinstance(_v, str) and _v.strip().lower() in ("light", "dark"):
                     globals()[_k] = _v.strip().lower()
+            elif _k == "UI_LANG":
+                # 界面语言只认 zh/en,坏值按内置中文运行;先于通用字符串分支
+                if isinstance(_v, str) and _v.strip().lower() in UI_LANG_VALUES:
+                    globals()[_k] = _v.strip().lower()
+            elif _k == "ENRICHMENT_SOURCES":
+                # 富集条目类型是列表:按取值表校验归一成元组,空集/坏值按内置默认运行;
+                # 必须先于通用数值/布尔分支
+                _srcs = normalized_enrichment_sources(_v)
+                if _srcs:
+                    globals()[_k] = _srcs
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, bool):
                 globals()[_k] = _v
             elif _k in UI_SETTINGS_KEYS and isinstance(_v, (int, float)) \
@@ -505,6 +547,19 @@ ML_RESULTS_KEEP_PER_GSE = 6           # 结果保留语义(§10 增补):同 tag 
 
 
 # ======== API.env 可视化设置(齿轮面板:数据源板块的密钥 + 分子对接板块的本机工具路径) ========
+# 键名与 API.env 文件内一致;落盘由 core.management.save_api_env 负责(set_key 保留注释与其他行),
+# 落盘后经 apply_api_env 回填运行时,免重启生效。密钥类键不回显当前值,输入新值即覆盖。
+# ======== 数据迁移(设置页导出/导入结果文件) ========
+# 暂存目录:导出包与导入会话的解压暂存都在 CACHE_DIR 下,过期由启动/新建会话时清扫
+TRANSFER_DIR = os.path.join(CACHE_DIR, "transfer")
+# 导入会话与导出包的保留时长(秒):过期在新建会话与启动时清扫(覆盖崩溃残留)
+TRANSFER_SESSION_TTL = 2 * 3600
+TRANSFER_EXPORT_TTL = 2 * 3600
+# 上传 zip 大小上限与解压未压缩总量上限(字节):后者防 zip 炸弹(包小内容大)
+TRANSFER_MAX_UPLOAD_BYTES = 8 * 1024**3
+TRANSFER_MAX_EXTRACT_BYTES = 8 * 1024**3
+
+# API.env 可视化设置(齿轮面板:数据源板块的密钥 + 分子对接板块的本机工具路径)
 # 键名与 API.env 文件内一致;落盘由 core.management.save_api_env 负责(set_key 保留注释与其他行),
 # 落盘后经 apply_api_env 回填运行时,免重启生效。密钥类键不回显当前值,输入新值即覆盖。
 API_ENV_KEYS = ("DisGeNET_API_KEY", "NCBI_API_KEY", "VINA_DIR", "OBABEL_DIR", "CLI_RESULTS_DIR")

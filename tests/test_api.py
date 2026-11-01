@@ -261,7 +261,7 @@ def test_stats_shape(client):
 def test_settings_snapshot_shape(client):
     body = client.get("/api/settings").json()
     for key in ("keys", "vina_dir", "string_version", "known_versions",
-                "chembl_blacklist", "pocket_cutoff"):
+                "chembl_blacklist", "pocket_cutoff", "ui_lang"):
         assert key in body, f"设置快照缺 {key}"
     assert set(body["keys"]) == {"disgenet", "ncbi"}  # 密钥只回布尔不回值
 
@@ -284,6 +284,20 @@ def test_settings_ui_validation_and_noop(client):
     r = client.post("/api/settings/ui", json={"changes": {"POCKET_CUTOFF": current}})
     assert r.status_code == 200 and r.json()["changed"] == []
     assert r.json()["snapshot"]["pocket_cutoff"] == current
+
+
+def test_settings_ui_lang_normalizes_and_restores(client):
+    """UI_LANG:合法值归一小写并进快照与落盘,非法值 400;测后恢复原值。"""
+    original = config.UI_LANG
+    try:
+        r = client.post("/api/settings/ui", json={"changes": {"UI_LANG": " EN "}})
+        assert r.status_code == 200
+        assert r.json()["changed"] == ["UI_LANG"]
+        assert client.get("/api/settings").json()["ui_lang"] == "en"
+        assert client.post("/api/settings/ui",
+                           json={"changes": {"UI_LANG": "fr"}}).status_code == 400
+    finally:
+        client.post("/api/settings/ui", json={"changes": {"UI_LANG": original}})
 
 
 def test_settings_ui_blacklist_normalizes_and_restores(client):
@@ -594,3 +608,176 @@ def test_spa_root_and_fallback(client):
     else:
         # dist 未构建的兜底分支
         assert "前端未构建" in text
+
+
+# ======== 数据迁移:导出 job / 下载端点 / 两段式导入 ========
+
+def _mk_analysis_dir(name: str = "aspirin_cancer_data") -> None:
+    d = os.path.join(config.DOWNLOADS_DIR, name)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "nodes.csv"), "w", encoding="utf-8") as f:
+        f.write("gene\nTP53\n")
+
+
+def test_transfer_export_job_and_download(client):
+    """导出:提交 job → 打包 done → 下载端点取回 zip;空范围/未知范围 400。"""
+    assert client.post("/api/transfer/export",
+                       json={"scopes": ["analysis"]}).status_code == 400  # 空库
+    assert client.post("/api/transfer/export",
+                       json={"scopes": ["md"]}).status_code == 400  # 未知范围
+    assert client.post("/api/transfer/export",
+                       json={"scopes": []}).status_code == 400
+
+    _mk_analysis_dir()
+    r = client.post("/api/transfer/export", json={"scopes": ["analysis", "ui_settings"]})
+    assert r.status_code == 200
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done"
+    result = job["result"]
+    assert result["counts"]["analysis"] == 1
+    filename = result["filename"]
+
+    z = client.get(f"/api/transfer/export/{filename}")
+    assert z.status_code == 200 and z.content[:2] == b"PK"
+    # 下载端点防线:固定命名形态之外一律 400,未知文件 404
+    # (含 ../ 的多段路径在 httpx 侧已被归一,到不了本端点,测的是单段坏名)
+    assert client.get("/api/transfer/export/evil.zip").status_code == 400
+    assert client.get("/api/transfer/export/npap_export_20260101_000000.zip").status_code == 404
+    assert client.get("/api/transfer/export/npap_export_20260101_0000_extra.zip").status_code == 400
+
+
+def test_transfer_import_two_stage_flow(client):
+    """导入两段式:上传有效包 → 预览报告 → commit 全 skip → 会话自动销毁。"""
+    from WY.core import transfer as tr
+
+    _mk_analysis_dir()
+    export = client.post("/api/transfer/export", json={"scopes": ["analysis"]})
+    job = _wait_job(client, export.json()["job_id"])
+    zip_path = os.path.join(config.TRANSFER_DIR, job["result"]["filename"])
+    with open(zip_path, "rb") as f:
+        zip_bytes = f.read()
+
+    up = client.post("/api/transfer/import", content=zip_bytes,
+                     headers={"Content-Type": "application/zip"})
+    assert up.status_code == 200
+    body = up.json()
+    sid, report = body["sid"], body["report"]
+    assert report["items"][0]["name"] == "aspirin_cancer_data"
+    assert report["items"][0]["conflict"] is True  # 本机原件还在
+
+    commit = client.post(f"/api/transfer/import/{sid}/commit", json={
+        "decisions": [{"kind": "analysis", "name": "aspirin_cancer_data",
+                       "action": "skip"}]})
+    assert commit.status_code == 200
+    assert commit.json()["report"]["skipped"] == [
+        {"kind": "analysis", "name": "aspirin_cancer_data"}]
+    # 无失败项 → 会话已销毁;再 commit 404
+    assert client.post(f"/api/transfer/import/{sid}/commit", json={
+        "decisions": []}).status_code == 404
+    assert client.delete(f"/api/transfer/import/{sid}").status_code == 404
+
+
+def test_transfer_import_rejects_bad_bundles(client, tmp_path):
+    """导入防线:非 zip / 缺 manifest 的包 400;空上传 400;未知会话 404。"""
+    assert client.post("/api/transfer/import", content=b"",
+                       headers={"Content-Type": "application/zip"}).status_code == 400
+    assert client.post("/api/transfer/import", content=b"not a zip",
+                       headers={"Content-Type": "application/zip"}).status_code == 400
+
+    import zipfile
+
+    nomanifest = tmp_path / "nomanifest.zip"
+    with zipfile.ZipFile(nomanifest, "w") as zf:
+        zf.writestr("evil.txt", "x")
+    r = client.post("/api/transfer/import", content=nomanifest.read_bytes(),
+                    headers={"Content-Type": "application/zip"})
+    assert r.status_code == 400 and "manifest" in r.json()["detail"]
+
+    assert client.post("/api/transfer/import/nosid/commit",
+                       json={"decisions": []}).status_code == 404
+    assert client.delete("/api/transfer/import/nosid").status_code == 404
+
+
+def test_transfer_import_commit_failure_keeps_session(client):
+    """commit 有失败项时保留会话,用户可调整决策重试。"""
+    from WY.core import transfer as tr
+
+    _mk_analysis_dir()
+    export = client.post("/api/transfer/export", json={"scopes": ["analysis"]})
+    job = _wait_job(client, export.json()["job_id"])
+    zip_path = os.path.join(config.TRANSFER_DIR, job["result"]["filename"])
+    with open(zip_path, "rb") as f:
+        zip_bytes = f.read()
+    sid = client.post("/api/transfer/import", content=zip_bytes,
+                      headers={"Content-Type": "application/zip"}).json()["sid"]
+
+    # rename 撞现有名 → failed,会话保留
+    r = client.post(f"/api/transfer/import/{sid}/commit", json={
+        "decisions": [{"kind": "analysis", "name": "aspirin_cancer_data",
+                       "action": "rename", "new_name": "aspirin_cancer_data"}]})
+    assert r.status_code == 200 and r.json()["report"]["failed"]
+    assert tr.get_import_session(sid) is not None
+
+    # 改用 overwrite → 成功,会话销毁
+    r2 = client.post(f"/api/transfer/import/{sid}/commit", json={
+        "decisions": [{"kind": "analysis", "name": "aspirin_cancer_data",
+                       "action": "overwrite"}]})
+    assert r2.json()["report"]["applied"] == [
+        {"kind": "analysis", "name": "aspirin_cancer_data"}]
+    assert tr.get_import_session(sid) is None
+
+
+def test_settings_ui_stats_sources_and_gsea_pair(client):
+    """新参数面板:快照含全部新字段;SOURCES 取值表校验(空集/非法 400);
+    数值范围双保险;GSEA 规模窗成对校验(min<max,含单改一边与当前值比对)。"""
+    body = client.get("/api/settings").json()
+    for key in ("rwr_alpha", "gsea_permutation_num", "proximity_n_perm",
+                "rwr_null_perms", "gsea_set_min_size", "gsea_set_max_size",
+                "gsea_fdr_screen", "enrichment_sources", "exhaustiveness",
+                "docking_cpu"):
+        assert key in body, f"设置快照缺 {key}"
+
+    originals = {k: getattr(config, k) for k in
+                 ("RWR_ALPHA", "GSEA_PERMUTATION_NUM", "ENRICHMENT_SOURCES",
+                  "GSEA_SET_MIN_SIZE", "GSEA_SET_MAX_SIZE", "EXHAUSTIVENESS")}
+    try:
+        r = client.post("/api/settings/ui", json={"changes": {
+            "ENRICHMENT_SOURCES": ["kegg", "GO:CC"], "RWR_ALPHA": 0.85,
+            "EXHAUSTIVENESS": 16}})
+        assert r.status_code == 200
+        snap = r.json()["snapshot"]
+        assert snap["enrichment_sources"] == ["KEGG", "GO:CC"]  # 归一:大写、去重、保序
+        assert snap["rwr_alpha"] == 0.85 and snap["exhaustiveness"] == 16
+        assert config.ENRICHMENT_SOURCES == ("KEGG", "GO:CC")  # 运行时为元组,下游迭代安全
+
+        for bad in ({"ENRICHMENT_SOURCES": []},                    # 空集
+                    {"ENRICHMENT_SOURCES": ["bogus"]},             # 全非法
+                    {"ENRICHMENT_SOURCES": "KEGG"},                # 非列表
+                    {"RWR_ALPHA": 2},                              # 范围外(α 退化区)
+                    {"EXHAUSTIVENESS": 99},                        # 范围外
+                    {"DOCKING_CPU": -1},                           # 范围外
+                    {"GSEA_SET_MIN_SIZE": 1000}):                  # 单改下限撞当前上限
+            assert client.post("/api/settings/ui",
+                               json={"changes": bad}).status_code == 400, bad
+        # 成对修改仍倒挂 → 400;合法配对 → 200
+        assert client.post("/api/settings/ui", json={"changes": {
+            "GSEA_SET_MIN_SIZE": 600, "GSEA_SET_MAX_SIZE": 100}}).status_code == 400
+        assert client.post("/api/settings/ui", json={"changes": {
+            "GSEA_SET_MIN_SIZE": 20, "GSEA_SET_MAX_SIZE": 600}}).status_code == 200
+    finally:
+        client.post("/api/settings/ui", json={"changes": {
+            "RWR_ALPHA": originals["RWR_ALPHA"],
+            "GSEA_PERMUTATION_NUM": originals["GSEA_PERMUTATION_NUM"],
+            "ENRICHMENT_SOURCES": list(originals["ENRICHMENT_SOURCES"]),
+            "GSEA_SET_MIN_SIZE": originals["GSEA_SET_MIN_SIZE"],
+            "GSEA_SET_MAX_SIZE": originals["GSEA_SET_MAX_SIZE"],
+            "EXHAUSTIVENESS": originals["EXHAUSTIVENESS"]}})
+
+
+def test_settings_snapshot_docking_params(client):
+    """快照携带对接参数行所需的实时值:num_modes 常量与随深度放宽的有效超时。"""
+    body = client.get("/api/settings").json()
+    assert body["num_modes"] == config.NUM_MODES
+    expected = max(config.DOCKING_TIMEOUT,
+                   config.DOCKING_TIMEOUT * config.EXHAUSTIVENESS // 8)
+    assert body["docking_timeout"] == expected

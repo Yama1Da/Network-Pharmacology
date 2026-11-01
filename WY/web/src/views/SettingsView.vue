@@ -4,16 +4,34 @@
  * ③ 分子对接(口袋阈值/Vina·Open Babel 路径) ④ 通用设置(密钥/CLI 产物目录)。
  * 密钥与路径走 save_api_env(白名单+消毒+set_key+运行时回填);分析参数走
  * /api/settings/ui(后端值变化时自动清 merged 整合缓存并同步互作组置信度)。 */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api } from '../api'
+import { api, type SettingsSnapshot, type TransferImportReport, type TransferItemReport } from '../api'
 import Stepper from '../components/Stepper.vue'
+import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
 import { applyScale, persistScale, snapScale } from '../utils/fontScale'
+import { normalizeLang, setLang } from '../i18n'
 import { applyTheme, normalizeTheme, persistTheme, type Theme } from '../utils/theme'
+import { downloadBlob } from '../utils/download'
 
 const { t } = useI18n()
 const { notice, flash } = useNotice(3600)
+
+/* 保存结果内联提示:页面长,顶部 notice 在内容区外看不见,随保存按钮就地显示。
+ * 切换板块即清空,避免上一板块的结果串场;transfer 的导出/导入流程仍走顶部 notice。 */
+const saveNote = ref<{ ok: boolean; text: string } | null>(null)
+let saveNoteTimer = 0
+function noteFlash(ok: boolean, text: string): void {
+  saveNote.value = { ok, text }
+  window.clearTimeout(saveNoteTimer)
+  saveNoteTimer = window.setTimeout(() => (saveNote.value = null), 4000)
+}
+function savedNote(purged: number): string {
+  return purged > 0
+    ? `${t('web.settings.saved')} ${t('web.settings.purged', { n: purged })}`
+    : t('web.settings.saved')
+}
 
 type Snapshot = Awaited<ReturnType<typeof api.settings>>
 
@@ -64,7 +82,23 @@ const enrichP = ref(0.055)
 const louvain = ref(1.0)
 const ppiConf = ref(0.4)
 
+/* 统计稳健性/研究语义参数(缓存键均含这些值,改动后旧缓存自动重算) */
+const rwrAlpha = ref(0.7)
+const gseaPerms = ref(1000)
+const proxPerms = ref(200)
+const rwrNullPerms = ref(200)
+const gseaMinSize = ref(15)
+const gseaMaxSize = ref(500)
+const gseaFdr = ref(0.25)
+const enrichSources = ref<string[]>([])
+const ENRICHMENT_SOURCE_VALUES = ['GO:BP', 'GO:MF', 'GO:CC', 'KEGG']
+/* 交叉校验:规模窗不允许倒挂、富集类别不允许空集(后端同款校验,前端先行拦截) */
+const gseaSizeBad = computed(() => gseaMinSize.value >= gseaMaxSize.value)
+const sourcesEmpty = computed(() => enrichSources.value.length === 0)
+
 const pocketCutoff = ref(4.0)
+const exhaustiveness = ref(8)
+const dockingCpu = ref(4)
 const vinaDir = ref('')
 const obabelDir = ref('')
 
@@ -88,7 +122,17 @@ function applySnapshot(s: Snapshot): void {
   enrichP.value = s.enrichment_pvalue
   louvain.value = s.louvain_resolution
   ppiConf.value = s.ppi_confidence
+  rwrAlpha.value = s.rwr_alpha
+  gseaPerms.value = s.gsea_permutation_num
+  proxPerms.value = s.proximity_n_perm
+  rwrNullPerms.value = s.rwr_null_perms
+  gseaMinSize.value = s.gsea_set_min_size
+  gseaMaxSize.value = s.gsea_set_max_size
+  gseaFdr.value = s.gsea_fdr_screen
+  enrichSources.value = [...s.enrichment_sources]
   pocketCutoff.value = s.pocket_cutoff
+  exhaustiveness.value = s.exhaustiveness
+  dockingCpu.value = s.docking_cpu
   vinaDir.value = s.vina_dir
   obabelDir.value = s.obabel_dir
 }
@@ -99,12 +143,14 @@ async function load(): Promise<void> {
 
 onMounted(() => void load().catch(() => flash(t('web.settings.read_fail'))))
 
-/* 保存后的统一提示:基础文案 + 整合缓存清理说明 */
+/* 保存后的统一提示:基础文案 + 整合缓存清理说明(随保存按钮就地显示) */
 function flashSaved(purged: number): void {
-  flash(purged > 0
+  noteFlash(true, purged > 0
     ? `${t('web.settings.saved')} ${t('web.settings.purged', { n: purged })}`
     : t('web.settings.saved'))
 }
+
+watch(active, () => (saveNote.value = null))
 
 /* ---------------- ① 数据来源 ---------------- */
 
@@ -116,7 +162,7 @@ async function saveSources(): Promise<void> {
     applySnapshot(r.snapshot)
     flashSaved(r.purged_merged)
   } catch (e) {
-    flash(e instanceof Error ? e.message : t('web.settings.save_fail'))
+    noteFlash(false, e instanceof Error ? e.message : t('web.settings.save_fail'))
   }
 }
 
@@ -125,10 +171,10 @@ async function applyStringVersion(): Promise<void> {
   if (!target) return
   try {
     const r = await api.setStringVersion(target)
-    flash(r.changed ? t('web.settings.switched', { v: r.version }) : t('web.settings.no_change'))
+    noteFlash(true, r.changed ? t('web.settings.switched', { v: r.version }) : t('web.settings.no_change'))
     stringVersion.value = r.version
   } catch (e) {
-    flash(e instanceof Error ? e.message : t('web.settings.switch_fail'))
+    noteFlash(false, e instanceof Error ? e.message : t('web.settings.switch_fail'))
   }
 }
 
@@ -152,6 +198,14 @@ function removeGene(gene: string): void {
 }
 
 async function saveAlgo(): Promise<void> {
+  if (sourcesEmpty.value) {
+    noteFlash(false, t('web.settings.sources_empty'))
+    return
+  }
+  if (gseaSizeBad.value) {
+    noteFlash(false, t('web.settings.gsea_size_bad'))
+    return
+  }
   try {
     const r = await api.saveUiSettings({
       CHEMBL_TARGET_BLACKLIST: blacklist.value,
@@ -161,12 +215,20 @@ async function saveAlgo(): Promise<void> {
       OT_MIN_SCORE: otMin.value,
       ENRICHMENT_PVALUE: enrichP.value,
       LOUVAIN_RESOLUTION: louvain.value,
-      PPI_CONFIDENCE: ppiConf.value
+      PPI_CONFIDENCE: ppiConf.value,
+      RWR_ALPHA: rwrAlpha.value,
+      GSEA_PERMUTATION_NUM: gseaPerms.value,
+      PROXIMITY_N_PERM: proxPerms.value,
+      RWR_NULL_PERMS: rwrNullPerms.value,
+      GSEA_SET_MIN_SIZE: gseaMinSize.value,
+      GSEA_SET_MAX_SIZE: gseaMaxSize.value,
+      GSEA_FDR_SCREEN: gseaFdr.value,
+      ENRICHMENT_SOURCES: enrichSources.value
     })
     applySnapshot(r.snapshot)
     flashSaved(r.purged_merged)
   } catch (e) {
-    flash(e instanceof Error ? e.message : t('web.settings.save_fail'))
+    noteFlash(false, e instanceof Error ? e.message : t('web.settings.save_fail'))
   }
 }
 
@@ -174,15 +236,19 @@ async function saveAlgo(): Promise<void> {
 
 async function saveDocking(): Promise<void> {
   try {
-    const ui = await api.saveUiSettings({ POCKET_CUTOFF: pocketCutoff.value })
+    const ui = await api.saveUiSettings({
+      POCKET_CUTOFF: pocketCutoff.value,
+      EXHAUSTIVENESS: exhaustiveness.value,
+      DOCKING_CPU: dockingCpu.value
+    })
     applySnapshot(ui.snapshot)
     const applied = (await api.saveApiEnv({
       VINA_DIR: vinaDir.value, OBABEL_DIR: obabelDir.value
     })).applied
     flashSaved(0)
-    if (applied.length) flash(`${t('web.settings.saved')} · ${applied.join(', ')}`)
+    if (applied.length) noteFlash(true, `${t('web.settings.saved')} · ${applied.join(', ')}`)
   } catch (e) {
-    flash(e instanceof Error ? e.message : t('web.settings.save_fail'))
+    noteFlash(false, e instanceof Error ? e.message : t('web.settings.save_fail'))
   }
 }
 
@@ -208,13 +274,196 @@ async function saveGeneral(): Promise<void> {
     const applied = (await api.saveApiEnv(changes)).applied
     dgKey.value = ''
     ncbiKey.value = ''
-    flash(applied.length ? t('web.settings.keys_saved', { names: applied.join(', ') })
-                         : t('web.settings.saved'))
+    noteFlash(true, applied.length ? t('web.settings.keys_saved', { names: applied.join(', ') })
+                                   : t('web.settings.saved'))
     await load()
   } catch {
-    flash(t('web.settings.keys_fail'))
+    noteFlash(false, t('web.settings.keys_fail'))
   }
 }
+
+/* ---------------- ⑤ 数据迁移(通用设置页底部的导出/导入) ----------------
+ * 导出走 job 打包后浏览器下载;导入两段式:上传解包预览 → 逐条决策 → 落盘。
+ * 密钥绝不进包:导出内容只有结果目录与 ui_settings.json(白名单设置,无密钥)。 */
+
+type ScopeKey = 'analysis' | 'star' | 'geo' | 'ui_settings'
+const SCOPE_DEFS: { key: ScopeKey; label: string }[] = [
+  { key: 'analysis', label: 'web.transfer.scope_analysis' },
+  { key: 'star', label: 'web.transfer.scope_star' },
+  { key: 'geo', label: 'web.transfer.scope_geo' },
+  { key: 'ui_settings', label: 'web.transfer.scope_settings' }
+]
+const KIND_LABEL: Record<string, string> = Object.fromEntries(
+  SCOPE_DEFS.map((s) => [s.key, s.label])
+)
+const exportScopes = ref<Record<ScopeKey, boolean>>({
+  analysis: true, star: true, geo: true, ui_settings: true
+})
+
+const exportJob = useJob((result) => {
+  const filename = String(result.filename ?? '')
+  void (async () => {
+    try {
+      downloadBlob(await api.transferDownload(filename), filename)
+      const counts = (result.counts ?? {}) as Record<string, number>
+      const total = Object.values(counts).reduce((a, b) => a + Number(b), 0)
+      flash(t('web.transfer.export_done', { n: total }))
+    } catch {
+      flash(t('web.transfer.download_fail'))
+    }
+  })()
+})
+
+async function runExport(): Promise<void> {
+  const scopes = SCOPE_DEFS.filter((s) => exportScopes.value[s.key]).map((s) => s.key)
+  if (!scopes.length) {
+    flash(t('web.transfer.no_scope'))
+    return
+  }
+  await exportJob.run(api.transferExport(scopes), { failText: t('web.transfer.export_fail') })
+}
+
+/* 导入两段式:预览行 → 决策表(action + 改名输入) → commit;失败项留在会话可重试 */
+interface RowDecision {
+  action: 'import' | 'overwrite' | 'skip' | 'rename'
+  new_name: string
+}
+const importing = ref(false)
+const importSid = ref('')
+const importReport = ref<TransferImportReport | null>(null)
+const decisions = ref<Record<string, RowDecision>>({})
+const uiDone = ref(false)
+
+const keyOf = (kind: string, name: string): string => `${kind}/${name}`
+const selectedCount = computed(
+  () => Object.values(decisions.value).filter((d) => d.action !== 'skip').length
+)
+
+function dec(kind: string, name: string): RowDecision {
+  const key = keyOf(kind, name)
+  let d = decisions.value[key]
+  if (!d) {
+    d = { action: 'skip', new_name: '' }
+    decisions.value[key] = d
+  }
+  return d
+}
+
+function filePicked(e: Event): void {
+  const input = e.target as HTMLInputElement
+  const f = input.files?.[0]
+  input.value = '' // 允许重复选择同一个文件重新解析
+  if (f) void uploadImport(f)
+}
+
+async function uploadImport(f: File): Promise<void> {
+  importing.value = true
+  resetImport()
+  try {
+    const r = await api.transferImport(f)
+    importSid.value = r.sid
+    importReport.value = r.report
+    // 默认决策:无冲突 → 导入;与现有数据重名或不可导入 → 跳过(由用户显式改选)
+    for (const it of r.report.items) {
+      dec(it.kind, it.name).action = it.conflict || it.invalid ? 'skip' : 'import'
+    }
+    if (r.report.ui_settings.present) {
+      // 界面设置无害(白名单过滤,覆盖的只是阈值/主题类偏好),默认直接接入,
+      // 重名只作提示;结果目录的冲突才默认跳过(覆盖会动真实数据)
+      dec('ui_settings', 'ui_settings.json').action = 'import'
+    }
+  } catch (e) {
+    flash(e instanceof Error ? e.message : t('web.transfer.import_fail'))
+  } finally {
+    importing.value = false
+  }
+}
+
+async function commitImport(): Promise<void> {
+  if (!importSid.value) return
+  importing.value = true
+  try {
+    // skip 决策也发后端:由 skipped 回执统一收账,本地不做过滤
+    const payload = Object.entries(decisions.value).map(([key, d]) => {
+      const idx = key.indexOf('/')
+      return {
+        kind: key.slice(0, idx),
+        name: key.slice(idx + 1),
+        action: d.action === 'import' ? ('overwrite' as const) : d.action,
+        new_name: d.new_name
+      }
+    })
+    const r = await api.transferCommit(importSid.value, payload)
+    const rep = r.report
+    const parts = [
+      rep.applied.length ? t('web.transfer.done_applied', { n: rep.applied.length }) : '',
+      rep.skipped.length ? t('web.transfer.done_skipped', { n: rep.skipped.length }) : '',
+      rep.failed.length ? t('web.transfer.done_failed', { n: rep.failed.length }) : ''
+    ].filter(Boolean)
+    flash(parts.join(' · ') || t('web.transfer.import_none'))
+    if (r.ui_snapshot) applyImportedUi(r.ui_snapshot)
+    // 已落定(导入/跳过)的行从预览里移除,失败行留下可改决策重试
+    const done = new Set(
+      [...rep.applied, ...rep.skipped].map((a) => keyOf(a.kind, a.name))
+    )
+    if (importReport.value) {
+      importReport.value = {
+        ...importReport.value,
+        items: importReport.value.items.filter((it) => !done.has(keyOf(it.kind, it.name)))
+      }
+      if (rep.applied.some((a) => a.kind === 'ui_settings')) uiDone.value = true
+    }
+    decisions.value = Object.fromEntries(
+      Object.entries(decisions.value).filter(([k]) => !done.has(k))
+    )
+    if (!rep.failed.length) resetImport()
+    await load()
+  } catch (e) {
+    flash(e instanceof Error ? e.message : t('web.transfer.import_fail'))
+  } finally {
+    importing.value = false
+  }
+}
+
+/* 导入的界面设置(主题/字号/语言)回填:后端已生效,前端同步本地镜像与当前显示 */
+function applyImportedUi(snap: SettingsSnapshot): void {
+  themeSel.value = normalizeTheme(snap.ui_theme)
+  persistTheme(themeSel.value)
+  applyTheme(themeSel.value)
+  fontScale.value = snapScale(snap.ui_font_scale)
+  savedScale.value = fontScale.value
+  persistScale(fontScale.value)
+  applyScale(fontScale.value)
+  setLang(normalizeLang(snap.ui_lang))
+}
+
+async function cancelImport(): Promise<void> {
+  const sid = importSid.value
+  resetImport()
+  if (sid) {
+    try {
+      await api.transferCancel(sid)
+    } catch {
+      /* 会话可能已过期,忽略 */
+    }
+  }
+}
+
+function resetImport(): void {
+  importSid.value = ''
+  importReport.value = null
+  decisions.value = {}
+  uiDone.value = false
+}
+
+function humanSize(n: number): string {
+  if (n >= 1 << 30) return `${(n / (1 << 30)).toFixed(1)} GB`
+  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`
+  if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(1)} KB`
+  return `${n} B`
+}
+
+const kindLabel = (it: TransferItemReport): string => t(KIND_LABEL[it.kind] ?? it.kind)
 </script>
 
 <template>
@@ -272,6 +521,9 @@ async function saveGeneral(): Promise<void> {
           </section>
 
           <button class="bar-btn" @click="saveSources">{{ t('web.settings.save') }}</button>
+          <Transition name="note">
+            <span v-if="saveNote" class="save-note" :class="{ fail: !saveNote.ok }">{{ saveNote.text }}</span>
+          </Transition>
         </template>
 
         <!-- ============ ② 分析算法 ============ -->
@@ -334,7 +586,54 @@ async function saveGeneral(): Promise<void> {
             </label>
           </div>
 
-          <button class="bar-btn" @click="saveAlgo">{{ t('web.settings.save') }}</button>
+          <section class="sec">
+            <h3 class="sec-title">{{ t('web.settings.sec_stats') }}</h3>
+            <p class="hint-line">{{ t('web.settings.stats_hint') }}</p>
+            <div class="opt-grid">
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.rwr_alpha_label') }}</span>
+                <Stepper v-model="rwrAlpha" :min="0.1" :max="0.9" :step="0.05" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.gsea_perms_label') }}</span>
+                <Stepper v-model="gseaPerms" :min="100" :max="5000" :step="100" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.prox_perms_label') }}</span>
+                <Stepper v-model="proxPerms" :min="50" :max="2000" :step="50" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.rwr_null_label') }}</span>
+                <Stepper v-model="rwrNullPerms" :min="50" :max="2000" :step="50" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.gsea_min_label') }}</span>
+                <Stepper v-model="gseaMinSize" :min="5" :max="100" :step="5" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.gsea_max_label') }}</span>
+                <Stepper v-model="gseaMaxSize" :min="100" :max="1000" :step="100" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.gsea_fdr_label') }}</span>
+                <Stepper v-model="gseaFdr" :min="0.05" :max="0.5" :step="0.05" />
+              </label>
+            </div>
+            <p class="hint-line">{{ t('web.settings.gsea_size_hint') }}</p>
+
+            <p class="hint-line">{{ t('web.settings.sources_label') }}</p>
+            <div class="tf-scopes">
+              <label v-for="s in ENRICHMENT_SOURCE_VALUES" :key="s" class="chk">
+                <input v-model="enrichSources" type="checkbox" :value="s" /> {{ s }}
+              </label>
+            </div>
+          </section>
+
+          <button class="bar-btn" :disabled="sourcesEmpty || gseaSizeBad"
+                  @click="saveAlgo">{{ t('web.settings.save') }}</button>
+          <Transition name="note">
+            <span v-if="saveNote" class="save-note" :class="{ fail: !saveNote.ok }">{{ saveNote.text }}</span>
+          </Transition>
         </template>
 
         <!-- ============ ③ 分子对接 ============ -->
@@ -344,7 +643,17 @@ async function saveGeneral(): Promise<void> {
               <span class="opt-label">{{ t('web.settings.pocket_label') }}</span>
               <Stepper v-model="pocketCutoff" :min="3" :max="6" :step="0.5" />
             </label>
+            <label class="opt">
+              <span class="opt-label">{{ t('web.settings.exhaust_label') }}</span>
+              <Stepper v-model="exhaustiveness" :min="1" :max="32" :step="1" :digits="0" />
+            </label>
+            <label class="opt">
+              <span class="opt-label">{{ t('web.settings.cpu_label') }}</span>
+              <Stepper v-model="dockingCpu" :min="0" :max="64" :step="1" :digits="0" />
+            </label>
           </div>
+          <p class="hint-line">{{ t('web.settings.exhaust_hint') }}</p>
+          <p class="hint-line">{{ t('web.settings.cpu_hint') }}</p>
           <section class="sec">
             <h3 class="sec-title">{{ t('web.settings.sec_paths') }}</h3>
             <p class="hint-line">{{ t('web.settings.paths_hint') }}</p>
@@ -358,6 +667,9 @@ async function saveGeneral(): Promise<void> {
             </div>
           </section>
           <button class="bar-btn" @click="saveDocking">{{ t('web.settings.save') }}</button>
+          <Transition name="note">
+            <span v-if="saveNote" class="save-note" :class="{ fail: !saveNote.ok }">{{ saveNote.text }}</span>
+          </Transition>
         </template>
 
         <!-- ============ ④ 通用设置 ============ -->
@@ -408,6 +720,97 @@ async function saveGeneral(): Promise<void> {
           <button class="bar-btn"
                   :disabled="!dgKey.trim() && !ncbiKey.trim() && cliResultsDir === '' && !fontScaleDirty && !themeDirty"
                   @click="saveGeneral">{{ t('web.settings.save') }}</button>
+            <Transition name="note">
+              <span v-if="saveNote" class="save-note" :class="{ fail: !saveNote.ok }">{{ saveNote.text }}</span>
+            </Transition>
+
+          <!-- ======== 数据迁移:导出 / 两段式导入(独立操作区,与上方保存按钮无关) ======== -->
+          <section class="sec">
+            <h3 class="sec-title">{{ t('web.transfer.title') }}</h3>
+            <p class="hint-line">{{ t('web.transfer.hint') }}</p>
+
+            <div class="tf-scopes">
+              <label v-for="s in SCOPE_DEFS" :key="s.key" class="chk">
+                <input v-model="exportScopes[s.key]" type="checkbox" /> {{ t(s.label) }}
+              </label>
+            </div>
+            <button class="bar-btn" :disabled="exportJob.running.value || importing"
+                    @click="runExport">{{ t('web.transfer.export_btn') }}</button>
+            <div v-if="exportJob.running.value" class="progress">
+              <div class="progress-track">
+                <div class="progress-fill"
+                     :style="{ width: `${((exportJob.fraction.value ?? 0) * 100).toFixed(0)}%` }"></div>
+              </div>
+              <p class="progress-text">{{ exportJob.text.value || t('web.transfer.exporting') }}</p>
+            </div>
+            <p v-if="exportJob.error.value" class="notice">{{ exportJob.error.value }}</p>
+
+            <div class="tf-import-row">
+              <label class="bar-btn tf-file-btn">
+                <input type="file" accept=".zip" @change="filePicked" />
+                {{ t('web.transfer.import_btn') }}
+              </label>
+              <span v-if="importing && !importReport" class="hint-line">
+                {{ t('web.transfer.import_analyzing') }}
+              </span>
+            </div>
+
+            <template v-if="importReport">
+              <p v-for="w in importReport.warnings" :key="w" class="notice">{{ w }}</p>
+              <div class="tf-table">
+                <div class="tf-row tf-head">
+                  <span>{{ t('web.transfer.col_kind') }}</span>
+                  <span>{{ t('web.transfer.col_name') }}</span>
+                  <span>{{ t('web.transfer.col_size') }}</span>
+                  <span>{{ t('web.transfer.col_action') }}</span>
+                </div>
+                <div v-for="it in importReport.items" :key="keyOf(it.kind, it.name)" class="tf-row">
+                  <span class="tf-kind">{{ kindLabel(it) }}</span>
+                  <span class="tf-name">
+                    {{ it.name }}
+                    <em v-if="it.conflict" class="tf-flag">{{ t('web.transfer.conflict') }}</em>
+                    <em v-if="it.invalid" class="tf-flag bad" :title="it.invalid_reason">
+                      {{ t('web.transfer.invalid_item') }}
+                    </em>
+                  </span>
+                  <span class="tf-size">{{ humanSize(it.bytes) }}</span>
+                  <span class="tf-action">
+                    <select v-model="dec(it.kind, it.name).action" class="tf-select"
+                            :disabled="it.invalid">
+                      <option value="import">{{ t('web.transfer.act_import') }}</option>
+                      <option v-if="it.conflict" value="overwrite">{{ t('web.transfer.act_overwrite') }}</option>
+                      <option value="skip">{{ t('web.transfer.act_skip') }}</option>
+                      <option v-if="it.conflict && !it.invalid" value="rename">{{ t('web.transfer.act_rename') }}</option>
+                    </select>
+                    <input v-if="dec(it.kind, it.name).action === 'rename'"
+                           v-model="dec(it.kind, it.name).new_name" class="tf-new"
+                           :placeholder="t('web.transfer.new_name_ph')" spellcheck="false" />
+                  </span>
+                </div>
+                <div v-if="importReport.ui_settings.present && !uiDone" class="tf-row">
+                  <span class="tf-kind">{{ t('web.transfer.scope_settings') }}</span>
+                  <span class="tf-name">ui_settings.json
+                    <em v-if="importReport.ui_settings.conflict" class="tf-flag">
+                      {{ t('web.transfer.conflict') }}
+                    </em>
+                  </span>
+                  <span class="tf-size">—</span>
+                  <span class="tf-action">
+                    <select v-model="dec('ui_settings', 'ui_settings.json').action" class="tf-select">
+                      <option value="import">{{ t('web.transfer.act_import') }}</option>
+                      <option value="skip">{{ t('web.transfer.act_skip') }}</option>
+                    </select>
+                  </span>
+                </div>
+              </div>
+              <div class="ver-row">
+                <button class="bar-btn" :disabled="importing || !selectedCount"
+                        @click="commitImport">{{ t('web.transfer.run_import') }}</button>
+                <button class="bar-btn tf-ghost" :disabled="importing"
+                        @click="cancelImport">{{ t('web.transfer.cancel_import') }}</button>
+              </div>
+            </template>
+          </section>
         </template>
       </div>
     </div>
@@ -695,6 +1098,110 @@ button.chip:hover {
   font-size: 11px;
   letter-spacing: 0.08em;
   color: var(--c-dim);
+}
+
+/* ======== 数据迁移(导出/导入) ======== */
+.tf-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 28px;
+  margin-top: 10px;
+}
+.tf-import-row {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  margin-top: 22px;
+}
+.tf-file-btn {
+  margin-top: 0;
+}
+.tf-file-btn input[type="file"] {
+  display: none;
+}
+.tf-table {
+  margin-top: 14px;
+  border-top: 1px solid var(--c-line-soft);
+}
+.tf-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 74px minmax(180px, auto);
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--c-line-soft);
+  font-size: 12.5px;
+}
+.tf-row.tf-head {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--c-ink3);
+}
+.tf-kind {
+  color: var(--c-ink2);
+}
+.tf-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tf-flag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--c-line);
+  font-style: normal;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--c-ink2);
+}
+.tf-flag.bad {
+  color: var(--c-danger);
+  border-color: var(--c-danger);
+}
+.tf-size {
+  font-variant-numeric: tabular-nums;
+  color: var(--c-ink3);
+  text-align: right;
+}
+.tf-action {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.tf-select,
+.tf-new {
+  border: none;
+  border-bottom: 1px solid var(--c-line);
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--c-ink);
+  padding: 3px 2px;
+  outline: none;
+}
+.tf-new {
+  width: 130px;
+}
+.tf-ghost {
+  border-bottom-color: transparent;
+  color: var(--c-ink4);
+}
+.tf-ghost:hover {
+  color: var(--c-ink);
+}
+.tf-ghost:disabled {
+  color: var(--c-ink4);
+}
+
+/* 保存按钮右侧的内联结果提示(页面长,顶部 notice 不可见) */
+.save-note {
+  margin-left: 16px;
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--c-dim);
+}
+.save-note.fail {
+  color: var(--c-danger);
 }
 
 @media (max-width: 760px) {

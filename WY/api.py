@@ -7,18 +7,21 @@
 """
 
 import csv
+import logging
 import os
 import re
 import shutil
 import time
+import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from WY import config
-from WY.core import jobs
+from WY.core import jobs, transfer
 from WY.core.enrichment import parse_enrichment_filename
 from WY.core.files import (list_cache_files, list_download_dirs, list_log_files,
                            make_dirs_zip, make_ppi_zip)
@@ -47,6 +50,12 @@ try:
     migrate_legacy_cache_names()
 except Exception:
     logging.exception("docking cache cleanup at startup failed")
+
+# 数据迁移暂存清扫:进程崩溃/重启残留的导入暂存与过期导出包,启动时兜底删除
+try:
+    transfer.cleanup_transfer_staging()
+except Exception:
+    logging.exception("transfer staging cleanup at startup failed")
 
 app = FastAPI(title="NPAP API", docs_url=None, redoc_url=None)
 
@@ -205,6 +214,122 @@ def collection_delete(kind: str, body: NamesBody) -> dict:
         else:
             deleted += 1
     return {"deleted": deleted, "failed": failed}
+
+
+# ======== 数据迁移:设置页的结果导出/两段式导入 ========
+# 业务逻辑(打包范围/manifest 校验/解压安检/冲突落盘)都在 core.transfer,
+# 这里只做 HTTP 形态:job 提交、文件流式收发、会话生命周期、错误码转换。
+
+class TransferExportBody(BaseModel):
+    scopes: list[str]
+
+
+@app.post("/api/transfer/export")
+def transfer_export(body: TransferExportBody) -> dict:
+    """导出为 zip:走 job 打包(core.build_export_bundle),完成后经下载端点取包。"""
+    unknown = sorted({s for s in body.scopes if s not in transfer.ALL_SCOPES})
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown scopes: {unknown}")
+    scopes = [s for s in transfer.ALL_SCOPES if s in body.scopes]
+    if not scopes:
+        raise HTTPException(status_code=400, detail="empty scopes")
+    # 空库快速失败:免得 job 打包出一个只有 manifest 的空包
+    if not any(s == "ui_settings" or transfer.list_scope_items(s) for s in scopes):
+        raise HTTPException(status_code=400,
+                            detail="nothing to export in selected scopes")
+
+    def task(progress) -> dict:
+        transfer.cleanup_transfer_staging()
+        os.makedirs(config.TRANSFER_DIR, exist_ok=True)
+        out = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
+        return transfer.build_export_bundle(scopes, out, progress=progress)
+
+    job_id = jobs.submit(task, "results export")
+    return {"job_id": job_id}
+
+
+@app.get("/api/transfer/export/{filename}")
+def transfer_export_download(filename: str) -> FileResponse:
+    """取回导出包:文件名白名单(basename + 固定命名形态)防路径探测。"""
+    if not transfer.EXPORT_FILE_RE.fullmatch(filename):
+        raise HTTPException(status_code=400, detail=f"invalid export filename: {filename!r}")
+    path = os.path.join(config.TRANSFER_DIR, filename)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="export bundle not found (expired?)")
+    return FileResponse(
+        path, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.post("/api/transfer/import")
+async def transfer_import(request: Request) -> dict:
+    """两段式导入·第一步:zip 原始请求体流式落盘(不引 multipart 依赖)→
+    解压暂存 + 安检 + 冲突分析,返回 (sid, 预览报告) 供前端逐条决策。"""
+    transfer.cleanup_transfer_staging()
+    os.makedirs(config.TRANSFER_DIR, exist_ok=True)
+    upload = os.path.join(config.TRANSFER_DIR, f"upload_{uuid.uuid4().hex[:12]}.zip")
+    received = 0
+    try:
+        with open(upload, "wb") as f:
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > config.TRANSFER_MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413,
+                                        detail="upload exceeds transfer size limit")
+                f.write(chunk)
+    except BaseException:
+        transfer.remove_quietly(upload)
+        raise
+    if received == 0:
+        transfer.remove_quietly(upload)
+        raise HTTPException(status_code=400, detail="empty upload")
+    try:
+        # 解压安检放线程池:大包秒级耗时,同步做会阻塞事件循环拖慢其他请求
+        sid, report = await run_in_threadpool(transfer.create_import_session, upload)
+    except transfer.TransferError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"sid": sid, "report": report}
+
+
+class TransferDecision(BaseModel):
+    kind: str
+    name: str
+    action: str            # overwrite | skip | rename(ui_settings 只认前两种的 overwrite/skip)
+    new_name: str = ""     # action=rename 时的用户自填新名
+
+
+class TransferCommitBody(BaseModel):
+    decisions: list[TransferDecision]
+
+
+@app.post("/api/transfer/import/{sid}/commit")
+def transfer_import_commit(sid: str, body: TransferCommitBody) -> dict:
+    """两段式导入·第二步:按用户决策落盘。存在失败项时保留会话以便调整重试,
+    全部落定(含跳过)即销毁会话与暂存。"""
+    session = transfer.get_import_session(sid)
+    if session is None:
+        raise HTTPException(status_code=404,
+                            detail="import session expired, upload the bundle again")
+    try:
+        report = transfer.commit_import(
+            session["staging"], [d.model_dump() for d in body.decisions])
+    except transfer.TransferError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    ui_snapshot = None
+    if any(a["kind"] == "ui_settings" for a in report["applied"]):
+        ui_snapshot = _settings_snapshot()
+    if not report["failed"]:
+        transfer.drop_import_session(sid)
+    return {"report": report, "ui_snapshot": ui_snapshot}
+
+
+@app.delete("/api/transfer/import/{sid}")
+def transfer_import_cancel(sid: str) -> dict:
+    """放弃导入:销毁会话并清空暂存目录。"""
+    if transfer.get_import_session(sid) is None:
+        raise HTTPException(status_code=404, detail="import session not found")
+    transfer.drop_import_session(sid)
+    return {"cancelled": True}
 
 
 # ======== 来源刷新(药物/疾病管理页):单文件与批量,经 job 提交-轮询 ========
@@ -703,6 +828,8 @@ class ApiEnvBody(BaseModel):
 
 def _settings_snapshot() -> dict:
     """设置快照:密钥只回布尔(不回值),路径明文,分析参数回当前生效值。"""
+    from WY.core.docking import docking_timeout
+
     return {
         "keys": {"disgenet": bool(config.DisGeNET_API_KEY),
                  "ncbi": bool(config.NCBI_API_KEY)},
@@ -723,8 +850,23 @@ def _settings_snapshot() -> dict:
         "louvain_resolution": config.LOUVAIN_RESOLUTION,
         "ppi_confidence": config.PPI_CONFIDENCE,
         "pocket_cutoff": config.POCKET_CUTOFF,
+        # 统计稳健性/研究语义参数(面板可调,随 ui_settings.json 迁移)
+        "rwr_alpha": config.RWR_ALPHA,
+        "gsea_permutation_num": config.GSEA_PERMUTATION_NUM,
+        "proximity_n_perm": config.PROXIMITY_N_PERM,
+        "rwr_null_perms": config.RWR_NULL_PERMS,
+        "gsea_set_min_size": config.GSEA_SET_MIN_SIZE,
+        "gsea_set_max_size": config.GSEA_SET_MAX_SIZE,
+        "gsea_fdr_screen": config.GSEA_FDR_SCREEN,
+        "enrichment_sources": list(config.ENRICHMENT_SOURCES),
+        "exhaustiveness": config.EXHAUSTIVENESS,
+        "docking_cpu": config.DOCKING_CPU,
+        "num_modes": config.NUM_MODES,
+        # 对接页参数行展示用:随搜索深度放宽的有效超时
+        "docking_timeout": docking_timeout(),
         "ui_font_scale": config.UI_FONT_SCALE,
         "ui_theme": config.UI_THEME,
+        "ui_lang": config.UI_LANG,
     }
 
 
@@ -771,9 +913,15 @@ _ALLOWED_UI_KEYS = (
     "POCKET_CUTOFF", "PPI_CONFIDENCE", "OT_TOP_N", "DISGENET_PAGES",
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "CHEMBL_CORROBORATION_REQUIRED", "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION",
-    "UI_FONT_SCALE", "UI_THEME",
+    "UI_FONT_SCALE", "UI_THEME", "UI_LANG",
+    # 统计稳健性/研究语义参数(缓存键均含这些值,改动后旧缓存自动失效重算)
+    "RWR_ALPHA", "GSEA_PERMUTATION_NUM", "PROXIMITY_N_PERM", "RWR_NULL_PERMS",
+    "GSEA_SET_MIN_SIZE", "GSEA_SET_MAX_SIZE", "GSEA_FDR_SCREEN",
+    # 分子对接
+    "EXHAUSTIVENESS", "DOCKING_CPU",
 )
 _BLACKLIST_KEY = "CHEMBL_TARGET_BLACKLIST"
+_SOURCES_KEY = "ENRICHMENT_SOURCES"
 # 数值范围(与前端 Stepper 的 min/max 一致,双保险)
 _UI_RANGES: dict[str, tuple[float, float]] = {
     "POCKET_CUTOFF": (3, 6), "PPI_CONFIDENCE": (0.15, 0.9),
@@ -782,6 +930,13 @@ _UI_RANGES: dict[str, tuple[float, float]] = {
     "OT_MIN_SCORE": (0, 1), "ENRICHMENT_PVALUE": (0.01, 0.2),
     "LOUVAIN_RESOLUTION": (0.5, 2),
     "UI_FONT_SCALE": (0.8, 1.5),
+    # α→0 只剩种子、α→1 近乎不收敛,必须卡在退化区间之外
+    "RWR_ALPHA": (0.1, 0.9), "GSEA_FDR_SCREEN": (0.05, 0.5),
+    # 置换数/搜索深度:上限即耗时上限(满档单次分析十余分钟级),不开放更高档位
+    "GSEA_PERMUTATION_NUM": (100, 5000), "PROXIMITY_N_PERM": (50, 2000),
+    "RWR_NULL_PERMS": (50, 2000),
+    "GSEA_SET_MIN_SIZE": (5, 100), "GSEA_SET_MAX_SIZE": (100, 1000),
+    "EXHAUSTIVENESS": (1, 32), "DOCKING_CPU": (0, 64),
 }
 # 这些键影响降噪/抓取规模,值变化后旧参数算出的 merged 整合表不再可信 → 自动清缓存
 _PURGE_MERGED_KEYS = {
@@ -801,6 +956,14 @@ def settings_ui_save(changes: dict) -> dict:
             if not (isinstance(v, list) and all(isinstance(i, str) and i.strip() for i in v)):
                 raise HTTPException(status_code=400, detail=f"{k} must be a list of gene symbols")
             validated[k] = [i.strip().upper() for i in v]
+        elif k == _SOURCES_KEY:
+            # 富集条目类型:取值表校验归一;空集会让 g:Profiler/Enrichr 请求非法,必须拒绝
+            srcs = config.normalized_enrichment_sources(v)
+            if not srcs:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{k} must be a non-empty subset of {config.ENRICHMENT_SOURCE_VALUES}")
+            validated[k] = srcs
         elif k in _ALLOWED_UI_KEYS:
             if k in ("CHEMBL_CORROBORATION_REQUIRED",):
                 if not isinstance(v, bool):
@@ -808,7 +971,12 @@ def settings_ui_save(changes: dict) -> dict:
             elif k == "UI_THEME":
                 if not (isinstance(v, str) and v.strip().lower() in ("light", "dark")):
                     raise HTTPException(status_code=400, detail=f"{k} must be 'light' or 'dark'")
-                validated[k] = v.strip().lower()
+                v = v.strip().lower()
+            elif k == "UI_LANG":
+                if not (isinstance(v, str) and v.strip().lower() in config.UI_LANG_VALUES):
+                    raise HTTPException(status_code=400,
+                                        detail=f"{k} must be one of {config.UI_LANG_VALUES}")
+                v = v.strip().lower()
             else:
                 if isinstance(v, bool) or not isinstance(v, (int, float)):
                     raise HTTPException(status_code=400, detail=f"{k} must be a number")
@@ -819,9 +987,16 @@ def settings_ui_save(changes: dict) -> dict:
             validated[k] = v
         else:
             raise HTTPException(status_code=400,
-                                detail=f"key not allowed: {k} (allowed: {_ALLOWED_UI_KEYS + (_BLACKLIST_KEY,)})")
+                                detail=f"key not allowed: {k} (allowed: {_ALLOWED_UI_KEYS + (_BLACKLIST_KEY, _SOURCES_KEY)})")
     if not validated:
         raise HTTPException(status_code=400, detail="no changes")
+
+    # GSEA 基因集规模窗成对校验:单改一边时与当前另一边比,夹逼区间不允许倒挂/相撞
+    _lo = validated.get("GSEA_SET_MIN_SIZE", config.GSEA_SET_MIN_SIZE)
+    _hi = validated.get("GSEA_SET_MAX_SIZE", config.GSEA_SET_MAX_SIZE)
+    if _lo >= _hi:
+        raise HTTPException(status_code=400,
+                            detail=f"GSEA_SET_MIN_SIZE({_lo}) must be < GSEA_SET_MAX_SIZE({_hi})")
 
     def _differs(k: str, v) -> bool:
         old = getattr(config, k, None)
@@ -1361,10 +1536,10 @@ def docking_run(sid: str, body: DockRunBody) -> dict:
         raise HTTPException(status_code=400, detail="ligand/receptor/box not ready")
 
     def task(progress) -> dict:
-        from WY.core.docking import parse_vina_scores, run_vina, split_vina
+        from WY.core.docking import docking_timeout, parse_vina_scores, run_vina, split_vina
 
         progress(fraction=None, text=f"vina 运行中(exhaustiveness={config.EXHAUSTIVENESS},"
-                                     f" 最长 {config.DOCKING_TIMEOUT}s)…")
+                                     f" 最长 {docking_timeout()}s)…")
         out_pdbqt = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                  f"vina_out_{datetime.now():%Y%m%d_%H%M%S}.pdbqt")
         proc = run_vina(dock["rec_pdbqt"], dock["lig_pdbqt"], dock["box"], out_path=out_pdbqt)
