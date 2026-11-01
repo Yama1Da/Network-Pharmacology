@@ -112,34 +112,14 @@ const DL_ITEM: Record<DlKey, string> = {
   vennPng: 'venn_png', vennSvg: 'venn_svg'
 }
 
-function fileSlug(s: string): string {
-  const out = s.trim().replace(/[^\p{L}\p{N}]+/gu, '_').replace(/^_+|_+$/g, '').slice(0, 40)
-  return out || 'targets'
-}
-
-function dlFilename(k: DlKey): string {
-  const d = fileSlug(drug.value)
-  const p = fileSlug(disease.value)
-  switch (k) {
-    case 'drug': return `${d}_drug_targets.csv`
-    case 'disease': return `${p}_disease_targets.csv`
-    case 'common': return `${d}_${p}_common_targets.csv`
-    case 'vennPng': return `venn_${d}_${p}.png`
-    case 'vennSvg': return `venn_${d}_${p}.svg`
-  }
-}
-
 async function doDownload(): Promise<void> {
   if (!done.value || !dlAny.value || !job.jobId.value) return
   dlError.value = ''
   dlBusy.value = true
   try {
     const keys = dlKeys.value.filter((k) => dlSel[k])
-    const blob = await api.targetsExport(job.jobId.value, keys.map((k) => DL_ITEM[k]))
-    const name = keys.length === 1
-      ? dlFilename(keys[0])
-      : `${fileSlug(drug.value)}_${fileSlug(disease.value)}_targets.zip`
-    downloadBlob(blob, name)
+    const { blob, filename } = await api.targetsExport(job.jobId.value, keys.map((k) => DL_ITEM[k]))
+    downloadBlob(blob, filename)
   } catch (e) {
     dlError.value = t('web.home.dl_fail', { msg: e instanceof Error ? e.message : String(e) })
   } finally {
