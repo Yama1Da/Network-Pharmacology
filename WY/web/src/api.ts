@@ -588,7 +588,7 @@ export const api = {
 
   dockingSave3d: (
     sid: string,
-    body: { pose: number; caption: string }
+    body: { pose: number; caption: string; cutoff: number }
   ): Promise<{ path: string; artifact_rel: string; offline_ok: boolean }> =>
     post(`/api/docking/${sid}/save3d`, body),
 

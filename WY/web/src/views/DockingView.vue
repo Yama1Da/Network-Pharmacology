@@ -341,7 +341,8 @@ async function save3d(): Promise<void> {
   save3dBusy.value = true
   try {
     const caption = `NPAP · ${drugName.value || '-'} × ${diseaseName.value || '-'} · ${gene.value} · pose ${poseSel.value}`
-    const r = await api.dockingSave3d(sid.value, { pose: poseSel.value, caption })
+    const r = await api.dockingSave3d(sid.value,
+      { pose: poseSel.value, caption, cutoff: cutoff.value })
     flash(t('web.docking.saved_3d', { rel: r.artifact_rel,
                                        offline: r.offline_ok ? t('web.docking.offline_ok') : t('web.docking.offline_no') }))
     // 保存进结果目录的同时把 HTML 直接下载到本地(对齐旧版"下载交互式 3D 视图")

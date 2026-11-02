@@ -1792,13 +1792,16 @@ def docking_interactions(sid: str, pose: int) -> dict:
 class DockSave3dBody(BaseModel):
     pose: int
     caption: str = ""
+    cutoff: float = 4.0
 
 
 @app.post("/api/docking/{sid}/save3d")
 def docking_save3d(sid: str, body: DockSave3dBody) -> dict:
-    """保存交互式 3D 视图 HTML 到结果目录(caption 由前端传入,离线可用)。"""
+    """保存交互式 3D 视图 HTML 到结果目录(caption 由前端传入,离线可用)。
+    口袋残基与相互作用随 cutoff 一并嵌入,保证导出文件与页面预览所见一致。"""
     dock = _session(sid)
-    from WY.core.docking import save_interactive_3d_html
+    from WY.core.docking import (interactions_near_ligand, residues_near_ligand,
+                                 save_interactive_3d_html)
 
     if not (dock.get("result") and dock.get("pdb_path") and dock.get("result_dir")):
         raise HTTPException(status_code=400, detail="save the result first")
@@ -1809,10 +1812,13 @@ def docking_save3d(sid: str, body: DockSave3dBody) -> dict:
         from WY.core.docking import extract_model
 
         extract_model(dock["result"]["out"], int(body.pose), pose_path)
+    pocket = residues_near_ligand(dock["pdb_path"], pose_path, cutoff=float(body.cutoff))
+    interactions = interactions_near_ligand(dock["pdb_path"], pose_path)
     file_name = f"3d_view_{safe_name(dock.get('gene', 'target'))}_pose{int(body.pose)}.html"
     out_path, offline_ok = save_interactive_3d_html(
         dock["pdb_path"], pose_path,
-        os.path.join(dock["result_dir"], file_name), body.caption)
+        os.path.join(dock["result_dir"], file_name), body.caption,
+        pocket=pocket, interactions=interactions)
     rel = os.path.relpath(out_path, config.DOWNLOADS_DIR).replace(os.sep, "/")
     return {"path": out_path, "artifact_rel": rel, "offline_ok": offline_ok}
 
