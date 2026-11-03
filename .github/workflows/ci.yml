@@ -24,10 +24,8 @@ jobs:
     steps:
       - name: 取出代码
         uses: actions/checkout@v4
-        with:
-          # push/PR 用事件自带的 ref(PR 才能测到合并结果);仅定时档固定检
-          # 出 brunch——schedule 只会检默认分支,不钉住就会测陈旧的 master
-          ref: ${{ github.event_name == 'schedule' && 'brunch' || github.ref }}
+        # push/PR 检出事件自带的 ref(PR 才能测到合并结果);定时档事件本身就
+        # 注册在默认分支 master 上,不钉 ref 即检默认分支最新提交,无陈旧分支名风险
 
       - name: 安装 Python 3.13
         uses: actions/setup-python@v5
