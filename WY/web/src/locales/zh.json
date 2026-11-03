@@ -914,6 +914,8 @@
  "web.docking.prefix_label": "归档前缀",
  "web.docking.prep_btn": "下载受体并准备",
  "web.docking.prepping": "下载并准备中…",
+ "web.docking.prep_fail": "受体准备失败",
+ "web.docking.src_manual": "手动基因模式(基因列表分析)",
  "web.docking.rcsb_empty": "RCSB 查无该基因的人类实验结构 —— 可开启 Step 1 的 AlphaFold 兜底。",
  "web.docking.receptor_ready": "受体已就绪",
  "web.docking.ref_ligands": "参考配体:{names}",

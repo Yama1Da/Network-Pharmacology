@@ -1283,8 +1283,17 @@ def docking_sources() -> dict:
     ppi_out = []
     for d in ppi_dirs["Directory"].tolist():
         prefix = d[:-5] if d.endswith("_data") else d
+        # 空壳目录(中断运行遗留、无任何文件)不进选择清单,避免出现 "empty →" 这类无效项
+        try:
+            if not any(e.is_file() for e in os.scandir(os.path.join(config.DOWNLOADS_DIR, d))):
+                continue
+        except OSError:
+            continue
         drug, disease = split_result_prefix(prefix)
-        ppi_out.append({"name": d, "display": f"{drug} → {disease}" or d})
+        # manual* 前缀是手动基因模式的固定结果目录(现按基因列表指纹分桶 manual_<hash8>),
+        # 前端按模式名展示,不把指纹当疾病名
+        ppi_out.append({"name": d, "display": f"{drug} → {disease}" or d,
+                        "manual": prefix.startswith("manual")})
 
     enr = list_cache_files("enrichment", exts=(".csv",))
     if not enr.empty:

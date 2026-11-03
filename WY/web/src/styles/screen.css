@@ -467,6 +467,10 @@
   letter-spacing: 0.1em;
   color: var(--c-dim);
 }
+/* 错误变体:job 失败信息用危险红(AnalysisView/DockingView 共用) */
+.notice.err {
+  color: var(--c-danger);
+}
 .note-enter-active,
 .note-leave-active {
   transition: all 0.4s ease;

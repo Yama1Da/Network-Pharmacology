@@ -28,7 +28,14 @@ async function ensureSession(): Promise<string> {
 /* ---------------- Step 1 数据源与候选基因 ---------------- */
 
 const srcMode = ref<'ppi' | 'enr'>('ppi')
-const ppiDirs = ref<{ name: string; display: string }[]>([])
+const ppiDirs = ref<{ name: string; display: string; manual?: boolean }[]>([])
+// 手动基因桶现在按基因列表指纹分桶(manual_<hash8>),展示名加桶指纹以便区分;
+// 旧版固定 manual_data 桶显示为 · data(仅存量数据可见)
+function srcLabel(d: { name: string; display: string; manual?: boolean }): string {
+  if (!d.manual) return d.display
+  const bucket = d.name.replace(/^manual_/, '').replace(/_data$/, '')
+  return `${t('web.docking.src_manual')} · ${bucket}`
+}
 const enrFiles = ref<{ name: string; display: string }[]>([])
 const selSource = ref('')
 const manualGenes = ref('')
@@ -413,7 +420,7 @@ onBeforeUnmount(() => {
       <p v-if="srcMode === 'ppi' && !ppiDirs.length" class="hint-line">{{ t('web.docking.no_ppi_dirs') }}</p>
       <select v-if="srcMode === 'ppi' && ppiDirs.length" class="sel" v-model="selSource" @change="selectSource(selSource)">
         <option value="" disabled>{{ t('web.docking.sel_dir_ph') }}</option>
-        <option v-for="d in ppiDirs" :key="d.name" :value="d.name">{{ d.display }}</option>
+        <option v-for="d in ppiDirs" :key="d.name" :value="d.name">{{ srcLabel(d) }}</option>
       </select>
       <select v-if="srcMode === 'enr' && enrFiles.length" class="sel" v-model="selSource" @change="selectSource(selSource)">
         <option value="" disabled>{{ t('web.docking.sel_enr_ph') }}</option>
@@ -528,6 +535,7 @@ onBeforeUnmount(() => {
             </div>
             <p class="progress-text">{{ recJob.text.value }}</p>
           </div>
+          <p v-if="recJob.error.value" class="notice err">{{ t('web.docking.prep_fail') }}:{{ recJob.error.value }}</p>
           <p v-if="receptor?.receptor_source === 'alphafold'" class="stale">
             {{ t('web.docking.af_warn', { pdb: receptor.pdb_id.split(':')[1] }) }}
           </p>

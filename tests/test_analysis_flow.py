@@ -52,13 +52,19 @@ def stubbed_core(monkeypatch):
     return saved_marker
 
 
+def _manual_prefix(genes: list[str]) -> str:
+    """手动模式前缀的期望值:manual_<基因列表md5前8位>(与 analysis 的分桶规则一致)。"""
+    import hashlib
+    return "manual_" + hashlib.md5("\r".join(sorted(genes)).encode("utf-8")).hexdigest()[:8]
+
+
 def test_run_ppi_analysis_manual_mode(stubbed_core):
     """manual 模式全链:基因解析→建图指标→富集汇合→结果字典结构完整→落盘恰好一次。"""
     res = ana.run_ppi_analysis(mode="manual", drug_name="", disease_name="",
                                gene_text="tp53, egfr, TP53", score=0.7)
     # 基因:大写去重排序
     assert res["genes"] == ["EGFR", "TP53"]
-    assert res["prefix"] == "manual"
+    assert res["prefix"] == _manual_prefix(["EGFR", "TP53"])
     # 建图与拓扑是真的(小图纯本地)
     assert res["graph"].number_of_nodes() == 2
     assert not res["metrics_df"].empty
@@ -69,11 +75,39 @@ def test_run_ppi_analysis_manual_mode(stubbed_core):
     # 落盘恰好一次,且拿到了图/指标/边表等全部产物
     assert stubbed_core["called"] == 1
     kwargs = stubbed_core["kwargs"]
-    assert kwargs["prefix"] == "manual" and not kwargs["edges_df"].empty
+    assert kwargs["prefix"] == _manual_prefix(["EGFR", "TP53"]) and not kwargs["edges_df"].empty
     # manual 模式不跑 GSEA/邻近度
     assert res["gsea"] == {} and res["proximity"] is None
     # 参数快照按位置元组记录
     assert res["params"][0] == "manual" and res["params"][4] == 0.7
+
+
+def test_manual_prefix_buckets_by_gene_list(stubbed_core, monkeypatch):
+    """手动模式按基因列表指纹分桶:同列表(乱序/大小写/重复)同前缀,异列表异前缀;
+    边表取数 label 固定传 "manual",与 CLI run_ppi --genes 共享边表缓存的特判入口。"""
+    captured: dict = {}
+
+    def fake_fetch(genes, **k):
+        captured["label"] = k.get("label")
+        return pd.DataFrame([{"protein_A": "TP53", "protein_B": "EGFR", "score": 900}])
+
+    monkeypatch.setattr(ana, "fetch_string_ppi", fake_fetch)
+
+    r1 = ana.run_ppi_analysis(mode="manual", drug_name="", disease_name="",
+                              gene_text="tp53, egfr, TP53", score=0.7)
+    assert captured["label"] == "manual"
+    assert r1["prefix"] == _manual_prefix(["EGFR", "TP53"])
+
+    # 同一基因列表(顺序/大小写/重复不同)→ 同一桶
+    r2 = ana.run_ppi_analysis(mode="manual", drug_name="", disease_name="",
+                              gene_text="EGFR tp53", score=0.7)
+    assert r2["prefix"] == r1["prefix"]
+
+    # 不同基因列表 → 不同桶
+    r3 = ana.run_ppi_analysis(mode="manual", drug_name="", disease_name="",
+                              gene_text="EGFR TP53 KRAS", score=0.7)
+    assert r3["prefix"] == _manual_prefix(["EGFR", "KRAS", "TP53"])
+    assert r3["prefix"] != r1["prefix"]
 
 
 def test_run_ppi_analysis_rwr_expansion_branch(stubbed_core, monkeypatch):

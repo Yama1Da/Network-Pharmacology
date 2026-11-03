@@ -541,6 +541,8 @@ onMounted(() => {
           <p v-else-if="gseaRes.reason === 'request_failed'" class="stale">{{ t('web.analysis.gsea_req_failed') }}</p>
           <p v-else-if="!gseaRes.rows.length" class="hint-line">{{ t('web.analysis.gsea_empty') }}</p>
           <template v-else>
+            <img v-if="art(`gsea_${gseaSide}_png`)" class="fig-img"
+                 :src="artifactsUrl(art(`gsea_${gseaSide}_png`) ?? '')" :alt="`GSEA ${gseaSide}`" />
             <div class="tbl-wrap">
               <table class="tbl">
                 <thead><tr><th>term_name</th><th>NES</th><th>adj_p</th></tr></thead>
@@ -548,7 +550,7 @@ onMounted(() => {
                   <tr v-for="(r, i) in gseaRes.rows" :key="i">
                     <td>{{ r.Term ?? r.term_name ?? r.Name }}</td>
                     <td>{{ fmt(r.NES ?? r.nes, 3) }}</td>
-                    <td>{{ fmt(r['FDR q-val'] ?? r.adj_p ?? r['FDR p-val'], 4) }}</td>
+                    <td>{{ fmt(r['FDR q-val'] ?? r.fdr_q_value ?? r.adj_p ?? r['FDR p-val'], 4) }}</td>
                   </tr>
                 </tbody>
               </table>
