@@ -77,7 +77,7 @@ RCSB_SEARCH_CACHE_TTL_HOURS = 96
 # 药物/疾病靶点在整合(merge)时做降噪过滤,阈值集中在此配置,过滤逻辑在 core/targets.py。
 # 过滤规则或阈值变更后需把 TARGET_FILTER_VERSION 加 1:merged 整合缓存的文件名
 # 带该版本号,加 1 后旧缓存自动失效,下次分析按新阈值重建(原始缓存不受影响)。
-TARGET_FILTER_VERSION = 3
+TARGET_FILTER_VERSION = 5
 # ChEMBL 黑名单:非特异性结合/药物代谢蛋白,不计入药物靶点
 # (白蛋白 ALB 与主要药物代谢 CYP 酶;CYP46A1 是脑特异胆固醇酶、可能是药效靶点,不列入)
 CHEMBL_TARGET_BLACKLIST = (
@@ -261,6 +261,9 @@ STRING_DOWNLOAD_STATIC_BASE = "https://stringdb-static.org/download"
 STRING_DOWNLOAD_MIRROR_BASE = "https://cn.string-db.org/download"
 # 下载源尝试顺序:官方站优先(国内无 STRING 数据镜像,清华 TUNA 等仅镜像 Bioconductor
 # 的 R 包,不含数据文件);官方站单连接实测仅 ~10KB/s,多段并行可近似线性提速。
+# 2026-11-02 复核:官方站 6 段并发聚合仍被限速(<67KB/s);cn.string-db.org 直链对全部
+# UA 均返回 403(测速脚本曾把"秒回的 403 错误页"误判为高速下载,见文件 评估文档),
+# 镜像直链确认不可用,维持官方站优先、镜像留链尾作哨兵(官方恢复直链后再挪首位)。
 INTERACTOME_DOWNLOAD_SOURCES = (
     STRING_DOWNLOAD_BASE, STRING_DOWNLOAD_STATIC_BASE, STRING_DOWNLOAD_MIRROR_BASE)
 # 全网络大文件下载并发分段数(仅对支持 HTTP Range 的源生效);不支持 Range 或分段

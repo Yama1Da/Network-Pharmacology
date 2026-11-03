@@ -372,6 +372,23 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   }).then((r) => json<T>(r))
 }
 
+/** 从 Content-Disposition 取服务端文件名:优先 RFC 5987 的 filename*(中文药名场景),
+ * 退回普通 filename="…";都缺失返回 null,由调用方兜底命名。 */
+function attachmentName(disposition: string | null): string | null {
+  if (!disposition) return null
+  const star = /filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/.exec(disposition)
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim())
+    } catch {
+      /* 非法百分号编码时退回普通 filename */
+    }
+  }
+  const plain = /filename\s*=\s*"([^"]*)"/.exec(disposition) ??
+                /filename\s*=\s*([^;]+)/.exec(disposition)
+  return plain ? plain[1].trim() : null
+}
+
 export const api = {
   /* ---- Logs(阶段 1) ---- */
   logsFiles: (): Promise<{ files: LogFile[] }> =>
@@ -441,6 +458,16 @@ export const api = {
   /* ---- 主页四库检索 + 设置(阶段 3 补全) ---- */
   retrieveTargets: (drug: string, disease: string): Promise<{ job_id: string }> =>
     post('/api/targets/retrieve', { drug, disease }),
+
+  /* 主页检索结果下载:多项后端打 zip,单项直接回对应文件(items 键见 api.py _EXPORT_ITEMS)。
+   * 文件名以响应头 Content-Disposition 为准(命名真相源在后端),取不到时用兜底名。 */
+  targetsExport: async (jobId: string, items: string[]): Promise<{ blob: Blob; filename: string }> => {
+    const r = await fetch(`/api/targets/export?job_id=${encodeURIComponent(jobId)}` +
+      `&items=${encodeURIComponent(items.join(','))}`)
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    const blob = await r.blob()
+    return { blob, filename: attachmentName(r.headers.get('content-disposition')) ?? 'targets_download' }
+  },
 
   /* ---- 主页页脚统计(本机缓存实数) ---- */
   homeStats: (): Promise<{
@@ -561,7 +588,7 @@ export const api = {
 
   dockingSave3d: (
     sid: string,
-    body: { pose: number; caption: string }
+    body: { pose: number; caption: string; cutoff: number }
   ): Promise<{ path: string; artifact_rel: string; offline_ok: boolean }> =>
     post(`/api/docking/${sid}/save3d`, body),
 

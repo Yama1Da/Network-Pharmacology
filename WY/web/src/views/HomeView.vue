@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import { setPrefill } from '../store'
 import { useJob } from '../composables/useJob'
+import { downloadBlob } from '../utils/download'
 import { theme } from '../utils/theme'
 
 const { t } = useI18n()
@@ -77,8 +78,53 @@ function retrieve(): void {
     return
   }
   done.value = null
+  dlError.value = ''
   void job.run(api.retrieveTargets(drug.value.trim(), disease.value.trim()),
     { doneText: t('web.home.retrieve_done') })
+}
+
+/* 结果下载:勾选要下哪些,一次请求交给 /api/targets/export——多项后端打 zip,单项直接回文件 */
+type DlKey = ListTab | 'vennPng' | 'vennSvg'
+const dlBusy = ref(false)
+const dlError = ref('')
+const dlSel = reactive<Record<DlKey, boolean>>(
+  { drug: true, disease: true, common: true, vennPng: true, vennSvg: true })
+
+/* venn 仅在后端确实渲染过(两侧至少一侧有靶点)时可选,否则导出端点会 404 */
+const vennReady = computed(() => !!job.jobId.value &&
+  ((done.value?.drug ?? 0) > 0 || (done.value?.disease ?? 0) > 0))
+const dlKeys = computed<DlKey[]>(() => {
+  const keys: DlKey[] = ['drug', 'disease', 'common']
+  if (vennReady.value) keys.push('vennPng', 'vennSvg')
+  return keys
+})
+const dlAny = computed(() => dlKeys.value.some((k) => dlSel[k]))
+
+function dlLabel(k: DlKey): string {
+  if (k === 'vennPng') return t('web.home.dl_venn')
+  if (k === 'vennSvg') return t('web.home.dl_venn_svg')
+  return `${t(`web.home.tab_${k}`)} CSV`
+}
+
+/* 与后端 _EXPORT_ITEMS 的 items 键一致 */
+const DL_ITEM: Record<DlKey, string> = {
+  drug: 'drug_csv', disease: 'disease_csv', common: 'common_csv',
+  vennPng: 'venn_png', vennSvg: 'venn_svg'
+}
+
+async function doDownload(): Promise<void> {
+  if (!done.value || !dlAny.value || !job.jobId.value) return
+  dlError.value = ''
+  dlBusy.value = true
+  try {
+    const keys = dlKeys.value.filter((k) => dlSel[k])
+    const { blob, filename } = await api.targetsExport(job.jobId.value, keys.map((k) => DL_ITEM[k]))
+    downloadBlob(blob, filename)
+  } catch (e) {
+    dlError.value = t('web.home.dl_fail', { msg: e instanceof Error ? e.message : String(e) })
+  } finally {
+    dlBusy.value = false
+  }
 }
 
 function goAnalysis(): void {
@@ -202,6 +248,18 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
           </table>
           <p v-else class="tl-empty">{{ t('web.home.list_empty') }}</p>
         </div>
+      </div>
+      <div class="dl">
+        <div class="dl-panel">
+          <label v-for="k in dlKeys" :key="k" class="dl-item">
+            <input v-model="dlSel[k]" type="checkbox" />
+            <span>{{ dlLabel(k) }}</span>
+          </label>
+          <button class="dl-go" :disabled="!dlAny || dlBusy" @click="doDownload">
+            {{ t('web.home.dl_go') }}
+          </button>
+        </div>
+        <p v-if="dlError" class="dl-fail">{{ dlError }}</p>
       </div>
       <button class="go enter" :title="t('web.home.enter_title')" @click="goAnalysis">
         <svg viewBox="0 0 24 14" width="22" height="13">
@@ -386,6 +444,62 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   font-size: 11.5px;
   letter-spacing: 0.05em;
   color: var(--c-ink3);
+}
+.dl {
+  margin-top: 20px;
+  /* 与下方"进入分析"黑色箭头拉开距离 */
+  margin-bottom: 34px;
+}
+.dl-panel {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px 20px;
+  flex-wrap: wrap;
+}
+.dl-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  color: var(--c-ink2);
+  cursor: pointer;
+  user-select: none;
+}
+.dl-item:hover {
+  color: var(--c-ink);
+}
+.dl-item input {
+  accent-color: var(--c-accent);
+  cursor: pointer;
+  margin: 0;
+}
+.dl-go {
+  border: 1px solid var(--c-line);
+  background: transparent;
+  color: var(--c-ink);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: border-color 0.3s, color 0.3s;
+}
+.dl-go:hover:not(:disabled) {
+  border-color: var(--c-accent);
+  color: var(--c-accent);
+}
+.dl-go:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.dl-fail {
+  margin: 8px 0 0;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--c-danger);
 }
 .foot-stats {
   margin-top: 48px;

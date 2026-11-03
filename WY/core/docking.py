@@ -1310,13 +1310,14 @@ _3D_HTML_TEMPLATE = """<!DOCTYPE html>
   #lic { display: block; margin-top: 2px; font-size: 11px; color: #777; }
   #bar { padding: 4px 14px; border-bottom: 1px solid #eee; }
   #focus { cursor: pointer; }
+  #hint { margin-left: 10px; font-size: 12px; color: #777; }
   #viewer { width: 100vw; height: calc(100vh - 88px); position: relative; }
 </style>
 __LIB__
 </head>
 <body>
 <div id="cap">__CAPTION__<span id="lic">__LICENSE_NOTE__</span></div>
-<div id="bar"><button id="focus">__FOCUS_BTN__</button></div>
+<div id="bar"><button id="focus">__FOCUS_BTN__</button><span id="hint">再次点击复位 · 双击视图任意处也可复位 · double-click the view to reset</span></div>
 <div id="viewer"></div>
 <script>
 (function () {
@@ -1387,18 +1388,25 @@ __LIB__
   viewer.zoomTo();
   viewer.render();
   // 聚焦口袋:以配体为中心、拉远到能框住口袋残基,并把周围蛋白卡通虚化;
-  // 双击复位为整体视图并取消虚化
-  document.getElementById("focus").onclick = function () {
-    applyProteinStyles(true);
-    viewer.zoomTo({ model: 1 });
-    viewer.zoom(0.55, 400);
+  // 按钮是开关:再次点击(或双击视图任意处)复位为整体视图并取消虚化
+  var focusBtn = document.getElementById("focus");
+  var focusLabel = focusBtn.textContent;
+  var resetLabel = "复位视图 Reset view";
+  var focused = false;
+  function setFocus(on) {
+    focused = on;
+    applyProteinStyles(on);
+    if (on) {
+      viewer.zoomTo({ model: 1 });
+      viewer.zoom(0.55, 400);
+    } else {
+      viewer.zoomTo();
+    }
+    focusBtn.textContent = on ? resetLabel : focusLabel;
     viewer.render();
-  };
-  document.getElementById("viewer").ondblclick = function () {
-    applyProteinStyles(false);
-    viewer.zoomTo();
-    viewer.render();
-  };
+  }
+  focusBtn.onclick = function () { setFocus(!focused); };
+  document.getElementById("viewer").ondblclick = function () { setFocus(false); };
 })();
 </script>
 <!--
