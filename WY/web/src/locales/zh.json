@@ -1236,6 +1236,7 @@
  "web.sources.drug_title": "药物靶点来源",
  "web.sources.empty": "尚无来源文件 —— 完成一次分析后自动生成。",
  "web.sources.merged_label": "整合表 (merged)",
+ "web.sources.legacy_merged_label": "旧版整合表 (旧版 merged)",
  "web.sources.merged_tag": "整合",
  "web.sources.one_empty": "抓取成功但 0 靶点(检查查询物)",
  "web.sources.one_fail": "失败:{msg}",

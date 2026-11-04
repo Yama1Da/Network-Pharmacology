@@ -48,7 +48,7 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["WY"]                # 统计 WY 包
 omit = [                       # 口径:入口编排层与脚本不计入分母
-    "WY/api.py",               # FastAPI 入口(业务语义与 cli.py 重叠,2026-10 拍板不进分母)
+    "WY/api/*",                # FastAPI 入口层(业务语义与 cli.py 重叠,2026-10 拍板不进分母)
     "WY/tools/*",              # 独立工具/基准脚本,不是被测对象
     "WY/benchmark/*",
 ]

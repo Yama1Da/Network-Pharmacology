@@ -42,6 +42,12 @@ const { selected, toggle: toggleSel, allSelected, toggleAll, retain } = useSelec
 const srcOn = ref<Record<string, boolean>>({})
 const showMerged = ref(true)
 
+/* 来源筛选的展示名:后端把旧过滤版本的整合缓存(merged_*_v<旧>_)回落为
+   source="merged",这里给它一个明确的"旧版"标签,避免与右侧整合表开关混淆;
+   其余来源名(ChEMBL/DGIdb/OpenTargets/DisGeNET)是专有名词,原样展示。 */
+const SRC_LABEL: Record<string, string> = { merged: 'web.sources.legacy_merged_label' }
+const srcLabel = (s: string): string => (SRC_LABEL[s] ? t(SRC_LABEL[s]) : s)
+
 const sourceNames = computed(() => {
   const names = new Set<string>()
   for (const it of items.value) {
@@ -167,7 +173,7 @@ onBeforeUnmount(() => {
     <div class="filters">
       <span class="ctl-label">{{ t('web.sources.source_label') }}</span>
       <label v-for="s in sourceNames" :key="s" class="chk">
-        <input v-model="srcOn[s]" type="checkbox" /> {{ s }}
+        <input v-model="srcOn[s]" type="checkbox" /> {{ srcLabel(s) }}
       </label>
       <label class="chk"><input v-model="showMerged" type="checkbox" /> {{ t('web.sources.merged_label') }}</label>
     </div>

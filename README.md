@@ -195,7 +195,7 @@ npap --help              # 入口脚本装进当前环境的 Scripts\（Windows�
 
 ```
 WY/
-├── api.py                  # FastAPI 入口：/api 端点 + 托管 web/dist 构建产物
+├── api/                    # FastAPI 入口：/api 端点按页拆分（__init__ 装配 + 各页路由模块）+ 托管 web/dist
 ├── cli.py                  # CLI 入口：serve / targets / ppi / enrich / proximity / rwr / analyze / batch
 ├── config.py               # 全部可调参数（路径、限流/重试、缓存 TTL、过滤阈值、STRING 版本）
 ├── env_discovery.py        # Vina / Open Babel 可执行文件探测
@@ -210,7 +210,7 @@ WY/
 │   │                       #   GEO 表达谱 + ML 共识筛选
 │   ├── management / jobs / analysis / files  #  数据管理编排、后台任务、结果文件
 │   └── http_client / caching / logging_setup / text_utils  # 基础设施
-├── web/                    # TS + Vue 3 前端源码（Vite 构建，产物 dist/ 由 api.py 托管）
+├── web/                    # TS + Vue 3 前端源码（Vite 构建，产物 dist/ 由 api/ 托管）
 ├── i18n/                   # 中英文案词典与取词 API
 ├── tools/                  # 独立工具：build_interactome / geo_ml_screen / net_block / export_i18n_json
 ├── benchmark/              # 基准验证：LIT-PCBA / 跨数据集稳健性 / ML 规模 / 恢复性

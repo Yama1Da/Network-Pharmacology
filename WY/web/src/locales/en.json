@@ -1236,6 +1236,7 @@
  "web.sources.drug_title": "Drug Target Sources",
  "web.sources.empty": "No source files yet — they are generated automatically after the first analysis.",
  "web.sources.merged_label": "Merged table (merged)",
+ "web.sources.legacy_merged_label": "Legacy merged (old filter version)",
  "web.sources.merged_tag": "Merged",
  "web.sources.one_empty": "Fetched but 0 targets (check the query)",
  "web.sources.one_fail": "Failed: {msg}",

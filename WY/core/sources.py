@@ -50,9 +50,12 @@ def disease_spec() -> dict:
 
 def file_path(filename: str, spec: dict) -> str:
     """整合前缀的文件位于 merged 目录,其余位于来源缓存目录
-    (原 core.management._mgmt_file_path,升为公开:API 层同样需要按 spec 解析路径)。"""
+    (原 core.management._mgmt_file_path,升为公开:API 层同样需要按 spec 解析路径)。
+    旧过滤版本的整合缓存(merged_*_v<旧>_ 前缀,TARGET_FILTER_VERSION 升版遗留)
+    同样按 merged 目录解析:它们实际就存放在那里,若按来源目录解析会变成
+    "列表看得见、size 显示 0 B、删不掉"的僵尸条目。来源文件名不含 merged_ 前缀,不冲突。"""
     import os
 
-    if filename.startswith(spec["merged_prefix"]):
+    if filename.startswith(spec["merged_prefix"]) or filename.startswith("merged_"):
         return os.path.join(spec["merged_dir"], filename)
     return os.path.join(spec["cache_dir"], filename)

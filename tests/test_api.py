@@ -103,7 +103,7 @@ def test_sources_refresh_unknown_kind_404(client):
 
 
 def test_sources_refresh_job_flow(client, monkeypatch):
-    monkeypatch.setattr("WY.api.update_all_cache_files",
+    monkeypatch.setattr("WY.api.sources.update_all_cache_files",
                         lambda *a, **k: pd.DataFrame())
     r = client.post("/api/sources/drug/refresh", json={"filenames": None})
     assert r.status_code == 200
@@ -125,9 +125,9 @@ def test_interactome_status_payload(client):
 
 
 def test_interactome_build_job_flow(client, monkeypatch):
-    monkeypatch.setattr("WY.api.build_interactome",
+    monkeypatch.setattr("WY.api.interactome.build_interactome",
                         lambda progress_cb=None: {"n_nodes": 2, "n_edges": 1})
-    monkeypatch.setattr("WY.api.clean_old_version_caches", lambda name: 0)
+    monkeypatch.setattr("WY.api.interactome.clean_old_version_caches", lambda name: 0)
     r = client.post("/api/interactome/build")
     job = _wait_job(client, r.json()["job_id"])
     assert job["status"] == "done" and job["result"]["nodes"] == 2
@@ -198,7 +198,7 @@ def _fake_ppi_result():
 
 
 def test_ppi_analyze_job_flow(client, monkeypatch):
-    monkeypatch.setattr("WY.api.run_ppi_analysis", lambda *a, **k: _fake_ppi_result())
+    monkeypatch.setattr("WY.api.ppi.run_ppi_analysis", lambda *a, **k: _fake_ppi_result())
     r = client.post("/api/ppi/analyze",
                     json={"mode": "names", "drug": "aspirin", "disease": "cancer"})
     job = _wait_job(client, r.json()["job_id"])
@@ -317,7 +317,7 @@ def test_settings_ui_blacklist_normalizes_and_restores(client):
 
 def test_settings_api_env_stubbed(client, monkeypatch):
     """save_api_env 会写真实 WY/API.env(BASE_DIR 不在沙箱),冒烟打桩验证 HTTP 形态。"""
-    monkeypatch.setattr("WY.api.save_api_env", lambda changes: ["NCBI_API_KEY"])
+    monkeypatch.setattr("WY.api.settings.save_api_env", lambda changes: ["NCBI_API_KEY"])
     r = client.post("/api/settings/api-env",
                     json={"changes": {"NCBI_API_KEY": "x"}})
     assert r.status_code == 200 and r.json() == {"applied": ["NCBI_API_KEY"]}
@@ -449,7 +449,7 @@ def test_docking_receptor_candidates_guard_and_flow(client, sid, monkeypatch):
 
     monkeypatch.setattr(docking, "fetch_receptor_pdb_candidates",
                         lambda *a, **k: pd.DataFrame())
-    _pdb_cached = __import__("WY.api", fromlist=["_pdb_candidates_cached"])
+    _pdb_cached = __import__("WY.api.docking", fromlist=["_pdb_candidates_cached"])
     _pdb_cached._pdb_candidates_cached.cache_clear()
     body = client.post(f"/api/docking/{sid}/receptor/candidates",
                        json={"gene": "TP53"}).json()
@@ -556,7 +556,7 @@ def test_ml_run_local_job_flow(client, monkeypatch):
                 "shortlist": pd.DataFrame([{"gene": "TP53", "in_shortlist": True}]),
                 "deg": pd.DataFrame([{"gene": "TP53"}]), "roc_png": ""}
 
-    monkeypatch.setattr("WY.api.run_screen_chain", fake_chain)
+    monkeypatch.setattr("WY.api.ml.run_screen_chain", fake_chain)
     r = client.post("/api/ml/run",
                     json={"mode": "local", "expr": "expr.csv", "labels": "labels.csv"})
     job = _wait_job(client, r.json()["job_id"])
