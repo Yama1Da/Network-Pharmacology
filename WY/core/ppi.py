@@ -350,7 +350,9 @@ def list_analyzed_pairs() -> list[dict]:
         if not os.path.isdir(dpath) or not d.endswith("_data"):
             continue
         prefix = d[:-len("_data")]
-        if prefix == "manual":
+        if prefix.startswith("manual"):
+            # 手动基因桶:目录名是基因列表哈希,没有真实药病语境,不进 ML 页的
+            # 疾病发现与排序候选(曾因表单残留值冒充 metformin/T2DM 被发现过)
             continue
         meta = {}
         meta_path = os.path.join(dpath, "analysis_meta.json")

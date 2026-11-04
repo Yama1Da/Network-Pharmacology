@@ -76,6 +76,9 @@ def test_run_ppi_analysis_manual_mode(stubbed_core):
     assert stubbed_core["called"] == 1
     kwargs = stubbed_core["kwargs"]
     assert kwargs["prefix"] == _manual_prefix(["EGFR", "TP53"]) and not kwargs["edges_df"].empty
+    # 表单残留的药病名在手动模式置空:不进 meta,不冒充药病对(ML 页按药病名发现)
+    assert kwargs["drug_name"] == "" and kwargs["disease_name"] == ""
+    assert res["params"][1] == "" and res["params"][2] == ""
     # manual 模式不跑 GSEA/邻近度
     assert res["gsea"] == {} and res["proximity"] is None
     # 参数快照按位置元组记录

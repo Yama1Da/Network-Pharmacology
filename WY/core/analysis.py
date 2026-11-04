@@ -365,6 +365,10 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         # 边表取数仍传 "manual"(见下方 fetch_string_ppi),与 CLI 共享同一特判与缓存。
         digest = hashlib.md5("\r".join(genes).encode("utf-8")).hexdigest()[:8]
         prefix = f"manual_{digest}"
+        # 表单里残留的药病名与本分析无关,置空:不进 meta(ML 页按药病名发现排序
+        # CSV,残留值会让手动桶冒充某个药病对),params 快照也置空(前端 genes 模式
+        # 的 snapshot 同步传空,两侧一致才不会误报参数过期)
+        drug_name = disease_name = ""
 
     # Step 0.5: RWR 扩展(可选),共享语义见 expand_targets_with_rwr;扩展失败按原始交集
     # 继续并保留纯种子清单,不让整个分析挂掉
