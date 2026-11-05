@@ -246,7 +246,7 @@ For behavior changes see `WY/config.py`; for secrets see `WY/API.env`.
 
 ```
 WY/
-├── api.py                  # FastAPI entry: /api endpoints + hosts the web/dist build output
+├── api/                    # FastAPI entry: /api endpoints split per page (__init__ assembly + route modules) + hosts web/dist
 ├── cli.py                  # CLI entry: serve / targets / ppi / enrich / proximity / rwr / analyze / batch
 ├── config.py               # All tunable parameters (paths, rate limits/retries, cache TTL, filter thresholds, STRING version)
 ├── env_discovery.py        # Vina / Open Babel executable discovery
@@ -261,14 +261,14 @@ WY/
 │   │                       #   GEO expression profiles + ML consensus screening
 │   ├── management / jobs / analysis / files  #   data-management orchestration, background jobs, result files
 │   └── http_client / caching / logging_setup / text_utils  # infrastructure
-├── web/                    # TS + Vue 3 frontend source (Vite build; dist/ hosted by api.py)
+├── web/                    # TS + Vue 3 frontend source (Vite build; dist/ hosted by api/)
 ├── i18n/                   # Chinese/English dictionaries and lookup API
 ├── tools/                  # Standalone tools: build_interactome / geo_ml_screen / net_block / export_i18n_json
 ├── benchmark/              # Benchmarks: LIT-PCBA / cross-dataset robustness / ML scale / recovery
 └── Static/                 # Runtime caches and analysis results
 ```
 
-Dependencies are strictly one-way: `web(TS+Vue) / api.py → core/ → i18n, config`.
+Dependencies are strictly one-way: `web(TS+Vue) / api/ → core/ → i18n, config`.
 `core/` does not depend on any UI framework and can be imported, reused, and tested
 headlessly; `cli.py` depends only on `core/` and `config`, sharing caches and settings
 with the web UI.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# NOTE: when editing this file, make the same change in start_npap.bat (and vice versa).
 # NPAP one-click launcher for Linux / macOS: starts the web server.
 # First run creates the venv and installs dependencies (a few minutes).
 # Usage: ./start_npap.sh   (or: bash start_npap.sh)

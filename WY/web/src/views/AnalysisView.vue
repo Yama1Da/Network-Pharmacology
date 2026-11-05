@@ -29,7 +29,10 @@ const hubTopN = ref(10)
 const hubMethod = ref('degree')
 
 const snapshot = computed<(string | number)[]>(() => [
-  mode.value, drug.value.trim(), disease.value.trim(), genesText.value.trim(),
+  mode.value,
+  mode.value === 'names' ? drug.value.trim() : '',
+  mode.value === 'names' ? disease.value.trim() : '',
+  genesText.value.trim(),
   score.value, networkType.value, rwrExpand.value, hubTopN.value, hubMethod.value
 ])
 
@@ -77,8 +80,12 @@ function analyze(): void {
     flash(t('web.analysis.need_names'))
     return
   }
+  // genes 模式下 drug/disease 是隐藏表单的残留值,与结果无关:传空,后端 params
+  // 快照同样置空,两侧一致,paramsStale 才不会误报参数过期
+  const namesMode = mode.value === 'names'
   const body: PpiAnalyzeBody = {
-    mode: mode.value, drug: drug.value, disease: disease.value, genes_text: genesText.value,
+    mode: mode.value, drug: namesMode ? drug.value : '', disease: namesMode ? disease.value : '',
+    genes_text: genesText.value,
     score: score.value, network_type: networkType.value, rwr_expand: rwrExpand.value,
     hub_top_n: hubTopN.value, hub_method: hubMethod.value
   }
@@ -541,6 +548,8 @@ onMounted(() => {
           <p v-else-if="gseaRes.reason === 'request_failed'" class="stale">{{ t('web.analysis.gsea_req_failed') }}</p>
           <p v-else-if="!gseaRes.rows.length" class="hint-line">{{ t('web.analysis.gsea_empty') }}</p>
           <template v-else>
+            <img v-if="art(`gsea_${gseaSide}_png`)" class="fig-img"
+                 :src="artifactsUrl(art(`gsea_${gseaSide}_png`) ?? '')" :alt="`GSEA ${gseaSide}`" />
             <div class="tbl-wrap">
               <table class="tbl">
                 <thead><tr><th>term_name</th><th>NES</th><th>adj_p</th></tr></thead>
@@ -548,7 +557,7 @@ onMounted(() => {
                   <tr v-for="(r, i) in gseaRes.rows" :key="i">
                     <td>{{ r.Term ?? r.term_name ?? r.Name }}</td>
                     <td>{{ fmt(r.NES ?? r.nes, 3) }}</td>
-                    <td>{{ fmt(r['FDR q-val'] ?? r.adj_p ?? r['FDR p-val'], 4) }}</td>
+                    <td>{{ fmt(r['FDR q-val'] ?? r.fdr_q_value ?? r.adj_p ?? r['FDR p-val'], 4) }}</td>
                   </tr>
                 </tbody>
               </table>

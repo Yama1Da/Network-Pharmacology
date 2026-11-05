@@ -2,13 +2,15 @@
 
 流程:把受体蛋白和配体小分子转成对接所需格式,确定结合口袋范围,
 运行 Vina 对接并解析打分。中间文件会缓存一段时间以便复用,对接结果只归档不缓存。
+
+结构解析/相互作用分析与交互式 3D 视图导出分别拆在 docking_interactions 与 docking_3d。
 """
 
 import hashlib
 import logging
 import os
 from datetime import datetime
-from typing import Iterator, NamedTuple
+from typing import Iterator
 
 import pandas as pd
 import requests
@@ -17,8 +19,14 @@ from .caching import load_json_file, save_json_file, save_text_atomic
 from .text_utils import load_name_map, safe_name
 from WY.i18n import t
 
-# PDB 结构中的水分子残基名,不参与结合位点定位与共晶配体识别
-_WATER_RESNAMES = ("HOH", "H2O", "WAT", "DOD")
+# 结构解析/相互作用(docking_interactions)与 3D 视图导出(docking_3d)已拆分为子模块;
+# 此处再导入以维持 WY.core.docking 既有对外接口(api/cli/tests 均从本模块导入这些名字)。
+from .docking_3d import (build_interactive_3d_html, cofactor_hetatm_pdb,
+                         interactive_3d_html, pose_pdbqt_to_pdb,
+                         save_interactive_3d_html)
+from .docking_interactions import (_pdb_coords, _run_obabel, _strip_receptor_pdb,
+                                   interactions_near_ligand, interactions_table,
+                                   parse_hetatm, residues_in_box, residues_near_ligand)
 
 
 def _docking_fingerprint(path: str) -> str:
@@ -44,273 +52,39 @@ def _unique_path(path: str) -> str:
     return candidate
 
 
-def _strip_receptor_pdb(pdb_path: str, out_path: str) -> None:
-    """清洗受体 PDB:只保留蛋白原子,去掉水、配体、离子和重复构象,便于后续对接。"""
-    seen = set()
-    lines = []
-    with open(pdb_path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            rec = line[:6].strip()
-            if rec == "ATOM":
-                if line[16] not in (" ", "A"):
-                    continue  # 跳过 altloc 冗余构象
-                key = (line[21], line[22:26].strip(), line[26], line[17:20],
-                       line[12:16].strip())  # 键含插入码(line[26]):82 与 82A 是不同残基
-                if key in seen:
-                    continue
-                seen.add(key)
-                lines.append(line.rstrip("\n"))
-            elif rec in ("TER", "END"):
-                lines.append(line.rstrip("\n"))
-    if not lines:
-        raise RuntimeError(f"no ATOM records in receptor PDB: {pdb_path}")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-
-
-class _AtomRecord(NamedTuple):
-    """PDB 原子记录的公共字段(仅产出坐标解析成功的行)。"""
-    rec: str      # 记录类型:"ATOM" / "HETATM"
-    resn: str     # 残基名
-    chain: str    # 链 ID(单字符,原样保留)
-    resi: str     # 残基编号
-    x: float
-    y: float
-    z: float
-    altloc: str   # 冗余构象标志(单字符)
-    atom: str     # 原子名
-    elem: str     # 元素(PDB 元素列; pdbqt 为 AutoDock 原子类型,如 OA/NA/A)
-
-
-def _guess_element(atom_name: str) -> str:
-    """元素列缺失时从原子名推断元素;仅个别两字符元素需特殊区分,相互作用判定够用。"""
-    name = atom_name.strip()
-    two = name[:2].upper()
-    if len(name) >= 2 and two in ("CL", "BR", "ZN", "FE", "MG", "MN"):
-        return two
-    return name[:1].upper() if name[:1].isalpha() else ""
-
-
-def _iter_atom_records(pdb_path: str) -> Iterator[_AtomRecord]:
-    """逐行流式读取 PDB 的 ATOM/HETATM 记录并解析坐标,逐条产出公共字段;
-    非原子记录与坐标残缺的坏行直接跳过(配体 pdbqt 文件同样按此规则解析)。
-    """
-    with open(pdb_path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            rec = line[:6].strip()
-            if rec not in ("ATOM", "HETATM"):
-                continue
-            try:
-                x, y, z = float(line[30:38]), float(line[38:46]), float(line[46:54])
-            except ValueError:
-                continue
-            # 元素列(PDB)/原子类型列(pdbqt)都在第 77 列之后,取该区域最后一个字母词
-            tail = line[76:].split()
-            elem = tail[-1] if tail and tail[-1].isalpha() else _guess_element(line[12:16].strip())
-            yield _AtomRecord(rec, line[17:20].strip(), line[21], line[22:26].strip(),
-                              x, y, z, line[16], line[12:16].strip(), elem)
-
-
-def _pdb_coords(pdb_path: str) -> tuple[list, list]:
-    """解析 PDB 文件中的原子坐标(单位 Å),返回 (蛋白原子坐标列表, 非水其他分子坐标列表)。"""
-    protein, het = [], []
-    for r in _iter_atom_records(pdb_path):
-        if r.resn in _WATER_RESNAMES:
-            continue  # 水分子不参与结合位点定位
-        (het if r.rec == "HETATM" else protein).append((r.x, r.y, r.z))
-    return protein, het
-
-
-def parse_hetatm(pdb_path: str) -> list[tuple[str, str, str, tuple]]:
-    """找出 PDB 中的共晶配体/辅因子(水除外),返回 (残基名, 链, 残基编号, (x, y, z)) 列表,供对接盒推断与 3D 预览使用。"""
-    het = []
-    for r in _iter_atom_records(pdb_path):
-        if r.rec == "HETATM" and r.resn not in _WATER_RESNAMES:
-            het.append((r.resn, r.chain, r.resi, (r.x, r.y, r.z)))
-    return het
-
-
-def residues_in_box(pdb_path: str, box: dict) -> list[str]:
-    """列出落在对接盒内的蛋白残基,用于检查盒子是否覆盖了结合口袋。"""
-    c, s = box["center"], box["size"]
-    lo = (c[0] - s[0] / 2, c[1] - s[1] / 2, c[2] - s[2] / 2)
-    hi = (c[0] + s[0] / 2, c[1] + s[1] / 2, c[2] + s[2] / 2)
-    res = set()
-    for r in _iter_atom_records(pdb_path):
-        if r.rec != "ATOM":
-            continue
-        if lo[0] <= r.x <= hi[0] and lo[1] <= r.y <= hi[1] and lo[2] <= r.z <= hi[2]:
-            res.add(f"{r.chain}{r.resi}:{r.resn}")
-    return sorted(res)
-
-
-def residues_near_ligand(receptor_pdb: str, ligand_pdbqt: str, cutoff: float = 4.0) -> list[dict]:
-    """找出对接构象(配体)周围 cutoff Å 以内的结合位点残基,只统计受体 ATOM 记录(水与共晶配体不参与)。
-    返回按链与残基编号排序、去重后的残基列表,每项含链号 chain、残基编号 resi、残基名 resn 及标注名称用的代表原子坐标 pos(CA 原子优先)。
-    """
-    import re
-
-    lig = [(r.x, r.y, r.z) for r in _iter_atom_records(ligand_pdbqt)]
-    if not lig:
-        return []
-
-    cutoff2 = cutoff * cutoff
-    found: dict[tuple, dict] = {}
-    for r in _iter_atom_records(receptor_pdb):
-        if r.rec != "ATOM" or r.altloc not in ("", " ", "A"):
-            continue  # 非蛋白记录与 altloc 冗余构象不参与位点判定
-        xyz = (r.x, r.y, r.z)
-        key = (r.chain.strip(), r.resi)
-        info = found.get(key)
-        if info is None:
-            info = {"resn": r.resn, "ca": None, "pos": xyz, "near": False}
-            found[key] = info
-        if info["ca"] is None and r.atom == "CA":
-            info["ca"] = xyz
-        if not info["near"]:
-            for lx, ly, lz in lig:
-                dx, dy, dz = xyz[0] - lx, xyz[1] - ly, xyz[2] - lz
-                if (abs(dx) <= cutoff and abs(dy) <= cutoff and abs(dz) <= cutoff
-                        and dx * dx + dy * dy + dz * dz <= cutoff2):
-                    info["near"] = True
-                    break
-    residues = [
-        {"chain": chain, "resi": resi, "resn": info["resn"],
-         "pos": info["ca"] or info["pos"]}
-        for (chain, resi), info in found.items() if info["near"]
-    ]
-    residues.sort(key=lambda r: (r["chain"], int(re.match(r"\d+", r["resi"]).group())
-                                 if re.match(r"\d+", r["resi"]) else 0, r["resi"]))
-    return residues
-
-
-# 相互作用几何判据(自实现,参数引自文献):
-# 氢键 N/O/S 重原子间距 ≤3.5 Å(Baker & Hubbard 1984;IUPAC 2011 建议)
-# 盐桥 反向带电基团间距 ≤4.0 Å(Barlow & Thornton 1983)
-# 疏水接触 C–C 间距 ≤4.0 Å(常用接触半径)
-# 无氢坐标下按重原子距离判定,不区分供体/受体方向;π-π 堆积不检测。
-_HBOND_CUTOFF = 3.5
-_SALT_CUTOFF = 4.0
-_HYDROPHOBIC_CUTOFF = 4.0
-
-# 标准氨基酸侧链带电基团原子(盐桥判定用)
-_SALT_ACIDIC = {"ASP": ("OD1", "OD2"), "GLU": ("OE1", "OE2")}
-_SALT_BASIC = {"LYS": ("NZ",), "ARG": ("NH1", "NH2"), "HIS": ("ND1", "NE2")}
-
-# pdbqt 原子类型(后缀 A 是芳香/极性标记)与 PDB 元素符号 → 相互作用判定用元素
-_INTERACTION_ELEMS = {"A": "C", "C": "C", "N": "N", "NA": "N", "NS": "N",
-                      "O": "O", "OA": "O", "OS": "O", "S": "S", "SA": "S"}
-
-
-def _interaction_elem(elem: str) -> str:
-    """把元素列(PDB 元素或 pdbqt 原子类型)归一成 N/O/S/C,其余元素(氢/金属/卤素)返回空串。"""
-    return _INTERACTION_ELEMS.get(elem.upper(), "")
-
-
-def interactions_near_ligand(receptor_pdb: str, ligand_pdbqt: str) -> list[dict]:
-    """检测对接构象与受体之间的氢键、盐桥与疏水接触,返回按类型与距离排序的原子对列表。
-
-    判据与文献出处见函数上方常量说明;水、共晶配体(HETATM)与 altloc 冗余构象不参与。
-    不解析 pdbqt 部分电荷,盐桥按"受体酸性 O↔配体 N、受体碱性 N↔配体 O"近似判定;
-    同一原子对同时满足多种类型时按 盐桥>氢键>疏水 只记一种。
-    每项含类型 kind(hbond/salt/hydro)、残基 chain/resi/resn、原子名 res_atom/lig_atom、
-    距离 dist(Å)与画虚线用的两端坐标 pos1/pos2。
-    """
-    import re
-
-    def _resi_num(resi: str) -> int:
-        m = re.match(r"\d+", resi)
-        return int(m.group()) if m else 0
-
-    lig_atoms = [(r, _interaction_elem(r.elem)) for r in _iter_atom_records(ligand_pdbqt)]
-    lig_atoms = [(r, e) for r, e in lig_atoms if e]
-    rec_atoms = [(r, _interaction_elem(r.elem)) for r in _iter_atom_records(receptor_pdb)
-                 if r.rec == "ATOM" and r.altloc in ("", " ", "A")]
-    rec_atoms = [(r, e) for r, e in rec_atoms if e]
-
-    def _entry(kind: str, r, l, d2: float) -> dict:
-        return {"kind": kind, "chain": r.chain, "resi": r.resi, "resn": r.resn,
-                "res_atom": r.atom, "lig_atom": l.atom, "dist": round(d2 ** 0.5, 2),
-                "pos1": (r.x, r.y, r.z), "pos2": (l.x, l.y, l.z)}
-
-    def _pair_d2(r, l) -> float:
-        dx, dy, dz = r.x - l.x, r.y - l.y, r.z - l.z
-        return dx * dx + dy * dy + dz * dz
-
-    out: list[dict] = []
-    # 1) 盐桥:酸性 O↔配体 N,碱性 N↔配体 O(近似,不区分质子化状态)
-    salted: set = set()  # (chain, resi, res_atom, 配体原子序号) 已归入盐桥的原子对
-    for r, _ in rec_atoms:
-        if r.atom in _SALT_ACIDIC.get(r.resn, ()):
-            targets = ("N",)
-        elif r.atom in _SALT_BASIC.get(r.resn, ()):
-            targets = ("O",)
-        else:
-            continue
-        for i, (l, le) in enumerate(lig_atoms):
-            if le not in targets:
-                continue
-            d2 = _pair_d2(r, l)
-            if d2 <= _SALT_CUTOFF ** 2:
-                salted.add((r.chain, r.resi, r.atom, i))
-                out.append(_entry("salt", r, l, d2))
-    # 2) 氢键:双方均为 N/O/S 重原子且距离足够近;已记为盐桥的原子对不重复记
-    polar = ("N", "O", "S")
-    for r, e in rec_atoms:
-        if e not in polar:
-            continue
-        for i, (l, le) in enumerate(lig_atoms):
-            if le not in polar or (r.chain, r.resi, r.atom, i) in salted:
-                continue
-            d2 = _pair_d2(r, l)
-            if d2 <= _HBOND_CUTOFF ** 2:
-                out.append(_entry("hbond", r, l, d2))
-    # 3) 疏水接触:C–C
-    for r, e in rec_atoms:
-        if e != "C":
-            continue
-        for i, (l, le) in enumerate(lig_atoms):
-            if le != "C":
-                continue
-            d2 = _pair_d2(r, l)
-            if d2 <= _HYDROPHOBIC_CUTOFF ** 2:
-                out.append(_entry("hydro", r, l, d2))
-
-    rank = {"salt": 0, "hbond": 1, "hydro": 2}
-    out.sort(key=lambda it: (rank[it["kind"]], it["dist"], it["chain"],
-                             _resi_num(it["resi"]), it["resi"]))
-    return out
-
-
-def interactions_table(interactions: list[dict]) -> pd.DataFrame:
-    """把相互作用原子对列表转成展示表格(类型本地化,残基带链号),列顺序固定。"""
-    kind_label = {"hbond": t("dock.inter_hbond"), "salt": t("dock.inter_salt"),
-                  "hydro": t("dock.inter_hydro")}
-    rows = [{
-        t("dock.inter_col_kind"): kind_label.get(it["kind"], it["kind"]),
-        t("dock.inter_col_residue"): (it["chain"] + "/" if it["chain"] else "")
-                                     + f'{it["resn"]}{it["resi"]}',
-        t("dock.inter_col_res_atom"): it["res_atom"],
-        t("dock.inter_col_lig_atom"): it["lig_atom"],
-        t("dock.inter_col_dist"): it["dist"],
-    } for it in interactions]
-    return pd.DataFrame(rows)
-
-
 def download_pdb(pdb_id: str) -> str:
-    """按 PDB 编号下载受体结构文件;之前下载过则直接复用本地文件。返回本地路径。"""
+    """按 PDB 编号下载受体结构文件;之前下载过则直接复用本地文件。返回本地路径。
+
+    RCSB 对部分条目不提供旧版 PDB 格式(逐条目判断,如 8VHE),.pdb 404 时
+    自动改下 mmCIF 并按 _atom_site 原样转写成 PDB(cif_atom_site_to_pdb),
+    ATOM/HETATM 语义不变,后续清洗/转 pdbqt/盒子推断链路无感。
+    """
     from WY import config
+    from .docking_interactions import cif_atom_site_to_pdb
 
     pdb_id = pdb_id.strip().lower()
     os.makedirs(config.DOCKING_RAW_CACHE_DIR, exist_ok=True)
     path = os.path.join(config.DOCKING_RAW_CACHE_DIR, f"{pdb_id}.pdb")
     if os.path.exists(path):
         return path
-    url = config.PDB_DOWNLOAD_URL.format(pdb_id=pdb_id)
-    resp = requests.get(url, timeout=config.API_TIMEOUT)
-    resp.raise_for_status()
-    # 原子写:同一 PDB 被两个会话并发处理时,半截文件不会被"存在即复用"判定永久信任
-    save_text_atomic(path, resp.text)
+    cif_path = os.path.join(config.DOCKING_RAW_CACHE_DIR, f"{pdb_id}.cif")
+    used_cif = os.path.exists(cif_path)  # 上次兜底已下载:条目发布后内容冻结,直接复用
+    if not used_cif:
+        pdb_url = config.PDB_DOWNLOAD_URL.format(pdb_id=pdb_id)
+        for url, dest in ((pdb_url, path), (pdb_url[:-4] + ".cif", cif_path)):
+            resp = requests.get(url, timeout=config.API_TIMEOUT)
+            if resp.status_code == 404:
+                continue  # 该条目没有这种格式,换下一个
+            resp.raise_for_status()
+            # 原子写:同一 PDB 被两个会话并发处理时,半截文件不会被"存在即复用"判定永久信任
+            save_text_atomic(dest, resp.text)
+            used_cif = dest == cif_path
+            break
+        else:
+            raise RuntimeError(
+                f"RCSB 未提供 {pdb_id.upper()} 的结构文件(PDB 与 mmCIF 格式均不可得)")
+    if used_cif and cif_atom_site_to_pdb(cif_path, path) == 0:
+        raise RuntimeError(f"mmCIF 转写得到 0 个原子:{cif_path}")
     return path
 
 
@@ -689,32 +463,6 @@ def fetch_receptor_pdb_candidates(gene_symbol: str, max_hits: int = 50,
         logging.exception("RCSB search failed for gene %s", gene_symbol)
         raise _friendly_rcsb_error(gene_symbol, exc)
     return results[gene]
-
-
-def _run_obabel(source: str, out_path: str, *flags: str) -> None:
-    """以子进程调用 obabel 命令行(与 Vina 同类的外部程序,不依赖其 Python 绑定)。
-
-    obabel 对读不到输入等情况只打错误日志、仍返回退出码 0 并留下空输出文件,
-    因此除退出码外还须校验输出文件存在且非空。找不到可执行文件、转换失败或超时报错。
-    """
-    import subprocess
-
-    from WY import config
-
-    if not os.path.isfile(config.OBABEL_EXE):
-        raise RuntimeError(
-            f"未找到 Open Babel 可执行文件（obabel）：{config.OBABEL_EXE or '未探测到'}。"
-            "请设置环境变量 OBABEL_DIR 指向 obabel 所在目录，或将 obabel 加入 PATH。")
-    try:
-        proc = subprocess.run(
-            [config.OBABEL_EXE, source, "-O", out_path, *flags], capture_output=True,
-            text=True, encoding="utf-8", errors="replace", timeout=config.OBABEL_TIMEOUT)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"obabel 转换超时（>{config.OBABEL_TIMEOUT} 秒）") from exc
-    if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
-        lines = (proc.stderr or proc.stdout or "").strip().splitlines()
-        detail = lines[-1] if lines else f"exit code {proc.returncode}"
-        raise RuntimeError(f"obabel 转换失败（{source}）：{detail}")
 
 
 def prepare_receptor_pdbqt(pdb_path: str, out_path: str | None = None) -> str:
@@ -1271,277 +1019,3 @@ def clamp_box(box: dict, max_size: float) -> dict:
     """
     size = tuple(round(min(float(v), float(max_size)), 4) for v in box["size"])
     return {"center": tuple(round(float(v), 4) for v in box["center"]), "size": size}
-
-
-# ---------- 交互式 3D 视图导出 ----------
-
-# 3Dmol.js 库的下载地址:官方源在前,jsdelivr 镜像兜底
-_3DMOL_JS_URLS = (
-    "https://3dmol.org/build/3Dmol-min.js",
-    "https://cdn.jsdelivr.net/npm/3dmol@2/build/3Dmol-min.js",
-)
-
-# 3Dmol.js 的许可文本(BSD-3-Clause,取自官方仓库 LICENSE):导出 HTML 内嵌或引用其库时
-# 随文件一并提供,满足许可证"再分发须保留版权声明与许可文本"的要求。
-_3DMOL_LICENSE_TEXT = """3Dmol.js incorporates code from GLmol, Three.js, and jQuery and is licensed under a BSD-3-Clause license.
-
-Copyright (c) 2014, University of Pittsburgh
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
-
-3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."""
-
-_3D_HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>__TITLE__</title>
-<style>
-  body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; }
-  #cap { padding: 8px 14px; background: #f5f7fa; border-bottom: 1px solid #ddd;
-         font-size: 13px; color: #333; }
-  #lic { display: block; margin-top: 2px; font-size: 11px; color: #777; }
-  #bar { padding: 4px 14px; border-bottom: 1px solid #eee; }
-  #focus { cursor: pointer; }
-  #hint { margin-left: 10px; font-size: 12px; color: #777; }
-  #viewer { width: 100vw; height: calc(100vh - 88px); position: relative; }
-</style>
-__LIB__
-</head>
-<body>
-<div id="cap">__CAPTION__<span id="lic">__LICENSE_NOTE__</span></div>
-<div id="bar"><button id="focus">__FOCUS_BTN__</button><span id="hint">再次点击复位 · 双击视图任意处也可复位 · double-click the view to reset</span></div>
-<div id="viewer"></div>
-<script>
-(function () {
-  var receptor = __RECEPTOR__;
-  var ligand = __LIGAND__;
-  var het = __HET__;
-  var pocket = __POCKET__;
-  var interactions = __INTERACTIONS__;
-  var viewer = $3Dmol.createViewer("viewer", { backgroundColor: "white" });
-  viewer.addModel(receptor, "pdb");
-  viewer.addModel(ligand, "pdb");
-  viewer.setStyle({ model: 1 }, { stick: { colorscheme: "greenCarbon" } });
-  if (het) {
-    viewer.addModel(het, "pdb");
-    viewer.setStyle({ model: 2 }, { stick: { colorscheme: "greyCarbon", opacity: 0.5, radius: 0.15 } });
-  }
-  // 口袋残基按链分组选择(无链号时不限定 chain)
-  var byChain = {};
-  (pocket || []).forEach(function (r) {
-    (byChain[r.chain] = byChain[r.chain] || []).push(r.resi);
-  });
-  // 受体卡通样式统一由此函数设置:faded=true 时卡通整体半透明(虚化周围蛋白),
-  // 突出口袋棍状、相互作用虚线与距离标注;虚化只是显示开关,信息不删减,双击复位即可还原。
-  // 口袋残基的卡通与棍状在一条语句里显式声明完整样式,不依赖多次 setStyle 的合并行为
-  function applyProteinStyles(faded) {
-    var cartoon = faded ? { color: "spectrum", opacity: 0.3 } : { color: "spectrum" };
-    viewer.setStyle({ model: 0 }, { cartoon: cartoon });
-    Object.keys(byChain).forEach(function (ch) {
-      var sel = { model: 0, resi: byChain[ch] };
-      if (ch) { sel.chain = ch; }
-      viewer.setStyle(sel, { cartoon: cartoon,
-                             stick: { colorscheme: "orangeCarbon", radius: 0.2 } });
-    });
-    viewer.render();
-  }
-  applyProteinStyles(false);
-  if (pocket && pocket.length) {
-    pocket.forEach(function (r) {
-      viewer.addLabel(r.resn + "-" + r.resi, {
-        position: { x: r.pos[0], y: r.pos[1], z: r.pos[2] },
-        fontSize: 11, fontColor: "black",
-        showBackground: true, backgroundColor: "white",
-        backgroundOpacity: 0.7
-      });
-    });
-  }
-  // 相互作用虚线圆柱:蓝=氢键 紫=盐桥 灰=疏水(用虚线圆柱而非 1px 线,白底下清晰);
-  // 氢键与盐桥在中点标注距离
-  var lineColors = { hbond: "#0f62fe", salt: "#c026d3", hydro: "#808080" };
-  (interactions || []).forEach(function (it) {
-    viewer.addCylinder({
-      start: { x: it.pos1[0], y: it.pos1[1], z: it.pos1[2] },
-      end: { x: it.pos2[0], y: it.pos2[1], z: it.pos2[2] },
-      radius: 0.06, dashed: true, dashLength: 0.3, gapLength: 0.22,
-      color: lineColors[it.kind] || "#777777"
-    });
-    if (it.kind !== "hydro") {
-      viewer.addLabel(it.dist.toFixed(1) + "\\u00C5", {
-        position: { x: (it.pos1[0] + it.pos2[0]) / 2,
-                    y: (it.pos1[1] + it.pos2[1]) / 2,
-                    z: (it.pos1[2] + it.pos2[2]) / 2 },
-        fontSize: 10, fontColor: "#333333",
-        showBackground: true, backgroundColor: "white",
-        backgroundOpacity: 0.6
-      });
-    }
-  });
-  viewer.zoomTo();
-  viewer.render();
-  // 聚焦口袋:以配体为中心、拉远到能框住口袋残基,并把周围蛋白卡通虚化;
-  // 按钮是开关:再次点击(或双击视图任意处)复位为整体视图并取消虚化
-  var focusBtn = document.getElementById("focus");
-  var focusLabel = focusBtn.textContent;
-  var resetLabel = "复位视图 Reset view";
-  var focused = false;
-  function setFocus(on) {
-    focused = on;
-    applyProteinStyles(on);
-    if (on) {
-      viewer.zoomTo({ model: 1 });
-      viewer.zoom(0.55, 400);
-    } else {
-      viewer.zoomTo();
-    }
-    focusBtn.textContent = on ? resetLabel : focusLabel;
-    viewer.render();
-  }
-  focusBtn.onclick = function () { setFocus(!focused); };
-  document.getElementById("viewer").ondblclick = function () { setFocus(false); };
-})();
-</script>
-<!--
-__3DMOL_LICENSE__
--->
-</body>
-</html>
-"""
-
-
-def _load_3dmol_js() -> str | None:
-    """读取 3Dmol.js 库源码:本地有缓存直接用,没有则下载一次并长期缓存。
-    两个下载地址都失败时返回 None,HTML 将改用在线引用(打开时需联网)。
-    """
-    from WY import config
-
-    cache_path = os.path.join(config.DOCKING_CACHE_DIR, "3Dmol-min.js")
-    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 100_000:
-        try:
-            with open(cache_path, encoding="utf-8") as f:
-                return f.read()
-        except OSError:
-            logging.exception("cached 3Dmol.js unreadable, re-downloading")
-    for url in _3DMOL_JS_URLS:
-        try:
-            resp = requests.get(url, timeout=config.API_TIMEOUT,
-                                headers=_RCSB_HEADERS)
-            resp.raise_for_status()
-            if "$3Dmol" not in resp.text or "</script" in resp.text:
-                raise RuntimeError(f"unexpected content from {url}")
-            os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
-            # 原子写:下载中途被打断不会留下半截 JS 被上面"大小达标即信任"的判定永久复用
-            save_text_atomic(cache_path, resp.text)
-            logging.info("Cached 3Dmol.js (%d KB) from %s", len(resp.text) // 1024, url)
-            return resp.text
-        except Exception:
-            logging.exception("3Dmol.js download failed: %s", url)
-    return None
-
-
-def pose_pdbqt_to_pdb(pose_pdbqt: str, out_path: str) -> str:
-    """把对接构象从 pdbqt 转成通用 PDB 格式(供各查看器显示);失败时抛 RuntimeError。"""
-    _run_obabel(pose_pdbqt, out_path)
-    return out_path
-
-
-def build_interactive_3d_html(receptor_pdb: str, ligand_pdb: str, caption: str = "",
-                              lib_js: str | None = None,
-                              pocket: list[dict] | None = None,
-                              het_pdb: str | None = None,
-                              interactions: list[dict] | None = None,
-                              focus_label: str = "Focus pocket") -> tuple[str, bool]:
-    """生成自包含的交互式 3D 视图 HTML,样式与页面内预览一致(受体卡通彩虹色、配体绿色棍状、结合位点残基橙色棍状并标注名称、相互作用虚线、共晶配体灰色半透明参照),返回 (html 文本, 是否离线可用)。
-    pocket 传入 residues_near_ligand 的结果时高亮结合位点残基;interactions 传入 interactions_near_ligand 的结果时画相互作用虚线并标注距离;
-    het_pdb 传入共晶配体的 HETATM 文本时以半透明灰棍叠加作天然口袋参照;focus_label 为「聚焦口袋」按钮文案;
-    lib_js 传入 3Dmol.js 源码时内嵌进文件双击即可离线打开,传 None 改用在线引用(打开时需联网)。
-    """
-    import html as _html
-    import json
-
-    if lib_js and "</script" not in lib_js:
-        lib_tag = f"<script>\n{lib_js}\n</script>"
-        offline_ok = True
-    else:
-        lib_tag = f'<script src="{_3DMOL_JS_URLS[0]}"></script>'
-        offline_ok = False
-    caption = _html.escape(caption)
-    # 3Dmol.js 许可标注:内嵌时"内嵌",CDN 引用时"加载";完整许可文本以注释随文件提供
-    note = ("内嵌 3Dmol.js (BSD-3-Clause)" if offline_ok
-            else "本页面通过 CDN 加载 3Dmol.js (BSD-3-Clause)")
-    out = (_3D_HTML_TEMPLATE
-           .replace("__3DMOL_LICENSE__", _3DMOL_LICENSE_TEXT)
-           .replace("__LICENSE_NOTE__",
-                    f"{note} · Copyright (c) 2014, University of Pittsburgh · https://3dmol.org")
-           .replace("__LIB__", lib_tag)
-           .replace("__TITLE__", caption or "3D view")
-           .replace("__CAPTION__", caption)
-           .replace("__FOCUS_BTN__", _html.escape(focus_label))
-           .replace("__INTERACTIONS__", json.dumps(interactions or []))
-           .replace("__POCKET__", json.dumps(pocket or []))
-           .replace("__HET__", json.dumps(het_pdb))
-           .replace("__RECEPTOR__", json.dumps(receptor_pdb))
-           .replace("__LIGAND__", json.dumps(ligand_pdb)))
-    return out, offline_ok
-
-
-def cofactor_hetatm_pdb(pdb_path: str, receptor_text: str | None = None) -> str:
-    """提取受体 PDB 中的非水 HETATM(共晶配体/辅因子)行,拼成 PDB 文本,供 3D 渲染叠加天然口袋参照;
-    无共晶配体时返回空字符串。receptor_text 传入已读取的 PDB 全文时不再重复读盘。"""
-    if receptor_text is None:
-        with open(pdb_path, encoding="utf-8", errors="replace") as f:
-            receptor_text = f.read()
-    return "\n".join(ln for ln in receptor_text.splitlines()
-                     if ln.startswith("HETATM")
-                     and ln[17:20].strip() not in _WATER_RESNAMES)
-
-
-def interactive_3d_html(pdb_path: str, pose_pdbqt: str, caption: str = "",
-                        pocket: list[dict] | None = None,
-                        receptor_text: str | None = None,
-                        pose_pdb: str | None = None,
-                        interactions: list[dict] | None = None,
-                        focus_label: str = "Focus pocket") -> tuple[str, bool]:
-    """由受体 PDB 与所选构象 pdbqt 生成可保存的交互式 3D 视图 HTML。
-    pocket 传入口袋残基列表时一并嵌入;interactions 传入相互作用列表时一并嵌入;
-    受体含共晶配体(非水 HETATM)时以半透明灰棍叠加,过滤规则与页面预览一致。
-    receptor_text 传入已读取的受体 PDB 全文、pose_pdb 传入已转换好的构象 PDB 路径时直接复用,
-    供页面在同一次刷新里让预览与保存 HTML 共用一次转换、一次读盘;不传时保持原有的自足行为。
-    """
-    if pose_pdb is None:
-        pose_pdb = os.path.join(os.path.dirname(pose_pdbqt), "pose_view.pdb")
-        pose_pdbqt_to_pdb(pose_pdbqt, pose_pdb)
-    if receptor_text is None:
-        with open(pdb_path, encoding="utf-8", errors="replace") as f:
-            receptor_text = f.read()
-    with open(pose_pdb, encoding="utf-8") as f:
-        ligand_pdb = f.read()
-    het_pdb = cofactor_hetatm_pdb(pdb_path, receptor_text=receptor_text)
-    return build_interactive_3d_html(receptor_text, ligand_pdb, caption,
-                                     lib_js=_load_3dmol_js(),
-                                     pocket=pocket, het_pdb=het_pdb or None,
-                                     interactions=interactions, focus_label=focus_label)
-
-
-def save_interactive_3d_html(pdb_path: str, pose_pdbqt: str, out_path: str,
-                             caption: str = "",
-                             pocket: list[dict] | None = None,
-                             interactions: list[dict] | None = None,
-                             focus_label: str = "Focus pocket") -> tuple[str, bool]:
-    """把交互式 3D 视图保存为单个 HTML 文件(同名覆盖,便于同一构象反复保存);返回 (文件路径, 是否离线可用)。"""
-    html_text, offline_ok = interactive_3d_html(pdb_path, pose_pdbqt, caption,
-                                                pocket=pocket, interactions=interactions,
-                                                focus_label=focus_label)
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(html_text)
-    logging.info("Saved interactive 3D view: %s (offline=%s)", out_path, offline_ok)
-    return out_path, offline_ok

@@ -44,9 +44,40 @@ jobs:
         run: pytest --cov --cov-report=term-missing --cov-report=xml
         # 覆盖率 75% 门槛写入 pyproject 后,此步自动生效(阶段四)
 
+      - name: 封网审计(拦截非回环连接,证明零外网依赖)
+        run: pytest -p WY.tools.net_block
+        # 二期接入 PK-DB/DrugComb/DailyMed/CCLE 四个新数据源,防"忘了打桩
+        # 直接真连"——桩漏了在此步立刻打红,而不是消耗真实配额或污染缓存。
+        # 独立成步、不并入上方覆盖率档:保留"审计工具不进默认流程"的设计意图
+
       - name: 保存覆盖率报告
         if: always()             # 即使测试失败也把报告传出来供排查
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage.xml
+
+  web:
+    # 前端门禁:类型检查(vue-tsc --noEmit)+ 产物打包。与 pytest 并行跑,
+    # 不增加总时长;只有装依赖走 registry(与上方 pip install 同性质的安装阶段),
+    # 构建本身零网络请求,不破坏"测试全断网"口径(封网审计只针对 pytest 档)。
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: WY/web
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: WY/web/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查 + 打包
+        run: npm run build

@@ -76,6 +76,67 @@ def test_download_pdb_caches_and_reuses(tmp_path, monkeypatch):
     assert p2 == p1 and calls["n"] == 1
 
 
+def test_download_pdb_falls_back_to_cif(tmp_path, monkeypatch):
+    """.pdb 404(RCSB 对部分条目不提供旧格式,如 8VHE)→ 自动改下 mmCIF 并按
+    _atom_site 转写为 PDB(HETATM 语义保留);转换产物二次下载时直接缓存命中。"""
+    import requests
+
+    _CIF = "\n".join([
+        "loop_",
+        "_atom_site.group_PDB",
+        "_atom_site.auth_atom_id",
+        "_atom_site.label_alt_id",
+        "_atom_site.auth_comp_id",
+        "_atom_site.auth_asym_id",
+        "_atom_site.auth_seq_id",
+        "_atom_site.pdbx_PDB_ins_code",
+        "_atom_site.Cartn_x",
+        "_atom_site.Cartn_y",
+        "_atom_site.Cartn_z",
+        "_atom_site.occupancy",
+        "_atom_site.B_iso_or_equiv",
+        "_atom_site.type_symbol",
+        "ATOM CA . ALA A 1 ? 1.000 2.000 3.000 1.00 20.00 C",
+        "ATOM N . ALA A 1 ? 1.500 2.500 3.500 1.00 20.00 N",
+        "HETATM C1 . A1A A 1 ? 4.000 5.000 6.000 1.00 30.00 C",
+    ])
+
+    urls: list[str] = []
+
+    def fake_get(url, timeout=None, **kw):
+        urls.append(url)
+        if url.endswith(".pdb"):
+            return _FakeResp(status=404)
+        return _FakeResp(_CIF)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    p = dock.download_pdb("8vhe")
+    assert [u[-4:] for u in urls] == [".pdb", ".cif"]
+    body = open(p, encoding="utf-8").read().splitlines()
+    assert sum(ln.startswith("ATOM") for ln in body) == 2
+    assert any(ln.startswith("HETATM") for ln in body)
+    assert body[0][17:20].strip() == "ALA" and body[0][77:79].strip() == "C"
+    assert body[2][17:20].strip() == "A1A"
+    urls.clear()
+    assert dock.download_pdb("8vhe") == p and not urls   # 转换产物即缓存
+
+
+def test_download_pdb_both_formats_missing(tmp_path, monkeypatch):
+    """两种格式均 404:报"未提供结构文件"的可读错误,不留半截缓存文件。"""
+    import os as _os
+
+    import requests
+
+    monkeypatch.setattr(requests, "get",
+                        lambda url, timeout=None, **kw: _FakeResp(status=404))
+    try:
+        dock.download_pdb("9zzz")
+        raise AssertionError("应当抛出 RuntimeError")
+    except RuntimeError as e:
+        assert "9ZZZ" in str(e) and "mmCIF" in str(e)
+    assert not any(f.startswith("9zzz") for f in _os.listdir(config.DOCKING_RAW_CACHE_DIR))
+
+
 def test_smiles_to_sdf_3d_real_rdkit(tmp_path):
     """SMILES → 3D SDF:RDKit 纯本地;非法 SMILES 报错。"""
     out = dock.smiles_to_sdf_3d("CCO", str(tmp_path / "lig.sdf"), n_confs=3)

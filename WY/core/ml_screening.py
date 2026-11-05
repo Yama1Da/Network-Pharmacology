@@ -34,6 +34,23 @@ def _top_k(n_features: int) -> int:
     return max(10, min(100, n_features // 20))
 
 
+def _standardize_features(X: pd.DataFrame) -> pd.DataFrame:
+    """进 ML 前按列做 z-score 标准化(均值 0/方差 1),返回同形状 DataFrame。
+
+    线性选择器的 L1/L2 惩罚与 SAGA/liblinear 优化器都对特征尺度敏感:原始
+    表达值量纲差异大时,迭代常跑满 max_iter 仍不收敛(ConvergenceWarning),
+    且大尺度基因被系统性少罚,系数重要性跨基因不可比。树模型(RF/Boruta/
+    XGBoost)对逐特征单调线性变换不敏感,统一标准化不影响其结果。
+    标准化只看特征分布、不用标签,与 deg_prefilter 同一泄漏口径(本模块对
+    ROC 的主张仅为「共识一致性」而非泛化性能);零方差列(恒定基因)由
+    sklearn 自动置 0,不会产生 NaN。
+    """
+    from sklearn.preprocessing import StandardScaler
+
+    scaled = StandardScaler().fit_transform(X)
+    return pd.DataFrame(scaled, index=X.index, columns=X.columns)
+
+
 # ---------------- 六个选择器(输入 X DataFrame, y Series;输出重要性 Series) ----------------
 
 
@@ -61,9 +78,12 @@ def _cv_auc_pick(model_fn, X, y, seed):
 
 def _sel_lasso(X, y, seed):
     from sklearn.linear_model import LogisticRegression
+    # tol 放宽到 1e-3(默认 1e-4):小样本+共相关基因下 SAGA 系数在等价基因间震荡,
+    # 默认判据常打满 5000 轮仍不收敛(实测 C=1.0 档 5000→198 轮);
+    # 重要性按秩排序消费,系数精度损失不影响排序
     m, c = _cv_auc_pick(
         lambda cc: LogisticRegression(C=cc, solver="saga", l1_ratio=1.0,
-                                      max_iter=5000, random_state=seed),
+                                      max_iter=5000, tol=1e-3, random_state=seed),
         X, y, seed)
     imp = pd.Series(np.abs(m.coef_.ravel()), index=X.columns)
     return imp, c
@@ -71,9 +91,10 @@ def _sel_lasso(X, y, seed):
 
 def _sel_enet(X, y, seed):
     from sklearn.linear_model import LogisticRegression
+    # tol 放宽理由同 _sel_lasso
     m, c = _cv_auc_pick(
         lambda cc: LogisticRegression(C=cc, solver="saga", l1_ratio=0.5,
-                                      max_iter=5000, random_state=seed),
+                                      max_iter=5000, tol=1e-3, random_state=seed),
         X, y, seed)
     imp = pd.Series(np.abs(m.coef_.ravel()), index=X.columns)
     return imp, c
@@ -141,7 +162,9 @@ def _sel_svm_rfe(X, y, seed):
     from sklearn.svm import LinearSVC
 
     n_select = max(10, X.shape[1] // 20)
-    rfe = RFE(LinearSVC(C=1.0, dual="auto"), step=0.2,
+    # liblinear 默认 max_iter=1000 在高维小样本下常跑满仍不收敛(ConvergenceWarning),
+    # 拉到与线性模型选择器一致的 5000;RFE 逐轮剔除基于权重排序,更值得算到位
+    rfe = RFE(LinearSVC(C=1.0, dual="auto", max_iter=5000), step=0.2,
               n_features_to_select=n_select)
     rfe.fit(X, y)
     rank = pd.Series(rfe.ranking_, index=X.columns)  # 1=第一轮入选,越大越早被淘汰
@@ -296,6 +319,8 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
             f"矩阵方向疑似转置:X 为 {X.shape[0]}×{X.shape[1]}(行多于列)—— "
             "表达矩阵通常基因数 >> 样本数,请确认 X 已转置为样本×基因")
 
+    X = _standardize_features(X)  # 惩罚公平 + SAGA/liblinear 收敛(详见 helper 注释)
+
     t0 = time.time()
 
     imps = _select_all(X, y, seed)
@@ -319,14 +344,20 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
     consensus = consensus.sort_values("consensus_score", ascending=False)
 
     # 算法间一致性(Spearman 秩相关均值):六算法高度相关 → 共识稳健(方案 §4.3)
-    from scipy.stats import spearmanr
+    import warnings
+
+    from scipy.stats import ConstantInputWarning, spearmanr
     algs = list(imps.keys())
     pairs = []
-    for i in range(len(algs)):
-        for j in range(i + 1, len(algs)):
-            rho, _ = spearmanr(imps[algs[i]].reindex(genes), imps[algs[j]].reindex(genes))
-            if np.isfinite(rho):
-                pairs.append(rho)
+    # 小样本下个别算法重要性恒定 → rho=NaN,本就由下方 isfinite 跳过;
+    # scipy>=1.9 对常数输入会额外发 ConstantInputWarning,此处局部静音
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConstantInputWarning)
+        for i in range(len(algs)):
+            for j in range(i + 1, len(algs)):
+                rho, _ = spearmanr(imps[algs[i]].reindex(genes), imps[algs[j]].reindex(genes))
+                if np.isfinite(rho):
+                    pairs.append(rho)
     meta = {
         "n_samples": int(len(y)), "n_genes": int(X.shape[1]),
         "n_case": int(np.asarray(y).sum()), "n_control": int(len(y) - int(np.asarray(y).sum())),

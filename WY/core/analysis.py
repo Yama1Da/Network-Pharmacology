@@ -12,6 +12,7 @@ matplotlib 的 pyplot 全局状态非线程安全，所有绘图统一留在调�
 收敛到本模块（网页端 Build Report 与 CLI 共享同一份分析语义）。
 """
 
+import hashlib
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -256,11 +257,13 @@ def save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_conte
                           string_fig, cyto_fig,
                           expansion_df, rwr_results, proximity_result, modules_data,
                           drug_name: str = "", disease_name: str = "",
+                          genes: list | None = None,
                           progress=None) -> tuple[dict, dict | None]:
     """Step 5/5.5:全部结果保存到下载目录(同名分析旧目录会被替换,不会堆积)。
 
     模块文件必须在主目录重建后落盘,否则会被 save_ppi_results 的旧目录清理删掉。
-    drug_name/disease_name 写入 analysis_meta.json,供 ML 筛选页按元数据发现排序 CSV。
+    drug_name/disease_name 写入 analysis_meta.json,供 ML 筛选页按元数据发现排序 CSV;
+    genes 同样入 meta(手动基因模式的哈希桶名靠它提供人类可读的清单)。
     返回 (saved 路径字典, modules_result)。"""
     def _prog(step: str | None = None, state: str | None = None,
               fraction: float | None = None) -> None:
@@ -281,6 +284,7 @@ def save_analysis_outputs(*, graph, static_fig, metrics_df, edges_df, html_conte
         string_fig=string_fig,
         cyto_fig=cyto_fig,
         drug=drug_name, disease=disease_name,
+        genes=genes,
     )
     # GSEA 结果 CSV 保存进分析目录（空结果不保存），打包下载时自动包含
     gsea_saved = save_gsea_results(saved["directory"], prefix, gsea_drug_df, gsea_disease_df)
@@ -356,7 +360,15 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
     else:
         tokens = re.split(r"[\s,;]+", gene_text)
         genes = sorted({t.strip().upper() for t in tokens if t.strip()})
-        prefix = "manual"
+        # 手动模式按基因列表指纹分桶(与 fetch_string_ppi 的基因指纹同款 md5):
+        # 不同基因列表各自成目录互不覆盖,同一列表幂等复用同名目录与富集缓存;
+        # 边表取数仍传 "manual"(见下方 fetch_string_ppi),与 CLI 共享同一特判与缓存。
+        digest = hashlib.md5("\r".join(genes).encode("utf-8")).hexdigest()[:8]
+        prefix = f"manual_{digest}"
+        # 表单里残留的药病名与本分析无关,置空:不进 meta(ML 页按药病名发现排序
+        # CSV,残留值会让手动桶冒充某个药病对),params 快照也置空(前端 genes 模式
+        # 的 snapshot 同步传空,两侧一致才不会误报参数过期)
+        drug_name = disease_name = ""
 
     # Step 0.5: RWR 扩展(可选),共享语义见 expand_targets_with_rwr;扩展失败按原始交集
     # 继续并保留纯种子清单,不让整个分析挂掉
@@ -376,7 +388,11 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
     # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,孤立节点在下游展示时隐藏）
     _prog("string", "running", 0.08)
     edges_df = fetch_string_ppi(genes, species=species_id, score=score,
-                                      network_type=network_type, label=prefix)
+                                      network_type=network_type,
+                                      # 手动模式固定传 "manual":命中 fetch_string_ppi 的
+                                      # label=="manual" 特判(文件名附加基因指纹),
+                                      # 与 CLI run_ppi --genes 共享同一份边表缓存
+                                      label="manual" if mode != "names" else prefix)
     _prog("string", "done", 0.30)
 
     # Step 2-4: 建图 + 拓扑指标 + Hub 筛选(排名制 top-N + 小网络保护)。
@@ -474,6 +490,7 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         expansion_df=expansion_df, rwr_results=rwr_results,
         proximity_result=proximity_result, modules_data=modules_data,
         drug_name=drug_name, disease_name=disease_name,
+        genes=genes,
         progress=progress)
 
     return {
