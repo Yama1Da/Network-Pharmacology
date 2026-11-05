@@ -831,9 +831,23 @@ onMounted(() => {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-/* 排序表列表与下方参数调节器之间留出呼吸间距 */
+/* 排序表列表与下方参数调节器之间留出呼吸间距;
+   三个参数组用 flex 拉开互相间隔(列间距 64px),窄屏自动换行(行距 20px) */
 .opt-grid {
   margin-top: 30px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px 64px;
+}
+/* 每组内"标签文字 + 步进器"绑成一个整体,文字与 +/- 按钮留足间距 */
+.opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+.opt-label {
+  white-space: nowrap;
 }
 /* 补充产物折叠(下载区) */
 .fold2 {

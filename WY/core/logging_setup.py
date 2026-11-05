@@ -32,6 +32,11 @@ def setup_logging() -> None:
     logger.setLevel(level)
     formatter = logging.Formatter(config.LOG_FORMAT, config.LOG_DATE_FORMAT)
 
+    # 把 warnings.warn 的输出并入日志框架:否则第三方库警告(sklearn/scipy 等)
+    # 只裸打到 stderr,无时间戳/级别前缀,app.log 也没有,事后无法排查。
+    # 桥接后走 py.warnings 记录器,WARNING 级,格式与本项目日志一致。
+    logging.captureWarnings(True)
+
     # 屏幕输出(方便实时查看运行情况)
     console = logging.StreamHandler()
     console.setLevel(level)

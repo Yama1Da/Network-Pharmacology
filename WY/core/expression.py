@@ -484,12 +484,23 @@ def differential_expression(matrix: pd.DataFrame, labels: pd.Series) -> pd.DataF
     mat = mat.dropna(how="all")
     a = mat[list(case_cols)].to_numpy(dtype=float)
     b = mat[list(ctrl_cols)].to_numpy(dtype=float)
+    # 近恒定基因(全部样本取值几乎相同)会让 Welch t 的矩计算灾难性消去
+    # (scipy RuntimeWarning "catastrophic cancellation",p 值不可靠)。这类基因
+    # log2FC≈0 本就不可能显著,剔除既消警告源,也防数值噪声挤占 FDR 排序名额。
+    # 相对阈值:std ≤ 1e-8×(1+|均值|),只在病态行触发,正常低方差基因不受影响
+    pooled = np.hstack([a, b])
+    scale = np.maximum(1.0, np.abs(np.nanmean(pooled, axis=1)))
+    keep = np.nanstd(pooled, axis=1) > 1e-8 * scale
+    n_const = int((~keep).sum())
+    if n_const:
+        logging.info("DEG: %d near-constant gene(s) dropped before t-test", n_const)
+    a, b = a[keep], b[keep]
     with np.errstate(invalid="ignore", divide="ignore"):
         t_stat, pvals = ttest_ind(a, b, axis=1, equal_var=False, nan_policy="omit")
         log2fc = (np.nanmean(a, axis=1) - np.nanmean(b, axis=1))
     valid = np.isfinite(pvals)
     res = pd.DataFrame({
-        "gene": mat.index,
+        "gene": mat.index[keep],
         "log2FC": log2fc,
         "t": t_stat,
         "p": pvals,
