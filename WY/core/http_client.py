@@ -41,10 +41,24 @@ def get_session() -> requests.Session:
     return _session
 
 
-def clear_http_cache() -> None:
-    """清空 HTTP 响应缓存(管理页强制更新前调用,确保抓到新数据)。"""
+def clear_http_cache(hosts: tuple[str, ...] | None = None) -> None:
+    """清空 HTTP 响应缓存(管理页强制更新前调用,确保抓到新数据)。
+    hosts 提供时按域名定向删除:只清待刷新数据源自己的响应,其余数据源的缓存
+    原样保留,避免"清一次全局、处处冷启动";空元组(数据源未知)或 None 均
+    按全量清空兜底。定向匹配不能走 delete(urls=通配)——那个按精确缓存键计算,
+    通配符无效;故先 filter() 逐条按域名筛出缓存键再删。"""
+    import urllib.parse
+
     try:
-        get_session().cache.clear()
+        cache = get_session().cache
+        if not hosts:
+            cache.clear()
+            return
+        targets = {h.lower() for h in hosts}
+        keys = [r.cache_key for r in cache.filter()
+                if urllib.parse.urlsplit(r.request.url).netloc.lower() in targets]
+        if keys:
+            cache.delete(*keys)
     except Exception:
         logging.exception("Failed to clear HTTP cache")
 

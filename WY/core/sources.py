@@ -6,13 +6,21 @@
 更新编排(单文件/批量/进度)在 core.management。
 """
 
-from WY.core.chembl import fetch_drug_targets_refresh
+from WY.core.chembl import CHEMBL_API_URL, fetch_drug_targets_refresh
 from WY.core.dgidb import fetch_drug_targets_refresh as fetch_dgidb_refresh
 from WY.core.disgenet import fetch_disease_targets_refresh
-from WY.core.opentargets import fetch_disease_targets_refresh as fetch_ot_refresh
+from WY.core.opentargets import (OPENTARGETS_API_URL,
+                                 fetch_disease_targets_refresh as fetch_ot_refresh)
 from WY.core.targets import (get_disease_targets_merged, get_drug_targets_merged,
                              invalidate_merged_disease_targets,
                              invalidate_merged_drug_targets)
+
+
+def _hosts(*urls: str) -> tuple[str, ...]:
+    """由 API 基址提取域名(强制刷新前定向清 HTTP 响应缓存用)。"""
+    import urllib.parse
+
+    return tuple(sorted({urllib.parse.urlsplit(u).netloc for u in urls}))
 
 
 def drug_spec() -> dict:
@@ -25,6 +33,9 @@ def drug_spec() -> dict:
         "merged_dir": config.MERGED_CACHE_DIR,
         "merged_prefix": config.MERGED_DRUG_PREFIX,
         "source_prefixes": ("ChEMBL_", "DGIdb_"),
+        # 强制刷新前需定向清空的 HTTP 响应缓存域名(按来源前缀;整合文件取全部)
+        "cache_hosts": {"ChEMBL_": _hosts(CHEMBL_API_URL),
+                        "DGIdb_": _hosts(config.DGIDB_GRAPHQL_URL)},
         "fetch_source": {"ChEMBL_": fetch_drug_targets_refresh,
                          "DGIdb_": fetch_dgidb_refresh},
         "fetch_merged": get_drug_targets_merged,
@@ -41,6 +52,8 @@ def disease_spec() -> dict:
         "merged_dir": config.MERGED_CACHE_DIR,
         "merged_prefix": config.MERGED_DISEASE_PREFIX,
         "source_prefixes": ("OpenTargets_", "DisGeNET_"),
+        "cache_hosts": {"OpenTargets_": _hosts(OPENTARGETS_API_URL),
+                        "DisGeNET_": _hosts(config.DisGeNET_URL)},
         "fetch_source": {"OpenTargets_": fetch_ot_refresh,
                          "DisGeNET_": fetch_disease_targets_refresh},
         "fetch_merged": get_disease_targets_merged,
@@ -59,3 +72,16 @@ def file_path(filename: str, spec: dict) -> str:
     if filename.startswith(spec["merged_prefix"]) or filename.startswith("merged_"):
         return os.path.join(spec["merged_dir"], filename)
     return os.path.join(spec["cache_dir"], filename)
+
+
+def cache_file_hosts(filename: str, spec: dict) -> tuple[str, ...]:
+    """强制刷新某缓存文件前,需定向清空的 HTTP 响应缓存域名。
+    来源文件只涉及该来源自己的域名;整合文件或未识别前缀取该类别全部来源域名
+    (整合文件的更新链会先刷新两个来源)。
+    spec 未声明 cache_hosts(测试自建的简化 spec)时返回空元组,
+    由 clear_http_cache 按全量清空兜底,保证刷新必拿新数据。"""
+    table = spec.get("cache_hosts") or {}
+    for prefix, hosts in table.items():
+        if filename.startswith(prefix):
+            return hosts
+    return tuple(sorted({h for hosts in table.values() for h in hosts}))

@@ -22,6 +22,7 @@ import pandas as pd
 from WY.i18n import t
 from WY.core.enrichment import parse_enrichment_filename
 from WY.core.http_client import clear_http_cache
+from WY.core.sources import cache_file_hosts
 from WY.core.text_utils import resolve_original_name, safe_name
 
 # ui_settings.json 的进程内读写锁:齿轮面板与对接页都会高频保存设置
@@ -203,10 +204,10 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
     if os.path.exists(path):
         os.replace(path, backup)
 
-    # 清空 HTTP 响应缓存,避免强制更新时命中旧响应导致更新无效;
-    # 并发批处理改为入口统一清一次,见 clear_http 参数说明
+    # 定向清空该来源域名的 HTTP 响应缓存,避免强制更新时命中旧响应导致更新无效
+    # (其余数据源的缓存原样保留);并发批处理改为入口统一清一次,见 clear_http 参数说明
     if clear_http:
-        clear_http_cache()
+        clear_http_cache(cache_file_hosts(filename, spec))
 
     status = "failed"
     df = pd.DataFrame()
@@ -252,9 +253,10 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
     filenames 提供时只更新这些来源文件,并只重建它们对应的整合文件(管理页"更新选中"
     的批量入口);选中清单里的 merged 整合文件按当前来源直接重建,不重抓来源。
     来源文件互相独立,线程池并发抓取提速;抓取链路自带按源限流(throttle 与
-    DisGeNET 配额均有锁保护),并发安全。HTTP 响应缓存在入口只清一次:
-    每文件中途清理会干扰其他线程的在途请求,且批量开始后本批抓取是唯一的
-    缓存写入方,清一次即可保证全部抓到新数据。
+    DisGeNET 配额均有锁保护),并发安全。HTTP 响应缓存在入口按域名定向清一次
+    (只清本批涉及来源的域名,其余数据源的缓存不受影响):每文件中途清理会干扰
+    其他线程的在途请求,且批量开始后本批抓取是唯一的缓存写入方,清一次即可
+    保证全部抓到新数据。
     merged 整合依赖全部来源的最新结果,保持串行收尾。
     on_progress 为可选进度回调 on_progress(frac, text):frac∈[0,1],text 为已翻译的
     进度文案,由界面层决定呈现方式(如 st.progress,仅限页面线程传入);本模块不碰 UI。
@@ -293,7 +295,16 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
 
     rows: list[dict] = []
     if jobs:
-        clear_http_cache()
+        # 入口按域名定向清一次 HTTP 响应缓存(只清本批涉及来源的域名,其余数据源
+        # 缓存不受影响):每文件中途清理会干扰其他线程的在途请求,且批量开始后
+        # 本批抓取是唯一的缓存写入方,清一次即可保证全部抓到新数据
+        batch_hosts: set = set()
+        for f in jobs:
+            batch_hosts.update(cache_file_hosts(f, spec))
+        for name in (filenames or []):
+            if name.startswith(spec["merged_prefix"]):
+                batch_hosts.update(cache_file_hosts(name, spec))  # 整合文件:两个来源域名都要
+        clear_http_cache(tuple(batch_hosts))
 
         def _run_one(filename: str) -> dict:
             return refresh_cache_file(filename, spec, cache_hours, clear_http=False)
