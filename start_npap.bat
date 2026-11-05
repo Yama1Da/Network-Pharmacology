@@ -1,4 +1,5 @@
 @echo off
+rem NOTE: when editing this file, make the same change in start_npap.sh (and vice versa).
 rem NPAP one-click launcher: starts the web server and opens the browser.
 rem First run creates the venv and installs dependencies (a few minutes).
 rem ASCII-only on purpose: cmd parses .bat files in the system ANSI codepage.

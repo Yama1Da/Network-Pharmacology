@@ -1,4 +1,5 @@
 @echo off
+rem NOTE: when editing this file, make the same change in stop_npap.sh (and vice versa).
 rem NPAP: stop the running web server (frees port 8000).
 rem ASCII-only on purpose: cmd parses .bat files in the system ANSI codepage.
 setlocal

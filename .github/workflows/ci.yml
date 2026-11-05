@@ -56,3 +56,28 @@ jobs:
         with:
           name: coverage-report
           path: coverage.xml
+
+  web:
+    # 前端门禁:类型检查(vue-tsc --noEmit)+ 产物打包。与 pytest 并行跑,
+    # 不增加总时长;只有装依赖走 registry(与上方 pip install 同性质的安装阶段),
+    # 构建本身零网络请求,不破坏"测试全断网"口径(封网审计只针对 pytest 档)。
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: WY/web
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: WY/web/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查 + 打包
+        run: npm run build

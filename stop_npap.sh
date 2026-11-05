@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# NOTE: when editing this file, make the same change in stop_npap.bat (and vice versa).
 # NPAP: stop the running web server (frees port 8000). Linux / macOS.
 set -u
 PORT=8000
