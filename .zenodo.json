@@ -4,15 +4,18 @@
   "creators": [
     {
       "name": "Zhang, Xueyang",
-      "affiliation": "Yama1Da (https://github.com/Yama1Da)"
+      "affiliation": "Yama1Da (https://github.com/Yama1Da)",
+      "orcid": "0009-0008-1842-1950"
     },
     {
-      "name": "Gui, Wuyan",
-      "affiliation": "GuiWuyan (https://github.com/GuiWuyan)"
+      "name": "Hu, Junwen",
+      "affiliation": "GuiWuyan (https://github.com/GuiWuyan)",
+      "orcid": "0009-0007-9166-9453"
     },
     {
       "name": "Zhang, Jianyong",
-      "affiliation": "Zhangjianyong2003 (https://github.com/Zhangjianyong2003)"
+      "affiliation": "Zhangjianyong2003 (https://github.com/Zhangjianyong2003)",
+      "orcid": "0000-0002-2173-7840"
     }
   ],
   "description": "A one-stop network pharmacology analysis platform: target acquisition (DisGeNET / DGIdb / Open Targets / ChEMBL), STRING PPI network construction, GO/KEGG enrichment analysis, AutoDock Vina molecular docking, and GEO transcriptomics with six-algorithm ML consensus screening to shortlist targets for wet-lab validation. 网络药理学一站式分析平台：输入药物与疾病名称，自动完成靶点获取、PPI 网络构建、富集分析、分子对接与机器学习共识筛选。",

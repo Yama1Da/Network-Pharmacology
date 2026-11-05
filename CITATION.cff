@@ -5,15 +5,27 @@ authors:
   - family-names: Zhang
     given-names: Xueyang
     alias: Yama1Da
+    orcid: "https://orcid.org/0009-0008-1842-1950"
     website: "https://github.com/Yama1Da"
-  - family-names: Gui
-    given-names: Wuyan
+  - family-names: Hu
+    given-names: Junwen
     alias: GuiWuyan
+    orcid: "https://orcid.org/0009-0007-9166-9453"
     website: "https://github.com/GuiWuyan"
   - family-names: Zhang
     given-names: Jianyong
     alias: Zhangjianyong2003
+    orcid: "https://orcid.org/0000-0002-2173-7840"
     website: "https://github.com/Zhangjianyong2003"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23981878
+    link: https://doi.org/10.5281/zenodo.23981878
+    description: DOI of release v1.0.0
+  - type: doi
+    value: 10.5281/zenodo.23981877
+    link: https://doi.org/10.5281/zenodo.23981877
+    description: Concept DOI, always resolving to the latest version
 version: 1.0.0
 date-released: "2026-11-05"
 license: Apache-2.0

@@ -91,6 +91,14 @@ def _sandbox_caches(request, tmp_path, monkeypatch):
     for attr in attrs:
         monkeypatch.setattr(config, attr, str(tmp_path / attr.lower()))
 
+    # ML 结果根(default_results_root = CLI_RESULTS_DIR 或 <BASE_DIR>/results)
+    # 同样按测试隔离:history/runs 端点会扫描 results/mlscreen,不隔离会把
+    # 机器上的历史 CLI 运行(如 GSE193066_fibrosis)读进"期望为空"的断言
+    import WY.core.ml_pipeline as _mlp
+
+    monkeypatch.setattr(_mlp, "default_results_root",
+                        lambda: str(tmp_path / "results"), raising=False)
+
 
 # ---- ML 测试降耗开关:默认瘦身跑,设 NPAP_ML_TEST_FULL=1 恢复生产参数 ----
 # Boruta 影子检验每次迭代都要训一棵 200 树随机森林,是 ML 套件约八成耗时的来源。

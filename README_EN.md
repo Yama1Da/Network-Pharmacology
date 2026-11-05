@@ -5,6 +5,7 @@
 [![CI](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.13%2C%20%3C3.14-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23981877.svg)](https://doi.org/10.5281/zenodo.23981877)
 
 A one-stop network pharmacology platform: enter a drug and disease name and it
 automatically runs the full pipeline of

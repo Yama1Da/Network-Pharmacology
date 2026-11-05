@@ -5,6 +5,7 @@
 [![CI](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Yama1Da/Network-Pharmacology/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.13%2C%20%3C3.14-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23981877.svg)](https://doi.org/10.5281/zenodo.23981877)
 
 一站式网络药理学分析平台：输入药物与疾病名称，自动完成
 「靶点获取 → 靶点整合 → PPI 网络构建 → 富集分析 → 分子对接」完整流程，
