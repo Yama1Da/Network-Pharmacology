@@ -1,0 +1,36 @@
+cff-version: 1.2.0
+message: "If you use NPAP in your research, please cite it using the metadata from this file."
+title: "NPAP: Network Pharmacology Analysis Platform"
+authors:
+  - family-names: Zhang
+    given-names: Xueyang
+    alias: Yama1Da
+    website: "https://github.com/Yama1Da"
+  - family-names: Gui
+    given-names: Wuyan
+    alias: GuiWuyan
+    website: "https://github.com/GuiWuyan"
+  - family-names: Zhang
+    given-names: Jianyong
+    alias: Zhangjianyong2003
+    website: "https://github.com/Zhangjianyong2003"
+version: 1.0.0
+date-released: "2026-11-05"
+license: Apache-2.0
+repository-code: "https://github.com/Yama1Da/Network-Pharmacology"
+abstract: >-
+  A one-stop network pharmacology analysis platform: given a drug and a
+  disease, it automatically performs target acquisition (DisGeNET, DGIdb,
+  Open Targets, ChEMBL), PPI network construction and topological analysis
+  (STRING), GO/KEGG enrichment analysis (g:Profiler / Enrichr), and AutoDock
+  Vina molecular docking. GEO transcriptomics with six-algorithm machine
+  learning consensus screening (LASSO, Elastic Net, Ridge, SVM-RFE,
+  RF+Boruta, XGBoost) shortlists targets for wet-lab validation.
+keywords:
+  - network pharmacology
+  - PPI network
+  - enrichment analysis
+  - molecular docking
+  - AutoDock Vina
+  - machine learning
+  - drug targets

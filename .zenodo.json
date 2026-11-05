@@ -1,0 +1,29 @@
+{
+  "title": "NPAP: Network Pharmacology Analysis Platform",
+  "upload_type": "software",
+  "creators": [
+    {
+      "name": "Zhang, Xueyang",
+      "affiliation": "Yama1Da (https://github.com/Yama1Da)"
+    },
+    {
+      "name": "Gui, Wuyan",
+      "affiliation": "GuiWuyan (https://github.com/GuiWuyan)"
+    },
+    {
+      "name": "Zhang, Jianyong",
+      "affiliation": "Zhangjianyong2003 (https://github.com/Zhangjianyong2003)"
+    }
+  ],
+  "description": "A one-stop network pharmacology analysis platform: target acquisition (DisGeNET / DGIdb / Open Targets / ChEMBL), STRING PPI network construction, GO/KEGG enrichment analysis, AutoDock Vina molecular docking, and GEO transcriptomics with six-algorithm ML consensus screening to shortlist targets for wet-lab validation. 网络药理学一站式分析平台：输入药物与疾病名称，自动完成靶点获取、PPI 网络构建、富集分析、分子对接与机器学习共识筛选。",
+  "license": "Apache-2.0",
+  "keywords": [
+    "network pharmacology",
+    "PPI network",
+    "enrichment analysis",
+    "molecular docking",
+    "AutoDock Vina",
+    "machine learning",
+    "drug targets"
+  ]
+}
