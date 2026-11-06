@@ -626,6 +626,7 @@ onMounted(() => {
 
       <template v-if="resultData.roc_png_rel">
         <p class="hint-line" style="margin-top:16px">{{ t('web.ml.roc_hint') }}</p>
+        <p v-if="(meta?.n_samples ?? 0) < 10" class="hint-line">{{ t('web.ml.roc_small_n') }}</p>
         <img class="fig-img" :src="artifactsUrl(resultData.roc_png_rel)" alt="ROC" />
       </template>
 

@@ -333,7 +333,11 @@ def run_screen_chain(*, gse: str | None = None,
             deg = deg.drop_duplicates("gene", keep="first")  # 防止 shortlist join 行爆炸
     else:
         X = matrix[labeled].T[genes]  # 转置为样本×基因(仅已标记样本)
-    res = run_ml_screening(X, label_series.loc[X.index], bootstrap_rounds=bootstrap_rounds)
+    # CV 无泄漏口径:传全基因矩阵供折内重筛(测试折标签不参与池圈定与标准化;
+    # counts 分支用重命名前的 ml_matrix 列,与折内 DEG 自洽,共识表仍以符号呈现)
+    cv_universe = ml_matrix.loc[labeled] if counts_mode else matrix[labeled].T
+    res = run_ml_screening(X, label_series.loc[X.index], bootstrap_rounds=bootstrap_rounds,
+                           cv_matrix=cv_universe, cv_top_n=prefilter_top)
     m = res["meta"]
     _report(None, f"ML 输入: {m['n_samples']}样本 × {m['n_genes']}基因 | "
                   f"{m['cv_mode']} AUC={m['cv_auc']} | 算法一致性={m['algo_spearman_mean']} | "
@@ -385,7 +389,10 @@ def run_screen_chain(*, gse: str | None = None,
                    "case_label": (local_info or {}).get("case_value", case_label)},
         "preprocess": log_branch,
         "deg_significant_fdr05": sig_n,
-        "deg_prefilter": {"top_n": len(deg_top), "leak_note": leak_note},
+        "deg_prefilter": {"top_n": len(deg_top), "leak_note": leak_note,
+                          "cv_caliber": ("折内重筛(无泄漏,泛化口径)"
+                                         if m.get("cv_pool") == "fold"
+                                         else "与共识同池(一致性口径)")},
         "ml_meta": m,
         "ranked_csvs": {n: {"path": p, "mtime": os.path.getmtime(p),
                             "size": os.path.getsize(p)}

@@ -246,18 +246,38 @@ def bootstrap_stability(X, y, rounds, seed):
                          index=X.columns), n_done)
 
 
-def crossval_roc(X, y, seed):
+def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None):
     """折内完整选择 + 折内训练、折外打分;返回 (auc, y_true, scores, mode)。
 
     最小类 ≤ 6 自动切 LOOCV;否则 5 折分层(折数受最小类限制)。
+    cv_matrix(可选):全基因「样本×基因」矩阵,行须覆盖 X 的全部样本。
+    提供时每折先以「训练折样本」重算 DEG(Welch t+BH)圈定折内候选池,
+    并在训练折上拟合标准化 scaler —— 测试折的标签与统计量都不参与,
+    AUC 为泛化口径;缺省(None)沿用 X 自身池(与共识同池,一致性口径)。
+    折内预筛复用 differential_expression 的 Welch t+BH(输入 ML 同款
+    log2 矩阵),不逐折重跑 DESeq2:预筛只是池缩减启发式,正确性要求是
+    「不碰测试折标签」,无需与全量 DEG 同方法。
     """
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import LeaveOneOut, StratifiedKFold
+    from sklearn.preprocessing import StandardScaler
 
     y_arr = np.asarray(y)
     min_cls = int(pd.Series(y_arr).value_counts().min())
-    k = _top_k(X.shape[1])
+    config = _config()
+    cv_top_n = config.ML_DEG_PREFILTER_TOP_N if cv_top_n is None else cv_top_n
+    fold_mode = cv_matrix is not None
+    if fold_mode:
+        missing = X.index.difference(cv_matrix.index)
+        if len(missing):
+            raise RuntimeError(
+                f"cv_matrix 缺少 {len(missing)} 个已标记样本(如 {list(missing[:3])})—— "
+                "cv_matrix 行必须覆盖 X 的全部样本")
+        Xcv = cv_matrix.loc[X.index]
+        k = _top_k(min(cv_top_n, Xcv.shape[1]))
+    else:
+        k = _top_k(X.shape[1])
     if min_cls <= 6:
         mode, splits = "loocv", list(LeaveOneOut().split(X, y_arr))
     else:
@@ -267,17 +287,34 @@ def crossval_roc(X, y, seed):
                                       random_state=seed).split(X, y_arr))
     y_true, scores = [], []
     for fold_i, (tr, te) in enumerate(splits):
-        Xtr, ytr = X.iloc[tr], y_arr[tr]
+        ytr = y_arr[tr]
         try:
+            if fold_mode:
+                # 折内候选池 + 折内标准化:测试折标签与统计量都不参与(无泄漏口径)
+                from .expression import differential_expression
+                fold_deg = differential_expression(
+                    Xcv.iloc[tr].T, pd.Series(ytr, index=X.index[tr]))
+                pool = fold_deg.sort_values(["FDR", "p"]).head(cv_top_n)["gene"].tolist()
+                if not pool:
+                    raise RuntimeError("折内 DEG 预筛得 0 个候选基因")
+                scaler = StandardScaler().fit(Xcv.iloc[tr][pool])
+                Xtr = pd.DataFrame(scaler.transform(Xcv.iloc[tr][pool]),
+                                   index=X.index[tr], columns=pool)
+                Xte = pd.DataFrame(scaler.transform(Xcv.iloc[te][pool]),
+                                   index=X.index[te], columns=pool)
+            else:
+                Xtr, Xte = X.iloc[tr], X.iloc[te]
             imps = _select_all(Xtr, ytr, seed + fold_i + 101,
                                boruta_iter=_BORUTA_ITER_BOOT)
+            rank = sum(imp.rank(ascending=False, method="average")
+                       for imp in imps.values())
+            genes = list(rank.sort_values().head(k).index)
+            m = LogisticRegression(C=1.0, solver="lbfgs",
+                                   max_iter=5000).fit(Xtr[genes], ytr)
+            s = m.decision_function(Xte[genes])
         except Exception:
             logging.exception("CV fold %d selection failed; fold skipped", fold_i)
             continue
-        rank = sum(imp.rank(ascending=False, method="average") for imp in imps.values())
-        genes = list(rank.sort_values().head(k).index)
-        m = LogisticRegression(C=1.0, solver="lbfgs", max_iter=5000).fit(Xtr[genes], ytr)
-        s = m.decision_function(X.iloc[te][genes])
         y_true.extend(y_arr[te].tolist())
         scores.extend(np.asarray(s).ravel().tolist())
     auc = float(roc_auc_score(y_true, scores)) if len(set(y_true)) > 1 else float("nan")
@@ -295,18 +332,25 @@ def _rank_score(imp: pd.Series) -> pd.Series:
 
 
 def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
-                     seed: int | None = None) -> dict:
-    """六算法 × 三验证 + 共识打分。返回 {consensus, freq, importances, cv, meta}。
+                     seed: int | None = None, *,
+                     cv_matrix: pd.DataFrame | None = None,
+                     cv_top_n: int | None = None) -> dict:
+    """六算法 × 三验证 + 共识打分。返回 {consensus, freq, importances, roc, meta}。
 
-    X: 样本×基因 表达矩阵(DEG 预过滤后的候选池);
+    X: 样本×基因 表达矩阵(DEG 预过滤后的候选池,共识/稳定性在此池上,全量口径);
     y: 0/1 标签(case=1);bootstrap_rounds 默认取 config.ML_BOOTSTRAP_ROUNDS;
     seed 默认 config.ML_SEED(固定,全程可复现)。
+    cv_matrix(可选):全基因「样本×基因」矩阵(行须覆盖 X 的全部样本)。
+    提供时 CV-ROC 走折内重筛(测试折标签不参与候选池圈定与标准化),
+    AUC 为泛化口径;缺省时 CV 与共识同池(一致性口径)。
+    cv_top_n 缺省取 config.ML_DEG_PREFILTER_TOP_N。
     """
     import time
 
     config = _config()
     seed = config.ML_SEED if seed is None else seed
     rounds = config.ML_BOOTSTRAP_ROUNDS if bootstrap_rounds is None else bootstrap_rounds
+    cv_top_n = config.ML_DEG_PREFILTER_TOP_N if cv_top_n is None else cv_top_n
 
     # 方向防御(审核 R1 修复):X 必须是样本×基因(行数=样本数=标签数,列数=基因数)
     if X.shape[0] != len(y):
@@ -326,7 +370,8 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
     imps = _select_all(X, y, seed)
     rank_scores = {alg: _rank_score(imp) for alg, imp in imps.items()}
     freq, n_boot_done = bootstrap_stability(X, y, rounds, seed)
-    auc, y_true, scores, cv_mode = crossval_roc(X, y, seed)
+    auc, y_true, scores, cv_mode = crossval_roc(X, y, seed,
+                                                cv_matrix=cv_matrix, cv_top_n=cv_top_n)
 
     genes = list(X.columns)
     consensus = pd.DataFrame(index=genes)
@@ -363,6 +408,10 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
         "n_case": int(np.asarray(y).sum()), "n_control": int(len(y) - int(np.asarray(y).sum())),
         "bootstrap_rounds": int(rounds), "bootstrap_rounds_done": int(n_boot_done),
         "cv_mode": cv_mode,
+        # CV 候选池口径:fold=折内重筛(无泄漏,泛化口径)/ pool=与共识同池(一致性口径)
+        "cv_pool": "fold" if cv_matrix is not None else "pool",
+        "cv_top_n": (min(cv_top_n, cv_matrix.shape[1])
+                     if cv_matrix is not None else None),
         "cv_auc": None if np.isnan(auc) else round(auc, 4),  # NaN → null(合法 JSON,审核 BUG-6)
         "seed": seed, "top_k_rule": _top_k(X.shape[1]),
         "consensus_weights": {"rank": config.ML_CONSENSUS_RANK_W,
@@ -384,14 +433,15 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
 def deg_prefilter(deg: pd.DataFrame, top_n: int | None = None) -> tuple[pd.DataFrame, str]:
     """DEG 表按 FDR 截前 top_n 基因(性能前提:SVM-RFE 对特征数近平方级)。
 
-    泄漏口径(写进 summary):预过滤在全数据上按 FDR 排序,折外信息参与了
-    预筛选 —— 业内通行做法,本模块对 ROC 的主张仅为「一致性」而非泛化性能。
+    全量口径:候选池按全数据 FDR 排序,仅作为共识/shortlist 的描述性交付物;
+    CV-ROC 的口径由调用方决定(run_ml_screening 的 cv_matrix 参数),
+    折内重筛时测试折标签不参与,summary 以 cv_caliber 区分。
     """
     config = _config()
     top_n = config.ML_DEG_PREFILTER_TOP_N if top_n is None else top_n
     deg = deg.sort_values(["FDR", "p"]).head(top_n).copy()
-    note = (f"DEG 预过滤:全数据按 FDR 排序取前 {len(deg)}(泄漏口径:fold 外全数据预选择,"
-            "业内通行,ROC 仅作一致性解读)")
+    note = (f"DEG 预过滤:共识候选池按全数据 FDR 排序取前 {len(deg)}(全量口径,"
+            "描述性交付物;CV 口径另见 summary 的 cv_caliber)")
     return deg, note
 
 
