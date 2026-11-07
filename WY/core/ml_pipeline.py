@@ -404,7 +404,6 @@ def run_screen_chain(*, gse: str | None = None,
         perm = permutation_test(X, label_series.loc[X.index],
                                 cv_matrix=cv_universe, cv_top_n=prefilter_top,
                                 n_perm=perm_rounds, seed=None,
-                                cv_repeats=cv_repeats,
                                 progress=lambda _s, msg: _report(None, msg))
         _report(None, f"置换检验: obs AUC={perm['obs_auc']:.4f} | "
                       f"p={perm['p_value']:.3f}({perm['n_perm']} 轮)")

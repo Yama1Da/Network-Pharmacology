@@ -21,6 +21,10 @@ import pandas as pd
 # Boruta 影子特征筛选的迭代轮数:全数据 12 轮(确认/拒绝),bootstrap 内 5 轮(降耗时)
 _BORUTA_ITER_FULL = 12
 _BORUTA_ITER_BOOT = 5
+# _rf_gain 单棵森林的树数(Boruta 每轮迭代与增益选择共用):生产 200。
+# 与 Boruta 迭代同款的「调用时读模块常量」模式——测试瘦身开关可整体下调,
+# 生产路径行为不变(见 tests/conftest.py 的降耗开关)
+_RF_N_TREES = 200
 _C_GRID = (0.01, 0.03, 0.1, 0.3, 1.0)  # 逻辑回归正则强度候选(越小越强)
 
 
@@ -109,8 +113,10 @@ def _sel_ridge(X, y, seed):
     return imp, c
 
 
-def _rf_gain(X, y, seed, n_estimators=200):
+def _rf_gain(X, y, seed, n_estimators=None):
     from sklearn.ensemble import RandomForestClassifier
+    if n_estimators is None:
+        n_estimators = _RF_N_TREES  # 调用时读常量(非定义期绑定),瘦身开关才能整体下调
     rf = RandomForestClassifier(n_estimators=n_estimators, random_state=seed,
                                 n_jobs=-1, class_weight="balanced")
     rf.fit(X, y)
@@ -338,7 +344,7 @@ def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None, repeats: int = 1)
 
 def permutation_test(X, y, *, cv_matrix=None, cv_top_n=None,
                      n_perm: int = 100, seed: int | None = None,
-                     cv_repeats: int | None = None, progress=None) -> dict:
+                     progress=None) -> dict:
     """标签置换检验:打乱标签重跑折内 CV,给出「观测 AUC 显著优于随机」的 p 值。
 
     每轮用 rng.permutation 打乱标签后只跑 crossval_roc(不跑共识/bootstrap ——
@@ -487,6 +493,7 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
         "algo_spearman_mean": round(float(np.mean(pairs)), 4) if pairs else None,
         "algo_spearman_min": round(float(np.min(pairs)), 4) if pairs else None,
         "boruta_iter_full": _BORUTA_ITER_FULL, "boruta_iter_boot": _BORUTA_ITER_BOOT,
+        "rf_n_trees": _RF_N_TREES,
         "elapsed_s": round(time.time() - t0, 1),
     }
     return {"consensus": consensus, "freq": freq, "importances": imps, "meta": meta,

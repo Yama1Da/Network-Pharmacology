@@ -4,7 +4,7 @@
 迁移自 selfcheck_ml.py(17 项中的 6 项)。纯本地合成数据,不联网。
 
 耗时口径:数据规模与 bootstrap 轮数按「足以支撑各断言」的下限取值;
-Boruta 迭代由 conftest._ml_slim_boruta 统一降档(NPAP_ML_TEST_FULL=1 恢复全参)。
+Boruta 迭代与 RF 树数由 conftest._ml_slim_params 统一降档(NPAP_ML_TEST_FULL=1 恢复全参)。
 本文件的断言全部是行为语义,与这些规模参数无关——改统计参数后请跑一次全参档。
 """
 import numpy as np
@@ -130,13 +130,14 @@ def test_cv_caliber_meta():
 
     40 基因窄池(模拟全量预筛)+ 200 基因全矩阵:共识跑在窄池上,CV 折内从
     全矩阵重筛(cv_top_n=15,折内 FDR 应把植入基因排进池子),植入信号保持可分。
-    cv_repeats=1:断言的是口径字段,不是重复精度。"""
+    cv_repeats=1:断言的是口径字段,不是重复精度。
+    bootstrap_rounds=2:共识稳定性不在断言内(cv_auc 来自折内 CV),不付 5 轮成本。"""
     X_full, y, _, _ = _make_synthetic(n_genes=200, seed=42)
     X_pool = X_full.iloc[:, :40]
-    res_pool = ml.run_ml_screening(X_pool, y, bootstrap_rounds=5, cv_repeats=1)
+    res_pool = ml.run_ml_screening(X_pool, y, bootstrap_rounds=2, cv_repeats=1)
     assert res_pool["meta"]["cv_pool"] == "pool"
     assert res_pool["meta"]["cv_top_n"] is None
-    res_fold = ml.run_ml_screening(X_pool, y, bootstrap_rounds=5, cv_repeats=1,
+    res_fold = ml.run_ml_screening(X_pool, y, bootstrap_rounds=2, cv_repeats=1,
                                    cv_matrix=X_full, cv_top_n=15)
     assert res_fold["meta"]["cv_pool"] == "fold"
     assert res_fold["meta"]["cv_top_n"] == 15
@@ -147,11 +148,13 @@ def test_cv_caliber_meta():
 def test_cv_matrix_label_shuffle():
     """折内重筛口径下打乱标签:AUC 应回落 ~0.5(无泄漏口径的退化对照)。
 
-    cv_repeats=1:窗口断言不依赖重复精度(与 test_label_shuffle 同理)。"""
+    cv_repeats=1:窗口断言不依赖重复精度(与 test_label_shuffle 同理)。
+    bootstrap_rounds=1:AUC 来自折内 CV,与 bootstrap 共识无关,不付
+    200 基因 × 10 轮的纯展示成本。"""
     X_full, y, _, _ = _make_synthetic(seed=99)
     rng = np.random.default_rng(77)
     y_shuf = pd.Series(rng.permutation(y.to_numpy()))
-    res = ml.run_ml_screening(X_full, y_shuf, bootstrap_rounds=10, cv_repeats=1,
+    res = ml.run_ml_screening(X_full, y_shuf, bootstrap_rounds=1, cv_repeats=1,
                               cv_matrix=X_full)
     auc = res["meta"]["cv_auc"]
     assert 0.20 < auc < 0.80, f"折内口径打乱后 AUC={auc} 异常(期望 ~0.5)"
