@@ -28,9 +28,10 @@ def test_signal_recall():
     """合成数据信号:共识 top15 应召回 ≥8 个植入基因,方向正确。
 
     100 基因中植入 10(shift=2.0):信号强度足够,共识召回与 200 基因口径一致
-    (2026-10 瘦身时全参档对照验证过,阈值未动)。"""
+    (2026-10 瘦身时全参档对照验证过,阈值未动)。
+    cv_repeats=1:本测试断言的是共识召回,与 CV 重复精度无关,不付重复成本。"""
     X, y, genes, planted = _make_synthetic(n_genes=100)
-    res = ml.run_ml_screening(X, y, bootstrap_rounds=10)
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=10, cv_repeats=1)
     top15 = res["consensus"].head(15).index.tolist()
     recall = len(set(planted) & set(top15))
     assert recall >= 8, f"信号召回不足: {recall}/15 (期望 ≥8)"
@@ -42,11 +43,12 @@ def test_signal_recall():
 def test_seed_consistency():
     """种子一致性:同种子两次运行逐基因一致。
 
-    确定性只依赖固定 seed 贯穿全部算法,与规模/轮数无关——50 基因 3 轮足矣。"""
+    确定性只依赖固定 seed 贯穿全部算法,与规模/轮数无关——50 基因 3 轮足矣。
+    cv_repeats=1:共识表不经过 CV,重复只添成本。"""
     X1, y, _, _ = _make_synthetic(n_genes=50, seed=42)
     X2, _, _, _ = _make_synthetic(n_genes=50, seed=42)
-    r1 = ml.run_ml_screening(X1, y, bootstrap_rounds=3, seed=0)
-    r2 = ml.run_ml_screening(X2, y, bootstrap_rounds=3, seed=0)
+    r1 = ml.run_ml_screening(X1, y, bootstrap_rounds=3, seed=0, cv_repeats=1)
+    r2 = ml.run_ml_screening(X2, y, bootstrap_rounds=3, seed=0, cv_repeats=1)
     cs1 = r1["consensus"]["consensus_score"].round(6).to_dict()
     cs2 = r2["consensus"]["consensus_score"].round(6).to_dict()
     assert cs1 == cs2, "同种子两次运行结果不一致"
@@ -66,7 +68,8 @@ def test_label_shuffle():
     X, y, _, planted = _make_synthetic(seed=99)
     rng = np.random.default_rng(77)
     y_shuf = pd.Series(rng.permutation(y.to_numpy()))
-    res = ml.run_ml_screening(X, y_shuf, bootstrap_rounds=10)
+    # cv_repeats=1:AUC 窗口断言(0.2~0.8)对重复精度不敏感,不付 ×5 成本
+    res = ml.run_ml_screening(X, y_shuf, bootstrap_rounds=10, cv_repeats=1)
     auc = res["meta"]["cv_auc"]
     assert 0.20 < auc < 0.80, f"打乱后 AUC={auc} 异常(期望 ~0.5)"
     top15 = res["consensus"].head(15).index.tolist()
@@ -79,9 +82,10 @@ def test_label_shuffle():
 def test_loocv_auto():
     """LOOCV 自动切换:最小类 ≤6 时 cv_mode 应为 loocv。
 
-    4+4 样本仍在切换阈值内(≤6),LOOCV 折数 12→8 进一步省时。"""
+    4+4 样本仍在切换阈值内(≤6),LOOCV 折数 12→8 进一步省时。
+    cv_repeats=1:断言的只是模式切换;LOOCV 本就强制归 1,显式声明免歧义。"""
     X, y, _, _ = _make_synthetic(n_ctrl=4, n_case=4, n_genes=50, seed=42)
-    res = ml.run_ml_screening(X, y, bootstrap_rounds=3)
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=3, cv_repeats=1)
     assert res["meta"]["cv_mode"] == "loocv", f"期望 loocv,实际 {res['meta']['cv_mode']}"
 
 
@@ -125,13 +129,14 @@ def test_cv_caliber_meta():
     """CV 口径记录:cv_matrix 提供时 meta.cv_pool="fold",缺省为 "pool"(兼容旧路径)。
 
     40 基因窄池(模拟全量预筛)+ 200 基因全矩阵:共识跑在窄池上,CV 折内从
-    全矩阵重筛(cv_top_n=15,折内 FDR 应把植入基因排进池子),植入信号保持可分。"""
+    全矩阵重筛(cv_top_n=15,折内 FDR 应把植入基因排进池子),植入信号保持可分。
+    cv_repeats=1:断言的是口径字段,不是重复精度。"""
     X_full, y, _, _ = _make_synthetic(n_genes=200, seed=42)
     X_pool = X_full.iloc[:, :40]
-    res_pool = ml.run_ml_screening(X_pool, y, bootstrap_rounds=5)
+    res_pool = ml.run_ml_screening(X_pool, y, bootstrap_rounds=5, cv_repeats=1)
     assert res_pool["meta"]["cv_pool"] == "pool"
     assert res_pool["meta"]["cv_top_n"] is None
-    res_fold = ml.run_ml_screening(X_pool, y, bootstrap_rounds=5,
+    res_fold = ml.run_ml_screening(X_pool, y, bootstrap_rounds=5, cv_repeats=1,
                                    cv_matrix=X_full, cv_top_n=15)
     assert res_fold["meta"]["cv_pool"] == "fold"
     assert res_fold["meta"]["cv_top_n"] == 15
@@ -140,35 +145,42 @@ def test_cv_caliber_meta():
 
 
 def test_cv_matrix_label_shuffle():
-    """折内重筛口径下打乱标签:AUC 应回落 ~0.5(无泄漏口径的退化对照)。"""
+    """折内重筛口径下打乱标签:AUC 应回落 ~0.5(无泄漏口径的退化对照)。
+
+    cv_repeats=1:窗口断言不依赖重复精度(与 test_label_shuffle 同理)。"""
     X_full, y, _, _ = _make_synthetic(seed=99)
     rng = np.random.default_rng(77)
     y_shuf = pd.Series(rng.permutation(y.to_numpy()))
-    res = ml.run_ml_screening(X_full, y_shuf, bootstrap_rounds=10, cv_matrix=X_full)
+    res = ml.run_ml_screening(X_full, y_shuf, bootstrap_rounds=10, cv_repeats=1,
+                              cv_matrix=X_full)
     auc = res["meta"]["cv_auc"]
     assert 0.20 < auc < 0.80, f"折内口径打乱后 AUC={auc} 异常(期望 ~0.5)"
 
 
 def test_cv_repeats_meta():
     """重复 CV:5-fold 下 repeats=3 时 cv_repeats=3、cv_mean/cv_sd 落盘;
-    LOOCV(最小类 ≤6)划分确定性,强制归 1 且 sd=None。"""
-    X, y, _, _ = _make_synthetic(n_ctrl=10, n_case=10, n_genes=60, seed=42)
-    res = ml.run_ml_screening(X, y, bootstrap_rounds=3, cv_repeats=3)
+    LOOCV(最小类 ≤6)划分确定性,强制归 1 且 sd=None。
+
+    本测试是重复成本唯一该付的地方:规模压到断言下限(40 基因 / 2 轮 bootstrap)。"""
+    X, y, _, _ = _make_synthetic(n_ctrl=10, n_case=10, n_genes=40, seed=42)
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=2, cv_repeats=3)
     m = res["meta"]
     assert m["cv_mode"].endswith("-fold"), f"10v10 应走分层,实际 {m['cv_mode']}"
     assert m["cv_repeats"] == 3
     assert m["cv_mean"] is not None and m["cv_sd"] is not None
     assert 0.8 <= m["cv_mean"] <= 1.0, f"植入信号下 cv_mean 应高,实际 {m['cv_mean']}"
-    Xs, ys, _, _ = _make_synthetic(n_ctrl=4, n_case=4, n_genes=60, seed=42)
-    res_loo = ml.run_ml_screening(Xs, ys, bootstrap_rounds=3, cv_repeats=3)
+    Xs, ys, _, _ = _make_synthetic(n_ctrl=4, n_case=4, n_genes=40, seed=42)
+    res_loo = ml.run_ml_screening(Xs, ys, bootstrap_rounds=2, cv_repeats=3)
     m2 = res_loo["meta"]
     assert m2["cv_mode"] == "loocv" and m2["cv_repeats"] == 1 and m2["cv_sd"] is None
     assert m2["cv_mean"] == m2["cv_auc"]
 
 
 def test_permutation_test():
-    """置换检验:n_perm=3 跑通,p∈(0,1],obs 与主 CV 同量级;合成信号下 p 应小。"""
-    X, y, _, _ = _make_synthetic(n_ctrl=8, n_case=8, n_genes=60, seed=42)
+    """置换检验:n_perm=3 跑通,p∈(0,1],obs 与主 CV 同量级;合成信号下 p 应小。
+
+    规模压到断言下限(40 基因 / 6v6,4 次完整 CV 已是本测试的固有成本)。"""
+    X, y, _, _ = _make_synthetic(n_ctrl=6, n_case=6, n_genes=40, seed=42)
     perm = ml.permutation_test(X, y, n_perm=3, seed=0)
     assert set(perm) == {"obs_auc", "aucs", "p_value", "n_perm"}
     assert perm["n_perm"] == 3 and len(perm["aucs"]) == 3
