@@ -198,11 +198,63 @@ export interface MlProbeResult {
   annot?: string
 }
 
+/** /api/ml/probe-batch 的单行结果:徽章原料 + 四态归纳(status 由后端归纳,前端直接消费)。 */
+export interface MlProbeBatchItem {
+  gse: string
+  err: string
+  assess: MlAssess | null
+  counts_confirmed?: boolean | null
+  status: 'ok' | 'unusable' | 'unknown' | 'err'
+}
+
+/** 分组选择器字段(总览 job 的 group_picker 载荷):取值含整行命中数 n
+ * (与 assign_groups 同口径),overlaps 为子串包含型重叠对(应标红禁选)。 */
+export interface MlGroupValue {
+  value: string
+  n: number
+}
+
+export interface MlGroupField {
+  name: string
+  label: string
+  values: MlGroupValue[]
+  overlaps: { a: string; b: string; n: number }[]
+  suggest_case?: string | null
+  suggest_control?: string | null
+}
+
+export interface MlGroupPicker {
+  fields: MlGroupField[]
+}
+
+/** counts 模式分组选择器(发动机不同的原因见 core.expression.counts_picker_fields):
+ * 正则匹配对象是 counts 列名 → 建议物是「取值对应列组的最长公共前缀」而非取值本身。 */
+export interface MlCountsGroup {
+  value: string
+  columns: string[]
+  suggest: string
+}
+
+export interface MlCountsField {
+  name: string
+  label: string
+  groups: MlCountsGroup[]
+  suggest_case?: string | null
+  suggest_control?: string | null
+}
+
+export interface MlCountsPicker {
+  fields: MlCountsField[]
+}
+
 /** /api/ml/overview 的 job result。 */
 export interface MlOverviewResult {
   overview: Row[]
   counts_rows?: Row[]
   assess?: MlAssess
+  group_picker?: MlGroupPicker
+  counts_picker?: MlCountsPicker | null
+  counts_match?: { matched: number; total: number } | null
   issues?: string[]
   counts_error?: string
 }
@@ -221,6 +273,9 @@ export interface MlRunResult {
     n_samples?: number
     n_genes?: number
     cv_auc?: number | null
+    cv_mean?: number | null
+    cv_sd?: number | null
+    cv_repeats?: number | null
     algo_spearman_mean?: number | null
     [k: string]: unknown
   }
@@ -526,15 +581,17 @@ export const api = {
   dockingSources: (): Promise<{
     ppi_dirs: { name: string; display: string }[]
     enr_files: { name: string; display: string }[]
+    manual_dirs: { name: string; n_genes: number; mtime: string; genes: string[] }[]
   }> => fetch('/api/docking/sources').then((r) => json(r)),
 
   dockingSource: (
     sid: string,
-    body: { mode: 'ppi' | 'enr' | 'manual'; name?: string; manual_genes?: string }
+    body: { mode: 'ppi' | 'enr' | 'manual' | 'manual-file'; name?: string; manual_genes?: string; manual_file?: string }
   ): Promise<{ label: string; drug: string; disease: string; hub_count: number;
                enr_count: number; candidates: string[] }> =>
     post(`/api/docking/${sid}/source`,
-         { mode: body.mode, name: body.name ?? '', manual_genes: body.manual_genes ?? '' }),
+         { mode: body.mode, name: body.name ?? '', manual_genes: body.manual_genes ?? '',
+           manual_file: body.manual_file ?? '' }),
 
   dockingCheckStructures: (
     sid: string,
@@ -602,6 +659,12 @@ export const api = {
   mlProbe: (gse: string, platformInfo: { platform: string; type: string }):
     Promise<MlProbeResult> =>
     post('/api/ml/probe', { gse, platform: platformInfo.platform, type_: platformInfo.type }),
+
+  mlProbeBatch: (rows: { gse: string; platform: string; type: string }[]):
+    Promise<{ results: MlProbeBatchItem[] }> =>
+    post('/api/ml/probe-batch', {
+      rows: rows.map((r) => ({ gse: r.gse, platform: r.platform, type_: r.type }))
+    }),
 
   mlOverview: (gse: string): Promise<{ job_id: string }> =>
     post('/api/ml/overview', { gse }),

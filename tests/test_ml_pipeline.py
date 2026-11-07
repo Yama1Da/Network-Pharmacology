@@ -191,3 +191,72 @@ def test_results_mgmt(tmp_path):
     assert os.path.isdir(junk)
 
     assert len(ml_results.zip_ml_runs([d_keep])) > 100, "zip 产物不应为空"
+
+
+# ---------------- load_local_expr 健壮化(2026-11 GSE253502 实跑教训固化) ----------------
+
+def _write_local(tmp_path, expr_df, labels_rows):
+    expr_p = tmp_path / "expr.csv"
+    lab_p = tmp_path / "labels.csv"
+    expr_df.to_csv(expr_p, encoding="utf-8-sig")
+    pd.DataFrame(labels_rows, columns=["sample_id", "group"]).to_csv(
+        lab_p, index=False, encoding="utf-8-sig")
+    return str(expr_p), str(lab_p)
+
+
+def test_load_local_expr_drops_comment_cols(tmp_path):
+    """作者分析列(FDR/PValue/log2FC 等精确匹配)被剔除并报告,不污染样本轴。"""
+    from WY.core.ml_pipeline import load_local_expr
+
+    rng = np.random.default_rng(7)
+    genes = [f"G{i:03d}" for i in range(20)]
+    cols = ["S1", "S2", "S3", "S4", "S5", "S6"]
+    df = pd.DataFrame(rng.normal(0, 1, (20, 6)), index=genes, columns=cols)
+    # 伪装成样本列的作者分析列:数值型,不会被 to_numeric 丢弃
+    df["FDR"] = 0.01
+    df["log2FC"] = 1.5
+    df["PValue"] = 0.03
+    labels = [(c, "control" if j < 3 else "case") for j, c in enumerate(cols)]
+    expr_p, lab_p = _write_local(tmp_path, df, labels)
+    notes: list[str] = []
+
+    matrix, y, _tag, info = load_local_expr(
+        expr_p, lab_p, case_label="case", progress=lambda s, m: notes.append(m))
+    assert list(matrix.columns) == cols, "注释列应被剔除,只剩真实样本列"
+    assert info["n_case"] == 3 and info["n_control"] == 3
+    assert any("剔除疑似作者分析列" in n for n in notes), notes
+
+
+def test_load_local_expr_duplicate_symbols_mean(tmp_path):
+    """重复基因符号按组均值聚合(替代旧 keep=first 的任意性)。"""
+    from WY.core.ml_pipeline import load_local_expr
+
+    cols = ["C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"]  # 4v4,过每组 ≥3 下限
+    expr = pd.DataFrame([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                         [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0],
+                         [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]],
+                        index=["T1", "T1", "T2"], columns=cols)
+    labels = [(c, "control" if c.startswith("C") else "case") for c in cols]
+    expr_p, lab_p = _write_local(tmp_path, expr, labels)
+
+    matrix, _y, _tag, _info = load_local_expr(expr_p, lab_p, case_label="case")
+    assert list(matrix.index) == ["T1", "T2"], "重复符号应聚合为一行"
+    # T1 两行均值 = [(1+10)/2, (2+20)/2, ...]
+    assert matrix.loc["T1"].tolist() == [5.5, 11.0, 16.5, 22.0, 27.5, 33.0, 38.5, 44.0]
+
+
+def test_load_local_expr_ensembl_error_guides_map_ids(tmp_path):
+    """Ensembl 级矩阵:map_ids 关 → 响亮报错并给出 --map-ids 引导。"""
+    from WY.core.ml_pipeline import load_local_expr
+
+    cols = ["C1", "C2", "C3", "C4", "D1", "D2", "D3", "D4"]
+    expr = pd.DataFrame(np.random.default_rng(1).normal(0, 1, (20, 8)),
+                        index=[f"ENSG{i:08d}" for i in range(20)], columns=cols)
+    labels = [(c, "control" if c.startswith("C") else "case") for c in cols]
+    expr_p, lab_p = _write_local(tmp_path, expr, labels)
+
+    try:
+        load_local_expr(expr_p, lab_p, case_label="case")
+        raise AssertionError("Ensembl 级矩阵未开 map_ids 应报错")
+    except RuntimeError as e:
+        assert "--map-ids" in str(e) and "mygene" in str(e)

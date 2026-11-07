@@ -533,11 +533,13 @@ GEO_DOWNLOAD_CONCURRENCY = 4         # 大文件分段并发连接数:跨境对 
                                      # (实测 8.5MB 爬 16 分钟),Range 分段多连接聚合提速;E-utilities 的
                                      # 3 req/s 限流只约束检索接口不约束文件服务器,4 连接在容忍范围内
 GEO_DOWNLOAD_STALL_TIMEOUT = 90      # 单连接断流判定(秒):连续无任何字节到达即断开该段;重试按段续传
-ML_SCREENING_VERSION = 1             # 算法/权重变更时 +1,旧结果自动失效(仿 TARGET_FILTER_VERSION)
+ML_SCREENING_VERSION = 2             # 算法/权重变更时 +1,旧结果自动失效(仿 TARGET_FILTER_VERSION)
+                                     # v2:CV 改重复分层 + 折内重筛口径(2026-11)
 ML_MIN_SAMPLES_PER_GROUP = 3         # 每组样本低于此数直接报错,不降级硬跑
 ML_SEED = 0                          # 全模块固定随机种子,可复现
 ML_BOOTSTRAP_ROUNDS = 30             # bootstrap 稳定性重采样轮次(2026-10 实测定档:500基因×30轮 ML 段约3.5分钟,页面/CLI 统一)
-ML_CV_FOLDS = 5                      # 交叉验证折数(M2)
+ML_CV_REPEATS = 5                    # 分层 CV 重复次数(mean±sd 报告精度;LOOCV 为确定性划分自动归 1)
+ML_PERMUTATION_ROUNDS = 0            # 标签置换检验轮次(离线显著性对照,0=关;Web 不暴露,CLI --perm 显式开)
 ML_SHORTLIST_TOP_K = 20              # shortlist 截断(M2)
 ML_DEG_PREFILTER_TOP_N = 500         # 进 ML 前按 FDR 截断的候选基因数(性能前提;500 与 30 轮为实测耗时定档,页面/CLI 统一)
 # NCBI 限流注册:按是否配 key 取对应间隔(方案:不新建限流器,并入现有节流表)

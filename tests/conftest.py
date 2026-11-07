@@ -101,16 +101,19 @@ def _sandbox_caches(request, tmp_path, monkeypatch):
 
 
 # ---- ML 测试降耗开关:默认瘦身跑,设 NPAP_ML_TEST_FULL=1 恢复生产参数 ----
-# Boruta 影子检验每次迭代都要训一棵 200 树随机森林,是 ML 套件约八成耗时的来源。
+# Boruta 影子检验每次迭代都要训一棵随机森林,是 ML 套件约八成耗时的来源。
 # 日常 CI 只验证行为语义(信号召回/种子一致/LOOCV 切换/分母回归),不需要
-# 12/5 轮的完整统计动力学;改统计参数(_BORUTA_ITER_*/算法超参)或发版前,
-# 手动跑一次全参档:NPAP_ML_TEST_FULL=1 pytest
+# 12/5 轮/200 树的完整统计动力学;改统计参数(_BORUTA_ITER_*/_RF_N_TREES/
+# 算法超参)或发版前,手动跑一次全参档:NPAP_ML_TEST_FULL=1 pytest
 # 降档语义(有意为之,知悉再用):
-# - 全量档 12→6:二项确认门仍可达(需 6/6 命中,p=0.016<0.05),确认分支仍被走到;
+# - Boruta 全量档 12→6:二项确认门仍可达(需 6/6 命中,p=0.016<0.05),确认分支仍被走到;
 # - bootstrap 档 5→3:确认门在 3 轮下数学上不可达(p 最小 0.125>0.05),
 #   rf_boruta 退化为纯 RF 增益(走产品代码里 confirmed 为空的分支,同样是定义行为)。
+# - RF 树数 200→100(2026-11-07 探针对照:同种子同迭代下信号召回 10/15 不变,
+#   label_shuffle 上限护栏余量反而增大 4→3,CV AUC/cv_mean 稳定,四重场景省 30%,
+#   生产档仍 200 树)。
 @pytest.fixture(autouse=True)
-def _ml_slim_boruta(monkeypatch):
+def _ml_slim_params(monkeypatch):
     if os.environ.get("NPAP_ML_TEST_FULL") == "1":
         yield
         return
@@ -118,4 +121,5 @@ def _ml_slim_boruta(monkeypatch):
 
     monkeypatch.setattr(ml, "_BORUTA_ITER_FULL", 6)
     monkeypatch.setattr(ml, "_BORUTA_ITER_BOOT", 3)
+    monkeypatch.setattr(ml, "_RF_N_TREES", 100)
     yield

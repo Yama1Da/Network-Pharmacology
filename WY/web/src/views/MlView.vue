@@ -7,7 +7,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, artifactsUrl, type MlHistoryRun, type MlOverviewResult,
-         type MlProbeResult, type MlRunResult, type Row } from '../api'
+         type MlProbeBatchItem, type MlProbeResult, type MlRunResult, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
@@ -28,6 +28,77 @@ const gse = ref('')
 const probe = ref<MlProbeResult | null>(null)
 const probeBusy = ref(false)
 let probedGse = ''
+
+/* 检索表体检徽章:行级预检状态(键=gse 大写)+ 勾选集 + 批检忙碌 */
+const rowProbes = ref<Record<string, MlProbeBatchItem>>({})
+const selectedRows = ref<Set<string>>(new Set())
+const probeBatchBusy = ref(false)
+const selectedCount = computed(() => selectedRows.value.size)
+const allSelected = computed(() =>
+  searchResults.value.length > 0 &&
+  searchResults.value.every((r) => selectedRows.value.has(rowGse(r))))
+
+function rowGse(r: Row): string {
+  return String(r.gse ?? '').trim().toUpperCase()
+}
+
+function toggleRow(g: string): void {
+  const s = new Set(selectedRows.value)
+  if (s.has(g)) s.delete(g)
+  else s.add(g)
+  selectedRows.value = s
+}
+
+function toggleAll(): void {
+  selectedRows.value = allSelected.value
+    ? new Set()
+    : new Set(searchResults.value.map(rowGse))
+}
+
+/* 体检后的 symbol_level 实测结论:i18n 键 + 语义色(空串=维持启发式原文) */
+function symbolVerdict(g: string): { key: string; tone: 'ok' | 'bad' | 'unknown' } | null {
+  const p = rowProbes.value[g]
+  if (!p) return null
+  if (p.status === 'err') return { key: 'web.ml.sym_unknown', tone: 'unknown' }
+  const a = p.assess
+  if (!a) return { key: 'web.ml.sym_unknown', tone: 'unknown' }
+  if (a.matrix_empty && a.counts_available) return { key: 'web.ml.sym_ok_counts', tone: 'ok' }
+  if (a.matrix_empty) return { key: 'web.ml.sym_bad_no_counts', tone: 'bad' }
+  if (a.symbol_level) return { key: 'web.ml.sym_ok_gene', tone: 'ok' }
+  if (a.annot === 'missing') return { key: 'web.ml.sym_bad_annot', tone: 'bad' }
+  return { key: 'web.ml.sym_unknown', tone: 'unknown' }
+}
+
+function dotClass(g: string): string {
+  // 批检进行中:已勾选且未出结果的行亮琥珀脉冲(结果由同步端点一次性返回,
+  // 期间全部选中行保持 busy 态,到齐后统一翻转为终态)
+  if (!rowProbes.value[g]) {
+    return probeBatchBusy.value && selectedRows.value.has(g) ? 'busy' : 'unknown'
+  }
+  const v = symbolVerdict(g)!
+  return v.tone === 'ok' ? 'ok' : v.tone === 'bad' ? 'bad' : 'unknown'
+}
+
+async function probeBatch(): Promise<void> {
+  const rows = searchResults.value
+    .filter((r) => selectedRows.value.has(rowGse(r)))
+    // 已有体检结论的行跳过(判定与盘上状态同步,重复打网络无增量;重测=重新检索)
+    .filter((r) => !rowProbes.value[rowGse(r)])
+    .map((r) => ({ gse: rowGse(r), ...searchPlatformFor(rowGse(r)) }))
+  if (!rows.length) { flash(t('web.ml.probe_sel_cached')); return }
+  probeBatchBusy.value = true
+  try {
+    const res = await api.mlProbeBatch(rows)
+    const next = { ...rowProbes.value }
+    for (const item of res.results) next[item.gse] = item
+    rowProbes.value = next
+    flash(t('web.ml.probe_batch_done', { n: res.results.length }))
+  } catch (e) {
+    flash(t('web.ml.probe_fail', { msg: e instanceof Error ? e.message : String(e) }))
+  } finally {
+    probeBatchBusy.value = false
+  }
+}
 const exprPath = ref('')
 const labelsPath = ref('')
 const localCase = ref('')
@@ -42,12 +113,14 @@ async function search(): Promise<void> {
   if (!disease.value.trim()) { flash(t('web.ml.need_disease')); return }
   searchBusy.value = true
   try {
-    const r = await api.mlSearch(disease.value.trim(), limit.value)
-    searchResults.value = r.results as Row[]
-    searchDisease.value = r.disease
-    gse.value = ''
-    probe.value = null
-    probedGse = ''
+      const r = await api.mlSearch(disease.value.trim(), limit.value)
+      searchResults.value = r.results as Row[]
+      searchDisease.value = r.disease
+      gse.value = ''
+      probe.value = null
+      probedGse = ''
+      rowProbes.value = {}
+      selectedRows.value = new Set()
   } catch (e) {
     flash(t('web.ml.search_fail', { msg: e instanceof Error ? e.message : String(e) }))
   } finally {
@@ -55,8 +128,15 @@ async function search(): Promise<void> {
   }
 }
 
-const gseOptions = computed<string[]>(() =>
-  searchResults.value.map((r) => String(r.gse ?? '').trim()).filter(Boolean))
+/** 点击检索表行 = 选中该 GSE(与对接页受体选择同一交互):驱动预检面板与运行配置,
+ * 行内 GSE 编号即确认信息;已选行再点保持选中(无反选)。 */
+function pickRow(g: string): void {
+  if (!g) return
+  if (gse.value.trim().toUpperCase() === g) return
+  gse.value = g
+  onGseChange()
+}
+
 const searchStale = computed(() =>
   searchResults.value.length > 0 &&
   disease.value.trim().toLowerCase() !== searchDisease.value.toLowerCase())
@@ -118,6 +198,102 @@ const overviewJob = useJob((result) => {
   flash(t('web.ml.overview_done_flash'))
 })
 const overview = ref<MlOverviewResult | null>(null)
+
+/* ---------------- 分组选择器(总览的三下拉:字段 → case/control 取值) ----------------
+ * 生成的正则为「列取值全值」的转义 —— 与 assign_groups 整行拼接匹配同源,
+ * protocol 列复述队列描述造成的污染从源头不存在;重叠对由后端 overlaps 显式给出。 */
+const gpField = ref('')
+const gpCase = ref('')
+const gpCtrl = ref('')
+const gpFields = computed(() => overview.value?.group_picker?.fields ?? [])
+const gpCurrent = computed(() => gpFields.value.find((f) => f.name === gpField.value) ?? null)
+const gpCaseN = computed(() =>
+  gpCurrent.value?.values.find((v) => v.value === gpCase.value)?.n ?? null)
+const gpCtrlN = computed(() =>
+  gpCurrent.value?.values.find((v) => v.value === gpCtrl.value)?.n ?? null)
+const gpOverlap = computed(() => {
+  const f = gpCurrent.value
+  if (!f || !gpCase.value || !gpCtrl.value) return null
+  return f.overlaps.find((o) => (o.a === gpCase.value && o.b === gpCtrl.value)
+                             || (o.a === gpCtrl.value && o.b === gpCase.value)) ?? null
+})
+const gpValid = computed(() => {
+  if (!gpCase.value || !gpCtrl.value) return null
+  if (gpCase.value === gpCtrl.value) return { ok: false, reason: 'same' }
+  if (gpOverlap.value) return { ok: false, reason: 'overlap' }
+  if ((gpCaseN.value ?? 0) === 0 || (gpCtrlN.value ?? 0) === 0) return { ok: false, reason: 'zero' }
+  if ((gpCaseN.value ?? 0) < 3 || (gpCtrlN.value ?? 0) < 3) return { ok: false, reason: 'small' }
+  return { ok: true, reason: '' }
+})
+/* 疑似纵向字段(取值含治疗前后/周次等):病例组含配对样本时提示用户收紧到时间点 */
+const gpPairedField = computed(() => {
+  for (const f of gpFields.value) {
+    if (f.name === gpField.value) continue
+    if (f.values.some((v) =>
+      /before|after|week|pre-?treatment|post-?treatment|day\s*\d/i.test(v.value)))
+      return f.label
+  }
+  return ''
+})
+
+function gpPickField(name: string): void {
+  gpField.value = name
+  const f = gpFields.value.find((x) => x.name === name)
+  gpCase.value = f?.suggest_case ?? ''
+  gpCtrl.value = f?.suggest_control ?? ''
+}
+
+function gpApply(): void {
+  if (!gpValid.value?.ok) return
+  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  casePat.value = esc(gpCase.value)
+  ctrlPat.value = esc(gpCtrl.value)
+  flash(t('web.ml.gp_filled'))
+}
+
+/* ---------------- counts 模式分组选择器 ----------------
+ * 与矩阵模式同外壳、不同发动机(原因见 core.expression.counts_picker_fields):
+ * 正则匹配对象是 counts 列名 → 建议物 = 取值对应列组的最长公共前缀。 */
+const ctsField = ref('')
+const ctsCase = ref('')
+const ctsCtrl = ref('')
+const ctsFields = computed(() => overview.value?.counts_picker?.fields ?? [])
+const ctsCurrent = computed(() => ctsFields.value.find((f) => f.name === ctsField.value) ?? null)
+const ctsAllCols = computed(() =>
+  overview.value?.counts_rows?.map((r) => String(r.sample ?? '')) ?? [])
+const ctsCaseGroup = computed(() =>
+  ctsCurrent.value?.groups.find((g) => g.value === ctsCase.value) ?? null)
+const ctsCtrlGroup = computed(() =>
+  ctsCurrent.value?.groups.find((g) => g.value === ctsCtrl.value) ?? null)
+const ctsSpill = computed(() => {
+  // 建议前缀会波及组外列(如 D5_20 与 D5_20B 并存)→ 标红,建议手调
+  const g = ctsCaseGroup.value
+  if (!g || !g.suggest) return 0
+  return ctsAllCols.value.filter((c) => c.includes(g.suggest)).length - g.columns.length
+})
+const ctsValid = computed(() => {
+  if (!ctsCase.value || !ctsCtrl.value) return null
+  if (ctsCase.value === ctsCtrl.value) return { ok: false, reason: 'same' }
+  if ((ctsCaseGroup.value?.columns.length ?? 0) < 3
+      || (ctsCtrlGroup.value?.columns.length ?? 0) < 3) return { ok: false, reason: 'small' }
+  if (ctsSpill.value > 0) return { ok: false, reason: 'spill' }
+  return { ok: true, reason: '' }
+})
+
+function ctsPickField(name: string): void {
+  ctsField.value = name
+  const f = ctsFields.value.find((x) => x.name === name)
+  ctsCase.value = f?.suggest_case ?? ''
+  ctsCtrl.value = f?.suggest_control ?? ''
+}
+
+function ctsApply(): void {
+  if (!ctsValid.value?.ok) return
+  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  casePat.value = esc(ctsCaseGroup.value?.suggest ?? '')
+  ctrlPat.value = esc(ctsCtrlGroup.value?.suggest ?? '')
+  flash(t('web.ml.gp_filled'))
+}
 
 async function loadOverview(): Promise<void> {
   const g = gse.value.trim().toUpperCase()
@@ -195,6 +371,12 @@ watch(gse, () => {
   overview.value = null
   casePat.value = ''
   ctrlPat.value = ''
+  gpField.value = ''
+  gpCase.value = ''
+  gpCtrl.value = ''
+  ctsField.value = ''
+  ctsCase.value = ''
+  ctsCtrl.value = ''
 })
 watch(disease, () => {
   resultData.value = null
@@ -385,19 +567,46 @@ onMounted(() => {
             {{ searchBusy ? t('web.ml.searching') : t('web.ml.search_btn') }}
           </button>
         </div>
-        <p v-if="diseases.length" class="hint-line">{{ t('web.ml.diseases_hint', { n: diseases.length }) }}</p>
-        <div v-if="searchResults.length" class="tbl-wrap">
-          <p v-if="searchStale" class="stale">{{ t('web.ml.search_stale', { d: searchDisease }) }}</p>
-          <table class="tbl">
-            <thead><tr><th v-for="k in Object.keys(searchResults[0])" :key="k">{{ k }}</th></tr></thead>
-            <tbody>
-              <tr v-for="(r, i) in searchResults" :key="i">
-                <td v-for="(v, k) in r" :key="k">{{ v }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p v-else-if="searchDisease" class="hint-line">{{ t('web.ml.no_results') }}</p>
+          <p v-if="diseases.length" class="hint-line">{{ t('web.ml.diseases_hint', { n: diseases.length }) }}</p>
+          <div v-if="searchResults.length" class="probe-row">
+            <span class="hint-line">{{ t('web.ml.probe_sel_hint', { n: selectedCount }) }}</span>
+            <button class="bar-btn" :disabled="probeBatchBusy || !selectedCount" @click="probeBatch">
+              {{ probeBatchBusy ? t('web.ml.probe_sel_running') : t('web.ml.probe_sel_btn') }}
+            </button>
+          </div>
+          <div v-if="searchResults.length" class="tbl-wrap">
+            <p v-if="searchStale" class="stale">{{ t('web.ml.search_stale', { d: searchDisease }) }}</p>
+            <table class="tbl">
+              <thead><tr>
+                <th class="col-chk"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
+                <th v-for="k in Object.keys(searchResults[0])" :key="k">{{ k }}</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="(r, i) in searchResults" :key="i"
+                    :class="{ selrow: rowGse(r) && rowGse(r) === gse.trim().toUpperCase() }"
+                    style="cursor: pointer" @click="pickRow(rowGse(r))">
+                  <td class="col-chk" @click.stop><input type="checkbox" :checked="selectedRows.has(rowGse(r))"
+                                                        @change="toggleRow(rowGse(r))" /></td>
+                  <td v-for="(v, k) in r" :key="k">
+                    <template v-if="k === 'gse'">
+                      <span class="dot" :class="dotClass(rowGse(r))"
+                            :title="t('web.ml.probe_dot_' + dotClass(rowGse(r)))"></span>{{ v }}
+                    </template>
+                    <template v-else-if="k === 'symbol_level'">
+                      <span v-if="symbolVerdict(rowGse(r))"
+                            :class="symbolVerdict(rowGse(r))!.tone"
+                            :title="symbolVerdict(rowGse(r))!.tone === 'unknown' ? t('web.ml.sym_unknown_title') : ''">
+                        {{ t(symbolVerdict(rowGse(r))!.key) }}
+                      </span>
+                      <span v-else class="sym-hint">{{ v }}</span>
+                    </template>
+                    <template v-else>{{ v }}</template>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else-if="searchDisease" class="hint-line">{{ t('web.ml.no_results') }}</p>
       </template>
       <p v-else-if="tab === 'direct'" class="hint-line">{{ t('web.ml.direct_hint') }}</p>
 
@@ -423,15 +632,12 @@ onMounted(() => {
       <!-- GSE 确认(检索/直填共用) -->
       <div class="set-row" v-if="tab !== 'local'">
         <label class="set-label">{{ t('web.ml.gse_label') }}</label>
-        <select v-if="gseOptions.length" class="sel" v-model="gse" @change="onGseChange">
-          <option value="" disabled>{{ t('web.ml.sel_gse_ph') }}</option>
-          <option v-for="g in gseOptions" :key="g" :value="g">{{ g }}</option>
-        </select>
-        <div v-else class="field">
+        <div class="field">
           <input v-model="gse" placeholder="GSE63067" spellcheck="false"
                  @change="onGseChange" /><i class="line"></i>
         </div>
         <span v-if="gse" class="state on">{{ t('web.ml.confirmed', { gse }) }}</span>
+        <span class="hint-line">{{ t('web.ml.pick_row_hint') }}</span>
       </div>
 
       <!-- 预检展示 -->
@@ -443,7 +649,7 @@ onMounted(() => {
                                         speed: (probeR.speed_bps / 1024).toFixed(0),
                                         eta: fmtEta(Math.min(probeR.size_bytes / Math.max(probeR.speed_bps, 1), 5400)) }) }}
           </p>
-          <p v-if="probeR && (!probeR.reliable || probeR.size_bytes / Math.max(probeR.speed_bps, 1) > 300)"
+          <p v-if="probeR && ((probeR.size_bytes >= 1048576 && !probeR.reliable) || probeR.size_bytes / Math.max(probeR.speed_bps, 1) > 300)"
              class="stale">{{ t('web.ml.probe_slow') }}</p>
           <p v-if="probeErr" class="hint-line">{{ t('web.ml.probe_fail', { msg: probeErr }) }}</p>
           <template v-if="probeAssess">
@@ -511,6 +717,53 @@ onMounted(() => {
               </tbody>
             </table>
           </div>
+          <!-- counts 模式分组选择器:同外壳不同发动机(见 core.expression.counts_picker_fields) -->
+          <p v-if="overview.counts_picker && !overview.counts_picker.fields?.length" class="stale">
+            {{ t('web.ml.gp_counts_nomatch',
+                 { m: overview.counts_match?.matched ?? 0, n: overview.counts_match?.total ?? 0 }) }}
+          </p>
+          <template v-if="overview.counts_picker?.fields?.length">
+            <div class="set-row">
+              <label class="set-label">{{ t('web.ml.gp_field_label') }}</label>
+              <select class="sel inline" v-model="ctsField" :disabled="unusable"
+                      @change="ctsPickField(ctsField)">
+                <option value="" disabled>{{ t('web.ml.gp_field_ph') }}</option>
+                <option v-for="f in overview.counts_picker.fields" :key="f.name" :value="f.name">
+                  {{ f.label }} ({{ f.groups.length }} 组)
+                </option>
+              </select>
+            </div>
+            <template v-if="ctsCurrent">
+              <div class="set-row">
+                <label class="set-label">{{ t('web.ml.gp_case') }}</label>
+                <select class="sel inline" v-model="ctsCase" :disabled="unusable">
+                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
+                  <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
+                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · 建议 {{ g.suggest }}
+                  </option>
+                </select>
+              </div>
+              <div class="set-row">
+                <label class="set-label">{{ t('web.ml.gp_ctrl') }}</label>
+                <select class="sel inline" v-model="ctsCtrl" :disabled="unusable">
+                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
+                  <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
+                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · 建议 {{ g.suggest }}
+                  </option>
+                </select>
+              </div>
+              <p v-if="ctsCase && ctsCtrl" class="hint-line"
+                 :class="{ good: ctsValid?.ok, stale: !ctsValid?.ok }">
+                {{ ctsValid?.ok
+                  ? t('web.ml.gp_covers', { n: ctsCaseGroup?.columns.length, m: ctsCtrlGroup?.columns.length })
+                  : t('web.ml.gp_validate_fail',
+                      { reason: t('web.ml.gp_reason_' + ctsValid?.reason) }) }}
+              </p>
+              <button class="bar-btn" :disabled="!ctsValid?.ok || unusable" @click="ctsApply">
+                {{ t('web.ml.gp_fill') }}
+              </button>
+            </template>
+          </template>
         </template>
         <template v-if="overview.assess && !overview.assess.matrix_empty">
           <p class="hint-line good">
@@ -524,9 +777,51 @@ onMounted(() => {
                     : t('web.ml.annot_unknown', { gpl: overview.assess.gpl }))
             }) }}
           </p>
-          <p v-if="overview.assess.group_fields?.length" class="hint-line">
-            {{ t('web.ml.group_fields', { fields: overview.assess.group_fields.slice(0, 3).join('; ') }) }}
-          </p>
+          <template v-if="overview.group_picker?.fields?.length">
+            <div class="set-row">
+              <label class="set-label">{{ t('web.ml.gp_field_label') }}</label>
+              <select class="sel inline" v-model="gpField" :disabled="unusable"
+                      @change="gpPickField(gpField)">
+                <option value="" disabled>{{ t('web.ml.gp_field_ph') }}</option>
+                <option v-for="f in overview.group_picker.fields" :key="f.name" :value="f.name">
+                  {{ f.label }} ({{ f.values.length }})
+                </option>
+              </select>
+            </div>
+            <template v-if="gpCurrent">
+              <div class="set-row">
+                <label class="set-label">{{ t('web.ml.gp_case') }}</label>
+                <select class="sel inline" v-model="gpCase" :disabled="unusable">
+                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
+                  <option v-for="v in gpCurrent.values" :key="v.value" :value="v.value">
+                    {{ v.value }} ({{ v.n }})
+                  </option>
+                </select>
+              </div>
+              <div class="set-row">
+                <label class="set-label">{{ t('web.ml.gp_ctrl') }}</label>
+                <select class="sel inline" v-model="gpCtrl" :disabled="unusable">
+                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
+                  <option v-for="v in gpCurrent.values" :key="v.value" :value="v.value">
+                    {{ v.value }} ({{ v.n }})
+                  </option>
+                </select>
+              </div>
+              <p v-if="gpPairedField" class="stale">
+                {{ t('web.ml.gp_paired', { field: gpPairedField }) }}
+              </p>
+              <p v-if="gpCase && gpCtrl" class="hint-line"
+                 :class="{ good: gpValid?.ok, stale: !gpValid?.ok }">
+                {{ gpValid?.ok
+                  ? t('web.ml.gp_validate_ok', { n: gpCaseN, m: gpCtrlN })
+                  : t('web.ml.gp_validate_fail',
+                      { reason: t('web.ml.gp_reason_' + gpValid?.reason) }) }}
+              </p>
+              <button class="bar-btn" :disabled="!gpValid?.ok || unusable" @click="gpApply">
+                {{ t('web.ml.gp_fill') }}
+              </button>
+            </template>
+          </template>
           <p v-if="overview.assess.n_samples != null && overview.assess.n_samples < 12" class="stale">
             {{ t('web.ml.few_samples', { n: overview.assess.n_samples }) }}
           </p>
@@ -620,12 +915,16 @@ onMounted(() => {
       <div class="metrics">
         <div class="metric"><b>{{ meta?.n_samples }}</b><span>{{ t('web.ml.m_samples') }}</span></div>
         <div class="metric"><b>{{ meta?.n_genes }}</b><span>{{ t('web.ml.m_genes') }}</span></div>
-        <div class="metric"><b>{{ meta?.cv_auc ?? 'N/A' }}</b><span>CV-AUC</span></div>
+        <div class="metric">
+          <b>{{ meta?.cv_mean ?? meta?.cv_auc ?? 'N/A' }}</b>
+          <span>CV-AUC<template v-if="meta?.cv_sd != null"> ± {{ meta.cv_sd }}</template></span>
+        </div>
         <div class="metric"><b>{{ meta?.algo_spearman_mean }}</b><span>{{ t('web.ml.m_spearman') }}</span></div>
       </div>
 
       <template v-if="resultData.roc_png_rel">
         <p class="hint-line" style="margin-top:16px">{{ t('web.ml.roc_hint') }}</p>
+        <p v-if="(meta?.n_samples ?? 0) < 10" class="hint-line">{{ t('web.ml.roc_small_n') }}</p>
         <img class="fig-img" :src="artifactsUrl(resultData.roc_png_rel)" alt="ROC" />
       </template>
 

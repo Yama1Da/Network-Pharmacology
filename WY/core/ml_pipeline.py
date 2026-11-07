@@ -17,6 +17,7 @@ import json
 import os
 import time
 
+import numpy as np
 import pandas as pd
 
 # 全链七阶段键(progress 回调的 stage 取值;CLI 进度编号分母也取自它)
@@ -44,19 +45,35 @@ def default_results_root() -> str:
 
 # ---------------- 本地矩阵输入(--expr 模式,方案 §6) ----------------
 
+# 补充文件常见的作者分析列名(精确匹配、大小写不敏感):这类列是数值列,
+# 不会被 to_numeric 丢弃,混进样本轴会造成列数虚报、污染 log 判定,甚至被
+# 误当对照样本。只做精确匹配(非子串),避免误杀碰巧同名的真实样本列。
+_LOCAL_EXPR_DROP_COLS = frozenset({
+    "fdr", "pvalue", "p value", "p_value", "padj", "p.val", "p.value",
+    "log2fc", "log2(fc)", "log2fc ", "fold change", "fc",
+    "control", "disease", "diatetes", "diabetes", "treatment", "group",
+    "symbol", "description", "gene name", "gene", "id",
+    "kegg", "pathway", "go component", "go function", "go process",
+})
+
 
 def load_local_expr(expr_path: str, labels_path: str,
                     case_label: str | None = None,
-                    progress=None) -> tuple[pd.DataFrame, pd.Series, str, dict]:
+                    progress=None,
+                    map_ids: bool = False) -> tuple[pd.DataFrame, pd.Series, str, dict]:
     """读本地表达矩阵与两列标签,产出与 GEO 链同构的(矩阵, 标签)。
 
     labels 为两列 CSV(sample_id, group),分组写法宽松(disease/control、
     case/ctrl、1/0),case_label 指定病例组取值(缺省按常见写法推断,推断不了
     报错);case 匹配 0 个或全部样本硬报错、每组样本量下限,与 assign_groups
     同款边界。表达矩阵样本轴自动识别:列名或行索引与标签样本ID重合多者视为
-    样本轴,「行=基因」与「行=样本」两种布局都接受;行标识须为基因符号级
-    (本地模式无 GPL 注释表,探针级无法映射 —— 方案 §2"映射失败明确报错")。
-
+    样本轴,「行=基因」与「行=样本」两种布局都接受。
+    清洗(2026-11 GSE253502 实跑教训固化):
+    - 补充文件里的作者分析列(FDR/PValue/log2FC/GO·KEGG 等,见
+      _LOCAL_EXPR_DROP_COLS)按精确匹配剔除并报告;
+    - 重复基因符号按组均值聚合(探针聚合通行做法,替代旧"保第一条"的任意性);
+    - 行标识为 Ensembl/探针级时:map_ids=True 则经 mygene 批量映射为符号
+      (约 2 万 ID 需联网一两分钟),False 则响亮报错并给引导。
     返回 (矩阵, 标签, tag, info);info 记录 case/control 取值与样本数,供 summary。
     """
     from .expression import looks_symbol_level
@@ -69,6 +86,21 @@ def load_local_expr(expr_path: str, labels_path: str,
     expr_df = expr_df.apply(pd.to_numeric, errors="coerce").dropna(how="all")
     if expr_df.empty:
         raise RuntimeError(f"{expr_path}: 未读到数值数据(首列应为基因符号,其余列为样本数值)")
+
+    # 作者分析列剔除:必须在样本轴判定之前,否则虚增列命中、污染计数
+    drop_hits = [c for c in expr_df.columns
+                 if str(c).strip().lower() in _LOCAL_EXPR_DROP_COLS]
+    if drop_hits:
+        _note(f"剔除疑似作者分析列 {len(drop_hits)} 个: {drop_hits[:8]}"
+              f"{' …' if len(drop_hits) > 8 else ''}")
+        expr_df = expr_df.drop(columns=drop_hits)
+    # to_numeric 后残留的全 NaN 列(纯文本注释列)同样剔除
+    nan_cols = [c for c in expr_df.columns if expr_df[c].isna().all()]
+    if nan_cols:
+        _note(f"剔除非数值列 {len(nan_cols)} 个: {list(nan_cols)[:8]}")
+        expr_df = expr_df.drop(columns=nan_cols)
+    if expr_df.empty or expr_df.shape[1] == 0:
+        raise RuntimeError(f"{expr_path}: 剔除注释列后没有剩余数值列,请核对矩阵格式")
 
     lab = pd.read_csv(labels_path, encoding="utf-8-sig")
     if lab.shape[1] < 2:
@@ -124,13 +156,23 @@ def load_local_expr(expr_path: str, labels_path: str,
     _note(f"case({case})={n_case} control({control})={n_ctrl}")
 
     if not looks_symbol_level(expr_df.index):
-        raise RuntimeError(
-            "本地矩阵行标识疑似探针级(_at/ENSG/ILMN_/A_ 等),本地模式无 GPL 注释表无法映射,"
-            "请先转为基因符号矩阵(方案边界:映射失败明确报错,不做激进猜测)")
+        if not map_ids:
+            raise RuntimeError(
+                "本地矩阵行标识疑似探针级(_at/ENSG/ILMN_/A_ 等),本地模式无 GPL 注释表无法映射,"
+                "请先转为基因符号矩阵;或加 --map-ids(CLI)/ map_ids(API)经 mygene "
+                "批量映射为符号(需联网,约 2 万 ID 一两分钟)")
+        from .expression import map_ids_to_symbol
+
+        _note(f"行标识非符号级,经 mygene 批量映射 {expr_df.shape[0]} 个 ID…")
+        smap = map_ids_to_symbol([str(g) for g in expr_df.index])
+        hit = sum(1 for v in smap.values() if v)
+        _note(f"符号映射命中 {hit}/{len(smap)}(未命中保留原 ID)")
+        expr_df.index = [smap.get(str(g)) or str(g) for g in expr_df.index]
     n_dup = int(expr_df.index.duplicated().sum())
     if n_dup:
-        _note(f"注意:重复基因符号 {n_dup} 个,各保留第一条")
-        expr_df = expr_df[~expr_df.index.duplicated(keep="first")]
+        # 组均值聚合:同一符号多行(多探针/多转录本)取均值,通行做法
+        _note(f"重复基因符号 {n_dup} 个,按组均值聚合")
+        expr_df = expr_df.groupby(level=0).mean()
     missing = [s for s in labels.index if s not in set(expr_df.columns)]
     if missing:
         raise RuntimeError(f"标签中的样本在表达矩阵中缺失: {missing[:5]}"
@@ -160,7 +202,10 @@ def run_screen_chain(*, gse: str | None = None,
                      top_k: int | None = None,
                      out_base: str | None = None,
                      out_subdir: str | None = "mlscreen",
-                     progress=None) -> dict:
+                     progress=None,
+                     map_ids: bool = False,
+                     perm_rounds: int = 0,
+                     cv_repeats: int | None = None) -> dict:
     """执行 screen 全链并落盘,返回内存产物供 CLI/页面呈现。
 
     返回 dict:consensus/shortlist/funnel/deg(DataFrame)、meta/roc(ML 产物)、
@@ -171,6 +216,9 @@ def run_screen_chain(*, gse: str | None = None,
     <out_base>(GEOresult)根下,与 MDresult 平级。产物目录为
     <out_base>[/<out_subdir>]/<tag>_<时间戳>/,在全部计算成功后才创建
     (失败语义:不部分落盘,summary.json 最后写入)。
+    map_ids:--expr 模式行标识非符号级时经 mygene 映射(需联网,见 load_local_expr)。
+    perm_rounds:标签置换检验轮次(0=关,离线显著性对照,成本见 permutation_test)。
+    cv_repeats:分层 CV 重复次数(None → config.ML_CV_REPEATS;LOOCV 自动归 1)。
     """
     from WY import config
     from .expression import differential_expression, map_probe_to_symbol, preprocess
@@ -207,7 +255,7 @@ def run_screen_chain(*, gse: str | None = None,
     if expr:
         _report("fetch", f"读取本地表达矩阵 {expr}")
         matrix_raw, label_series, tag, local_info = load_local_expr(
-            expr, labels, case_label, progress=progress)
+            expr, labels, case_label, progress=progress, map_ids=map_ids)
         _report(None, f"矩阵 {matrix_raw.shape[0]} 基因 × {matrix_raw.shape[1]} 样本")
     elif counts_mode:
         # RNA-seq 路径(二期):raw counts 来自 suppl 补充文件,DEG 走 DESeq2
@@ -333,11 +381,32 @@ def run_screen_chain(*, gse: str | None = None,
             deg = deg.drop_duplicates("gene", keep="first")  # 防止 shortlist join 行爆炸
     else:
         X = matrix[labeled].T[genes]  # 转置为样本×基因(仅已标记样本)
-    res = run_ml_screening(X, label_series.loc[X.index], bootstrap_rounds=bootstrap_rounds)
+    # CV 无泄漏口径:传全基因矩阵供折内重筛(测试折标签不参与池圈定与标准化;
+    # counts 分支用重命名前的 ml_matrix 列,与折内 DEG 自洽,共识表仍以符号呈现)
+    cv_universe = ml_matrix.loc[labeled] if counts_mode else matrix[labeled].T
+    res = run_ml_screening(X, label_series.loc[X.index], bootstrap_rounds=bootstrap_rounds,
+                           cv_matrix=cv_universe, cv_top_n=prefilter_top,
+                           cv_repeats=cv_repeats)
     m = res["meta"]
+    auc_text = f"{m['cv_mean']}" if m.get("cv_mean") is not None else f"{m['cv_auc']}"
+    if m.get("cv_sd") is not None:
+        auc_text += f" ± {m['cv_sd']}"
     _report(None, f"ML 输入: {m['n_samples']}样本 × {m['n_genes']}基因 | "
-                  f"{m['cv_mode']} AUC={m['cv_auc']} | 算法一致性={m['algo_spearman_mean']} | "
+                  f"{m['cv_mode']} AUC={auc_text}({m.get('cv_repeats', 1)} 次) | "
+                  f"算法一致性={m['algo_spearman_mean']} | "
                   f"耗时 {m['elapsed_s']}s")
+
+    # 标签置换检验(离线显著性对照,CLI --perm 显式开;成本见 permutation_test docstring)
+    perm = None
+    if perm_rounds > 0:
+        from .ml_screening import permutation_test
+        _report("ml", f"标签置换检验({perm_rounds} 轮,只跑折内 CV)")
+        perm = permutation_test(X, label_series.loc[X.index],
+                                cv_matrix=cv_universe, cv_top_n=prefilter_top,
+                                n_perm=perm_rounds, seed=None,
+                                progress=lambda _s, msg: _report(None, msg))
+        _report(None, f"置换检验: obs AUC={perm['obs_auc']:.4f} | "
+                      f"p={perm['p_value']:.3f}({perm['n_perm']} 轮)")
 
     _report("shortlist", "shortlist 与漏斗")
     ranked = ranked_csvs or {}
@@ -385,7 +454,18 @@ def run_screen_chain(*, gse: str | None = None,
                    "case_label": (local_info or {}).get("case_value", case_label)},
         "preprocess": log_branch,
         "deg_significant_fdr05": sig_n,
-        "deg_prefilter": {"top_n": len(deg_top), "leak_note": leak_note},
+        "deg_prefilter": {"top_n": len(deg_top), "leak_note": leak_note,
+                          "cv_caliber": ("折内重筛(无泄漏,泛化口径)"
+                                         if m.get("cv_pool") == "fold"
+                                         else "与共识同池(一致性口径)")
+                                         + ";AUC 为重复 CV 池化口径"
+                                         + ("(mean±sd 见 ml_meta.cv_mean/cv_sd)"
+                                            if m.get("cv_repeats", 1) > 1 else "")},
+        "permutation": ({"obs_auc": perm["obs_auc"], "p_value": perm["p_value"],
+                         "n_perm": perm["n_perm"],
+                         "perm_auc_mean": round(float(np.mean(perm["aucs"])), 4),
+                         "perm_auc_sd": round(float(np.std(perm["aucs"])), 4)}
+                        if perm else None),
         "ml_meta": m,
         "ranked_csvs": {n: {"path": p, "mtime": os.path.getmtime(p),
                             "size": os.path.getsize(p)}
@@ -402,7 +482,9 @@ def run_screen_chain(*, gse: str | None = None,
                  "force_refresh": force_refresh, "force_log": force_log,
                  "prefilter_top": prefilter_top,
                  "bootstrap_rounds": bootstrap_rounds, "top_k": top_k,
-                 "ranked_csvs": ranked, "out_base": out_base},
+                 "ranked_csvs": ranked, "out_base": out_base,
+                 "map_ids": map_ids, "perm_rounds": perm_rounds,
+                 "cv_repeats": cv_repeats},
     }
     with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=1)
