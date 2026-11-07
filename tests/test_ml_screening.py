@@ -193,3 +193,47 @@ def test_permutation_test():
     perm_mean = float(np.mean([a for a in perm["aucs"] if a is not None]))
     assert perm["obs_auc"] > perm_mean, \
         f"obs {perm['obs_auc']} 应高于置换均值 {perm_mean:.3f}"
+
+
+# ---------- 平台排序 CSV 重复基因回归(P0-D,2026-11-08 审查) ----------
+
+
+def test_shortlist_survives_duplicate_genes_in_ranked_csv(tmp_path):
+    """回归测试:平台排序 CSV 含重复基因时 shortlist 不得崩溃,且同基因取最高分。
+
+    缺陷:_read_ranked_csv 对基因列不去重,多探针/多转录本数据同基因多行
+    极常见;build_shortlist 里 rk.set_index("gene") 得到重复索引,
+    sl["gene"].map(merged["score"]) 在 pandas 2.3 抛 InvalidIndexError——
+    该调用发生在 ML 共识算完之后,异常让整条链前功尽弃。
+    复现要点:两行同基因不同分的 CSV → build_shortlist 修复前抛
+    InvalidIndexError,修复后按既有口径(同基因取最高分)正常出表,
+    与 enrichment_gsea.build_ranked_list 的 groupby.max 对齐。
+    """
+    csv = tmp_path / "platform.csv"
+    csv.write_text(
+        "gene,score\nTP53,5.0\nEGFR,7.0\nTP53,9.0\n", encoding="utf-8")
+    consensus = pd.DataFrame(
+        {"consensus_score": [0.9, 0.8]}, index=["TP53", "EGFR"])
+    deg = pd.DataFrame({
+        "gene": ["TP53", "EGFR"],
+        "log2FC": [1.2, 0.3],
+        "FDR": [0.01, 0.5],
+        "direction": ["up", "up"],
+    })
+
+    sl, funnel = ml.build_shortlist(
+        consensus, deg, {"platform": str(csv)}, top_k=2)
+
+    # 崩溃已过,验证去重语义:TP53 出现两行(5.0/9.0),必须只保留一行且取最高分
+    tp53 = sl.loc[sl["gene"] == "TP53"].iloc[0]
+    egfr = sl.loc[sl["gene"] == "EGFR"].iloc[0]
+    assert tp53["platform_score"] == 9.0, tp53["platform_score"]
+    assert tp53["platform_rank"] == 1, tp53["platform_rank"]
+    assert egfr["platform_score"] == 7.0 and egfr["platform_rank"] == 2
+    assert tp53["in_platform"] and egfr["in_platform"]
+    # 漏斗与证据计数不被重复行干扰
+    assert sl.loc[sl["gene"] == "TP53", "evidence_count"].iloc[0] == 2  # DEG 显著 + 平台
+    assert sl.loc[sl["gene"] == "EGFR", "evidence_count"].iloc[0] == 1  # 仅平台
+    rk_stage = funnel.loc[funnel["stage"] == "∩ 平台排序(platform)"].iloc[0]
+    # 漏斗逐层截断:∩ DEG 显著层已把 EGFR(FDR=0.5)截掉,平台层只承接 TP53
+    assert rk_stage["n"] == 1, rk_stage["n"]

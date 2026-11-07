@@ -316,11 +316,13 @@ def _multi_source_bfs(Mt, source_idx) -> "np.ndarray":
     return dist
 
 
-@functools.lru_cache(maxsize=2)
 def _lcc_context(species: str):
-    """背景互作组 LCC 的计算上下文（进程内缓存）：节点表、基因→行号、邻接矩阵、度数表。
-    缓存键含磁盘构建记录的置信度与 STRING 版本:重建为不同参数后不会命中旧图;
-    同参数重建则由 interactome.clear_runtime_caches() 一并清除本缓存。"""
+    """背景互作组 LCC 的计算上下文：节点表、基因→行号、邻接矩阵、度数表。
+    刻意不加外层缓存:实际缓存在 _lcc_context_cached,按物种+置信度+STRING 版本
+    键控,重建为不同参数后不会命中旧图,同参数重建则由
+    interactome.clear_runtime_caches() 清除;若本函数再包一层按 species 的
+    lru_cache,该清理够不到它,重建/切版本后会静默用旧图计算(2026-11 P0-A)。
+    代价仅为每次分析多读一次磁盘 meta,可忽略。"""
     from . import interactome as itx
 
     meta = itx.require_meta(species)  # 未构建时由此抛 InteractomeNotBuiltError

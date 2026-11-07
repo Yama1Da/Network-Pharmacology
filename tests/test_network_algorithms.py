@@ -462,3 +462,44 @@ def test_rwr_truncation_guarantee():
     assert all(r["gene"] not in seed_set for r in res["top_nonseed"])
     scores = [r["score"] for r in res["top_nonseed"]]
     assert scores == sorted(scores, reverse=True), "non-seed rows must be score-desc"
+
+
+# ---------- 缓存失效回归(P0-A,2026-11-08 审查) ----------
+
+
+def test_clear_runtime_caches_invalidates_lcc_context(monkeypatch):
+    """回归测试:clear_runtime_caches() 后,RWR/邻近度不得再拿到旧 LCC 上下文。
+
+    缺陷:_lcc_context 外层按 species 键 lru_cache,而 clear_runtime_caches()
+    只清内层 _lcc_context_cached。同进程内重建互作组或切 STRING 版本后,
+    外层缓存直接命中提前返回,内层清了也没用——RWR 排序、邻近度 z/p、
+    度匹配零分布全部基于旧背景网络计算且无任何报错。
+    复现要点:调一次 _lcc_context 填充缓存 → clear_runtime_caches() → 再调
+    一次,断言底层加载被重新执行(返回新对象);修复前外层命中返回旧对象。
+    不依赖真实互作组数据:require_meta 与 _lcc_context_cached 均替换为桩。
+    """
+    calls: list[tuple] = []
+    stub_meta = {"confidence": 950, "string_version": "12.0"}
+    orig_cached = na._lcc_context_cached
+
+    def fake_cached(species, confidence, version):
+        calls.append((species, confidence, version))
+        return object()  # 每次返回新对象:拿到旧对象即证明缓存未失效
+
+    fake_cached.cache_clear = orig_cached.cache_clear  # clear_runtime_caches 需要的接口
+    monkeypatch.setattr(na, "_lcc_context_cached", fake_cached)
+    monkeypatch.setattr(itx, "require_meta", lambda species: stub_meta)
+
+    try:
+        first = na._lcc_context("Human")
+        itx.clear_runtime_caches()
+        second = na._lcc_context("Human")
+    finally:
+        # 修复前 _lcc_context 带 lru_cache:清掉本测试填入的桩对象,避免污染
+        # 同进程后续测试;修复后是普通函数(无 cache_clear),此调用为空操作。
+        clear = getattr(na._lcc_context, "cache_clear", None)
+        if clear is not None:
+            clear()
+
+    assert len(calls) == 2, f"清缓存后底层加载必须重新执行,实际仅 {len(calls)} 次: {calls}"
+    assert second is not first, "clear_runtime_caches() 后不得返回旧 LCC 上下文对象"

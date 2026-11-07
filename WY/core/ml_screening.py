@@ -519,7 +519,10 @@ def deg_prefilter(deg: pd.DataFrame, top_n: int | None = None) -> tuple[pd.DataF
 
 
 def _read_ranked_csv(path: str) -> pd.DataFrame:
-    """读平台排序 CSV(gene 列 + 分数列),返回 gene|score|rank;格式不识别时报可读错误。"""
+    """读平台排序 CSV(gene 列 + 分数列),返回 gene|score|rank;格式不识别时报可读错误。
+    同一基因多行(多探针/多转录本)时取最高分——与 enrichment_gsea.build_ranked_list
+    的 groupby.max 同一口径;不去重会让 build_shortlist 的 set_index("gene") 产生
+    重复索引,map 阶段抛 InvalidIndexError,ML 已算完的共识全盘作废(2026-11 P0-D)。"""
     df = pd.read_csv(path, encoding="utf-8-sig")
     gene_col = next((c for c in df.columns
                      if str(c).strip().lower() in ("gene", "target", "symbol",
@@ -533,6 +536,7 @@ def _read_ranked_csv(path: str) -> pd.DataFrame:
     out = df[[gene_col, score_col]].copy()
     out.columns = ["gene", "score"]
     out["gene"] = out["gene"].astype(str).str.upper().str.strip()
+    out = out.groupby("gene", as_index=False)["score"].max()
     out = out.sort_values("score", ascending=False).reset_index(drop=True)
     out["rank"] = out.index + 1
     return out
