@@ -198,6 +198,15 @@ export interface MlProbeResult {
   annot?: string
 }
 
+/** /api/ml/probe-batch 的单行结果:徽章原料 + 四态归纳(status 由后端归纳,前端直接消费)。 */
+export interface MlProbeBatchItem {
+  gse: string
+  err: string
+  assess: MlAssess | null
+  counts_confirmed?: boolean | null
+  status: 'ok' | 'unusable' | 'unknown' | 'err'
+}
+
 /** /api/ml/overview 的 job result。 */
 export interface MlOverviewResult {
   overview: Row[]
@@ -607,6 +616,12 @@ export const api = {
   mlProbe: (gse: string, platformInfo: { platform: string; type: string }):
     Promise<MlProbeResult> =>
     post('/api/ml/probe', { gse, platform: platformInfo.platform, type_: platformInfo.type }),
+
+  mlProbeBatch: (rows: { gse: string; platform: string; type: string }[]):
+    Promise<{ results: MlProbeBatchItem[] }> =>
+    post('/api/ml/probe-batch', {
+      rows: rows.map((r) => ({ gse: r.gse, platform: r.platform, type_: r.type }))
+    }),
 
   mlOverview: (gse: string): Promise<{ job_id: string }> =>
     post('/api/ml/overview', { gse }),

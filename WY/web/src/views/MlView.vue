@@ -7,7 +7,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, artifactsUrl, type MlHistoryRun, type MlOverviewResult,
-         type MlProbeResult, type MlRunResult, type Row } from '../api'
+         type MlProbeBatchItem, type MlProbeResult, type MlRunResult, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
@@ -28,6 +28,77 @@ const gse = ref('')
 const probe = ref<MlProbeResult | null>(null)
 const probeBusy = ref(false)
 let probedGse = ''
+
+/* 检索表体检徽章:行级预检状态(键=gse 大写)+ 勾选集 + 批检忙碌 */
+const rowProbes = ref<Record<string, MlProbeBatchItem>>({})
+const selectedRows = ref<Set<string>>(new Set())
+const probeBatchBusy = ref(false)
+const selectedCount = computed(() => selectedRows.value.size)
+const allSelected = computed(() =>
+  searchResults.value.length > 0 &&
+  searchResults.value.every((r) => selectedRows.value.has(rowGse(r))))
+
+function rowGse(r: Row): string {
+  return String(r.gse ?? '').trim().toUpperCase()
+}
+
+function toggleRow(g: string): void {
+  const s = new Set(selectedRows.value)
+  if (s.has(g)) s.delete(g)
+  else s.add(g)
+  selectedRows.value = s
+}
+
+function toggleAll(): void {
+  selectedRows.value = allSelected.value
+    ? new Set()
+    : new Set(searchResults.value.map(rowGse))
+}
+
+/* 体检后的 symbol_level 实测结论:i18n 键 + 语义色(空串=维持启发式原文) */
+function symbolVerdict(g: string): { key: string; tone: 'ok' | 'bad' | 'unknown' } | null {
+  const p = rowProbes.value[g]
+  if (!p) return null
+  if (p.status === 'err') return { key: 'web.ml.sym_unknown', tone: 'unknown' }
+  const a = p.assess
+  if (!a) return { key: 'web.ml.sym_unknown', tone: 'unknown' }
+  if (a.matrix_empty && a.counts_available) return { key: 'web.ml.sym_ok_counts', tone: 'ok' }
+  if (a.matrix_empty) return { key: 'web.ml.sym_bad_no_counts', tone: 'bad' }
+  if (a.symbol_level) return { key: 'web.ml.sym_ok_gene', tone: 'ok' }
+  if (a.annot === 'missing') return { key: 'web.ml.sym_bad_annot', tone: 'bad' }
+  return { key: 'web.ml.sym_unknown', tone: 'unknown' }
+}
+
+function dotClass(g: string): string {
+  // 批检进行中:已勾选且未出结果的行亮琥珀脉冲(结果由同步端点一次性返回,
+  // 期间全部选中行保持 busy 态,到齐后统一翻转为终态)
+  if (!rowProbes.value[g]) {
+    return probeBatchBusy.value && selectedRows.value.has(g) ? 'busy' : 'unknown'
+  }
+  const v = symbolVerdict(g)!
+  return v.tone === 'ok' ? 'ok' : v.tone === 'bad' ? 'bad' : 'unknown'
+}
+
+async function probeBatch(): Promise<void> {
+  const rows = searchResults.value
+    .filter((r) => selectedRows.value.has(rowGse(r)))
+    // 已有体检结论的行跳过(判定与盘上状态同步,重复打网络无增量;重测=重新检索)
+    .filter((r) => !rowProbes.value[rowGse(r)])
+    .map((r) => ({ gse: rowGse(r), ...searchPlatformFor(rowGse(r)) }))
+  if (!rows.length) { flash(t('web.ml.probe_sel_cached')); return }
+  probeBatchBusy.value = true
+  try {
+    const res = await api.mlProbeBatch(rows)
+    const next = { ...rowProbes.value }
+    for (const item of res.results) next[item.gse] = item
+    rowProbes.value = next
+    flash(t('web.ml.probe_batch_done', { n: res.results.length }))
+  } catch (e) {
+    flash(t('web.ml.probe_fail', { msg: e instanceof Error ? e.message : String(e) }))
+  } finally {
+    probeBatchBusy.value = false
+  }
+}
 const exprPath = ref('')
 const labelsPath = ref('')
 const localCase = ref('')
@@ -42,12 +113,14 @@ async function search(): Promise<void> {
   if (!disease.value.trim()) { flash(t('web.ml.need_disease')); return }
   searchBusy.value = true
   try {
-    const r = await api.mlSearch(disease.value.trim(), limit.value)
-    searchResults.value = r.results as Row[]
-    searchDisease.value = r.disease
-    gse.value = ''
-    probe.value = null
-    probedGse = ''
+      const r = await api.mlSearch(disease.value.trim(), limit.value)
+      searchResults.value = r.results as Row[]
+      searchDisease.value = r.disease
+      gse.value = ''
+      probe.value = null
+      probedGse = ''
+      rowProbes.value = {}
+      selectedRows.value = new Set()
   } catch (e) {
     flash(t('web.ml.search_fail', { msg: e instanceof Error ? e.message : String(e) }))
   } finally {
@@ -55,8 +128,15 @@ async function search(): Promise<void> {
   }
 }
 
-const gseOptions = computed<string[]>(() =>
-  searchResults.value.map((r) => String(r.gse ?? '').trim()).filter(Boolean))
+/** 点击检索表行 = 选中该 GSE(与对接页受体选择同一交互):驱动预检面板与运行配置,
+ * 行内 GSE 编号即确认信息;已选行再点保持选中(无反选)。 */
+function pickRow(g: string): void {
+  if (!g) return
+  if (gse.value.trim().toUpperCase() === g) return
+  gse.value = g
+  onGseChange()
+}
+
 const searchStale = computed(() =>
   searchResults.value.length > 0 &&
   disease.value.trim().toLowerCase() !== searchDisease.value.toLowerCase())
@@ -385,19 +465,46 @@ onMounted(() => {
             {{ searchBusy ? t('web.ml.searching') : t('web.ml.search_btn') }}
           </button>
         </div>
-        <p v-if="diseases.length" class="hint-line">{{ t('web.ml.diseases_hint', { n: diseases.length }) }}</p>
-        <div v-if="searchResults.length" class="tbl-wrap">
-          <p v-if="searchStale" class="stale">{{ t('web.ml.search_stale', { d: searchDisease }) }}</p>
-          <table class="tbl">
-            <thead><tr><th v-for="k in Object.keys(searchResults[0])" :key="k">{{ k }}</th></tr></thead>
-            <tbody>
-              <tr v-for="(r, i) in searchResults" :key="i">
-                <td v-for="(v, k) in r" :key="k">{{ v }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p v-else-if="searchDisease" class="hint-line">{{ t('web.ml.no_results') }}</p>
+          <p v-if="diseases.length" class="hint-line">{{ t('web.ml.diseases_hint', { n: diseases.length }) }}</p>
+          <div v-if="searchResults.length" class="probe-row">
+            <span class="hint-line">{{ t('web.ml.probe_sel_hint', { n: selectedCount }) }}</span>
+            <button class="bar-btn" :disabled="probeBatchBusy || !selectedCount" @click="probeBatch">
+              {{ probeBatchBusy ? t('web.ml.probe_sel_running') : t('web.ml.probe_sel_btn') }}
+            </button>
+          </div>
+          <div v-if="searchResults.length" class="tbl-wrap">
+            <p v-if="searchStale" class="stale">{{ t('web.ml.search_stale', { d: searchDisease }) }}</p>
+            <table class="tbl">
+              <thead><tr>
+                <th class="col-chk"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
+                <th v-for="k in Object.keys(searchResults[0])" :key="k">{{ k }}</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="(r, i) in searchResults" :key="i"
+                    :class="{ selrow: rowGse(r) && rowGse(r) === gse.trim().toUpperCase() }"
+                    style="cursor: pointer" @click="pickRow(rowGse(r))">
+                  <td class="col-chk" @click.stop><input type="checkbox" :checked="selectedRows.has(rowGse(r))"
+                                                        @change="toggleRow(rowGse(r))" /></td>
+                  <td v-for="(v, k) in r" :key="k">
+                    <template v-if="k === 'gse'">
+                      <span class="dot" :class="dotClass(rowGse(r))"
+                            :title="t('web.ml.probe_dot_' + dotClass(rowGse(r)))"></span>{{ v }}
+                    </template>
+                    <template v-else-if="k === 'symbol_level'">
+                      <span v-if="symbolVerdict(rowGse(r))"
+                            :class="symbolVerdict(rowGse(r))!.tone"
+                            :title="symbolVerdict(rowGse(r))!.tone === 'unknown' ? t('web.ml.sym_unknown_title') : ''">
+                        {{ t(symbolVerdict(rowGse(r))!.key) }}
+                      </span>
+                      <span v-else class="sym-hint">{{ v }}</span>
+                    </template>
+                    <template v-else>{{ v }}</template>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else-if="searchDisease" class="hint-line">{{ t('web.ml.no_results') }}</p>
       </template>
       <p v-else-if="tab === 'direct'" class="hint-line">{{ t('web.ml.direct_hint') }}</p>
 
@@ -423,15 +530,12 @@ onMounted(() => {
       <!-- GSE 确认(检索/直填共用) -->
       <div class="set-row" v-if="tab !== 'local'">
         <label class="set-label">{{ t('web.ml.gse_label') }}</label>
-        <select v-if="gseOptions.length" class="sel" v-model="gse" @change="onGseChange">
-          <option value="" disabled>{{ t('web.ml.sel_gse_ph') }}</option>
-          <option v-for="g in gseOptions" :key="g" :value="g">{{ g }}</option>
-        </select>
-        <div v-else class="field">
+        <div class="field">
           <input v-model="gse" placeholder="GSE63067" spellcheck="false"
                  @change="onGseChange" /><i class="line"></i>
         </div>
         <span v-if="gse" class="state on">{{ t('web.ml.confirmed', { gse }) }}</span>
+        <span class="hint-line">{{ t('web.ml.pick_row_hint') }}</span>
       </div>
 
       <!-- 预检展示 -->

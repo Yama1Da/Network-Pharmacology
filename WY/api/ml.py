@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 import logging
 import os
+import time
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
@@ -74,43 +75,123 @@ class MlProbeBody(BaseModel):
     type_: str = ""      # 检索结果带出的类型("芯片"/"测序")
 
 
-@router.post("/api/ml/probe")
-def ml_probe(body: MlProbeBody) -> dict:
-    """GSE 预检(同步,小 Range 请求,每 GSE 前端调用一次):
-    体积/速度/ETA + 可用性判定(已缓存→权威;未缓存→元数据条件版)+ counts 补充 + 注释探活。"""
+def _empty_matrix_assess(gse: str) -> dict:
+    """空矩阵类数据集的可用性判定(series matrix 不存在或为元数据空表):
+    counts 补充文件决定生死 —— 有则运行时自动回退 DESeq2,可用;无则确定性不可用。"""
+    from WY.core.geo import has_counts_supplement
+
+    counts = has_counts_supplement(gse)
+    return {"matrix_empty": True, "counts_available": counts,
+            "symbol_level": None, "annot": None, "gpl": "",
+            "group_fields": [], "n_samples": None, "usable": counts}
+
+
+def _probe_one(gse: str, platform: str = "", type_: str = "") -> dict:
+    """单 GSE 预检判定(ml_probe 与 probe-batch 共用):
+    体积/速度 + 可用性(已缓存→权威;未缓存→元数据条件版)+ counts 补充 + 注释探活。
+
+    批检附加:counts_confirmed —— counts 可用性是否经本地缓存实锤
+    (True=缓存盘命中确凿;False=已确认不可用;None=文件名级判定,未下载无法确认)。
+    """
     from WY.core.expression import (assess_expression_dataset, normalize_gpl,
                                     probe_platform_annot)
-    from WY.core.geo import _geo_cache_path, fetch_geo_dataset, has_counts_supplement, \
+    from WY.core.geo import _geo_cache_path, fetch_geo_dataset, \
         probe_series_matrix
 
-    gse = body.gse.strip().upper()
-    if not gse:
-        raise HTTPException(status_code=400, detail="gse is required")
     out: dict = {"gse": gse, "r": None, "err": "", "assess": None,
-                 "annot_missing": False, "gpl": ""}
+                 "annot_missing": False, "gpl": "", "counts_confirmed": None}
     try:
         out["r"] = probe_series_matrix(gse)
     except Exception as exc:
         out["err"] = str(exc)
-    if body.type_.strip() == "芯片" and body.platform.strip():
+        # 404 = series matrix 不存在:元数据型提交(RNA-seq 常态)或提交者未提供。
+        # 这是确定性事实而非探测失败 —— 与"小体积空表"同路径体检 counts,
+        # 给出绿/红结论,不留灰态(2026-11-07 GSE250283 实测:404+注释缺失
+        # 却亮灰"待运行时确认",用户被迫跑完总览才知道不可用)
+        if "404" in str(exc) or "Not Found" in str(exc):
+            out["assess"] = _empty_matrix_assess(gse)
+    if type_.strip() == "芯片" and platform.strip():
         try:
-            out["annot"] = probe_platform_annot(body.platform.strip())
-            out["gpl"] = normalize_gpl(body.platform.strip())
+            out["annot"] = probe_platform_annot(platform.strip())
+            out["gpl"] = normalize_gpl(platform.strip())
             out["annot_missing"] = out["annot"] == "missing"
         except Exception:
             pass
     if os.path.isfile(_geo_cache_path(gse)):
         try:
             out["assess"] = assess_expression_dataset(fetch_geo_dataset(gse))
+            if out["assess"].get("matrix_empty"):
+                # 空矩阵分支的 counts_available 由 has_counts_supplement 文件名级判定;
+                # 缓存盘上若已有 counts 矩阵文件则为实锤可用(运行时不会重下)
+                out["counts_confirmed"] = bool(out["assess"].get("counts_available"))
         except Exception:
             pass
     elif out["r"] and out["r"].get("size_bytes", 10 ** 9) < 20 * 1024:
         # 小体积 series matrix(≈3KB)几乎必然是元数据型空表:预检 counts 可用性
-        out["assess"] = {"matrix_empty": True,
-                         "counts_available": has_counts_supplement(gse),
-                         "symbol_level": None, "annot": None, "gpl": "",
-                         "group_fields": [], "n_samples": None, "usable": False}
+        out["assess"] = _empty_matrix_assess(gse)
+        # counts_confirmed 保持 None:补充文件未落盘,文件名级判定待运行时实锤
     return out
+
+
+def _probe_status(p: dict) -> str:
+    """把 _probe_one 的原料归纳为四态徽章:err/unusable/ok/unknown。
+
+    判定优先级:assess 的可用/不可用结论 > 注释缺失(探针级矩阵的确定性
+    不可用)> 探测本身失败(网络层,真未知)> 其余。"""
+    a = p.get("assess") or {}
+    if a:
+        if a.get("usable") or a.get("counts_available"):
+            return "ok"
+        if a.get("matrix_empty") and not a.get("counts_available"):
+            return "unusable"
+    if p.get("annot_missing"):
+        return "unusable"
+    if p.get("err"):
+        return "err"
+    return "unknown"
+
+
+@router.post("/api/ml/probe")
+def ml_probe(body: MlProbeBody) -> dict:
+    """GSE 预检(同步,小 Range 请求,每 GSE 前端调用一次):
+    体积/速度/ETA + 可用性判定(已缓存→权威;未缓存→元数据条件版)+ counts 补充 + 注释探活。"""
+    gse = body.gse.strip().upper()
+    if not gse:
+        raise HTTPException(status_code=400, detail="gse is required")
+    return _probe_one(gse, body.platform, body.type_)
+
+
+class MlProbeBatchBody(BaseModel):
+    class Row(BaseModel):
+        gse: str
+        platform: str = ""
+        type_: str = ""
+
+    rows: list[Row]
+
+
+@router.post("/api/ml/probe-batch")
+def ml_probe_batch(body: MlProbeBatchBody) -> dict:
+    """检索表批量体检(同步,行间 0.3s 礼貌间隔):
+    每行跑与单检同款的判定,返回轻量徽章原料 {gse, err, assess, counts_confirmed, status}。
+    上限 50 行 = 检索条上限(limit stepper max),50 行最坏 1~3 分钟;
+    不体积/测速 —— 徽章只需要判定,不需要 ETA。"""
+    if not body.rows:
+        raise HTTPException(status_code=400, detail="rows is required")
+    if len(body.rows) > 50:
+        raise HTTPException(status_code=400, detail="rows limited to 50")
+    results = []
+    for i, row in enumerate(body.rows):
+        gse = row.gse.strip().upper()
+        if not gse:
+            continue
+        p = _probe_one(gse, row.platform, row.type_)
+        results.append({"gse": gse, "err": p["err"], "assess": p["assess"],
+                        "counts_confirmed": p.get("counts_confirmed"),
+                        "status": _probe_status(p)})
+        if i < len(body.rows) - 1:
+            time.sleep(0.3)   # 行间礼貌间隔:探测走裸 requests,不经统一节流
+    return {"results": results}
 
 
 class MlOverviewBody(BaseModel):

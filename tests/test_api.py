@@ -551,6 +551,38 @@ def test_ml_probe_validation_and_metadata_path(client, monkeypatch):
     assert isinstance(body["assess"]["counts_available"], bool)
 
 
+def test_ml_probe_batch(client, monkeypatch):
+    """批量体检:单检同款判定归纳为四态徽章;空 rows/超限 → 400;
+    series matrix 404 = 确定性事实(无 counts → 红),不留灰态。"""
+    def _fake_probe(gse):
+        if gse == "GSE404":
+            raise RuntimeError("404 Client Error: Not Found for url: .../GSE404_series_matrix.txt.gz")
+        return {"size_bytes": 10}           # 其余走 <20KB 空表分支
+    monkeypatch.setattr("WY.core.geo.probe_series_matrix", _fake_probe)
+    monkeypatch.setattr("WY.core.geo.has_counts_supplement",
+                        lambda gse: gse == "GSEOK")
+    r = client.post("/api/ml/probe-batch", json={"rows": []})
+    assert r.status_code == 400
+    r = client.post("/api/ml/probe-batch",
+                    json={"rows": [{"gse": f"G{i}", "platform": "", "type": ""}
+                                   for i in range(51)]})
+    assert r.status_code == 400   # 超检索上限(50)才拒;50 行合法
+    body = client.post("/api/ml/probe-batch", json={"rows": [
+        {"gse": "gseok", "platform": "", "type": ""},
+        {"gse": "gseno", "platform": "", "type": ""},
+        {"gse": "gse404", "platform": "", "type": ""},
+    ]}).json()
+    by = {x["gse"]: x for x in body["results"]}
+    assert by["GSEOK"]["status"] == "ok" and by["GSEOK"]["assess"]["counts_available"] is True
+    assert by["GSENO"]["status"] == "unusable"
+    # 404:assess 走空矩阵分支(counts 无 → 红),err 保留供详情展示
+    assert by["GSE404"]["status"] == "unusable"
+    assert by["GSE404"]["assess"]["matrix_empty"] is True
+    assert by["GSE404"]["assess"]["counts_available"] is False
+    assert "404" in by["GSE404"]["err"]
+    assert by["GSEOK"]["counts_confirmed"] is None   # 未落盘,文件名级判定不实锤
+
+
 def test_ml_overview_job_flow(client, monkeypatch):
     fake_ds = SimpleNamespace(issues=[], table=pd.DataFrame(),
                               samples=pd.DataFrame({"title": ["s1"]}))
