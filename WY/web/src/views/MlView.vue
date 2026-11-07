@@ -251,6 +251,50 @@ function gpApply(): void {
   flash(t('web.ml.gp_filled'))
 }
 
+/* ---------------- counts 模式分组选择器 ----------------
+ * 与矩阵模式同外壳、不同发动机(原因见 core.expression.counts_picker_fields):
+ * 正则匹配对象是 counts 列名 → 建议物 = 取值对应列组的最长公共前缀。 */
+const ctsField = ref('')
+const ctsCase = ref('')
+const ctsCtrl = ref('')
+const ctsFields = computed(() => overview.value?.counts_picker?.fields ?? [])
+const ctsCurrent = computed(() => ctsFields.value.find((f) => f.name === ctsField.value) ?? null)
+const ctsAllCols = computed(() =>
+  overview.value?.counts_rows?.map((r) => String(r.sample ?? '')) ?? [])
+const ctsCaseGroup = computed(() =>
+  ctsCurrent.value?.groups.find((g) => g.value === ctsCase.value) ?? null)
+const ctsCtrlGroup = computed(() =>
+  ctsCurrent.value?.groups.find((g) => g.value === ctsCtrl.value) ?? null)
+const ctsSpill = computed(() => {
+  // 建议前缀会波及组外列(如 D5_20 与 D5_20B 并存)→ 标红,建议手调
+  const g = ctsCaseGroup.value
+  if (!g || !g.suggest) return 0
+  return ctsAllCols.value.filter((c) => c.includes(g.suggest)).length - g.columns.length
+})
+const ctsValid = computed(() => {
+  if (!ctsCase.value || !ctsCtrl.value) return null
+  if (ctsCase.value === ctsCtrl.value) return { ok: false, reason: 'same' }
+  if ((ctsCaseGroup.value?.columns.length ?? 0) < 3
+      || (ctsCtrlGroup.value?.columns.length ?? 0) < 3) return { ok: false, reason: 'small' }
+  if (ctsSpill.value > 0) return { ok: false, reason: 'spill' }
+  return { ok: true, reason: '' }
+})
+
+function ctsPickField(name: string): void {
+  ctsField.value = name
+  const f = ctsFields.value.find((x) => x.name === name)
+  ctsCase.value = f?.suggest_case ?? ''
+  ctsCtrl.value = f?.suggest_control ?? ''
+}
+
+function ctsApply(): void {
+  if (!ctsValid.value?.ok) return
+  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  casePat.value = esc(ctsCaseGroup.value?.suggest ?? '')
+  ctrlPat.value = esc(ctsCtrlGroup.value?.suggest ?? '')
+  flash(t('web.ml.gp_filled'))
+}
+
 async function loadOverview(): Promise<void> {
   const g = gse.value.trim().toUpperCase()
   if (!g) { flash(t('web.ml.need_gse')); return }
@@ -330,6 +374,9 @@ watch(gse, () => {
   gpField.value = ''
   gpCase.value = ''
   gpCtrl.value = ''
+  ctsField.value = ''
+  ctsCase.value = ''
+  ctsCtrl.value = ''
 })
 watch(disease, () => {
   resultData.value = null
@@ -602,7 +649,7 @@ onMounted(() => {
                                         speed: (probeR.speed_bps / 1024).toFixed(0),
                                         eta: fmtEta(Math.min(probeR.size_bytes / Math.max(probeR.speed_bps, 1), 5400)) }) }}
           </p>
-          <p v-if="probeR && (!probeR.reliable || probeR.size_bytes / Math.max(probeR.speed_bps, 1) > 300)"
+          <p v-if="probeR && ((probeR.size_bytes >= 1048576 && !probeR.reliable) || probeR.size_bytes / Math.max(probeR.speed_bps, 1) > 300)"
              class="stale">{{ t('web.ml.probe_slow') }}</p>
           <p v-if="probeErr" class="hint-line">{{ t('web.ml.probe_fail', { msg: probeErr }) }}</p>
           <template v-if="probeAssess">
@@ -670,6 +717,53 @@ onMounted(() => {
               </tbody>
             </table>
           </div>
+          <!-- counts 模式分组选择器:同外壳不同发动机(见 core.expression.counts_picker_fields) -->
+          <p v-if="overview.counts_picker && !overview.counts_picker.fields?.length" class="stale">
+            {{ t('web.ml.gp_counts_nomatch',
+                 { m: overview.counts_match?.matched ?? 0, n: overview.counts_match?.total ?? 0 }) }}
+          </p>
+          <template v-if="overview.counts_picker?.fields?.length">
+            <div class="set-row">
+              <label class="set-label">{{ t('web.ml.gp_field_label') }}</label>
+              <select class="sel inline" v-model="ctsField" :disabled="unusable"
+                      @change="ctsPickField(ctsField)">
+                <option value="" disabled>{{ t('web.ml.gp_field_ph') }}</option>
+                <option v-for="f in overview.counts_picker.fields" :key="f.name" :value="f.name">
+                  {{ f.label }} ({{ f.groups.length }} 组)
+                </option>
+              </select>
+            </div>
+            <template v-if="ctsCurrent">
+              <div class="set-row">
+                <label class="set-label">{{ t('web.ml.gp_case') }}</label>
+                <select class="sel inline" v-model="ctsCase" :disabled="unusable">
+                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
+                  <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
+                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · 建议 {{ g.suggest }}
+                  </option>
+                </select>
+              </div>
+              <div class="set-row">
+                <label class="set-label">{{ t('web.ml.gp_ctrl') }}</label>
+                <select class="sel inline" v-model="ctsCtrl" :disabled="unusable">
+                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
+                  <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
+                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · 建议 {{ g.suggest }}
+                  </option>
+                </select>
+              </div>
+              <p v-if="ctsCase && ctsCtrl" class="hint-line"
+                 :class="{ good: ctsValid?.ok, stale: !ctsValid?.ok }">
+                {{ ctsValid?.ok
+                  ? t('web.ml.gp_covers', { n: ctsCaseGroup?.columns.length, m: ctsCtrlGroup?.columns.length })
+                  : t('web.ml.gp_validate_fail',
+                      { reason: t('web.ml.gp_reason_' + ctsValid?.reason) }) }}
+              </p>
+              <button class="bar-btn" :disabled="!ctsValid?.ok || unusable" @click="ctsApply">
+                {{ t('web.ml.gp_fill') }}
+              </button>
+            </template>
+          </template>
         </template>
         <template v-if="overview.assess && !overview.assess.matrix_empty">
           <p class="hint-line good">

@@ -227,12 +227,34 @@ export interface MlGroupPicker {
   fields: MlGroupField[]
 }
 
+/** counts 模式分组选择器(发动机不同的原因见 core.expression.counts_picker_fields):
+ * 正则匹配对象是 counts 列名 → 建议物是「取值对应列组的最长公共前缀」而非取值本身。 */
+export interface MlCountsGroup {
+  value: string
+  columns: string[]
+  suggest: string
+}
+
+export interface MlCountsField {
+  name: string
+  label: string
+  groups: MlCountsGroup[]
+  suggest_case?: string | null
+  suggest_control?: string | null
+}
+
+export interface MlCountsPicker {
+  fields: MlCountsField[]
+}
+
 /** /api/ml/overview 的 job result。 */
 export interface MlOverviewResult {
   overview: Row[]
   counts_rows?: Row[]
   assess?: MlAssess
   group_picker?: MlGroupPicker
+  counts_picker?: MlCountsPicker | null
+  counts_match?: { matched: number; total: number } | null
   issues?: string[]
   counts_error?: string
 }

@@ -305,6 +305,89 @@ def group_picker_fields(ds) -> list[dict]:
     return fields
 
 
+def counts_picker_fields(ds, count_columns: list[str]) -> list[dict]:
+    """counts 数据集的分组选择器 payload —— 与 group_picker_fields 是**两套发动机**。
+
+    为什么不能复用矩阵模式的引擎(2026-11-07 讨论定案):
+    - 矩阵模式的正则匹配「样本注释整行」:字段取值全值长在行文本里,
+      全值锚定(re.escape)即 "值在行文本中 ⇔ 命中",防污染由构造成立;
+    - counts 模式的正则匹配「counts 矩阵的列名」—— 取值本身根本不出现在
+      列名里,拿取值当正则永远匹配不到。必须换发动机:按字段取值把
+      counts 列分组,建议正则 = 组内列名的最长公共前缀
+      (如 D5_20_1/D5_20_2/D5_20_3 → D5_20)。
+    交互外壳与矩阵模式一致(三下拉 + 校验 + 填入),用户感知"同一功能"。
+
+    每字段返回 {name, label, groups: [{value, columns, suggest}], suggest_*}:
+    - groups 按 counts 列对应的样本注释取值分组;不对应任何样本行的列
+      (如基因注释列 gene_Dbxref)不入组;
+    - suggest = 组内列名最长公共前缀(单列组即列名本身);组间列名互斥
+      (一列只属于一个取值组),但前缀可能波及组外列(如 D5_20 与 D5_20B),
+      由前端用全列名清单做"波及"校验;
+    - 候选列启发式与 group_picker_fields 同款(deny 名单/值级性别检查);
+      取值含对照词表的组恰一个时给 suggest_control,两组时补 suggest_case。
+    """
+    title = (ds.samples["title"].astype(str)
+             if "title" in ds.samples.columns else None)
+    fields: list[dict] = []
+    for col in ds.samples.columns:
+        if not (col.startswith("characteristics") or col in ("title", "source_name_ch1")):
+            continue
+        if any(k in col.lower() for k in _GROUP_FIELD_DENY):
+            continue
+        raw = ds.samples[col].astype(str)
+        uniq = sorted({v for v in raw.unique() if v.strip() and v.lower() != "nan"})
+        if not 2 <= len(uniq) <= 8:
+            continue
+        lows = {v.strip().lower() for v in uniq}
+        toks = {v.split(":")[-1].strip().split()[-1]
+                for v in lows if v.split(":")[-1].strip().split()}
+        if toks and toks <= _SEX_VALUE_TOKENS:
+            continue
+
+        groups_by_value: dict[str, list[str]] = {v: [] for v in uniq}
+        for c in count_columns:
+            if title is None:
+                continue
+            m = ds.samples[title == str(c)]
+            if m.empty:
+                continue                       # 非样本列(如 gene_Dbxref 注释列)不入组
+            v = str(m.iloc[0][col])
+            if v in groups_by_value:
+                groups_by_value[v].append(str(c))
+
+        def _lcp(names: list[str]) -> str:
+            p = names[0]
+            for nm in names[1:]:
+                while not nm.startswith(p):
+                    p = p[:-1]
+                    if not p:
+                        break
+            return p
+
+        groups = [{"value": v, "columns": cols, "suggest": _lcp(cols) if cols else ""}
+                  for v, cols in groups_by_value.items() if cols]
+        if len(groups) < 2:
+            continue                           # 分不出组的字段对选择器无意义
+        ctrl_groups = [g for g in groups if _CONTROL_VALUE_RE.search(g["value"])]
+        suggest_control = ctrl_groups[0]["suggest"] if len(ctrl_groups) == 1 else None
+        suggest_case = (next(g["suggest"] for g in groups
+                             if g["value"] != ctrl_groups[0]["value"])
+                        if suggest_control and len(groups) == 2 else None)
+
+        label = col
+        prefixes = {g["value"].split(":")[0].strip().lower()
+                    for g in groups if ":" in g["value"]}
+        if len(prefixes) == 1 and all(":" in g["value"] for g in groups):
+            label = groups[0]["value"].split(":")[0].strip()
+        fields.append({"name": col, "label": label, "groups": groups,
+                       "suggest_case": suggest_case, "suggest_control": suggest_control})
+
+    fields.sort(key=lambda f: 0 if any(
+        w in f"{f['label']} {f['name']}".lower()
+        for w in ("disease", "state", "group", "diagnosis", "treatment")) else 1)
+    return fields
+
+
 def map_probe_to_symbol(matrix: pd.DataFrame, gpl: str) -> pd.DataFrame:
     """把探针级矩阵按 GPL 注释映射为基因符号矩阵。
 

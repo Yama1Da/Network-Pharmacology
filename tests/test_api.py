@@ -618,6 +618,40 @@ def test_ml_overview_job_flow(client, monkeypatch):
     assert {"a": "control", "b": "control group", "n": 4} in f2["overlaps"]
 
 
+def test_ml_overview_counts_picker(client, monkeypatch):
+    """counts 模式选择器:按字段取值分组 counts 列,建议=组内列名公共前缀;
+    非样本列(gene_Dbxref)不入组;取值无对照词时不给方向建议。"""
+    samples = pd.DataFrame({
+        "title": [f"D5_20_{i}" for i in range(1, 4)] + [f"D5_CTL_{i}" for i in range(1, 4)],
+        "characteristics_ch1_3": (["treatment: HGF increased"] * 3
+                                  + ["treatment: medium only"] * 3),
+        "gender": ["male"] * 6,
+    })
+    fake_ds = SimpleNamespace(issues=["series matrix empty"], table=pd.DataFrame(),
+                              samples=samples)
+    monkeypatch.setattr("WY.core.geo.fetch_geo_dataset", lambda gse, **k: fake_ds)
+    monkeypatch.setattr("WY.core.geo.group_fields_overview", lambda ds: pd.DataFrame())
+    monkeypatch.setattr("WY.core.expression.assess_expression_dataset",
+                        lambda ds: {"usable": True, "matrix_empty": True})
+    cnt = pd.DataFrame({c: [1] for c in
+                        ["D5_20_1", "D5_20_2", "D5_20_3",
+                         "D5_CTL_1", "D5_CTL_2", "D5_CTL_3", "gene_Dbxref"]})
+    monkeypatch.setattr("WY.core.geo.fetch_gse_count_matrix",
+                        lambda gse, prefer=None: {"counts": cnt})
+    r = client.post("/api/ml/overview", json={"gse": "gsex"})
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done"
+    cp = job["result"]["counts_picker"]
+    f = cp["fields"][0]
+    assert f["label"] == "treatment"
+    assert f["suggest_case"] is None and f["suggest_control"] is None
+    groups = {g["value"]: g for g in f["groups"]}
+    assert groups["treatment: HGF increased"]["suggest"] == "D5_20_"
+    assert groups["treatment: HGF increased"]["columns"] == ["D5_20_1", "D5_20_2", "D5_20_3"]
+    assert groups["treatment: medium only"]["columns"] == ["D5_CTL_1", "D5_CTL_2", "D5_CTL_3"]
+    assert all("gene_Dbxref" not in g["columns"] for g in f["groups"])
+
+
 def test_ml_ranked_empty(client):
     assert client.post("/api/ml/ranked", json={}).json() == {"files": []}
 

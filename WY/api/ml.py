@@ -204,7 +204,8 @@ def ml_overview(body: MlOverviewBody) -> dict:
     分组字段分布 + counts 列清单(空矩阵类)+ 可用性权威判定。"""
     import pandas as pd
 
-    from WY.core.expression import assess_expression_dataset, group_picker_fields
+    from WY.core.expression import (assess_expression_dataset, counts_picker_fields,
+                                    group_picker_fields)
     from WY.core.geo import fetch_gse_count_matrix, fetch_geo_dataset, group_fields_overview
 
     gse = body.gse.strip().upper()
@@ -218,10 +219,14 @@ def ml_overview(body: MlOverviewBody) -> dict:
         overview = group_fields_overview(ds)
         a = assess_expression_dataset(ds)
         picker = group_picker_fields(ds)
+        counts_picker = None
+        counts_match = None
         counts_rows: list[dict] = []
         if ds.issues and ds.table.empty:
             try:
                 cnt = fetch_gse_count_matrix(gse)
+                count_columns = [str(c) for c in cnt["counts"].columns]
+                counts_picker = counts_picker_fields(ds, count_columns)
                 grp_cols = [c for c in ds.samples.columns
                             if c.startswith("characteristics")
                             and 2 <= ds.samples[c].astype(str).nunique() <= 8
@@ -229,7 +234,7 @@ def ml_overview(body: MlOverviewBody) -> dict:
                                         ("age", "sex", "gender", "date", "batch"))]
                 title = (ds.samples["title"].astype(str)
                          if "title" in ds.samples.columns else None)
-                for c in [str(c) for c in cnt["counts"].columns]:
+                for c in count_columns:
                     row = {"sample": c}
                     if title is not None:
                         m = ds.samples[title == c]
@@ -240,12 +245,20 @@ def ml_overview(body: MlOverviewBody) -> dict:
             except Exception as exc:
                 logging.exception("counts overview failed for %s", gse)
                 counts_rows = []
+                counts_picker = None
                 return {"overview": overview.to_dict(orient="records"),
                         "counts_rows": counts_rows, "assess": a,
-                        "group_picker": {"fields": picker},
+                        "group_picker": {"fields": picker}, "counts_picker": None,
+                        "counts_match": None,
                         "issues": list(ds.issues), "counts_error": str(exc)}
+            # 列名↔样本标题匹配率:提交者常在 counts 文件里用另一套缩写
+            # (实测 GSE353436:列名 SH1/NCM1 vs 标题 "AGS gastric cancer cells, NC, …"),
+            # 全部对不上时分组信息不可自动提取,前端据此明示而非静默无选择器
+            counts_match = {"matched": sum(1 for row in counts_rows if len(row) > 1),
+                            "total": len(count_columns)}
         return {"overview": overview.to_dict(orient="records"),
                 "counts_rows": counts_rows, "assess": a, "group_picker": {"fields": picker},
+                "counts_picker": {"fields": counts_picker}, "counts_match": counts_match,
                 "issues": list(ds.issues)}
 
     return {"job_id": jobs.submit(task, f"ml overview {gse}")}
