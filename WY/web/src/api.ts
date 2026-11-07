@@ -221,6 +221,9 @@ export interface MlRunResult {
     n_samples?: number
     n_genes?: number
     cv_auc?: number | null
+    cv_mean?: number | null
+    cv_sd?: number | null
+    cv_repeats?: number | null
     algo_spearman_mean?: number | null
     [k: string]: unknown
   }

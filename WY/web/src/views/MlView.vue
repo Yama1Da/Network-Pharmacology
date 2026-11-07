@@ -620,7 +620,10 @@ onMounted(() => {
       <div class="metrics">
         <div class="metric"><b>{{ meta?.n_samples }}</b><span>{{ t('web.ml.m_samples') }}</span></div>
         <div class="metric"><b>{{ meta?.n_genes }}</b><span>{{ t('web.ml.m_genes') }}</span></div>
-        <div class="metric"><b>{{ meta?.cv_auc ?? 'N/A' }}</b><span>CV-AUC</span></div>
+        <div class="metric">
+          <b>{{ meta?.cv_mean ?? meta?.cv_auc ?? 'N/A' }}</b>
+          <span>CV-AUC<template v-if="meta?.cv_sd != null"> ± {{ meta.cv_sd }}</template></span>
+        </div>
         <div class="metric"><b>{{ meta?.algo_spearman_mean }}</b><span>{{ t('web.ml.m_spearman') }}</span></div>
       </div>
 

@@ -246,10 +246,14 @@ def bootstrap_stability(X, y, rounds, seed):
                          index=X.columns), n_done)
 
 
-def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None):
-    """折内完整选择 + 折内训练、折外打分;返回 (auc, y_true, scores, mode)。
+def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None, repeats: int = 1):
+    """折内完整选择 + 折内训练、折外打分;返回 (auc, y_true, scores, mode, aucs)。
 
     最小类 ≤ 6 自动切 LOOCV;否则 5 折分层(折数受最小类限制)。
+    repeats:分层 CV 重复次数(每轮 random_state=seed+r*977 重排划分),
+    返回的 auc/scores 为**全部重复池化**的结果(单图/单 AUC),aucs 为逐次
+    AUC 列表(供 mean±sd 报告精度);LOOCV 划分是确定性的,重复无意义,
+    强制按 1 次执行(此时 aucs 长度 1)。
     cv_matrix(可选):全基因「样本×基因」矩阵,行须覆盖 X 的全部样本。
     提供时每折先以「训练折样本」重算 DEG(Welch t+BH)圈定折内候选池,
     并在训练折上拟合标准化 scaler —— 测试折的标签与统计量都不参与,
@@ -279,46 +283,97 @@ def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None):
     else:
         k = _top_k(X.shape[1])
     if min_cls <= 6:
-        mode, splits = "loocv", list(LeaveOneOut().split(X, y_arr))
+        mode = "loocv"
+        split_sets = [list(LeaveOneOut().split(X, y_arr))]   # 确定性,重复无意义
     else:
         n_splits = min(5, min_cls)
         mode = f"{n_splits}-fold"
-        splits = list(StratifiedKFold(n_splits=n_splits, shuffle=True,
-                                      random_state=seed).split(X, y_arr))
+        split_sets = [list(StratifiedKFold(
+            n_splits=n_splits, shuffle=True,
+            random_state=seed + r * 977).split(X, y_arr))
+            for r in range(max(1, repeats))]
     y_true, scores = [], []
-    for fold_i, (tr, te) in enumerate(splits):
-        ytr = y_arr[tr]
-        try:
-            if fold_mode:
-                # 折内候选池 + 折内标准化:测试折标签与统计量都不参与(无泄漏口径)
-                from .expression import differential_expression
-                fold_deg = differential_expression(
-                    Xcv.iloc[tr].T, pd.Series(ytr, index=X.index[tr]))
-                pool = fold_deg.sort_values(["FDR", "p"]).head(cv_top_n)["gene"].tolist()
-                if not pool:
-                    raise RuntimeError("折内 DEG 预筛得 0 个候选基因")
-                scaler = StandardScaler().fit(Xcv.iloc[tr][pool])
-                Xtr = pd.DataFrame(scaler.transform(Xcv.iloc[tr][pool]),
-                                   index=X.index[tr], columns=pool)
-                Xte = pd.DataFrame(scaler.transform(Xcv.iloc[te][pool]),
-                                   index=X.index[te], columns=pool)
-            else:
-                Xtr, Xte = X.iloc[tr], X.iloc[te]
-            imps = _select_all(Xtr, ytr, seed + fold_i + 101,
-                               boruta_iter=_BORUTA_ITER_BOOT)
-            rank = sum(imp.rank(ascending=False, method="average")
-                       for imp in imps.values())
-            genes = list(rank.sort_values().head(k).index)
-            m = LogisticRegression(C=1.0, solver="lbfgs",
-                                   max_iter=5000).fit(Xtr[genes], ytr)
-            s = m.decision_function(Xte[genes])
-        except Exception:
-            logging.exception("CV fold %d selection failed; fold skipped", fold_i)
-            continue
-        y_true.extend(y_arr[te].tolist())
-        scores.extend(np.asarray(s).ravel().tolist())
+    aucs: list[float] = []
+    for r, splits in enumerate(split_sets):
+        r_true, r_scores = [], []
+        for fold_i, (tr, te) in enumerate(splits):
+            ytr = y_arr[tr]
+            try:
+                if fold_mode:
+                    # 折内候选池 + 折内标准化:测试折标签与统计量都不参与(无泄漏口径)
+                    from .expression import differential_expression
+                    fold_deg = differential_expression(
+                        Xcv.iloc[tr].T, pd.Series(ytr, index=X.index[tr]))
+                    pool = fold_deg.sort_values(["FDR", "p"]).head(cv_top_n)["gene"].tolist()
+                    if not pool:
+                        raise RuntimeError("折内 DEG 预筛得 0 个候选基因")
+                    scaler = StandardScaler().fit(Xcv.iloc[tr][pool])
+                    Xtr = pd.DataFrame(scaler.transform(Xcv.iloc[tr][pool]),
+                                       index=X.index[tr], columns=pool)
+                    Xte = pd.DataFrame(scaler.transform(Xcv.iloc[te][pool]),
+                                       index=X.index[te], columns=pool)
+                else:
+                    Xtr, Xte = X.iloc[tr], X.iloc[te]
+                imps = _select_all(Xtr, ytr, seed + fold_i + 101,
+                                   boruta_iter=_BORUTA_ITER_BOOT)
+                rank = sum(imp.rank(ascending=False, method="average")
+                           for imp in imps.values())
+                genes = list(rank.sort_values().head(k).index)
+                m = LogisticRegression(C=1.0, solver="lbfgs",
+                                       max_iter=5000).fit(Xtr[genes], ytr)
+                s = m.decision_function(Xte[genes])
+            except Exception:
+                logging.exception("CV repeat %d fold %d selection failed; fold skipped",
+                                  r, fold_i)
+                continue
+            r_true.extend(y_arr[te].tolist())
+            r_scores.extend(np.asarray(s).ravel().tolist())
+        y_true.extend(r_true)
+        scores.extend(r_scores)
+        aucs.append(float(roc_auc_score(r_true, r_scores))
+                    if len(set(r_true)) > 1 else float("nan"))
     auc = float(roc_auc_score(y_true, scores)) if len(set(y_true)) > 1 else float("nan")
-    return auc, np.array(y_true), np.array(scores), mode
+    return auc, np.array(y_true), np.array(scores), mode, aucs
+
+
+def permutation_test(X, y, *, cv_matrix=None, cv_top_n=None,
+                     n_perm: int = 100, seed: int | None = None,
+                     cv_repeats: int | None = None, progress=None) -> dict:
+    """标签置换检验:打乱标签重跑折内 CV,给出「观测 AUC 显著优于随机」的 p 值。
+
+    每轮用 rng.permutation 打乱标签后只跑 crossval_roc(不跑共识/bootstrap ——
+    置换分布只需要 AUC,共识产物与置换无关)。p 值按置换检验惯例
+    (1 + #{perm_auc >= obs}) / (1 + n_perm) 计算,含观测值本身,永不为 0。
+    划分结构沿用 crossval_roc 的规则(小样本 LOOCV / 大样本分层 5 折),
+    LOOCV 下置换检验依然有效:打乱的是标签与样本的对应关系,划分不变。
+
+    成本模型:每轮 ≈ 一次折内 CV(88 样本实测 60–90s;3v3 LOOCV 秒级)。
+    这是离线显著性对照 —— 建议先小轮数(10)试跑再上正式轮数(100),
+    并行化留待真实需求(各轮完全独立,理论可按核数铺开)。
+    返回 {obs_auc, aucs, p_value, n_perm}。
+    """
+    from sklearn.metrics import roc_auc_score
+
+    config = _config()
+    seed = config.ML_SEED if seed is None else seed
+    cv_top_n = config.ML_DEG_PREFILTER_TOP_N if cv_top_n is None else cv_top_n
+    y_arr = np.asarray(y)
+    obs_auc, _, _, _, _ = crossval_roc(X, y, seed, cv_matrix=cv_matrix,
+                                       cv_top_n=cv_top_n, repeats=1)
+    rng = np.random.default_rng(seed + 31337)
+    aucs: list[float] = []
+    for i in range(max(1, n_perm)):
+        y_perm = pd.Series(rng.permutation(y_arr), index=X.index)
+        auc_p, _, _, _, _ = crossval_roc(X, y_perm, seed, cv_matrix=cv_matrix,
+                                         cv_top_n=cv_top_n, repeats=1)
+        aucs.append(auc_p)
+        if progress:
+            progress(None, f"置换 {i + 1}/{n_perm}: AUC={auc_p:.4f}")
+    n_ge = sum(1 for a in aucs if np.isfinite(a) and a >= obs_auc)
+    return {"obs_auc": float(obs_auc),
+            "aucs": [round(float(a), 4) if np.isfinite(a) else None for a in aucs],
+            "p_value": round((1 + n_ge) / (1 + len(aucs)), 4),
+            "n_perm": len(aucs)}
 
 
 # ---------------- 共识与主入口 ----------------
@@ -334,7 +389,8 @@ def _rank_score(imp: pd.Series) -> pd.Series:
 def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
                      seed: int | None = None, *,
                      cv_matrix: pd.DataFrame | None = None,
-                     cv_top_n: int | None = None) -> dict:
+                     cv_top_n: int | None = None,
+                     cv_repeats: int | None = None) -> dict:
     """六算法 × 三验证 + 共识打分。返回 {consensus, freq, importances, roc, meta}。
 
     X: 样本×基因 表达矩阵(DEG 预过滤后的候选池,共识/稳定性在此池上,全量口径);
@@ -351,6 +407,7 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
     seed = config.ML_SEED if seed is None else seed
     rounds = config.ML_BOOTSTRAP_ROUNDS if bootstrap_rounds is None else bootstrap_rounds
     cv_top_n = config.ML_DEG_PREFILTER_TOP_N if cv_top_n is None else cv_top_n
+    repeats = config.ML_CV_REPEATS if cv_repeats is None else max(1, int(cv_repeats))
 
     # 方向防御(审核 R1 修复):X 必须是样本×基因(行数=样本数=标签数,列数=基因数)
     if X.shape[0] != len(y):
@@ -370,8 +427,8 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
     imps = _select_all(X, y, seed)
     rank_scores = {alg: _rank_score(imp) for alg, imp in imps.items()}
     freq, n_boot_done = bootstrap_stability(X, y, rounds, seed)
-    auc, y_true, scores, cv_mode = crossval_roc(X, y, seed,
-                                                cv_matrix=cv_matrix, cv_top_n=cv_top_n)
+    auc, y_true, scores, cv_mode, auc_list = crossval_roc(
+        X, y, seed, cv_matrix=cv_matrix, cv_top_n=cv_top_n, repeats=repeats)
 
     genes = list(X.columns)
     consensus = pd.DataFrame(index=genes)
@@ -412,6 +469,15 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
         "cv_pool": "fold" if cv_matrix is not None else "pool",
         "cv_top_n": (min(cv_top_n, cv_matrix.shape[1])
                      if cv_matrix is not None else None),
+        # 精度报告:aucs 为逐次重复的 AUC;cv_mean/cv_sd 为 mean±sd。
+        # LOOCV 划分确定性 → repeats 实际为 1,sd 无意义置 None。
+        # cv_auc 仍为池化口径(全重复折外打分合起来算一次 ROC,PNG 标题同源);
+        # cv_mean 是"均值 of 均值",与池化 cv_auc 语义不同,论文引用请用 cv_mean±cv_sd。
+        "cv_repeats": len(auc_list),
+        "cv_mean": (round(float(np.nanmean(auc_list)), 4)
+                    if auc_list and not all(np.isnan(auc_list)) else None),
+        "cv_sd": (round(float(np.nanstd(auc_list, ddof=1)), 4)
+                  if len(auc_list) > 1 and not all(np.isnan(auc_list)) else None),
         "cv_auc": None if np.isnan(auc) else round(auc, 4),  # NaN → null(合法 JSON,审核 BUG-6)
         "seed": seed, "top_k_rule": _top_k(X.shape[1]),
         "consensus_weights": {"rank": config.ML_CONSENSUS_RANK_W,

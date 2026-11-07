@@ -200,6 +200,9 @@ class MlRunBody(BaseModel):
     top_k: int | None = None
     prefilter_top: int | None = None
     bootstrap_rounds: int | None = None
+    map_ids: bool = False         # --expr 模式 Ensembl/探针级矩阵经 mygene 映射(需联网)
+    perm_rounds: int = 0          # 标签置换检验轮次(0=关;离线对照,长任务,UI 暂不暴露)
+    cv_repeats: int | None = None  # 分层 CV 重复次数(None → config.ML_CV_REPEATS)
 
 
 def _rel_downloads(path: str) -> str | None:
@@ -237,7 +240,10 @@ def ml_run(body: MlRunBody) -> dict:
                       bootstrap_rounds=int(body.bootstrap_rounds or 30),
                       ranked_csvs=ranked_csvs, top_k=int(body.top_k or 50),
                       out_base=config.GEO_RESULT_DIR, out_subdir=None,
-                      progress=_ml_progress(progress))
+                      progress=_ml_progress(progress),
+                      map_ids=bool(body.map_ids),
+                      perm_rounds=max(0, int(body.perm_rounds or 0)),
+                      cv_repeats=body.cv_repeats)
         if body.mode == "local":
             res = run_screen_chain(expr=body.expr.strip(), labels=body.labels.strip(),
                                    case_label=body.case_label.strip() or None, **common)

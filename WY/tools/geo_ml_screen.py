@@ -146,7 +146,8 @@ def cmd_screen(args) -> int:
         force_refresh=args.force_refresh, force_log=args.force_log,
         prefilter_top=args.prefilter_top, bootstrap_rounds=args.bootstrap_rounds,
         ranked_csvs=ranked_csvs, top_k=args.top_k, out_base=base,
-        progress=_progress)
+        progress=_progress, map_ids=args.map_ids, perm_rounds=args.perm,
+        cv_repeats=args.cv_repeats)
     return 0
 
 
@@ -197,6 +198,16 @@ def main() -> int:
     p_scr.add_argument("--force-log", dest="force_log", default=None, type=str,
                        choices=["true", "false"], help="覆盖 log2 启发式")
     p_scr.add_argument("--force-refresh", action="store_true")
+    p_scr.add_argument("--map-ids", action="store_true",
+                       help="--expr 模式行标识为 Ensembl/探针级时,经 mygene 批量映射为基因符号"
+                            "(需联网,约 2 万 ID 一两分钟;默认关,关闭时直接报错引导)")
+    p_scr.add_argument("--perm", dest="perm", type=int, default=config.ML_PERMUTATION_ROUNDS,
+                       help="标签置换检验轮次(离线显著性对照,0=关;只跑折内 CV,"
+                            "88 样本约 60–90s/轮,建议先 --perm 10 试跑;"
+                            "默认 config.ML_PERMUTATION_ROUNDS=0)")
+    p_scr.add_argument("--cv-repeats", dest="cv_repeats", type=int, default=None,
+                       help="分层 CV 重复次数(默认 config.ML_CV_REPEATS=5;报告 mean±sd;"
+                            "LOOCV 为确定性划分自动归 1)")
     p_scr.add_argument("--out", help="结果根目录")
     p_scr.set_defaults(func=cmd_screen)
 

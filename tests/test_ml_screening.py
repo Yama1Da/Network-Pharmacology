@@ -147,3 +147,34 @@ def test_cv_matrix_label_shuffle():
     res = ml.run_ml_screening(X_full, y_shuf, bootstrap_rounds=10, cv_matrix=X_full)
     auc = res["meta"]["cv_auc"]
     assert 0.20 < auc < 0.80, f"折内口径打乱后 AUC={auc} 异常(期望 ~0.5)"
+
+
+def test_cv_repeats_meta():
+    """重复 CV:5-fold 下 repeats=3 时 cv_repeats=3、cv_mean/cv_sd 落盘;
+    LOOCV(最小类 ≤6)划分确定性,强制归 1 且 sd=None。"""
+    X, y, _, _ = _make_synthetic(n_ctrl=10, n_case=10, n_genes=60, seed=42)
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=3, cv_repeats=3)
+    m = res["meta"]
+    assert m["cv_mode"].endswith("-fold"), f"10v10 应走分层,实际 {m['cv_mode']}"
+    assert m["cv_repeats"] == 3
+    assert m["cv_mean"] is not None and m["cv_sd"] is not None
+    assert 0.8 <= m["cv_mean"] <= 1.0, f"植入信号下 cv_mean 应高,实际 {m['cv_mean']}"
+    Xs, ys, _, _ = _make_synthetic(n_ctrl=4, n_case=4, n_genes=60, seed=42)
+    res_loo = ml.run_ml_screening(Xs, ys, bootstrap_rounds=3, cv_repeats=3)
+    m2 = res_loo["meta"]
+    assert m2["cv_mode"] == "loocv" and m2["cv_repeats"] == 1 and m2["cv_sd"] is None
+    assert m2["cv_mean"] == m2["cv_auc"]
+
+
+def test_permutation_test():
+    """置换检验:n_perm=3 跑通,p∈(0,1],obs 与主 CV 同量级;合成信号下 p 应小。"""
+    X, y, _, _ = _make_synthetic(n_ctrl=8, n_case=8, n_genes=60, seed=42)
+    perm = ml.permutation_test(X, y, n_perm=3, seed=0)
+    assert set(perm) == {"obs_auc", "aucs", "p_value", "n_perm"}
+    assert perm["n_perm"] == 3 and len(perm["aucs"]) == 3
+    assert 0 < perm["p_value"] <= 1
+    assert 0.5 <= perm["obs_auc"] <= 1.0
+    # 观测 AUC 应明显高于置换分布均值(合成信号可分,随机标签不可分)
+    perm_mean = float(np.mean([a for a in perm["aucs"] if a is not None]))
+    assert perm["obs_auc"] > perm_mean, \
+        f"obs {perm['obs_auc']} 应高于置换均值 {perm_mean:.3f}"
