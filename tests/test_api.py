@@ -382,7 +382,7 @@ def test_docking_session_create_and_expired_404(client):
 
 def test_docking_sources_empty(client):
     body = client.get("/api/docking/sources").json()
-    assert body == {"ppi_dirs": [], "enr_files": []}
+    assert body == {"ppi_dirs": [], "enr_files": [], "manual_dirs": []}
 
 
 def test_docking_source_manual_and_bad_mode(client, sid):
@@ -395,15 +395,48 @@ def test_docking_source_manual_and_bad_mode(client, sid):
     assert body["label"] == "" and body["hub_count"] == 0
 
 
+def test_docking_manual_dirs_listing_and_source_filter(client, sid):
+    """manual_* 桶进专属清单(基因从 analysis_meta.json 读出),PPI/富集清单不再收录。"""
+    import json as _json
+
+    bucket = os.path.join(config.DOWNLOADS_DIR, "manual_abc12345_data")
+    os.makedirs(bucket, exist_ok=True)
+    with open(os.path.join(bucket, "analysis_meta.json"), "w", encoding="utf-8") as f:
+        _json.dump({"genes": ["TP53", "EGFR", "APOE"]}, f)
+    os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
+    with open(os.path.join(config.ENRICHMENT_CACHE_DIR,
+                           "gProfiler_manual_abc12345.csv"), "w", encoding="utf-8") as f:
+        f.write("term_id,genes\nhsa04115,TP53\n")
+
+    body = client.get("/api/docking/sources").json()
+    assert [m["name"] for m in body["manual_dirs"]] == ["manual_abc12345_data"]
+    m = body["manual_dirs"][0]
+    assert m["n_genes"] == 3 and m["genes"] == ["APOE", "EGFR", "TP53"]
+    assert all(not d["name"].startswith("manual") for d in body["ppi_dirs"])
+    assert all(not f["name"].startswith("gProfiler_manual") for f in body["enr_files"])
+
+    # manual-file 模式:从桶元数据回填基因(与 manual 输入同构落 dock)
+    r = client.post(f"/api/docking/{sid}/source",
+                    json={"mode": "manual-file", "manual_file": "manual_abc12345_data"})
+    assert r.status_code == 200
+    assert r.json()["candidates"] == ["APOE", "EGFR", "TP53"]
+    # 非法路径拒绝
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "manual-file", "manual_file": "../evil"}).status_code == 400
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "manual-file", "manual_file": "ppi_x_data"}).status_code == 400
+
+
 def test_docking_check_structures_guards(client, sid):
+    """未选任何来源时结构检查 400;手动模式已修通:候选即输入基因,直检走 direct 分支。"""
     fresh = client.post("/api/docking/session").json()["sid"]
     assert client.post(f"/api/docking/{fresh}/check-structures",
                        json={"use_struct": True}).status_code == 400
-    # manual 模式不产生候选集(candidate_pre 为空):结构检查必须 400 拒绝而非空跑
     client.post(f"/api/docking/{sid}/source",
                 json={"mode": "manual", "manual_genes": "TP53"})
-    assert client.post(f"/api/docking/{sid}/check-structures",
-                       json={"use_struct": False}).status_code == 400
+    body = client.post(f"/api/docking/{sid}/check-structures",
+                       json={"use_struct": False}).json()
+    assert body["job_id"] is None and body["direct"]["genes"] == ["TP53"]
 
 
 def test_docking_source_enr_and_check_structures_direct(client, monkeypatch):
@@ -438,6 +471,18 @@ def test_docking_ligand_guards(client, sid):
     body = client.post(f"/api/docking/{sid}/ligand",
                        json={"source": "smiles", "smiles": "CCO"}).json()
     assert "ok" in body
+
+
+def test_docking_ligand_manual_name_query_blocked(client, sid):
+    """手动会话按药名盲查被拦(曾把 'manual' 直送 PubChem);CID 直查放行。"""
+    client.post(f"/api/docking/{sid}/source",
+                json={"mode": "manual", "manual_genes": "TP53"})
+    body = client.post(f"/api/docking/{sid}/ligand",
+                       json={"source": "pubchem", "query": "manual"}).json()
+    assert body["ok"] is False and "CID" in body["error"]
+    # 纯数字 CID 经 resolve_cid 直通下载层,不触名称解析
+    from WY.core.docking import resolve_cid
+    assert resolve_cid("2244") == 2244  # 纯数字直通,不触网
 
 
 def test_docking_receptor_candidates_guard_and_flow(client, sid, monkeypatch):
@@ -506,18 +551,105 @@ def test_ml_probe_validation_and_metadata_path(client, monkeypatch):
     assert isinstance(body["assess"]["counts_available"], bool)
 
 
+def test_ml_probe_batch(client, monkeypatch):
+    """批量体检:单检同款判定归纳为四态徽章;空 rows/超限 → 400;
+    series matrix 404 = 确定性事实(无 counts → 红),不留灰态。"""
+    def _fake_probe(gse):
+        if gse == "GSE404":
+            raise RuntimeError("404 Client Error: Not Found for url: .../GSE404_series_matrix.txt.gz")
+        return {"size_bytes": 10}           # 其余走 <20KB 空表分支
+    monkeypatch.setattr("WY.core.geo.probe_series_matrix", _fake_probe)
+    monkeypatch.setattr("WY.core.geo.has_counts_supplement",
+                        lambda gse: gse == "GSEOK")
+    r = client.post("/api/ml/probe-batch", json={"rows": []})
+    assert r.status_code == 400
+    r = client.post("/api/ml/probe-batch",
+                    json={"rows": [{"gse": f"G{i}", "platform": "", "type": ""}
+                                   for i in range(51)]})
+    assert r.status_code == 400   # 超检索上限(50)才拒;50 行合法
+    body = client.post("/api/ml/probe-batch", json={"rows": [
+        {"gse": "gseok", "platform": "", "type": ""},
+        {"gse": "gseno", "platform": "", "type": ""},
+        {"gse": "gse404", "platform": "", "type": ""},
+    ]}).json()
+    by = {x["gse"]: x for x in body["results"]}
+    assert by["GSEOK"]["status"] == "ok" and by["GSEOK"]["assess"]["counts_available"] is True
+    assert by["GSENO"]["status"] == "unusable"
+    # 404:assess 走空矩阵分支(counts 无 → 红),err 保留供详情展示
+    assert by["GSE404"]["status"] == "unusable"
+    assert by["GSE404"]["assess"]["matrix_empty"] is True
+    assert by["GSE404"]["assess"]["counts_available"] is False
+    assert "404" in by["GSE404"]["err"]
+    assert by["GSEOK"]["counts_confirmed"] is None   # 未落盘,文件名级判定不实锤
+
+
 def test_ml_overview_job_flow(client, monkeypatch):
-    fake_ds = SimpleNamespace(issues=[], table=pd.DataFrame(),
-                              samples=pd.DataFrame({"title": ["s1"]}))
+    samples = pd.DataFrame({
+        "title": [f"S{i}" for i in range(9)],
+        "characteristics_ch1_1": (["disease state: obese T2DM and dyslipidemia"] * 6
+                                  + ["disease state: control"] * 3),
+        "characteristics_ch1_2": ["control"] * 5 + ["control group"] * 4,   # 子串重叠对
+        "gender": ["male"] * 9,           # deny 名单 → 不进选择器
+    })
+    fake_ds = SimpleNamespace(issues=[], table=pd.DataFrame(), samples=samples)
     monkeypatch.setattr("WY.core.geo.fetch_geo_dataset", lambda gse, **k: fake_ds)
     monkeypatch.setattr("WY.core.geo.group_fields_overview",
                         lambda ds: pd.DataFrame())
     monkeypatch.setattr("WY.core.expression.assess_expression_dataset",
-                        lambda ds: {"usable": True})
+                    lambda ds: {"usable": True})
     r = client.post("/api/ml/overview", json={"gse": "gsex"})
     job = _wait_job(client, r.json()["job_id"])
     assert job["status"] == "done"
     assert job["result"]["overview"] == [] and job["result"]["issues"] == []
+    # 分组选择器 payload:字段/取值/整行命中数/重叠对/方向建议
+    gp = job["result"]["group_picker"]
+    by_name = {f["name"]: f for f in gp["fields"]}
+    assert set(by_name) == {"characteristics_ch1_1", "characteristics_ch1_2"}  # gender 被 deny
+    f1 = by_name["characteristics_ch1_1"]
+    assert f1["label"] == "disease state"
+    assert f1["suggest_control"] == "disease state: control"
+    assert f1["suggest_case"] == "disease state: obese T2DM and dyslipidemia"
+    n_map = {v["value"]: v["n"] for v in f1["values"]}
+    assert n_map["disease state: control"] == 3
+    assert n_map["disease state: obese T2DM and dyslipidemia"] == 6
+    # 子串重叠:整行包含语义下 "control" 也命中 "control group" 行(9+4=9?——5+4=9)
+    f2 = by_name["characteristics_ch1_2"]
+    assert {v["value"]: v["n"] for v in f2["values"]} == {"control": 9, "control group": 4}
+    assert {"a": "control", "b": "control group", "n": 4} in f2["overlaps"]
+
+
+def test_ml_overview_counts_picker(client, monkeypatch):
+    """counts 模式选择器:按字段取值分组 counts 列,建议=组内列名公共前缀;
+    非样本列(gene_Dbxref)不入组;取值无对照词时不给方向建议。"""
+    samples = pd.DataFrame({
+        "title": [f"D5_20_{i}" for i in range(1, 4)] + [f"D5_CTL_{i}" for i in range(1, 4)],
+        "characteristics_ch1_3": (["treatment: HGF increased"] * 3
+                                  + ["treatment: medium only"] * 3),
+        "gender": ["male"] * 6,
+    })
+    fake_ds = SimpleNamespace(issues=["series matrix empty"], table=pd.DataFrame(),
+                              samples=samples)
+    monkeypatch.setattr("WY.core.geo.fetch_geo_dataset", lambda gse, **k: fake_ds)
+    monkeypatch.setattr("WY.core.geo.group_fields_overview", lambda ds: pd.DataFrame())
+    monkeypatch.setattr("WY.core.expression.assess_expression_dataset",
+                        lambda ds: {"usable": True, "matrix_empty": True})
+    cnt = pd.DataFrame({c: [1] for c in
+                        ["D5_20_1", "D5_20_2", "D5_20_3",
+                         "D5_CTL_1", "D5_CTL_2", "D5_CTL_3", "gene_Dbxref"]})
+    monkeypatch.setattr("WY.core.geo.fetch_gse_count_matrix",
+                        lambda gse, prefer=None: {"counts": cnt})
+    r = client.post("/api/ml/overview", json={"gse": "gsex"})
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done"
+    cp = job["result"]["counts_picker"]
+    f = cp["fields"][0]
+    assert f["label"] == "treatment"
+    assert f["suggest_case"] is None and f["suggest_control"] is None
+    groups = {g["value"]: g for g in f["groups"]}
+    assert groups["treatment: HGF increased"]["suggest"] == "D5_20_"
+    assert groups["treatment: HGF increased"]["columns"] == ["D5_20_1", "D5_20_2", "D5_20_3"]
+    assert groups["treatment: medium only"]["columns"] == ["D5_CTL_1", "D5_CTL_2", "D5_CTL_3"]
+    assert all("gene_Dbxref" not in g["columns"] for g in f["groups"])
 
 
 def test_ml_ranked_empty(client):

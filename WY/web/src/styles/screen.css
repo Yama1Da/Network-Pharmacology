@@ -513,6 +513,35 @@
   border-bottom-color: var(--c-ghost);
   color: var(--c-ink4);
 }
+
+/* ML 检索表体检徽章:行首状态点 + symbol_level 实测结论着色 */
+.probe-row {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  margin-top: 10px;
+}
+.col-chk {
+  width: 28px;
+  text-align: center;
+}
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.dot.ok { background: var(--c-ok, #1a7f37); }
+.dot.bad { background: var(--c-danger, #c62828); }
+.dot.unknown { background: transparent; border: 1px solid var(--c-line, #ccc); }
+.dot.busy { background: var(--c-warn, #b26a00); animation: dot-pulse 0.9s infinite alternate; }
+@keyframes dot-pulse { from { opacity: 0.35; } to { opacity: 1; } }
+.sym-hint { color: var(--c-ink4, #999); font-style: italic; }
+span.ok { color: var(--c-ok, #1a7f37); }
+span.bad { color: var(--c-danger, #c62828); }
+span.unknown { color: var(--c-ink3, #666); }
 .bar-btn.danger {
   color: var(--c-danger);
   border-bottom-color: var(--c-danger);

@@ -9,6 +9,7 @@ authors:
     website: "https://github.com/Yama1Da"
   - family-names: Hu
     given-names: Junwen
+    affiliation: "Chongqing Jiaotong University"
     alias: GuiWuyan
     orcid: "https://orcid.org/0009-0007-9166-9453"
     website: "https://github.com/GuiWuyan"
@@ -20,11 +21,9 @@ authors:
 identifiers:
   - type: doi
     value: 10.5281/zenodo.23981878
-    link: https://doi.org/10.5281/zenodo.23981878
     description: DOI of release v1.0.0
   - type: doi
     value: 10.5281/zenodo.23981877
-    link: https://doi.org/10.5281/zenodo.23981877
     description: Concept DOI, always resolving to the latest version
 version: 1.0.0
 date-released: "2026-11-05"

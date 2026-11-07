@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 import os
 import re
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
@@ -59,7 +60,11 @@ def docking_create_session() -> dict:
 
 @router.get("/api/docking/sources")
 def docking_sources() -> dict:
-    """Step 1 的两个候选来源清单:PPI 分析目录(展示名 = 药物 → 疾病)与 ORA 富集文件。"""
+    """Step 1 的候选来源清单:PPI 分析目录(展示名 = 药物 → 疾病)与 ORA 富集文件。
+
+    手动基因分析(manual_* 桶及其富集缓存)不进这两个清单 —— 它们由
+    「手动基因对接」专属入口接管(见 manual_dirs 与 source 的 manual 模式)。
+    """
     from WY.core.docking import split_result_prefix
     from WY.core.enrichment import parse_enrichment_filename
     from WY.core.files import list_cache_files, list_download_dirs
@@ -68,6 +73,7 @@ def docking_sources() -> dict:
     dirs = list_download_dirs()
     ppi_dirs = dirs[dirs["Directory"].str.endswith("_data", na=False)] if not dirs.empty else dirs
     ppi_out = []
+    manual_out = []
     for d in ppi_dirs["Directory"].tolist():
         prefix = d[:-5] if d.endswith("_data") else d
         # 空壳目录(中断运行遗留、无任何文件)不进选择清单,避免出现 "empty →" 这类无效项
@@ -76,27 +82,63 @@ def docking_sources() -> dict:
                 continue
         except OSError:
             continue
+        if prefix.startswith("manual"):
+            # 手动基因桶:进专属入口的清单(基因列表在 analysis_meta.json),
+            # 不混入 PPI 分析下拉 —— 哈希桶名对用户无意义,且药病反解必得 "manual"
+            meta = _read_manual_meta(d)
+            if meta["genes"]:
+                manual_out.append(meta)
+            continue
         drug, disease = split_result_prefix(prefix)
-        # manual* 前缀是手动基因模式的固定结果目录(现按基因列表指纹分桶 manual_<hash8>),
-        # 前端按模式名展示,不把指纹当疾病名
-        ppi_out.append({"name": d, "display": f"{drug} → {disease}" or d,
-                        "manual": prefix.startswith("manual")})
+        ppi_out.append({"name": d, "display": f"{drug} → {disease}" or d})
 
     enr = list_cache_files("enrichment", exts=(".csv",))
     if not enr.empty:
         is_ora = enr["File name"].map(
             lambda n: (parse_enrichment_filename(n) or {}).get("kind") == "ora")
         enr = enr[is_ora].sort_values("Modified time", ascending=False)
+        # 手动基因模式的富集缓存(label=manual_<hash>)同样归专属入口,不进本清单
+        enr = enr[~enr["File name"].map(
+            lambda n: ((parse_enrichment_filename(n) or {}).get("label") or "")
+            .startswith("manual"))]
     enr_out = [{"name": row["File name"],
                 "display": f"{enrichment_display_name(row['File name'])} · {row['Modified time']}"}
                for _, row in enr.iterrows()]
-    return {"ppi_dirs": ppi_out, "enr_files": enr_out}
+    return {"ppi_dirs": ppi_out, "enr_files": enr_out, "manual_dirs": manual_out}
+
+
+def _read_manual_meta(dir_name: str) -> dict:
+    """读手动基因桶的 analysis_meta.json,返回 {name, n_genes, mtime, genes}。
+
+    基因清单由 save_ppi_results 写入(core/ppi.py,manual 前缀桶专属);
+    缺文件/无 genes(旧版桶)返回空 genes,调用方据此跳过。
+    """
+    import json as _json
+
+    d = os.path.join(config.DOWNLOADS_DIR, dir_name)
+    info = {"name": dir_name, "n_genes": 0, "mtime": "", "genes": []}
+    try:
+        info["mtime"] = datetime.fromtimestamp(
+            os.path.getmtime(d)).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        pass
+    meta_path = os.path.join(d, "analysis_meta.json")
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            genes = (_json.load(f).get("genes") or [])
+        genes = sorted({str(g).strip().upper() for g in genes if str(g).strip()})
+        info["genes"] = genes
+        info["n_genes"] = len(genes)
+    except (OSError, ValueError):
+        pass
+    return info
 
 
 class DockSourceBody(BaseModel):
-    mode: str            # "ppi" | "enr" | "manual"
+    mode: str            # "ppi" | "enr" | "manual" | "manual-file"
     name: str = ""       # ppi 目录名 / enr 文件名
     manual_genes: str = ""
+    manual_file: str = ""  # manual-file 模式:downloads 下 manual_*_data 目录名
 
 
 @router.post("/api/docking/{sid}/source")
@@ -126,18 +168,38 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
         label = enrichment_filename_label(body.name)
         dock["label"] = label
         dock["drug"], dock["disease"] = split_result_prefix(label)
-    elif body.mode == "manual":
-        dock["genes"] = sorted({g.strip().upper() for g in re.split(r"[,;\s]+", body.manual_genes)
-                                if g.strip()})
-        dock["label"] = ""
+    elif body.mode in ("manual", "manual-file"):
+        # 手动基因对接专属入口:基因列表来自输入框(manual)或历史桶元数据
+        # (manual-file,读 analysis_meta.json)。无药病语境,label 只作来源标识,
+        # 以 manual 开头 —— ligand 端点据此拦截"按药名查 PubChem"。
+        if body.mode == "manual":
+            genes = sorted({g.strip().upper() for g in re.split(r"[,;\s]+", body.manual_genes)
+                            if g.strip()})
+            if not genes:
+                raise HTTPException(status_code=400, detail="manual_genes is required")
+            dock["label"] = ""
+        else:
+            safe = os.path.basename(body.manual_file.strip())
+            if not (safe.startswith("manual") and safe.endswith("_data")):
+                raise HTTPException(status_code=400, detail="manual_file must be a manual_*_data dir")
+            genes = _read_manual_meta(safe)["genes"]
+            if not genes:
+                raise HTTPException(status_code=400,
+                                    detail=f"{safe}: analysis_meta.json 无基因清单(旧版桶)")
+            dock["label"] = safe[:-5] if safe.endswith("_data") else safe
         dock["drug"] = ""
         dock["disease"] = ""
         dock["hub_genes"], dock["enrichment_genes"] = [], []
+        dock["genes"] = genes
     else:
-        raise HTTPException(status_code=400, detail="mode must be ppi|enr|manual")
+        raise HTTPException(status_code=400, detail="mode must be ppi|enr|manual|manual-file")
 
     docking_session.reset_downstream(dock)
-    if body.mode != "manual":
+    if body.mode not in ("ppi", "enr"):
+        # 手动模式:全部输入基因即候选(无网络/无交集计算),跳过结构检查直接
+        # 进 Step 3 也能选基因;check-structures 会把 genes 替换为"有结构"子集
+        dock["candidate_pre"] = list(dock["genes"])
+    else:
         hub_set = set(dock.get("hub_genes") or [])
         enr_set = set(dock.get("enrichment_genes") or [])
         dock["candidate_pre"] = sorted(hub_set & enr_set) if hub_set else sorted(enr_set)
@@ -207,6 +269,15 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
         query = body.query.strip()
         if not query:
             return {"ok": False, "error": "未提供药物名或 CID"}
+        # 手动基因会话无药名语境:按名称盲查必然是"把来源标识当药名"的误用
+        #(曾把 "manual" 直接送进 PubChem 报"查无化合物");CID 直查(纯数字)放行。
+        # 判据 = 会话由手动入口建立(label 为空串或 manual_*,且未挂 PPI/富集来源)
+        is_manual_session = (not (dock.get("ppi_dir") or dock.get("enr_file"))
+                             and not (dock.get("label") or "").startswith(("gProfiler", "Enrichr"))
+                             and bool(dock.get("genes")))
+        if is_manual_session and not query.isdigit():
+            return {"ok": False,
+                    "error": "手动基因模式无关联药物:请输入 CID(纯数字)直接下载,或改用 SMILES"}
         try:
             cid = resolve_cid(query)
         except PubChemUnavailable as exc:

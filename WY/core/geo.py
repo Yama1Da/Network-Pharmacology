@@ -823,9 +823,16 @@ def assign_groups(ds: GeoDataset, case_pattern: str, control_pattern: str) -> pd
             f"分组正则匹配失败:case 匹配 {n_case} 个、control 匹配 {n_ctrl} 个样本。"
             "请先运行不带分组参数的 deg 命令查看字段取值后修正正则。")
     if n_case == len(text) or n_ctrl == len(text):
+        # 附上被命中样本的注释示例:两组共享同一前缀时(如 "obese T2DM and exercise"
+        # 与 "...and control" 的共同头),用户看到示例即知该改用区分性尾段关键词
+        which = "case" if n_case == len(text) else "control"
+        pat = case_pattern if which == "case" else control_pattern
+        examples = [ln[:100]
+                    for ln in text[case_hit if which == "case" else ctrl_hit].head(2)]
         raise RuntimeError(
-            "分组正则匹配了全部样本(case 或 control 必须留出对照组/病例组),"
-            "请把正则收紧到具体分组字段值。")
+            f"分组正则 {pat!r} 匹配了全部 {len(text)} 个样本(case 或 control 必须留出"
+            "对照组/病例组)—— 两组样本注释常共享同一前缀,请改用只出现在一组里的"
+            f"区分性关键词。被一并命中的样本注释示例: {examples}")
     overlap = text[case_hit & ctrl_hit]
     if len(overlap):
         raise RuntimeError(
