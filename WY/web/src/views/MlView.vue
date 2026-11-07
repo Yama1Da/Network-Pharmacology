@@ -199,6 +199,58 @@ const overviewJob = useJob((result) => {
 })
 const overview = ref<MlOverviewResult | null>(null)
 
+/* ---------------- 分组选择器(总览的三下拉:字段 → case/control 取值) ----------------
+ * 生成的正则为「列取值全值」的转义 —— 与 assign_groups 整行拼接匹配同源,
+ * protocol 列复述队列描述造成的污染从源头不存在;重叠对由后端 overlaps 显式给出。 */
+const gpField = ref('')
+const gpCase = ref('')
+const gpCtrl = ref('')
+const gpFields = computed(() => overview.value?.group_picker?.fields ?? [])
+const gpCurrent = computed(() => gpFields.value.find((f) => f.name === gpField.value) ?? null)
+const gpCaseN = computed(() =>
+  gpCurrent.value?.values.find((v) => v.value === gpCase.value)?.n ?? null)
+const gpCtrlN = computed(() =>
+  gpCurrent.value?.values.find((v) => v.value === gpCtrl.value)?.n ?? null)
+const gpOverlap = computed(() => {
+  const f = gpCurrent.value
+  if (!f || !gpCase.value || !gpCtrl.value) return null
+  return f.overlaps.find((o) => (o.a === gpCase.value && o.b === gpCtrl.value)
+                             || (o.a === gpCtrl.value && o.b === gpCase.value)) ?? null
+})
+const gpValid = computed(() => {
+  if (!gpCase.value || !gpCtrl.value) return null
+  if (gpCase.value === gpCtrl.value) return { ok: false, reason: 'same' }
+  if (gpOverlap.value) return { ok: false, reason: 'overlap' }
+  if ((gpCaseN.value ?? 0) === 0 || (gpCtrlN.value ?? 0) === 0) return { ok: false, reason: 'zero' }
+  if ((gpCaseN.value ?? 0) < 3 || (gpCtrlN.value ?? 0) < 3) return { ok: false, reason: 'small' }
+  return { ok: true, reason: '' }
+})
+/* 疑似纵向字段(取值含治疗前后/周次等):病例组含配对样本时提示用户收紧到时间点 */
+const gpPairedField = computed(() => {
+  for (const f of gpFields.value) {
+    if (f.name === gpField.value) continue
+    if (f.values.some((v) =>
+      /before|after|week|pre-?treatment|post-?treatment|day\s*\d/i.test(v.value)))
+      return f.label
+  }
+  return ''
+})
+
+function gpPickField(name: string): void {
+  gpField.value = name
+  const f = gpFields.value.find((x) => x.name === name)
+  gpCase.value = f?.suggest_case ?? ''
+  gpCtrl.value = f?.suggest_control ?? ''
+}
+
+function gpApply(): void {
+  if (!gpValid.value?.ok) return
+  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  casePat.value = esc(gpCase.value)
+  ctrlPat.value = esc(gpCtrl.value)
+  flash(t('web.ml.gp_filled'))
+}
+
 async function loadOverview(): Promise<void> {
   const g = gse.value.trim().toUpperCase()
   if (!g) { flash(t('web.ml.need_gse')); return }
@@ -275,6 +327,9 @@ watch(gse, () => {
   overview.value = null
   casePat.value = ''
   ctrlPat.value = ''
+  gpField.value = ''
+  gpCase.value = ''
+  gpCtrl.value = ''
 })
 watch(disease, () => {
   resultData.value = null
@@ -628,9 +683,51 @@ onMounted(() => {
                     : t('web.ml.annot_unknown', { gpl: overview.assess.gpl }))
             }) }}
           </p>
-          <p v-if="overview.assess.group_fields?.length" class="hint-line">
-            {{ t('web.ml.group_fields', { fields: overview.assess.group_fields.slice(0, 3).join('; ') }) }}
-          </p>
+          <template v-if="overview.group_picker?.fields?.length">
+            <div class="set-row">
+              <label class="set-label">{{ t('web.ml.gp_field_label') }}</label>
+              <select class="sel inline" v-model="gpField" :disabled="unusable"
+                      @change="gpPickField(gpField)">
+                <option value="" disabled>{{ t('web.ml.gp_field_ph') }}</option>
+                <option v-for="f in overview.group_picker.fields" :key="f.name" :value="f.name">
+                  {{ f.label }} ({{ f.values.length }})
+                </option>
+              </select>
+            </div>
+            <template v-if="gpCurrent">
+              <div class="set-row">
+                <label class="set-label">{{ t('web.ml.gp_case') }}</label>
+                <select class="sel inline" v-model="gpCase" :disabled="unusable">
+                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
+                  <option v-for="v in gpCurrent.values" :key="v.value" :value="v.value">
+                    {{ v.value }} ({{ v.n }})
+                  </option>
+                </select>
+              </div>
+              <div class="set-row">
+                <label class="set-label">{{ t('web.ml.gp_ctrl') }}</label>
+                <select class="sel inline" v-model="gpCtrl" :disabled="unusable">
+                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
+                  <option v-for="v in gpCurrent.values" :key="v.value" :value="v.value">
+                    {{ v.value }} ({{ v.n }})
+                  </option>
+                </select>
+              </div>
+              <p v-if="gpPairedField" class="stale">
+                {{ t('web.ml.gp_paired', { field: gpPairedField }) }}
+              </p>
+              <p v-if="gpCase && gpCtrl" class="hint-line"
+                 :class="{ good: gpValid?.ok, stale: !gpValid?.ok }">
+                {{ gpValid?.ok
+                  ? t('web.ml.gp_validate_ok', { n: gpCaseN, m: gpCtrlN })
+                  : t('web.ml.gp_validate_fail',
+                      { reason: t('web.ml.gp_reason_' + gpValid?.reason) }) }}
+              </p>
+              <button class="bar-btn" :disabled="!gpValid?.ok || unusable" @click="gpApply">
+                {{ t('web.ml.gp_fill') }}
+              </button>
+            </template>
+          </template>
           <p v-if="overview.assess.n_samples != null && overview.assess.n_samples < 12" class="stale">
             {{ t('web.ml.few_samples', { n: overview.assess.n_samples }) }}
           </p>

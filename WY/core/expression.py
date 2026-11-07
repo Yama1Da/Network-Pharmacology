@@ -9,6 +9,7 @@
 import gzip
 import logging
 import os
+import re
 import time
 
 import numpy as np
@@ -234,6 +235,74 @@ def assess_expression_dataset(ds) -> dict:
             "gpl": ds.gpl, "annot": annot, "group_fields": group_fields,
             "counts_available": None,
             "n_samples": n, "usable": usable}
+
+
+# 分组方向建议的对照词表(整词匹配,不分大小写):命中其一的取值判为 control
+_CONTROL_VALUE_WORDS = ("control", "healthy", "normal", "sham", "wildtype",
+                        "wild-type", "wt", "benign", "non-disease", "noncarrier")
+_CONTROL_VALUE_RE = re.compile(
+    "|".join(rf"\b{re.escape(w)}\b" for w in _CONTROL_VALUE_WORDS), re.I)
+
+
+def group_picker_fields(ds) -> list[dict]:
+    """分组选择器 payload:候选字段的取值清单 + 整行命中数 + 重叠对 + 方向建议。
+
+    与 assess 的候选启发式同款(characteristics/title/source、2~8 取值、
+    deny 名单 + 值级性别检查),额外保证:
+    - values 为列内去重后的**全值**(如 "disease state: control"),与
+      assign_groups 的整行拼接文本同源 —— 以全值 re.escape 作正则时
+      "值在行文本中 ⇔ contains 命中"由构造成立,protocol 列复述队列描述
+      造成的污染(裸 control 命中全部样本)从源头不存在;
+    - n 为**整行命中数**(非列内计数),前端校验与运行期 assign_groups 同口径;
+    - overlaps 记录同字段两值的行命中交集>0 的对子(子串包含型,如
+      "control" ⊂ "control group"),前端据此标红禁止选择;
+    - suggest_control/suggest_case:恰一值命中对照词表时给出方向建议,
+      两值字段才补 case 建议;字段名/标签含 disease/state/group/diagnosis 排前。
+    仅用于非空矩阵路径 —— counts 数据集的正则匹配对象是 counts 列名,语义不同。
+    """
+    text = ds.samples.apply(lambda row: " | ".join(str(v) for v in row.values), axis=1)
+    fields: list[dict] = []
+    for col in ds.samples.columns:
+        if not (col.startswith("characteristics") or col in ("title", "source_name_ch1")):
+            continue
+        if any(k in col.lower() for k in _GROUP_FIELD_DENY):
+            continue
+        raw = ds.samples[col].astype(str)
+        uniq = sorted({v for v in raw.unique() if v.strip() and v.lower() != "nan"})
+        if not 2 <= len(uniq) <= 8:
+            continue
+        lows = {v.strip().lower() for v in uniq}
+        toks = {v.split(":")[-1].strip().split()[-1]
+                for v in lows if v.split(":")[-1].strip().split()}
+        if toks and toks <= _SEX_VALUE_TOKENS:
+            continue
+
+        hit_sets = {v: set(text[text.str.contains(re.escape(v), case=False)].index)
+                    for v in uniq}
+        values = [{"value": v, "n": len(hit_sets[v])} for v in uniq]
+        overlaps = []
+        for i in range(len(uniq)):
+            for j in range(i + 1, len(uniq)):
+                n_ov = len(hit_sets[uniq[i]] & hit_sets[uniq[j]])
+                if n_ov:
+                    overlaps.append({"a": uniq[i], "b": uniq[j], "n": n_ov})
+
+        label = col
+        prefixes = {v.split(":")[0].strip().lower() for v in uniq if ":" in v}
+        if len(prefixes) == 1 and all(":" in v for v in uniq):
+            label = uniq[0].split(":")[0].strip()
+        ctrl_hits = [v for v in uniq if _CONTROL_VALUE_RE.search(v)]
+        suggest_control = ctrl_hits[0] if len(ctrl_hits) == 1 else None
+        suggest_case = (next(v for v in uniq if v != suggest_control)
+                        if suggest_control and len(uniq) == 2 else None)
+        fields.append({"name": col, "label": label, "values": values,
+                       "overlaps": overlaps,
+                       "suggest_case": suggest_case, "suggest_control": suggest_control})
+
+    fields.sort(key=lambda f: 0 if any(
+        w in f"{f['label']} {f['name']}".lower()
+        for w in ("disease", "state", "group", "diagnosis")) else 1)
+    return fields
 
 
 def map_probe_to_symbol(matrix: pd.DataFrame, gpl: str) -> pd.DataFrame:

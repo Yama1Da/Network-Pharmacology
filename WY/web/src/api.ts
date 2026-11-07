@@ -207,11 +207,32 @@ export interface MlProbeBatchItem {
   status: 'ok' | 'unusable' | 'unknown' | 'err'
 }
 
+/** 分组选择器字段(总览 job 的 group_picker 载荷):取值含整行命中数 n
+ * (与 assign_groups 同口径),overlaps 为子串包含型重叠对(应标红禁选)。 */
+export interface MlGroupValue {
+  value: string
+  n: number
+}
+
+export interface MlGroupField {
+  name: string
+  label: string
+  values: MlGroupValue[]
+  overlaps: { a: string; b: string; n: number }[]
+  suggest_case?: string | null
+  suggest_control?: string | null
+}
+
+export interface MlGroupPicker {
+  fields: MlGroupField[]
+}
+
 /** /api/ml/overview 的 job result。 */
 export interface MlOverviewResult {
   overview: Row[]
   counts_rows?: Row[]
   assess?: MlAssess
+  group_picker?: MlGroupPicker
   issues?: string[]
   counts_error?: string
 }

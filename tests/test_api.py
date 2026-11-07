@@ -584,17 +584,38 @@ def test_ml_probe_batch(client, monkeypatch):
 
 
 def test_ml_overview_job_flow(client, monkeypatch):
-    fake_ds = SimpleNamespace(issues=[], table=pd.DataFrame(),
-                              samples=pd.DataFrame({"title": ["s1"]}))
+    samples = pd.DataFrame({
+        "title": [f"S{i}" for i in range(9)],
+        "characteristics_ch1_1": (["disease state: obese T2DM and dyslipidemia"] * 6
+                                  + ["disease state: control"] * 3),
+        "characteristics_ch1_2": ["control"] * 5 + ["control group"] * 4,   # 子串重叠对
+        "gender": ["male"] * 9,           # deny 名单 → 不进选择器
+    })
+    fake_ds = SimpleNamespace(issues=[], table=pd.DataFrame(), samples=samples)
     monkeypatch.setattr("WY.core.geo.fetch_geo_dataset", lambda gse, **k: fake_ds)
     monkeypatch.setattr("WY.core.geo.group_fields_overview",
                         lambda ds: pd.DataFrame())
     monkeypatch.setattr("WY.core.expression.assess_expression_dataset",
-                        lambda ds: {"usable": True})
+                    lambda ds: {"usable": True})
     r = client.post("/api/ml/overview", json={"gse": "gsex"})
     job = _wait_job(client, r.json()["job_id"])
     assert job["status"] == "done"
     assert job["result"]["overview"] == [] and job["result"]["issues"] == []
+    # 分组选择器 payload:字段/取值/整行命中数/重叠对/方向建议
+    gp = job["result"]["group_picker"]
+    by_name = {f["name"]: f for f in gp["fields"]}
+    assert set(by_name) == {"characteristics_ch1_1", "characteristics_ch1_2"}  # gender 被 deny
+    f1 = by_name["characteristics_ch1_1"]
+    assert f1["label"] == "disease state"
+    assert f1["suggest_control"] == "disease state: control"
+    assert f1["suggest_case"] == "disease state: obese T2DM and dyslipidemia"
+    n_map = {v["value"]: v["n"] for v in f1["values"]}
+    assert n_map["disease state: control"] == 3
+    assert n_map["disease state: obese T2DM and dyslipidemia"] == 6
+    # 子串重叠:整行包含语义下 "control" 也命中 "control group" 行(9+4=9?——5+4=9)
+    f2 = by_name["characteristics_ch1_2"]
+    assert {v["value"]: v["n"] for v in f2["values"]} == {"control": 9, "control group": 4}
+    assert {"a": "control", "b": "control group", "n": 4} in f2["overlaps"]
 
 
 def test_ml_ranked_empty(client):

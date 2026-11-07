@@ -204,7 +204,7 @@ def ml_overview(body: MlOverviewBody) -> dict:
     分组字段分布 + counts 列清单(空矩阵类)+ 可用性权威判定。"""
     import pandas as pd
 
-    from WY.core.expression import assess_expression_dataset
+    from WY.core.expression import assess_expression_dataset, group_picker_fields
     from WY.core.geo import fetch_gse_count_matrix, fetch_geo_dataset, group_fields_overview
 
     gse = body.gse.strip().upper()
@@ -217,6 +217,7 @@ def ml_overview(body: MlOverviewBody) -> dict:
         progress(fraction=0.75, text="分组字段总览…")
         overview = group_fields_overview(ds)
         a = assess_expression_dataset(ds)
+        picker = group_picker_fields(ds)
         counts_rows: list[dict] = []
         if ds.issues and ds.table.empty:
             try:
@@ -241,9 +242,11 @@ def ml_overview(body: MlOverviewBody) -> dict:
                 counts_rows = []
                 return {"overview": overview.to_dict(orient="records"),
                         "counts_rows": counts_rows, "assess": a,
+                        "group_picker": {"fields": picker},
                         "issues": list(ds.issues), "counts_error": str(exc)}
         return {"overview": overview.to_dict(orient="records"),
-                "counts_rows": counts_rows, "assess": a, "issues": list(ds.issues)}
+                "counts_rows": counts_rows, "assess": a, "group_picker": {"fields": picker},
+                "issues": list(ds.issues)}
 
     return {"job_id": jobs.submit(task, f"ml overview {gse}")}
 
