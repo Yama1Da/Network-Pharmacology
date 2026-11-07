@@ -529,15 +529,17 @@ export const api = {
   dockingSources: (): Promise<{
     ppi_dirs: { name: string; display: string }[]
     enr_files: { name: string; display: string }[]
+    manual_dirs: { name: string; n_genes: number; mtime: string; genes: string[] }[]
   }> => fetch('/api/docking/sources').then((r) => json(r)),
 
   dockingSource: (
     sid: string,
-    body: { mode: 'ppi' | 'enr' | 'manual'; name?: string; manual_genes?: string }
+    body: { mode: 'ppi' | 'enr' | 'manual' | 'manual-file'; name?: string; manual_genes?: string; manual_file?: string }
   ): Promise<{ label: string; drug: string; disease: string; hub_count: number;
                enr_count: number; candidates: string[] }> =>
     post(`/api/docking/${sid}/source`,
-         { mode: body.mode, name: body.name ?? '', manual_genes: body.manual_genes ?? '' }),
+         { mode: body.mode, name: body.name ?? '', manual_genes: body.manual_genes ?? '',
+           manual_file: body.manual_file ?? '' }),
 
   dockingCheckStructures: (
     sid: string,

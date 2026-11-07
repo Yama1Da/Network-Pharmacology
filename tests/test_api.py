@@ -382,7 +382,7 @@ def test_docking_session_create_and_expired_404(client):
 
 def test_docking_sources_empty(client):
     body = client.get("/api/docking/sources").json()
-    assert body == {"ppi_dirs": [], "enr_files": []}
+    assert body == {"ppi_dirs": [], "enr_files": [], "manual_dirs": []}
 
 
 def test_docking_source_manual_and_bad_mode(client, sid):
@@ -395,15 +395,48 @@ def test_docking_source_manual_and_bad_mode(client, sid):
     assert body["label"] == "" and body["hub_count"] == 0
 
 
+def test_docking_manual_dirs_listing_and_source_filter(client, sid):
+    """manual_* 桶进专属清单(基因从 analysis_meta.json 读出),PPI/富集清单不再收录。"""
+    import json as _json
+
+    bucket = os.path.join(config.DOWNLOADS_DIR, "manual_abc12345_data")
+    os.makedirs(bucket, exist_ok=True)
+    with open(os.path.join(bucket, "analysis_meta.json"), "w", encoding="utf-8") as f:
+        _json.dump({"genes": ["TP53", "EGFR", "APOE"]}, f)
+    os.makedirs(config.ENRICHMENT_CACHE_DIR, exist_ok=True)
+    with open(os.path.join(config.ENRICHMENT_CACHE_DIR,
+                           "gProfiler_manual_abc12345.csv"), "w", encoding="utf-8") as f:
+        f.write("term_id,genes\nhsa04115,TP53\n")
+
+    body = client.get("/api/docking/sources").json()
+    assert [m["name"] for m in body["manual_dirs"]] == ["manual_abc12345_data"]
+    m = body["manual_dirs"][0]
+    assert m["n_genes"] == 3 and m["genes"] == ["APOE", "EGFR", "TP53"]
+    assert all(not d["name"].startswith("manual") for d in body["ppi_dirs"])
+    assert all(not f["name"].startswith("gProfiler_manual") for f in body["enr_files"])
+
+    # manual-file 模式:从桶元数据回填基因(与 manual 输入同构落 dock)
+    r = client.post(f"/api/docking/{sid}/source",
+                    json={"mode": "manual-file", "manual_file": "manual_abc12345_data"})
+    assert r.status_code == 200
+    assert r.json()["candidates"] == ["APOE", "EGFR", "TP53"]
+    # 非法路径拒绝
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "manual-file", "manual_file": "../evil"}).status_code == 400
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "manual-file", "manual_file": "ppi_x_data"}).status_code == 400
+
+
 def test_docking_check_structures_guards(client, sid):
+    """未选任何来源时结构检查 400;手动模式已修通:候选即输入基因,直检走 direct 分支。"""
     fresh = client.post("/api/docking/session").json()["sid"]
     assert client.post(f"/api/docking/{fresh}/check-structures",
                        json={"use_struct": True}).status_code == 400
-    # manual 模式不产生候选集(candidate_pre 为空):结构检查必须 400 拒绝而非空跑
     client.post(f"/api/docking/{sid}/source",
                 json={"mode": "manual", "manual_genes": "TP53"})
-    assert client.post(f"/api/docking/{sid}/check-structures",
-                       json={"use_struct": False}).status_code == 400
+    body = client.post(f"/api/docking/{sid}/check-structures",
+                       json={"use_struct": False}).json()
+    assert body["job_id"] is None and body["direct"]["genes"] == ["TP53"]
 
 
 def test_docking_source_enr_and_check_structures_direct(client, monkeypatch):
@@ -438,6 +471,18 @@ def test_docking_ligand_guards(client, sid):
     body = client.post(f"/api/docking/{sid}/ligand",
                        json={"source": "smiles", "smiles": "CCO"}).json()
     assert "ok" in body
+
+
+def test_docking_ligand_manual_name_query_blocked(client, sid):
+    """手动会话按药名盲查被拦(曾把 'manual' 直送 PubChem);CID 直查放行。"""
+    client.post(f"/api/docking/{sid}/source",
+                json={"mode": "manual", "manual_genes": "TP53"})
+    body = client.post(f"/api/docking/{sid}/ligand",
+                       json={"source": "pubchem", "query": "manual"}).json()
+    assert body["ok"] is False and "CID" in body["error"]
+    # 纯数字 CID 经 resolve_cid 直通下载层,不触名称解析
+    from WY.core.docking import resolve_cid
+    assert resolve_cid("2244") == 2244  # 纯数字直通,不触网
 
 
 def test_docking_receptor_candidates_guard_and_flow(client, sid, monkeypatch):

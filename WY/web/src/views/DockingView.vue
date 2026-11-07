@@ -28,18 +28,17 @@ async function ensureSession(): Promise<string> {
 /* ---------------- Step 1 数据源与候选基因 ---------------- */
 
 const srcMode = ref<'ppi' | 'enr'>('ppi')
-const ppiDirs = ref<{ name: string; display: string; manual?: boolean }[]>([])
-// 手动基因桶现在按基因列表指纹分桶(manual_<hash8>),展示名加桶指纹以便区分;
-// 旧版固定 manual_data 桶显示为 · data(仅存量数据可见)
-function srcLabel(d: { name: string; display: string; manual?: boolean }): string {
-  if (!d.manual) return d.display
-  const bucket = d.name.replace(/^manual_/, '').replace(/_data$/, '')
-  return `${t('web.docking.src_manual')} · ${bucket}`
-}
+const ppiDirs = ref<{ name: string; display: string }[]>([])
 const enrFiles = ref<{ name: string; display: string }[]>([])
 const selSource = ref('')
 const manualGenes = ref('')
+// 手动基因对接专属入口:manual_* 桶不再混入 PPI/富集下拉,由此处接管
+const manualMode = ref(false)
+const manualDirs = ref<{ name: string; n_genes: number; mtime: string; genes: string[] }[]>([])
+const manualPick = ref('')
 const s1 = ref<{ drug: string; disease: string; hub: number; enr: number; candidates: string[] } | null>(null)
+// 手动会话:Step 2 隐藏"按药名查 PubChem"(无药名语境;CID 直查与 SMILES 保留)
+const isManualSession = computed(() => manualMode.value && !s1.value?.drug)
 const useStruct = ref(true)
 const allowAf = ref(false)
 const structJob = useJob((result) => {
@@ -53,6 +52,7 @@ async function loadSources(): Promise<void> {
   const s = await api.dockingSources()
   ppiDirs.value = s.ppi_dirs
   enrFiles.value = s.enr_files
+  manualDirs.value = s.manual_dirs ?? []
 }
 async function selectSource(name: string): Promise<void> {
   sid.value = await ensureSession()
@@ -65,7 +65,39 @@ async function selectSource(name: string): Promise<void> {
   if (r.drug) void fetchLigand()
 }
 
+function pickManualFile(name: string): void {
+  const d = manualDirs.value.find((x) => x.name === name)
+  if (d?.genes?.length) {
+    manualGenes.value = d.genes.join(', ')
+    flash(t('web.docking.manual_loaded', { n: d.genes.length }))
+  }
+}
+
+/** 手动面板输入框 → 基因列表(与后端同款分隔符切分,实时计数) */
+const parsedManualGenes = computed<string[]>(() =>
+  manualGenes.value.split(/[,;\s]+/).map((g) => g.trim().toUpperCase()).filter(Boolean))
+
+/** 来源三态切换(ppi/enr/manual):入口级操作,清掉当前来源与下游,
+ * 避免两个流程共用半截会话;首次切到手动时补拉清单。 */
+function setSrcMode(mode: 'ppi' | 'enr' | 'manual'): void {
+  if (mode === 'manual') {
+    manualMode.value = true
+    s1.value = null
+    structResult.value = null
+    resetDownstream()
+    if (!manualDirs.value.length) void loadSources()
+    return
+  }
+  manualMode.value = false
+  if (srcMode.value === mode) return
+  srcMode.value = mode
+  s1.value = null
+  structResult.value = null
+  resetDownstream()
+}
+
 async function useManual(): Promise<void> {
+  if (!manualGenes.value.trim()) return
   sid.value = await ensureSession()
   const r = await api.dockingSource(sid.value, { mode: 'manual', manual_genes: manualGenes.value })
   s1.value = { drug: r.drug, disease: r.disease, hub: r.hub_count, enr: r.enr_count, candidates: r.candidates }
@@ -412,25 +444,53 @@ onBeforeUnmount(() => {
     <!-- ============ Step 1 ============ -->
     <section class="step" :class="{ done: stepDone.s1 }">
       <h3 class="step-title">{{ t('web.docking.s1_title') }} <span v-if="stepDone.s1" class="ok-mark">{{ t('web.docking.s1_genes_ok', { n: genes.length }) }}</span></h3>
+
+      <!-- 三来源切换:PPI / 富集缓存 / 手动基因(专属面板,下游 Step 2-6 共用) -->
       <div class="lv-group">
-        <button class="lv" :class="{ on: srcMode === 'ppi' }" @click="srcMode = 'ppi'">{{ t('web.docking.src_ppi') }}</button>
+        <button class="lv" :class="{ on: srcMode === 'ppi' }" @click="setSrcMode('ppi')">{{ t('web.docking.src_ppi') }}</button>
         <i class="lv-sep">/</i>
-        <button class="lv" :class="{ on: srcMode === 'enr' }" @click="srcMode = 'enr'">{{ t('web.docking.src_enr') }}</button>
+        <button class="lv" :class="{ on: srcMode === 'enr' }" @click="setSrcMode('enr')">{{ t('web.docking.src_enr') }}</button>
+        <i class="lv-sep">/</i>
+        <button class="lv" :class="{ on: manualMode }" @click="setSrcMode('manual')">{{ t('web.docking.manual_entry_btn') }}</button>
       </div>
+
+      <!-- 手动基因面板 -->
+      <template v-if="manualMode">
+        <p class="hint-line">{{ t('web.docking.manual_panel_hint') }}</p>
+        <div class="set-row">
+          <label class="set-label">{{ t('web.docking.manual_pick_label') }}</label>
+          <select class="sel" v-model="manualPick" @change="pickManualFile(manualPick)"
+                  :disabled="!manualDirs.length">
+            <option value="" disabled>{{ t('web.docking.manual_pick_ph') }}</option>
+            <option v-for="d in manualDirs" :key="d.name" :value="d.name">
+              {{ d.n_genes }} {{ t('web.docking.manual_gene_unit') }} · {{ d.mtime }} · {{ d.name }}
+            </option>
+          </select>
+        </div>
+        <textarea v-model="manualGenes" rows="3" class="ta"
+                  :placeholder="t('web.docking.manual_genes_ph')" spellcheck="false"></textarea>
+        <p class="hint-line">{{ t('web.docking.manual_count', { n: parsedManualGenes.length }) }}</p>
+        <button class="bar-btn" :disabled="!parsedManualGenes.length || structJob.running.value"
+                @click="useManual">{{ t('web.docking.manual_btn') }}</button>
+      </template>
+
+      <!-- 标准流程来源选择 -->
+      <template v-else>
       <p v-if="srcMode === 'ppi' && !ppiDirs.length" class="hint-line">{{ t('web.docking.no_ppi_dirs') }}</p>
       <select v-if="srcMode === 'ppi' && ppiDirs.length" class="sel" v-model="selSource" @change="selectSource(selSource)">
         <option value="" disabled>{{ t('web.docking.sel_dir_ph') }}</option>
-        <option v-for="d in ppiDirs" :key="d.name" :value="d.name">{{ srcLabel(d) }}</option>
+        <option v-for="d in ppiDirs" :key="d.name" :value="d.name">{{ d.display }}</option>
       </select>
       <select v-if="srcMode === 'enr' && enrFiles.length" class="sel" v-model="selSource" @change="selectSource(selSource)">
         <option value="" disabled>{{ t('web.docking.sel_enr_ph') }}</option>
         <option v-for="f in enrFiles" :key="f.name" :value="f.name">{{ f.display }}</option>
       </select>
+      </template>
 
       <template v-if="s1">
         <div class="metrics three">
-          <div class="metric"><b>{{ s1.hub }}</b><span>{{ t('web.docking.m_hub') }}</span></div>
-          <div class="metric"><b>{{ s1.enr }}</b><span>{{ t('web.docking.m_enr') }}</span></div>
+          <div v-if="!isManualSession" class="metric"><b>{{ s1.hub }}</b><span>{{ t('web.docking.m_hub') }}</span></div>
+          <div v-if="!isManualSession" class="metric"><b>{{ s1.enr }}</b><span>{{ t('web.docking.m_enr') }}</span></div>
           <div class="metric"><b>{{ s1.candidates.length }}</b><span>{{ t('web.docking.m_cand') }}</span></div>
         </div>
         <p class="hint-line">{{ candidatePreview }}</p>
@@ -465,12 +525,9 @@ onBeforeUnmount(() => {
           </p>
         </template>
       </template>
-
-      <div v-if="!s1 && !ppiDirs.length && !enrFiles.length" class="manual">
-        <p class="hint-line">{{ t('web.docking.manual_hint') }}</p>
-        <textarea v-model="manualGenes" rows="2" class="ta" placeholder="TP53, EGFR, …"></textarea>
-        <button class="bar-btn" @click="useManual">{{ t('web.docking.manual_btn') }}</button>
-      </div>
+      <p v-if="!manualMode && !s1 && !ppiDirs.length && !enrFiles.length" class="hint-line">
+        {{ t('web.docking.no_sources_hint') }}
+      </p>
     </section>
 
     <!-- ============ Step 2 ============ -->
@@ -483,13 +540,14 @@ onBeforeUnmount(() => {
       </div>
       <template v-if="ligSource === 'pubchem'">
         <div class="set-row">
-          <label class="set-label">{{ t('web.docking.lig_label') }}</label>
-          <div class="field"><input v-model="ligQuery" :placeholder="s1?.drug || t('web.docking.drug_name_ph')" spellcheck="false" /><i class="line"></i></div>
+          <label class="set-label">{{ isManualSession ? t('web.docking.lig_cid_manual') : t('web.docking.lig_label') }}</label>
+          <div class="field"><input v-model="ligQuery" :placeholder="isManualSession ? t('web.docking.cid_ph') : (s1?.drug || t('web.docking.drug_name_ph'))" spellcheck="false" /><i class="line"></i></div>
           <button class="bar-btn" :disabled="ligBusy" @click="fetchLigand">
             {{ ligBusy ? t('web.docking.fetching') : t('web.docking.fetch_ligand') }}
           </button>
         </div>
-        <p v-if="!s1?.drug && !lig?.ok" class="hint-line">{{ t('web.docking.no_drug_hint') }}</p>
+        <p v-if="isManualSession" class="hint-line">{{ t('web.docking.manual_ligand_hint') }}</p>
+        <p v-else-if="!s1?.drug && !lig?.ok" class="hint-line">{{ t('web.docking.no_drug_hint') }}</p>
       </template>
       <template v-else>
         <textarea v-model="ligSmiles" rows="2" class="ta" :placeholder="t('web.docking.smiles_ph')"></textarea>
