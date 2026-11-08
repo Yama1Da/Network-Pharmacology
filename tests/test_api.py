@@ -754,6 +754,41 @@ def test_ml_runs_zip_empty_ok(client):
     assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
 
 
+def test_ml_runs_zip_rejects_outside_root(client, tmp_path):
+    """回归测试(P1-B):zip 端点不得打包登记结果根之外的目录。
+
+    缺陷:zip_ml_runs 只查 os.path.isdir,POST /api/ml/runs/zip 传任意存在的
+    目录即整树打包返回(任意读)。对照 delete_ml_runs 早有「登记根包含 +
+    summary.json 存在」双重校验,zip 漏配。
+    复现要点:在登记结果根之外造一个含已知内容的目录,POST 其绝对路径;
+    修复前 200 且 zip 内含该文件(任意读),修复后 400 且 detail 带被拒路径。
+    顺带保绿:登记根下合法 run 仍 200,空列表仍 200(空目录包)。
+    """
+    import io as _io
+    import zipfile as _zipfile
+
+    outside = tmp_path / "outside_secret"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOP-SECRET", encoding="utf-8")
+
+    r = client.post("/api/ml/runs/zip", json={"paths": [str(outside)]})
+    assert r.status_code == 400, f"登记根外目录必须 400,实际 {r.status_code}"
+    assert "outside_secret" in (r.json().get("detail") or "")
+
+    # 保绿:登记根下的合法 run 仍 200;根外目录不会出现在任何包里
+    run_dir = os.path.join(config.GEO_RESULT_DIR, "GSEX_20260101_000000")
+    os.makedirs(run_dir, exist_ok=True)
+    with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
+    r = client.post("/api/ml/runs/zip", json={"paths": [run_dir]})
+    assert r.status_code == 200
+    with _zipfile.ZipFile(_io.BytesIO(r.content)) as z:
+        assert "secret.txt" not in "".join(z.namelist())
+
+    # 保绿:空列表仍 200
+    assert client.post("/api/ml/runs/zip", json={"paths": []}).status_code == 200
+
+
 def test_ml_runs_cleanup_empty(client):
     assert client.post("/api/ml/runs/cleanup",
                        json={"keep": 3}).json() == {"deleted": []}

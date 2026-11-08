@@ -154,8 +154,10 @@ def test_results_mgmt(tmp_path):
     summary 的目录拒删、zip 产出非空。"""
     from WY.core import ml_results
 
-    root = os.path.join(str(tmp_path), "mlscreen")
-    os.makedirs(root)
+    # zip 的双重校验(P1-B)针对登记结果根(_roots()),自造根须对齐:
+    # 沙箱里 default_results_root() = tmp_path/results,登记根即 results/mlscreen
+    root = os.path.join(str(tmp_path), "results", "mlscreen")
+    os.makedirs(root, exist_ok=True)
 
     def _mk(tag, ymd, hms):
         d = os.path.join(root, f"{tag}_{ymd}_{hms}")

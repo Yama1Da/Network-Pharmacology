@@ -439,7 +439,12 @@ def ml_runs_delete(body: MlRunsBody) -> dict:
 def ml_runs_zip(body: MlRunsBody) -> Response:
     from WY.core.ml_results import zip_ml_runs
 
-    data = zip_ml_runs(body.paths)
+    try:
+        data = zip_ml_runs(body.paths)
+    except ValueError as exc:
+        # 登记根外/非 run 目录一律视为请求错误,400 带被拒路径明细(P1-B;
+        # 与 delete 的"跳过+warning"语义不同:zip 的调用方是前端勾选列表)
+        raise HTTPException(status_code=400, detail=str(exc))
     return Response(content=data, media_type="application/zip",
                     headers={"Content-Disposition": "attachment; filename=\"ML_runs.zip\""})
 
