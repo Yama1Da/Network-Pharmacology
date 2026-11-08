@@ -420,9 +420,12 @@ const canRun = computed(() =>
 async function run(): Promise<void> {
   if (sourceConflict.value) { flash(t('web.ml.conflict_flash')); return }
   if (localPartial.value) { flash(t('web.ml.partial_flash')); return }
-  // 代际守卫(P0-F):发起时捕获 GSE 快照(本地模式下 GSE 虽不参与请求,
-  // 但切换同样意味着数据上下文变化,结果一并作废),期间切换则不落④区
+  // 代际守卫(P0-F 及其备案扩展):发起时捕获 GSE/疾病名/输入方式三重快照,
+  // 任一变化即视为数据上下文已变,在途结果作废不落④区(watch 只清展示,
+  // 不阻断 onDone 回填——守卫补上这段)
   const g0 = gse.value.trim().toUpperCase()
+  const d0 = disease.value.trim().toLowerCase()
+  const tab0 = tab.value
   await runJob.run(api.mlRun({
     mode: useLocal.value ? 'local' : 'gse',
     gse: g0,
@@ -433,6 +436,8 @@ async function run(): Promise<void> {
   }), {
     doneText: t('web.ml.run_done_text'),
     stale: () => gse.value.trim().toUpperCase() !== g0
+      || disease.value.trim().toLowerCase() !== d0
+      || tab.value !== tab0
   })
 }
 
