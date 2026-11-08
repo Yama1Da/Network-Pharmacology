@@ -485,6 +485,28 @@ def test_docking_ligand_manual_name_query_blocked(client, sid):
     assert resolve_cid("2244") == 2244  # 纯数字直通,不触网
 
 
+def test_docking_source_name_traversal_rejected(client, sid):
+    """回归测试(P1-C):ppi/enr 来源名不得携带路径分隔符或逃逸缓存根。
+
+    缺陷:mode=ppi 的 name 直传 read_ppi_dataset(os.path.join 无包含校验),
+    mode=enr 的 name 直拼 ENRICHMENT_CACHE_DIR 读 CSV——`../` 或盘符名可读
+    缓存根之外的文件内容(以 hub/enrichment 基因行集形式回显);对照
+    manual-file 分支早有 basename+形态校验,三模式口径不一。
+    复现要点:`name="../WY/API.env"` 与 `name="C:/Windows/win.ini"` 在修复前
+    均 400 之外的状态(ppi 以空集合 200 成功建会话,enr 读不到则 500);
+    修复后统一 400。合法纯名保绿(数据集不存在按空集合处理)。
+    """
+    for mode, name in (("ppi", "../WY/API.env"), ("ppi", "C:/Windows/win.ini"),
+                       ("enr", "../WY/API.env"), ("enr", "C:/Windows/win.ini"),
+                       ("ppi", "sub/dir_data"), ("enr", "a/b.csv")):
+        r = client.post(f"/api/docking/{sid}/source", json={"mode": mode, "name": name})
+        assert r.status_code == 400, f"{mode}/{name} 必须 400,实际 {r.status_code}"
+    # 保绿:合法纯名(数据集不存在,read_ppi_dataset 按空集合处理)
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "ppi", "name": "aspirin_cancer_data"}
+                       ).status_code == 200
+
+
 def test_docking_manual_guard_survives_source_switch(client, sid, monkeypatch):
     """回归测试(P1-D):先选 ppi 再切 manual,防呆判据不得被残留键绕过。
 

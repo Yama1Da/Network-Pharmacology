@@ -53,6 +53,20 @@ def _session(sid: str) -> dict:
     return dock
 
 
+def _require_registered_name(name: str, base_dir: str) -> None:
+    """ppi/enr 来源名校验(P1-C):拒绝路径分隔符(../、子路径、盘符名)与
+    realpath 逃逸出缓存根的名字。manual-file 分支此前已有 basename+形态校验,
+    本函数把 ppi/enr 两分支拉齐到同一口径;core 侧 read_ppi_dataset 不动——
+    页面/CLI 既有调用方以可信输入使用,收紧入口比放宽校验面更小。"""
+    if not name or name != os.path.basename(name):
+        raise HTTPException(status_code=400,
+                            detail="name 必须为缓存目录下的纯文件名(不含路径分隔符)")
+    real_base = os.path.realpath(base_dir)
+    full = os.path.realpath(os.path.join(real_base, name))
+    if not full.startswith(real_base + os.sep):
+        raise HTTPException(status_code=400, detail="name 逃逸出缓存目录")
+
+
 @router.post("/api/docking/session")
 def docking_create_session() -> dict:
     return {"sid": docking_session.create()}
@@ -154,6 +168,7 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
 
     hub_genes: list[str] = []
     if body.mode == "ppi":
+        _require_registered_name(body.name, config.DOWNLOADS_DIR)
         dock["source_mode"] = body.mode
         dock["ppi_dir"] = body.name
         dock["hub_genes"], dock["enrichment_genes"] = read_ppi_dataset(body.name)
@@ -161,6 +176,7 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
         dock["label"] = prefix
         dock["drug"], dock["disease"] = split_result_prefix(prefix)
     elif body.mode == "enr":
+        _require_registered_name(body.name, config.ENRICHMENT_CACHE_DIR)
         dock["source_mode"] = body.mode
         dock["enr_file"] = body.name
         df = pd.read_csv(os.path.join(config.ENRICHMENT_CACHE_DIR, body.name),
