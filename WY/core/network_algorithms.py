@@ -348,6 +348,19 @@ def _lcc_context_cached(species: str, confidence: int, string_version: str):
     return nodes, idx, Mt, degree_map
 
 
+def _lcc_build_token(species: str) -> str:
+    """互作组构建批次标识(2026-11 P0-G):取构建记录的 built_at,进 RWR/邻近度
+    磁盘缓存键。同版本/置信度下重建(图内容已变)使令牌变化 → 键变化 → 重算
+    覆盖;未重建则键稳定,命中保留。未构建时返回空串(保持既有顺序语义:缓存
+    命中检查先于未构建处理,不以异常改变行为)。"""
+    from . import interactome as itx
+
+    try:
+        return str(itx.require_meta(species).get("built_at") or "")
+    except itx.InteractomeNotBuiltError:
+        return ""
+
+
 def _build_degree_bins(degree_map: dict, bin_size: int) -> dict:
     """按度值区间 [k*bin, (k+1)*bin) 给基因分箱（度匹配抽样用）。"""
     bins: dict[int, list[str]] = {}
@@ -587,6 +600,7 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
                + f"|{species}|{config.PROXIMITY_N_PERM}|{config.PROXIMITY_SEED}"
                + f"|{config.PROXIMITY_DEGREE_BIN_SIZE}"
                + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}"
+               + f"|{_lcc_build_token(species)}"
                + "|v2-excl")  # v2：结果新增去交集字段，旧缓存（v1）自动失效重算
     md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
     name = f"proximity_{label}.json" if label else f"proximity_{md5[:12]}.json"
@@ -749,7 +763,8 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
                + f"|{species}|{config.RWR_ALPHA}|{config.RWR_TOL}|{config.RWR_MAX_ITER}"
                + f"|{config.RWR_NULL_PERMS}|{config.RWR_NULL_SEED}"
                + f"|{config.PROXIMITY_DEGREE_BIN_SIZE}"
-               + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}")
+               + f"|{config.STRING_VERSION}|{config.INTERACTOME_CONFIDENCE}"
+               + f"|{_lcc_build_token(species)}")
     md5 = hashlib.md5(payload.encode("utf-8")).hexdigest()
     name = f"rwr_{label}.json" if label else f"rwr_{md5[:12]}.json"
     os.makedirs(config.RWR_CACHE_DIR, exist_ok=True)

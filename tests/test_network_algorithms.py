@@ -503,3 +503,35 @@ def test_clear_runtime_caches_invalidates_lcc_context(monkeypatch):
 
     assert len(calls) == 2, f"清缓存后底层加载必须重新执行,实际仅 {len(calls)} 次: {calls}"
     assert second is not first, "clear_runtime_caches() 后不得返回旧 LCC 上下文对象"
+
+
+def test_rwr_cache_key_includes_build_token(monkeypatch):
+    """回归测试(P0-G):同版本/置信度下重建互作组后,RWR 磁盘缓存不得按旧键命中。
+
+    缺陷:run_rwr_cached 的缓存键 payload 只含输入与 STRING_VERSION/CONFIDENCE,
+    不含构建批次标识——同参数重建(图内容已变,构建记录 built_at 已更新)后
+    键不变,旧结果仍按 cached: True 命中返回(静默过期结果)。
+    复现要点:桩替 _lcc_context(小图上下文)与 require_meta(built_at=T1)→
+    跑一次写缓存 → 再跑确认命中 → 改 built_at=T2(模拟同参数重建)→ 再跑;
+    修复前 cached=True(旧键命中),修复后键变重算覆盖 cached=False。
+    邻近度 payload 同构,共用同一令牌来源(_lcc_build_token),一并修复。
+    """
+    G = nx.karate_club_graph()
+    G = nx.relabel_nodes(G, {i: f"G{i:02d}" for i in G.nodes()})
+    ctx = _graph_context(G)
+    monkeypatch.setattr(na, "_lcc_context", lambda species: ctx)
+    meta = {"built_at": "2026-11-08T12:00:00", "confidence": 950,
+            "string_version": "12.0"}
+    monkeypatch.setattr(itx, "require_meta", lambda species: meta)
+    monkeypatch.setattr(config, "RWR_NULL_PERMS", 3)  # 小图少置换,只看缓存语义
+
+    seeds = ["G01", "G02", "G03"]
+    r1 = na.run_rwr_cached(seeds, label="p0g_token")
+    assert r1["ok"] and r1.get("cached") is False
+    r2 = na.run_rwr_cached(seeds, label="p0g_token")
+    assert r2.get("cached") is True, "同键第二次应命中缓存"
+
+    meta["built_at"] = "2026-11-08T13:00:00"  # 模拟同版本同置信度重建
+    r3 = na.run_rwr_cached(seeds, label="p0g_token")
+    assert r3["ok"] and r3.get("cached") is False, \
+        "重建(built_at 变化)后必须重算,不得命中旧缓存"
