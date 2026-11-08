@@ -289,6 +289,15 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
     from WY.core.docking import (PubChemUnavailable, fetch_ligand_sdf_3d,
                                  prepare_ligand_pdbqt, resolve_cid, smiles_to_sdf_3d)
 
+    # 会话兜底(P0-B):来源上下文在获取期间被切换(另一标签页/竞态)则放弃写入,
+    # 不让旧配体落到新上下文会话里(前端代际守卫为主,此为 API 层第二道)
+    src_ctx = (dock.get("source_mode"), dock.get("ppi_dir"),
+               dock.get("enr_file"), dock.get("label"))
+
+    def _src_ctx_changed() -> bool:
+        return (dock.get("source_mode"), dock.get("ppi_dir"),
+                dock.get("enr_file"), dock.get("label")) != src_ctx
+
     if body.source == "pubchem":
         query = body.query.strip()
         if not query:
@@ -314,6 +323,8 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
             return {"ok": False, "error": f"配体获取失败:{exc}"}
         if not sdf_path:
             return {"ok": False, "error": f"CID {cid} 无 3D 结构,请换一个条目或用 SMILES"}
+        if _src_ctx_changed():
+            return {"ok": False, "stale": True, "error": "来源已切换，配体结果已丢弃"}
         dock["cid"] = cid
         try:
             dock["lig_pdbqt"] = prepare_ligand_pdbqt(sdf_path)
@@ -328,6 +339,8 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
                 body.smiles,
                 os.path.join(config.DOCKING_RAW_CACHE_DIR,
                              f"ligand_smiles_{datetime.now():%Y%m%d_%H%M%S}.sdf"))
+            if _src_ctx_changed():
+                return {"ok": False, "stale": True, "error": "来源已切换，配体结果已丢弃"}
             dock["cid"] = None
             dock["lig_pdbqt"] = prepare_ligand_pdbqt(sdf_path)
         except Exception as exc:
@@ -398,16 +411,24 @@ def docking_receptor_prepare(sid: str, body: DockReceptorPrepareBody) -> dict:
                                      prepare_receptor_pdbqt)
 
         progress(fraction=0.2, text="下载受体结构…")
+        # 会话兜底(P0-B):提交与写回之间基因被换(另一标签页/竞态)则放弃写入,
+        # 结果带 stale 标记,不污染新基因的会话(前端代际守卫为主,此为第二道)
+        if dock.get("gene") != body.gene:
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
         if body.pdb_id.startswith("AFDB:"):
             pdb_path, af_acc = fetch_alphafold_receptor(
                 body.gene, taxon=int(config.SPECIES_MAP["Human"]["ncbi_taxon"]))
-            dock["pdb_id"] = f"AFDB:{af_acc}"
-            dock["receptor_source"] = "alphafold"
+            new_pdb_id, new_source = f"AFDB:{af_acc}", "alphafold"
         else:
             pdb_path = download_pdb(body.pdb_id)
-            dock["pdb_id"] = body.pdb_id
-            dock["receptor_source"] = "experiment"
+            new_pdb_id, new_source = body.pdb_id, "experiment"
         progress(fraction=0.7, text="受体转 pdbqt…")
+        if dock.get("gene") != body.gene:  # 下载期间被换基因:写前再核一道
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+        dock["pdb_id"] = new_pdb_id
+        dock["receptor_source"] = new_source
         dock["pdb_path"] = pdb_path
         dock["rec_pdbqt"] = prepare_receptor_pdbqt(pdb_path)
         dock["pdb_sel"] = body.pdb_id

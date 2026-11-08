@@ -107,6 +107,7 @@ async function useManual(): Promise<void> {
 
 /** 数据源变更后清空前端本地的下游视图状态(服务端会话已由端点同步失效)。 */
 function resetDownstream(): void {
+  ligStale.value = false
   lig.value = null
   receptor.value = null
   candRows.value = []
@@ -148,14 +149,23 @@ const ligQuery = ref('')
 const ligSmiles = ref('')
 const lig = ref<{ ok: boolean; error?: string; cid?: number | null; lig_pdbqt?: string } | null>(null)
 const ligBusy = ref(false)
+const ligStale = ref(false)
 
 async function fetchLigand(): Promise<void> {
   sid.value = await ensureSession()
+  // 代际守卫(P0-B):发起时捕获来源上下文快照,期间切换则丢弃,防旧配体写回新上下文
+  const ctx0 = `${srcMode.value}|${selSource.value}|${manualMode.value ? 'manual' : 'auto'}`
+  ligStale.value = false
   ligBusy.value = true
   try {
-    lig.value = ligSource.value === 'pubchem'
+    const r = ligSource.value === 'pubchem'
       ? await api.dockingLigand(sid.value, { source: 'pubchem', query: ligQuery.value })
       : await api.dockingLigand(sid.value, { source: 'smiles', smiles: ligSmiles.value })
+    if (`${srcMode.value}|${selSource.value}|${manualMode.value ? 'manual' : 'auto'}` !== ctx0) {
+      ligStale.value = true
+      return
+    }
+    lig.value = r
   } catch (e) {
     lig.value = { ok: false, error: e instanceof Error ? e.message : String(e) }
   } finally {
@@ -216,8 +226,12 @@ function flagBlocked(flag: string): boolean {
 async function prepareReceptor(): Promise<void> {
   if (!pdbSel.value || flagBlocked(selFlag.value)) return
   sid.value = await ensureSession()
+  // 代际守卫(P0-B):发起时捕获基因快照,期间切换则受体结果作废,
+  // 不落 Step 3 展示(服务端另有写前核对兜底)
+  const g0 = gene.value
   await recJob.run(api.dockingReceptorPrepare(sid.value, { gene: gene.value, pdb_id: pdbSel.value }),
-    { doneText: t('web.docking.receptor_ready') })
+    { doneText: t('web.docking.receptor_ready'),
+      stale: () => gene.value !== g0 })
 }
 
 const selFlag = computed(() => candRows.value.find((r) => r.pdb_id === pdbSel.value)?.flag ?? '')
@@ -283,6 +297,11 @@ const dockState = ref<{ result: { log_tail: string; scores: Row[] } } | null>(nu
 
 const canRun = computed(() => !!(
   lig.value?.ok && receptor.value && box.value))
+
+// 任一步骤 job 或配体获取进行中,锁住来源/基因切换入口(P0-B):
+// 中途换来源/基因会让在途结果落到新上下文,拼出「新来源 + 旧配体/旧受体」组合
+const busyLock = computed(() =>
+  ligBusy.value || structJob.running.value || recJob.running.value || runJob.running.value)
 
 async function runDock(): Promise<void> {
   sid.value = await ensureSession()
@@ -477,11 +496,13 @@ onBeforeUnmount(() => {
       <!-- 标准流程来源选择 -->
       <template v-else>
       <p v-if="srcMode === 'ppi' && !ppiDirs.length" class="hint-line">{{ t('web.docking.no_ppi_dirs') }}</p>
-      <select v-if="srcMode === 'ppi' && ppiDirs.length" class="sel" v-model="selSource" @change="selectSource(selSource)">
+      <select v-if="srcMode === 'ppi' && ppiDirs.length" class="sel" v-model="selSource"
+              :disabled="busyLock" @change="selectSource(selSource)">
         <option value="" disabled>{{ t('web.docking.sel_dir_ph') }}</option>
         <option v-for="d in ppiDirs" :key="d.name" :value="d.name">{{ d.display }}</option>
       </select>
-      <select v-if="srcMode === 'enr' && enrFiles.length" class="sel" v-model="selSource" @change="selectSource(selSource)">
+      <select v-if="srcMode === 'enr' && enrFiles.length" class="sel" v-model="selSource"
+              :disabled="busyLock" @change="selectSource(selSource)">
         <option value="" disabled>{{ t('web.docking.sel_enr_ph') }}</option>
         <option v-for="f in enrFiles" :key="f.name" :value="f.name">{{ f.display }}</option>
       </select>
@@ -555,6 +576,7 @@ onBeforeUnmount(() => {
           {{ ligBusy ? t('web.docking.generating') : t('web.docking.gen_conformer') }}
         </button>
       </template>
+      <p v-if="ligStale" class="stale">{{ t('web.job.stale') }}</p>
       <p v-if="lig?.ok" class="hint-line good">{{ t('web.docking.lig_ok') }}</p>
       <p v-if="lig && !lig.ok" class="stale">{{ lig.error }}</p>
     </section>
@@ -563,7 +585,7 @@ onBeforeUnmount(() => {
     <section class="step" :class="{ done: stepDone.s3 }">
       <h3 class="step-title">{{ t('web.docking.s3_title') }} <span v-if="stepDone.s3" class="ok-mark">✓ {{ receptor?.pdb_id }}</span></h3>
       <template v-if="genes.length">
-        <select class="sel" v-model="gene" @change="loadCandidates">
+        <select class="sel" v-model="gene" :disabled="recJob.running.value" @change="loadCandidates">
           <option value="" disabled>{{ t('web.docking.sel_gene_ph') }}</option>
           <option v-for="g in genes" :key="g" :value="g">{{ g }}</option>
         </select>
@@ -594,6 +616,7 @@ onBeforeUnmount(() => {
             <p class="progress-text">{{ recJob.text.value }}</p>
           </div>
           <p v-if="recJob.error.value" class="notice err">{{ t('web.docking.prep_fail') }}:{{ recJob.error.value }}</p>
+          <p v-if="recJob.stale.value" class="stale">{{ t('web.job.stale') }}</p>
           <p v-if="receptor?.receptor_source === 'alphafold'" class="stale">
             {{ t('web.docking.af_warn', { pdb: receptor.pdb_id.split(':')[1] }) }}
           </p>

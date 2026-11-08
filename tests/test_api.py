@@ -547,6 +547,77 @@ def test_docking_manual_guard_survives_source_switch(client, sid, monkeypatch):
     assert "查无化合物" in body["error"], body["error"]  # 桩返回 None 的固定文案
 
 
+def test_docking_receptor_prepare_stale_discard(client, sid, monkeypatch):
+    """回归测试(P0-B 后端兜底):受体准备任务写回前核对会话基因,被换即放弃写入。
+
+    缺陷:prepare 任务闭包直接写共享会话 dock["rec_pdbqt"]/["pdb_id"],无代际
+    核对——提交与写回之间基因被换(另一标签页/竞态),旧基因的受体会落进
+    新基因的会话,canRun 满足后 vina 对错误靶点运行。
+    复现要点:manual 会话种子 gene=TP53 → 提交 prepare(桩 download 2s)→
+    立即把会话 gene 改为 EGFR → 任务终态 result.stale=True 且会话无受体写入。
+    """
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    client.post(f"/api/docking/{sid}/source",
+                json={"mode": "manual", "manual_genes": "TP53,EGFR"})
+    dock = docking_session.get(sid)
+    dock["gene"] = "TP53"
+    dock["genes"] = ["TP53", "EGFR"]
+
+    def slow_download(pdb_id):
+        time.sleep(2)
+        return f"C:/fake/{pdb_id}.pdb"
+
+    monkeypatch.setattr(docking, "download_pdb", slow_download)
+    monkeypatch.setattr(docking, "prepare_receptor_pdbqt", lambda p: "fake.pdbqt")
+
+    job = client.post(f"/api/docking/{sid}/receptor/prepare",
+                      json={"gene": "TP53", "pdb_id": "1XQ8"}).json()["job_id"]
+    dock["gene"] = "EGFR"  # 提交后立刻换基因(模拟竞态)
+    body = _wait_job(client, job)
+    assert body["status"] == "done" and body["result"].get("stale") is True, body
+    dock = docking_session.get(sid)
+    assert "rec_pdbqt" not in dock and "pdb_id" not in dock, "stale 受体不得写入会话"
+
+
+def test_docking_ligand_stale_discard(client, sid, monkeypatch):
+    """回归测试(P0-B 后端兜底):配体获取写回前核对来源上下文,被切即丢弃。
+
+    缺陷:配体端点直接写 dock["cid"]/["lig_pdbqt"],来源在获取期间被切换时,
+    旧来源的配体落进新来源会话,canRun 满足后 vina 对错误配体运行并打 ✓。
+    复现要点:manual 会话 → smiles 获取(桩 2s)→ 1 秒时后台线程把
+    source_mode 翻为 ppi → 响应 ok=False/stale=True 且会话无配体写入。
+    """
+    import threading
+
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    client.post(f"/api/docking/{sid}/source",
+                json={"mode": "manual", "manual_genes": "TP53"})
+    assert docking_session.get(sid).get("source_mode") == "manual"
+
+    def slow_smiles(smiles, path):
+        time.sleep(2)
+        return path
+
+    monkeypatch.setattr(docking, "smiles_to_sdf_3d", slow_smiles)
+    monkeypatch.setattr(docking, "prepare_ligand_pdbqt", lambda p: "fake.pdbqt")
+
+    def flip():
+        d = docking_session.get(sid)
+        if d is not None:
+            d["source_mode"] = "ppi"
+
+    threading.Timer(1.0, flip).start()
+    body = client.post(f"/api/docking/{sid}/ligand",
+                       json={"source": "smiles", "smiles": "CCO"}).json()
+    assert body.get("ok") is False and body.get("stale") is True, body
+    dock = docking_session.get(sid)
+    assert "lig_pdbqt" not in dock and "cid" not in dock, "stale 配体不得写入会话"
+
+
 def test_docking_receptor_candidates_guard_and_flow(client, sid, monkeypatch):
     assert client.post(f"/api/docking/{sid}/receptor/candidates",
                        json={"gene": "EGFR"}).status_code == 400
