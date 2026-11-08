@@ -33,7 +33,9 @@ def drop(sid: str) -> None:
 
 def reset_downstream(dock: dict) -> None:
     """数据源/基因/结构变更后,清空下游步骤的旧结果(原页面同名函数的会话版):
-    残留的旧配体/受体/盒会静默覆盖新推断值,必须整段失效。"""
+    残留的旧配体/受体/盒会静默覆盖新推断值,必须整段失效。
+    注意:source_mode(api/docking 来源模式,2026-11 P1-D)有意不在清单——
+    它在来源选择时写入、须跨下游重置始终存活,盲查防呆判据依赖它。"""
     for k in ("lig_pdbqt", "cid", "lig_auto_done", "gene", "rec_pdbqt", "pdb_id",
               "pdb_path", "box", "result", "result_dir", "starred", "receptor_source",
               "gene_structures", "candidate_pre", "batch_results",

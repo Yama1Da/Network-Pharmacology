@@ -154,12 +154,14 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
 
     hub_genes: list[str] = []
     if body.mode == "ppi":
+        dock["source_mode"] = body.mode
         dock["ppi_dir"] = body.name
         dock["hub_genes"], dock["enrichment_genes"] = read_ppi_dataset(body.name)
         prefix = body.name[:-5] if body.name.endswith("_data") else body.name
         dock["label"] = prefix
         dock["drug"], dock["disease"] = split_result_prefix(prefix)
     elif body.mode == "enr":
+        dock["source_mode"] = body.mode
         dock["enr_file"] = body.name
         df = pd.read_csv(os.path.join(config.ENRICHMENT_CACHE_DIR, body.name),
                          encoding="utf-8-sig", comment="#")
@@ -172,6 +174,12 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
         # 手动基因对接专属入口:基因列表来自输入框(manual)或历史桶元数据
         # (manual-file,读 analysis_meta.json)。无药病语境,label 只作来源标识,
         # 以 manual 开头 —— ligand 端点据此拦截"按药名查 PubChem"。
+        # 来源模式显式记录(P1-D):防呆判据只看它,不得从 ppi_dir/enr_file
+        # 残留反推;此处顺带清掉对侧来源键(先选 ppi/enr 再切 manual 的会话
+        # 曾因残留绕过盲查防线——防御纵深,判据本身已不依赖它们)
+        dock["source_mode"] = body.mode
+        dock.pop("ppi_dir", None)
+        dock.pop("enr_file", None)
         if body.mode == "manual":
             genes = sorted({g.strip().upper() for g in re.split(r"[,;\s]+", body.manual_genes)
                             if g.strip()})
@@ -271,9 +279,9 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
             return {"ok": False, "error": "未提供药物名或 CID"}
         # 手动基因会话无药名语境:按名称盲查必然是"把来源标识当药名"的误用
         #(曾把 "manual" 直接送进 PubChem 报"查无化合物");CID 直查(纯数字)放行。
-        # 判据 = 会话由手动入口建立(label 为空串或 manual_*,且未挂 PPI/富集来源)
-        is_manual_session = (not (dock.get("ppi_dir") or dock.get("enr_file"))
-                             and not (dock.get("label") or "").startswith(("gProfiler", "Enrichr"))
+        # 判据 = 会话由手动入口建立(显式 source_mode,P1-D:不从 ppi_dir/enr_file
+        # 残留反推——先选 ppi 再切 manual 的会话曾绕过本防线)
+        is_manual_session = (dock.get("source_mode") in ("manual", "manual-file")
                              and bool(dock.get("genes")))
         if is_manual_session and not query.isdigit():
             return {"ok": False,

@@ -485,6 +485,46 @@ def test_docking_ligand_manual_name_query_blocked(client, sid):
     assert resolve_cid("2244") == 2244  # 纯数字直通,不触网
 
 
+def test_docking_manual_guard_survives_source_switch(client, sid, monkeypatch):
+    """回归测试(P1-D):先选 ppi 再切 manual,防呆判据不得被残留键绕过。
+
+    缺陷:ppi/enr 分支写 dock["ppi_dir"]/["enr_file"],切 manual 时不清除,
+    reset_downstream 的失效清单也不含它们;防呆判据从「未挂 ppi/enr」反推,
+    残留使 is_manual_session 恒为 False——手动基因清单(如基因名被当药名)
+    可直送 PubChem 盲查(注释记载的事故形态)。
+    复现要点:mode=ppi(数据集不存在,read_ppi_dataset 按空集合处理)→ 切
+    manual → 非数字药名查询。修复前走 resolve_cid 盲查(桩替记录调用并返回
+    None,响应为「查无化合物」);修复后判据只看显式 source_mode,盲查不被
+    调用,返回手动模式拦截文案;manual→ppi 反向切换后药名查询恢复放行。
+    """
+    import WY.core.docking as docking
+
+    calls: list[str] = []
+    monkeypatch.setattr(docking, "resolve_cid",
+                        lambda query: (calls.append(query), None)[1])
+
+    # 先选 ppi 来源,再切 manual:残留 ppi_dir 曾使防呆判据失效
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "ppi", "name": "aspirin_cancer_data"}
+                       ).status_code == 200
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "manual", "manual_genes": "TP53"}
+                       ).status_code == 200
+    body = client.post(f"/api/docking/{sid}/ligand",
+                       json={"source": "pubchem", "query": "aspirin"}).json()
+    assert calls == [], f"不得发生 PubChem 盲查,实际调用了 {calls}"
+    assert body["ok"] is False and "CID" in body["error"], body["error"]
+
+    # 反向切换 manual → ppi:显式来源后,药名查询应恢复放行(走盲查路径)
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "ppi", "name": "aspirin_cancer_data"}
+                       ).status_code == 200
+    body = client.post(f"/api/docking/{sid}/ligand",
+                       json={"source": "pubchem", "query": "aspirin"}).json()
+    assert calls == ["aspirin"], f"ppi 来源的药名查询应放行解析: calls={calls}"
+    assert "查无化合物" in body["error"], body["error"]  # 桩返回 None 的固定文案
+
+
 def test_docking_receptor_candidates_guard_and_flow(client, sid, monkeypatch):
     assert client.post(f"/api/docking/{sid}/receptor/candidates",
                        json={"gene": "EGFR"}).status_code == 400
@@ -752,6 +792,9 @@ def test_spa_wildcard_blocks_drive_traversal(client, monkeypatch, tmp_path):
     修复前返回 200 且内容命中(任意读),修复后 404。
     修复:与 /api/artifacts 同款 realpath 包含校验;正常资产与 SPA 回退
     (index.html + no-cache)响应形态不变。
+    CI 教训:盘符断言仅 Windows 可执行——POSIX 下 as_posix() 以 / 开头,
+    f"/{path}" 拼出的双斜杠 URL 会被客户端规范化剥成相对名(2026-11 CI
+    ubuntu runner 实测:请求落回 SPA 回退 200),故按 os.name 守卫。
     """
     import WY.api as api_mod
 
@@ -759,15 +802,17 @@ def test_spa_wildcard_blocks_drive_traversal(client, monkeypatch, tmp_path):
     (dist / "assets").mkdir(parents=True)
     (dist / "index.html").write_text("<html>spa-ok</html>", encoding="utf-8")
     (dist / "app.js").write_text("console.log(1)", encoding="utf-8")
-    secret = tmp_path / "secret.txt"
-    secret.write_text("TOP-SECRET-OUTSIDE-DIST", encoding="utf-8")
     monkeypatch.setattr(api_mod, "_DIST", str(dist))
 
-    # 盘符绝对路径(restore 语义:join 丢前缀)→ 修复前 200 且命中内容,修复后 404
-    r = client.get(f"/{secret.as_posix()}")
-    assert r.status_code == 404, f"盘符绝对路径必须 404,实际 {r.status_code}"
-    assert "TOP-SECRET" not in r.text
-    # URL 编码穿越 → 404(裸 ../ 会被 httpx 客户端规范化,TestClient 层测不到,不设断言)
+    # 盘符绝对路径(Windows 特有:join 丢前缀)→ 修复前 200 且命中内容,修复后 404
+    if os.name == "nt":
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP-SECRET-OUTSIDE-DIST", encoding="utf-8")
+        r = client.get(f"/{secret.as_posix()}")
+        assert r.status_code == 404, f"盘符绝对路径必须 404,实际 {r.status_code}"
+        assert "TOP-SECRET" not in r.text
+    # URL 编码穿越 → 404(编码段不被客户端规范化,可到达服务端;裸 ../ 会被
+    # httpx 规范化,TestClient 层测不到,不设断言)
     assert client.get("/..%2f..%2f/etc/passwd").status_code == 404
     # dist 内正常文件仍 200
     r = client.get("/app.js")
