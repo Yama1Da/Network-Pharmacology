@@ -1000,6 +1000,7 @@
  "web.home.venn_alt": "Drug–disease target Venn diagram",
  "web.job.done": "Done",
  "web.job.fail": "Failed",
+ "web.job.stale": "Job stale: dataset changed, result discarded",
  "web.logs.content_read_fail": "Failed to read the log content",
  "web.logs.current_dot": "Currently being written",
  "web.logs.empty": "No log files yet — run an analysis and daily archives will appear here.",

@@ -18,6 +18,8 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
   const extra = ref<Record<string, unknown>>({})
   const error = ref('')
   const result = ref<Record<string, unknown> | null>(null)
+  // 代际守卫命中标记:本次 run 的结果因 UI 状态(如 GSE)切换而被丢弃
+  const stale = ref(false)
 
   let cancelled = false
   onScopeDispose(() => {
@@ -26,12 +28,13 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
 
   async function run(
     submit: Promise<{ job_id: string }>,
-    opts: { doneText?: string; failText?: string } = {}
+    opts: { doneText?: string; failText?: string; stale?: () => boolean } = {}
   ): Promise<void> {
     if (running.value) {
       return
     }
     cancelled = false
+    stale.value = false
     running.value = true
     error.value = ''
     result.value = null
@@ -47,6 +50,14 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
         fraction.value = state.progress.fraction
         text.value = state.progress.text
         extra.value = { ...state.progress }
+        // 代际守卫(P0-F/P0-B):发起时 UI 状态(如 GSE/基因)已变 → 结果作废,
+        // 不落值、不触发 onDone;stale 置位供调用方渲染过期提示(状态文案区随
+        // running 结束消失,过期标记需要独立渲染位)
+        if (opts.stale?.()) {
+          stale.value = true
+          text.value = t('web.job.stale')
+          break
+        }
         if (state.status === 'done') {
           result.value = state.result
           text.value = opts.doneText ?? t('web.job.done')
@@ -68,5 +79,5 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
     }
   }
 
-  return { running, fraction, text, extra, error, result, jobId, run }
+  return { running, fraction, text, extra, error, result, jobId, stale, run }
 }

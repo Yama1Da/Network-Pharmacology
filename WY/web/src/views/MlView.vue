@@ -298,7 +298,12 @@ function ctsApply(): void {
 async function loadOverview(): Promise<void> {
   const g = gse.value.trim().toUpperCase()
   if (!g) { flash(t('web.ml.need_gse')); return }
-  await overviewJob.run(api.mlOverview(g), { doneText: t('web.ml.overview_done_text') })
+  // 代际守卫(P0-F):发起时捕获 GSE 快照,期间切换则总览作废(否则旧数据集的
+  // group_picker 回填 ② 区,gpApply/ctsApply 会把旧分组正则填进新 GSE 的 run)
+  await overviewJob.run(api.mlOverview(g), {
+    doneText: t('web.ml.overview_done_text'),
+    stale: () => gse.value.trim().toUpperCase() !== g
+  })
 }
 
 /* 排序 CSV 候选 */
@@ -415,14 +420,20 @@ const canRun = computed(() =>
 async function run(): Promise<void> {
   if (sourceConflict.value) { flash(t('web.ml.conflict_flash')); return }
   if (localPartial.value) { flash(t('web.ml.partial_flash')); return }
+  // 代际守卫(P0-F):发起时捕获 GSE 快照(本地模式下 GSE 虽不参与请求,
+  // 但切换同样意味着数据上下文变化,结果一并作废),期间切换则不落④区
+  const g0 = gse.value.trim().toUpperCase()
   await runJob.run(api.mlRun({
     mode: useLocal.value ? 'local' : 'gse',
-    gse: gse.value.trim().toUpperCase(),
+    gse: g0,
     case_pattern: casePat.value, control_pattern: ctrlPat.value,
     expr: exprPath.value, labels: labelsPath.value, case_label: localCase.value,
     ranked_labels: [...rankedSel.value],
     top_k: topK.value, prefilter_top: prefilterN.value, bootstrap_rounds: bootstrapN.value
-  }), { doneText: t('web.ml.run_done_text') })
+  }), {
+    doneText: t('web.ml.run_done_text'),
+    stale: () => gse.value.trim().toUpperCase() !== g0
+  })
 }
 
 const forceJob = useJob(() => {
@@ -684,6 +695,7 @@ onMounted(() => {
                 @click="loadOverview">
           {{ overviewJob.running.value ? t('web.ml.overview_running') : t('web.ml.overview_btn') }}
         </button>
+        <span v-if="overviewJob.stale.value" class="state">{{ t('web.job.stale') }}</span>
       </div>
       <div v-if="overviewJob.running.value" class="progress">
         <div class="progress-track"><div class="progress-fill indeterminate"></div></div>
