@@ -742,6 +742,42 @@ def test_spa_root_and_fallback(client):
         assert "前端未构建" in text
 
 
+def test_spa_wildcard_blocks_drive_traversal(client, monkeypatch, tmp_path):
+    """回归测试(P1-A):SPA 通配路由必须挡住 Windows 盘符绝对路径穿越。
+
+    缺陷:旧实现仅以 `if ".." in full_path` 防穿越;Windows 下
+    os.path.join(_DIST, "C:/...") 会整段丢弃 dist 前缀,
+    GET /C:/... 可读任意盘任意文件(2026-11-08 实测确认)。
+    复现要点:沙箱 dist 外放一个已知内容的文件,请求其盘符绝对路径;
+    修复前返回 200 且内容命中(任意读),修复后 404。
+    修复:与 /api/artifacts 同款 realpath 包含校验;正常资产与 SPA 回退
+    (index.html + no-cache)响应形态不变。
+    """
+    import WY.api as api_mod
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>spa-ok</html>", encoding="utf-8")
+    (dist / "app.js").write_text("console.log(1)", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP-SECRET-OUTSIDE-DIST", encoding="utf-8")
+    monkeypatch.setattr(api_mod, "_DIST", str(dist))
+
+    # 盘符绝对路径(restore 语义:join 丢前缀)→ 修复前 200 且命中内容,修复后 404
+    r = client.get(f"/{secret.as_posix()}")
+    assert r.status_code == 404, f"盘符绝对路径必须 404,实际 {r.status_code}"
+    assert "TOP-SECRET" not in r.text
+    # URL 编码穿越 → 404(裸 ../ 会被 httpx 客户端规范化,TestClient 层测不到,不设断言)
+    assert client.get("/..%2f..%2f/etc/passwd").status_code == 404
+    # dist 内正常文件仍 200
+    r = client.get("/app.js")
+    assert r.status_code == 200 and "console.log" in r.text
+    # SPA 回退仍 200 + index.html + no-cache(R3:响应形态零变更)
+    r = client.get("/some/deep/route")
+    assert r.status_code == 200 and "spa-ok" in r.text
+    assert r.headers.get("cache-control") == "no-cache"
+
+
 # ======== 数据迁移:导出 job / 下载端点 / 两段式导入 ========
 
 def _mk_analysis_dir(name: str = "aspirin_cancer_data") -> None:

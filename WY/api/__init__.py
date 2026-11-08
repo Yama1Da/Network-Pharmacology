@@ -73,11 +73,15 @@ if os.path.isdir(os.path.join(_DIST, "assets")):
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa(full_path: str) -> FileResponse:
-        if ".." in full_path:
+        # realpath 包含校验(与 /api/artifacts 同款,2026-11 P1-A):仅挡 ".."
+        # 挡不住 Windows 盘符绝对路径——os.path.join(_DIST, "C:/...") 会整段
+        # 丢弃 dist 前缀,任意文件可读
+        base = os.path.realpath(_DIST)
+        full = os.path.realpath(os.path.join(base, full_path))
+        if not (full == base or full.startswith(base + os.sep)):
             raise HTTPException(status_code=404)
-        candidate = os.path.join(_DIST, full_path)
-        if full_path and os.path.isfile(candidate):
-            return FileResponse(candidate)
+        if full_path and os.path.isfile(full):
+            return FileResponse(full)
         # index.html 不缓存:构建产物文件名带哈希,浏览器缓存旧 index 会引用已删除的旧资产
         return FileResponse(os.path.join(_DIST, "index.html"),
                             headers={"Cache-Control": "no-cache"})

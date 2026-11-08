@@ -425,6 +425,13 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
         raise RuntimeError(
             f"矩阵方向疑似转置:X 为 {X.shape[0]}×{X.shape[1]}(行多于列)—— "
             "表达矩阵通常基因数 >> 样本数,请确认 X 已转置为样本×基因")
+    dup_cols = X.columns[X.columns.duplicated()]
+    if len(dup_cols):
+        # 入口防呆(2026-11 P0-C):重复基因列会在 ML 阶段以难懂的库错误崩溃,
+        # 且发生在 DEG 已算完之后。上游必须聚合去重(参见 ml_pipeline 的均值口径)
+        raise RuntimeError(
+            f"ML 输入矩阵存在重复基因列(共 {len(dup_cols)} 个,如 "
+            f"{sorted(set(dup_cols))[:5]})—— 上游映射/读取层应先按基因聚合去重")
 
     X = _standardize_features(X)  # 惩罚公平 + SAGA/liblinear 收敛(详见 helper 注释)
 
