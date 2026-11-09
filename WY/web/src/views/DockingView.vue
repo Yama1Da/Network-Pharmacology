@@ -241,6 +241,9 @@ const selFlag = computed(() => candRows.value.find((r) => r.pdb_id === pdbSel.va
 const box = ref<{ center: number[]; size: number[] } | null>(null)
 const boxMeta = ref<{ clamped: boolean; inferred_ligands: string[] | null; residues: string[] } | null>(null)
 const boxBusy = ref(false)
+// 盒子预览重建计数:iframe 的 src 固定指向 box-3d,微调/重推不重建就永远不刷新
+// (QA 2026-11-09 反馈)。递增同时改 src(?v=)与 :key,防缓存且强制重挂载。
+const boxKey = ref(0)
 
 async function inferBox(): Promise<void> {
   sid.value = await ensureSession()
@@ -249,6 +252,7 @@ async function inferBox(): Promise<void> {
     const r = await api.dockingBox(sid.value, { infer: true })
     box.value = r.box
     boxMeta.value = { clamped: r.clamped, inferred_ligands: r.inferred_ligands, residues: r.residues }
+    boxKey.value++
   } catch (e) {
     flash(e instanceof Error ? e.message : String(e))
   } finally {
@@ -262,6 +266,7 @@ async function applyManualBox(): Promise<void> {
   try {
     const r = await api.dockingBox(sid.value, { infer: false, center: box.value!.center, size: box.value!.size })
     boxMeta.value = { clamped: false, inferred_ligands: null, residues: r.residues }
+    boxKey.value++
   } catch (e) {
     flash(e instanceof Error ? e.message : String(e))
   } finally {
@@ -567,8 +572,7 @@ onBeforeUnmount(() => {
             {{ ligBusy ? t('web.docking.fetching') : t('web.docking.fetch_ligand') }}
           </button>
         </div>
-        <p v-if="isManualSession" class="hint-line">{{ t('web.docking.manual_ligand_hint') }}</p>
-        <p v-else-if="!s1?.drug && !lig?.ok" class="hint-line">{{ t('web.docking.no_drug_hint') }}</p>
+        <p v-if="!isManualSession && !s1?.drug && !lig?.ok" class="hint-line">{{ t('web.docking.no_drug_hint') }}</p>
       </template>
       <template v-else>
         <textarea v-model="ligSmiles" rows="2" class="ta" :placeholder="t('web.docking.smiles_ph')"></textarea>
@@ -660,7 +664,7 @@ onBeforeUnmount(() => {
             <p v-else class="hint-line">{{ t('web.docking.box_empty') }}</p>
           </div>
           <div class="box-view">
-            <iframe class="fig-frame" :src="`/api/docking/${sid}/box-3d`" title="box preview" />
+            <iframe :key="boxKey" class="fig-frame" :src="`/api/docking/${sid}/box-3d?v=${boxKey}`" title="box preview" />
           </div>
         </div>
       </template>

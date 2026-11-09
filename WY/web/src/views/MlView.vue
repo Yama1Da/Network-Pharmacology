@@ -243,12 +243,19 @@ function gpPickField(name: string): void {
   gpCtrl.value = f?.suggest_control ?? ''
 }
 
+/* 填入成功的按钮旁短反馈:2s 后消失(flash 在页顶,填按钮在页腰,容易两头都看不到) */
+const gpFilled = ref(false)
+let gpFilledTimer = 0
+
 function gpApply(): void {
   if (!gpValid.value?.ok) return
   const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   casePat.value = esc(gpCase.value)
   ctrlPat.value = esc(gpCtrl.value)
   flash(t('web.ml.gp_filled'))
+  gpFilled.value = true
+  window.clearTimeout(gpFilledTimer)
+  gpFilledTimer = window.setTimeout(() => { gpFilled.value = false }, 2000)
 }
 
 /* ---------------- counts 模式分组选择器 ----------------
@@ -274,6 +281,9 @@ const ctsSpill = computed(() => {
 const ctsValid = computed(() => {
   if (!ctsCase.value || !ctsCtrl.value) return null
   if (ctsCase.value === ctsCtrl.value) return { ok: false, reason: 'same' }
+  // 组内列名无公共前缀(如 run accession 混名)→ 建议为空,填入会得到空正则:
+  // 空正则匹配一切,canRun 也会因正则为空而锁死,必须在此拦下(QA 2026-11-09)
+  if (!ctsCaseGroup.value?.suggest || !ctsCtrlGroup.value?.suggest) return { ok: false, reason: 'no_lcp' }
   if ((ctsCaseGroup.value?.columns.length ?? 0) < 3
       || (ctsCtrlGroup.value?.columns.length ?? 0) < 3) return { ok: false, reason: 'small' }
   if (ctsSpill.value > 0) return { ok: false, reason: 'spill' }
@@ -287,12 +297,18 @@ function ctsPickField(name: string): void {
   ctsCtrl.value = f?.suggest_control ?? ''
 }
 
+const ctsFilled = ref(false)
+let ctsFilledTimer = 0
+
 function ctsApply(): void {
   if (!ctsValid.value?.ok) return
   const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   casePat.value = esc(ctsCaseGroup.value?.suggest ?? '')
   ctrlPat.value = esc(ctsCtrlGroup.value?.suggest ?? '')
   flash(t('web.ml.gp_filled'))
+  ctsFilled.value = true
+  window.clearTimeout(ctsFilledTimer)
+  ctsFilledTimer = window.setTimeout(() => { ctsFilled.value = false }, 2000)
 }
 
 async function loadOverview(): Promise<void> {
@@ -696,7 +712,8 @@ onMounted(() => {
         <label class="set-label">{{ t('web.ml.ctrl_pat_label') }}</label>
         <div class="field wide"><input v-model="ctrlPat" :disabled="unusable"
                                        placeholder="healthy" spellcheck="false" /><i class="line"></i></div>
-        <button class="bar-btn" :disabled="!gse || overviewJob.running.value || unusable"
+        <!-- probeBusy 置灰:可用性判定出炉前不启动分钟级下载,免得对不可用数据集白跑(QA 2026-11-09) -->
+        <button class="bar-btn" :disabled="!gse || overviewJob.running.value || unusable || probeBusy"
                 @click="loadOverview">
           {{ overviewJob.running.value ? t('web.ml.overview_running') : t('web.ml.overview_btn') }}
         </button>
@@ -756,7 +773,7 @@ onMounted(() => {
                 <select class="sel inline" v-model="ctsCase" :disabled="unusable">
                   <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
                   <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
-                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · 建议 {{ g.suggest }}
+                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · {{ g.suggest ? `建议 ${g.suggest}` : t('web.ml.gp_no_lcp') }}
                   </option>
                 </select>
               </div>
@@ -765,7 +782,7 @@ onMounted(() => {
                 <select class="sel inline" v-model="ctsCtrl" :disabled="unusable">
                   <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
                   <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
-                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · 建议 {{ g.suggest }}
+                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · {{ g.suggest ? `建议 ${g.suggest}` : t('web.ml.gp_no_lcp') }}
                   </option>
                 </select>
               </div>
@@ -779,6 +796,7 @@ onMounted(() => {
               <button class="bar-btn" :disabled="!ctsValid?.ok || unusable" @click="ctsApply">
                 {{ t('web.ml.gp_fill') }}
               </button>
+              <span v-if="ctsFilled" class="state on">{{ t('web.ml.gp_filled') }}</span>
             </template>
           </template>
         </template>
@@ -837,6 +855,7 @@ onMounted(() => {
               <button class="bar-btn" :disabled="!gpValid?.ok || unusable" @click="gpApply">
                 {{ t('web.ml.gp_fill') }}
               </button>
+              <span v-if="gpFilled" class="state on">{{ t('web.ml.gp_filled') }}</span>
             </template>
           </template>
           <p v-if="overview.assess.n_samples != null && overview.assess.n_samples < 12" class="stale">
@@ -892,7 +911,9 @@ onMounted(() => {
       <p v-if="unusable" class="stale">{{ t('web.ml.run_locked') }}</p>
       <p v-else-if="sourceConflict" class="stale">{{ t('web.ml.conflict') }}</p>
       <p v-else-if="localPartial" class="stale">{{ t('web.ml.local_partial') }}</p>
-      <button class="build" :disabled="!canRun || runJob.running.value || overviewJob.running.value"
+      <!-- probeBusy 置灰是防御性双保险:换 GSE 会清空分组正则,canRun 理论上已为假;
+           显式挡住防止未来动线变化后在可用性判定出炉前启动分钟级 run(QA 2026-11-09) -->
+      <button class="build" :disabled="!canRun || runJob.running.value || overviewJob.running.value || probeBusy"
               @click="run">
         <svg viewBox="0 0 24 14" width="26" height="15">
           <path d="M1 7h20M15.5 1.5 21.5 7l-6 5.5" fill="none" stroke="currentColor"
