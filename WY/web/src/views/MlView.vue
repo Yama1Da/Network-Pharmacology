@@ -7,10 +7,11 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, artifactsUrl, type MlHistoryRun, type MlOverviewResult,
-         type MlProbeBatchItem, type MlProbeResult, type MlRunResult, type Row } from '../api'
+         type MlProbeResult, type MlRunResult, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
+import { dropBadge, freshBadge, pruneBadges, putBadge } from '../utils/probeBadgeCache'
 import { fmtSize } from '../utils/format'
 
 const { t } = useI18n()
@@ -29,8 +30,9 @@ const probe = ref<MlProbeResult | null>(null)
 const probeBusy = ref(false)
 let probedGse = ''
 
-/* 检索表体检徽章:行级预检状态(键=gse 大写)+ 勾选集 + 批检忙碌 */
-const rowProbes = ref<Record<string, MlProbeBatchItem>>({})
+/* 检索表体检徽章:行级预检状态存 utils/probeBadgeCache(模块级,切页不丢;
+ * 判定是 GEO 归档不可变属性,缓存安全;本地盘上状态变化由 overviewJob/
+ * forceJob 的 onDone 钩子精准失效,TTL 1h 兜底)+ 勾选集 + 批检忙碌 */
 const selectedRows = ref<Set<string>>(new Set())
 const probeBatchBusy = ref(false)
 const selectedCount = computed(() => selectedRows.value.size)
@@ -57,7 +59,7 @@ function toggleAll(): void {
 
 /* 体检后的 symbol_level 实测结论:i18n 键 + 语义色(空串=维持启发式原文) */
 function symbolVerdict(g: string): { key: string; tone: 'ok' | 'bad' | 'unknown' } | null {
-  const p = rowProbes.value[g]
+  const p = freshBadge(g)
   if (!p) return null
   if (p.status === 'err') return { key: 'web.ml.sym_unknown', tone: 'unknown' }
   const a = p.assess
@@ -72,26 +74,27 @@ function symbolVerdict(g: string): { key: string; tone: 'ok' | 'bad' | 'unknown'
 function dotClass(g: string): string {
   // 批检进行中:已勾选且未出结果的行亮琥珀脉冲(结果由同步端点一次性返回,
   // 期间全部选中行保持 busy 态,到齐后统一翻转为终态)
-  if (!rowProbes.value[g]) {
+  if (!freshBadge(g)) {
     return probeBatchBusy.value && selectedRows.value.has(g) ? 'busy' : 'unknown'
   }
   const v = symbolVerdict(g)!
   return v.tone === 'ok' ? 'ok' : v.tone === 'bad' ? 'bad' : 'unknown'
 }
 
-async function probeBatch(): Promise<void> {
+async function probeBatch(force = false): Promise<void> {
+  pruneBadges()
   const rows = searchResults.value
     .filter((r) => selectedRows.value.has(rowGse(r)))
-    // 已有体检结论的行跳过(判定与盘上状态同步,重复打网络无增量;重测=重新检索)
-    .filter((r) => !rowProbes.value[rowGse(r)])
+    // 已有新鲜结论(TTL 内)的行跳过,重复打网络无增量;过期/err 行自动重测;
+    // Shift+点击 = 强制重测(忽略缓存,QA 2026-11-09),本地数据集状态变化
+    // 另有失效钩子(overviewJob/forceJob onDone)精准作废对应条目
+    .filter((r) => force || !freshBadge(rowGse(r)))
     .map((r) => ({ gse: rowGse(r), ...searchPlatformFor(rowGse(r)) }))
   if (!rows.length) { flash(t('web.ml.probe_sel_cached')); return }
   probeBatchBusy.value = true
   try {
     const res = await api.mlProbeBatch(rows)
-    const next = { ...rowProbes.value }
-    for (const item of res.results) next[item.gse] = item
-    rowProbes.value = next
+    for (const item of res.results) putBadge(item)
     flash(t('web.ml.probe_batch_done', { n: res.results.length }))
   } catch (e) {
     flash(t('web.ml.probe_fail', { msg: e instanceof Error ? e.message : String(e) }))
@@ -119,7 +122,8 @@ async function search(): Promise<void> {
       gse.value = ''
       probe.value = null
       probedGse = ''
-      rowProbes.value = {}
+      // 徽章缓存不清:判定不可变,换检索词同 GSE 即时复用;只剪过期条目
+      pruneBadges()
       selectedRows.value = new Set()
   } catch (e) {
     flash(t('web.ml.search_fail', { msg: e instanceof Error ? e.message : String(e) }))
@@ -194,6 +198,8 @@ const fmtEta = (s: number): string =>
 const casePat = ref('')
 const ctrlPat = ref('')
 const overviewJob = useJob((result) => {
+  // 失效钩子:数据集已落盘,旧徽章(未实锤态)不再可信,立即回灰点重测
+  dropBadge(gse.value.trim().toUpperCase())
   overview.value = result as unknown as MlOverviewResult
   flash(t('web.ml.overview_done_flash'))
 })
@@ -458,6 +464,8 @@ async function run(): Promise<void> {
 }
 
 const forceJob = useJob(() => {
+  // 失效钩子:强制重下已落盘,旧徽章立即作废(gse 取值须在清 fallback 之前)
+  dropBadge(fallback.value?.gse ?? gse.value.trim().toUpperCase())
   fallback.value = null
   probedGse = ''
   probe.value = null
@@ -602,9 +610,11 @@ onMounted(() => {
           <p v-if="diseases.length" class="hint-line">{{ t('web.ml.diseases_hint', { n: diseases.length }) }}</p>
           <div v-if="searchResults.length" class="probe-row">
             <span class="hint-line">{{ t('web.ml.probe_sel_hint', { n: selectedCount }) }}</span>
-            <button class="bar-btn" :disabled="probeBatchBusy || !selectedCount" @click="probeBatch">
+            <button class="bar-btn" :disabled="probeBatchBusy || !selectedCount"
+                    @click="probeBatch($event.shiftKey)">
               {{ probeBatchBusy ? t('web.ml.probe_sel_running') : t('web.ml.probe_sel_btn') }}
             </button>
+            <span class="hint-line">{{ t('web.ml.probe_force_hint') }}</span>
           </div>
           <div v-if="searchResults.length" class="tbl-wrap">
             <p v-if="searchStale" class="stale">{{ t('web.ml.search_stale', { d: searchDisease }) }}</p>

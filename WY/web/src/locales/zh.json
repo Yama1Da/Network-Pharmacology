@@ -1111,6 +1111,7 @@
  "web.ml.probe_dot_ok": "体检通过:矩阵可解析或 counts 可用",
  "web.ml.probe_dot_unknown": "未体检或无法预判",
  "web.ml.probe_fail": "预检失败(不影响正式运行):{msg}",
+ "web.ml.probe_force_hint": "（Shift+点击 = 强制重测）",
  "web.ml.probe_meta": "矩阵 {size} · 实测 {speed} KB/s · 预计 {eta}",
  "web.ml.probe_sel_btn": "体检所选",
  "web.ml.probe_sel_cached": "所选行均已体检过(重新检索可重测)",
