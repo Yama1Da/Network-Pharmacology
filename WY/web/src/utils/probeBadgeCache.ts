@@ -16,6 +16,9 @@ const MAX_ENTRIES = 2000
 interface Entry {
   item: MlProbeBatchItem
   at: number
+  /** 真实体检时刻:at 带抖动只管过期语义,"体检于 N 分钟前"的展示必须用它,
+   * 否则防雪崩回拨会把伪造的年龄当事实展示给用户(2026-11-10 徽章豁免改造发现)。 */
+  probedAt: number
 }
 
 const cache = new Map<string, Entry>()
@@ -31,13 +34,26 @@ export function freshBadge(gse: string): MlProbeBatchItem | undefined {
   return e.item
 }
 
+/** 徽章命中及其真实年龄(分钟):选中 GSE 时判定能否豁免单检,并诚实展示体检时间。 */
+export function freshBadgeWithAge(gse: string): { item: MlProbeBatchItem; ageMin: number } | undefined {
+  const e = cache.get(gse)
+  if (!e) return undefined
+  if (Date.now() - e.at > TTL_MS) {
+    cache.delete(gse)
+    return undefined
+  }
+  return { item: e.item, ageMin: Math.max(0, Math.round((Date.now() - e.probedAt) / 60000)) }
+}
+
 export function putBadge(item: MlProbeBatchItem): void {
   if (item.status === 'err') return
   // 时间戳抖动(审计 2026-11-10):同批写入的条目时间戳只差微秒,无抖动则
   // TTL 满一小时后同刻集体失效,一次批检点击即触发选中行全量重测;回拨
-  // 0~15% TTL 让条目在一个窗口内渐进过期,后续点击只补测已失效的那部分
-  const at = Date.now() - Math.random() * TTL_MS * 0.15
-  cache.set(item.gse, { item, at })
+  // 0~15% TTL 让条目在一个窗口内渐进过期,后续点击只补测已失效的那部分。
+  // 抖动只作用于过期用的 at;真实体检时刻另存 probedAt 供展示(见 Entry 注释)
+  const now = Date.now()
+  const at = now - Math.random() * TTL_MS * 0.15
+  cache.set(item.gse, { item, at, probedAt: now })
   while (cache.size > MAX_ENTRIES) {
     const oldest = cache.keys().next().value
     if (oldest === undefined) break

@@ -11,7 +11,7 @@ import { api, artifactsUrl, type MlHistoryRun, type MlOverviewResult,
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
-import { dropBadge, freshBadge, pruneBadges, putBadge } from '../utils/probeBadgeCache'
+import { dropBadge, freshBadge, freshBadgeWithAge, pruneBadges, putBadge } from '../utils/probeBadgeCache'
 import { fmtSize } from '../utils/format'
 
 const { t } = useI18n()
@@ -122,6 +122,7 @@ async function search(): Promise<void> {
       gse.value = ''
       probe.value = null
       probedGse = ''
+      badgeApplied.value = null
       // 徽章缓存不清:判定不可变,换检索词同 GSE 即时复用;只剪过期条目
       pruneBadges()
       selectedRows.value = new Set()
@@ -150,10 +151,28 @@ function searchPlatformFor(g: string): { platform: string; type: string } {
   return { platform: String(row?.platform ?? ''), type: String(row?.type ?? '') }
 }
 
-/* GSE 确定后预检(每 GSE 一次) */
+/* GSE 确定后预检(每 GSE 一次;徽章命中则豁免,2026-11-10 QA 拍板):
+ * 批检与单检同走后端 _probe_one,1h TTL 内绿/红结论相同——命中即跳过单检
+ * (省一次 Range 请求与缓存命中时的全矩阵解析),红点直接锁定;灰(unknown)、
+ * err(不缓存,重试有真实价值)、无徽章(直填/超时)照旧单检。 */
+const badgeApplied = ref<{ status: 'ok' | 'unusable'; ageMin: number } | null>(null)
+
 async function probeGse(): Promise<void> {
   const g = gse.value.trim().toUpperCase()
-  if (!g || probedGse === g) return
+  badgeApplied.value = null
+  if (!g) return
+  // 徽章查询必须在"每 GSE 一次"去重之前:批检徽章常在单检已跑完后才落地
+  // (黄点期间点过该 GSE),再次 change 同一 GSE 仍要查——否则占位说明永远
+  // 不会出现,单检的旧结果(可能是 err)一直占着展示位
+  const b = freshBadgeWithAge(g)
+  if (b && (b.item.status === 'ok' || b.item.status === 'unusable')) {
+    probedGse = g
+    badgeApplied.value = { status: b.item.status, ageMin: b.ageMin }
+    probe.value = null
+    probeBusy.value = false
+    return
+  }
+  if (probedGse === g) return
   probedGse = g
   probeBusy.value = true
   try {
@@ -181,6 +200,9 @@ const probeR = computed(() => probe.value?.r ?? null)
 const probeErr = computed(() => probe.value?.err ?? '')
 const probeAssess = computed(() => probe.value?.assess ?? null)
 const unusable = computed(() => {
+  // 徽章直锁:批检判 unusable 的红点数据集跳过单检,选中即锁(2026-11-10 QA;
+  // 批检返回体无 annot_missing 字段,不能靠合成 assess 判定,须按 status 直锁)
+  if (hasGse.value && badgeApplied.value?.status === 'unusable') return true
   const p = probe.value
   const a = probeAssess.value
   return !!(hasGse.value && a && p?.gse === gse.value.trim().toUpperCase() &&
@@ -469,6 +491,7 @@ const forceJob = useJob(() => {
   fallback.value = null
   probedGse = ''
   probe.value = null
+  badgeApplied.value = null
   flash(t('web.ml.force_done_flash'))
 })
 
@@ -682,9 +705,14 @@ onMounted(() => {
         <span class="hint-line">{{ t('web.ml.pick_row_hint') }}</span>
       </div>
 
-      <!-- 预检展示 -->
-      <template v-if="tab !== 'local' && gse && (probeBusy || probe)">
+      <!-- 预检展示(徽章豁免时显示占位说明,2026-11-10 QA) -->
+      <template v-if="tab !== 'local' && gse && (probeBusy || probe || badgeApplied)">
         <p v-if="probeBusy" class="hint-line">{{ t('web.ml.probing') }}</p>
+        <p v-else-if="badgeApplied" :class="badgeApplied.status === 'unusable' ? 'stale' : 'hint-line good'">
+          {{ badgeApplied.status === 'unusable'
+              ? t('web.ml.badge_unusable', { n: badgeApplied.ageMin })
+              : t('web.ml.badge_skip_probe', { n: badgeApplied.ageMin }) }}
+        </p>
         <template v-else>
           <p v-if="probeR" class="hint-line">
             {{ t('web.ml.probe_meta', { size: fmtSize(probeR.size_bytes),
