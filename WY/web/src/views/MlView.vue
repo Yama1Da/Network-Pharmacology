@@ -947,6 +947,8 @@ onMounted(() => {
         <p v-if="runJob.text.value" class="hint-line">{{ runJob.text.value }}</p>
       </div>
       <p v-if="runJob.error.value" class="stale">{{ t('web.ml.run_fail', { msg: runJob.error.value }) }}</p>
+      <!-- 过期提示必须在 running 块外:useJob 的过期文案写在 text 里,随进度块一起消失 -->
+      <p v-if="runJob.stale.value" class="stale">{{ t('web.job.stale') }}</p>
 
       <div v-if="fallback" class="set-row" style="margin-top:14px">
         <span class="stale">{{ t('web.ml.fallback_warn', { date: fallback.date }) }}</span>

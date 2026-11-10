@@ -999,6 +999,7 @@
  "web.home.venn_alt": "药物-疾病靶点 Venn 图",
  "web.job.done": "完成",
  "web.job.fail": "失败",
+ "web.job.stale": "任务已过期：页面状态已变更，结果已丢弃",
  "web.logs.content_read_fail": "日志内容读取失败",
  "web.logs.current_dot": "当前正在写入",
  "web.logs.empty": "暂无日志文件 —— 跑一次分析后,这里会出现按天归档的记录。",

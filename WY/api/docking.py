@@ -427,10 +427,17 @@ def docking_receptor_prepare(sid: str, body: DockReceptorPrepareBody) -> dict:
         if dock.get("gene") != body.gene:  # 下载期间被换基因:写前再核一道
             return {"stale": True, "ok": False,
                     "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+        rec_pdbqt = prepare_receptor_pdbqt(pdb_path)
+        # 检查③(2026-11-10 残余窗口封堵):obabel 转换最长 OBABEL_TIMEOUT=120s,
+        # 这段窗口内基因同样可能被换——转换完成、写回会话前最后核一道,并把全部
+        # 会话写入移到该检查之后,杜绝「新基因会话挂旧基因受体」的混合状态
+        if dock.get("gene") != body.gene:
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
         dock["pdb_id"] = new_pdb_id
         dock["receptor_source"] = new_source
         dock["pdb_path"] = pdb_path
-        dock["rec_pdbqt"] = prepare_receptor_pdbqt(pdb_path)
+        dock["rec_pdbqt"] = rec_pdbqt
         dock["pdb_sel"] = body.pdb_id
         dock.pop("result", None)
         return {"pdb_id": dock["pdb_id"], "receptor_source": dock["receptor_source"],

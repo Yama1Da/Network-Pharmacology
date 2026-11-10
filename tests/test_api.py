@@ -593,6 +593,9 @@ def test_docking_receptor_prepare_stale_discard(client, sid, monkeypatch):
     新基因的会话,canRun 满足后 vina 对错误靶点运行。
     复现要点:manual 会话种子 gene=TP53 → 提交 prepare(桩 download 2s)→
     立即把会话 gene 改为 EGFR → 任务终态 result.stale=True 且会话无受体写入。
+    2026-11-10 升级:写回断言由固定键黑名单改为提交前后键集差分——stale 路径
+    未来新增任何写入键都会红,而夹具/其他路径的新增键不误报(差分只框定本任务
+    窗口;_touched 只变值不增键)。
     """
     import WY.core.docking as docking
     from WY.core import docking_session
@@ -610,13 +613,57 @@ def test_docking_receptor_prepare_stale_discard(client, sid, monkeypatch):
     monkeypatch.setattr(docking, "download_pdb", slow_download)
     monkeypatch.setattr(docking, "prepare_receptor_pdbqt", lambda p: "fake.pdbqt")
 
+    before = set(docking_session.get(sid))  # 任务写入前键集基线(夹具写入已完成)
     job = client.post(f"/api/docking/{sid}/receptor/prepare",
                       json={"gene": "TP53", "pdb_id": "1XQ8"}).json()["job_id"]
     dock["gene"] = "EGFR"  # 提交后立刻换基因(模拟竞态)
     body = _wait_job(client, job)
     assert body["status"] == "done" and body["result"].get("stale") is True, body
+    leaked = set(docking_session.get(sid)) - before
+    assert not leaked, f"stale 受体任务不得向会话写入任何键,实际新增: {sorted(leaked)}"
+
+
+def test_docking_receptor_prepare_stale_during_conversion(client, sid, monkeypatch):
+    """回归测试(P0-B 残余窗口/检查③,2026-11-10):obabel 转换期间换基因,写回必须被拦。
+
+    缺陷(修复前):下载后核了一道,但 prepare_receptor_pdbqt(obabel 子进程,
+    最长 OBABEL_TIMEOUT=120s)的转换窗口内基因仍可能被换——转换完成后无检查
+    直接写 dock["rec_pdbqt"]/["pdb_sel"],且 pdb_id/pdb_path 在转换前就已写入;
+    换基因端点 pop 掉旧键后,旧基因的 rec_pdbqt 又落回新基因会话,重新推断盒子
+    后 canRun 满足,vina 将对旧基因受体运行。
+    复现要点:快下载 + 慢转换桩(2s);提交后 0.3s 翻基因(落点在转换窗口内)。
+    修复前 result 无 stale 标记且会话出现 rec_pdbqt/pdb_sel(及 pdb_id/pdb_path)
+    残留;修复后 stale=True 且受体相关五键全部不在会话(写入整体移到检查之后)。
+    2026-11-10 升级:写回断言由固定键黑名单改为提交前后键集差分(同
+    test_docking_receptor_prepare_stale_discard 的 docstring 说明)。
+    """
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    client.post(f"/api/docking/{sid}/source",
+                json={"mode": "manual", "manual_genes": "TP53,EGFR"})
     dock = docking_session.get(sid)
-    assert "rec_pdbqt" not in dock and "pdb_id" not in dock, "stale 受体不得写入会话"
+    dock["gene"] = "TP53"
+    dock["genes"] = ["TP53", "EGFR"]
+
+    monkeypatch.setattr(docking, "download_pdb",
+                        lambda pdb_id: f"C:/fake/{pdb_id}.pdb")
+
+    def slow_prepare(path):
+        time.sleep(2)
+        return "fake.pdbqt"
+
+    monkeypatch.setattr(docking, "prepare_receptor_pdbqt", slow_prepare)
+
+    before = set(docking_session.get(sid))  # 任务写入前键集基线(夹具写入已完成)
+    job = client.post(f"/api/docking/{sid}/receptor/prepare",
+                      json={"gene": "TP53", "pdb_id": "1XQ8"}).json()["job_id"]
+    time.sleep(0.3)  # 让任务越过下载、进入转换窗口
+    dock["gene"] = "EGFR"  # 转换进行中换基因(模拟另一标签页竞态)
+    body = _wait_job(client, job)
+    assert body["status"] == "done" and body["result"].get("stale") is True, body
+    leaked = set(docking_session.get(sid)) - before
+    assert not leaked, f"stale 受体任务不得向会话写入任何键,实际新增: {sorted(leaked)}"
 
 
 def test_docking_ligand_stale_discard(client, sid, monkeypatch):
@@ -626,6 +673,8 @@ def test_docking_ligand_stale_discard(client, sid, monkeypatch):
     旧来源的配体落进新来源会话,canRun 满足后 vina 对错误配体运行并打 ✓。
     复现要点:manual 会话 → smiles 获取(桩 2s)→ 1 秒时后台线程把
     source_mode 翻为 ppi → 响应 ok=False/stale=True 且会话无配体写入。
+    2026-11-10 升级:写回断言由固定键黑名单改为提交前后键集差分(同
+    test_docking_receptor_prepare_stale_discard 的 docstring 说明)。
     """
     import threading
 
@@ -648,12 +697,13 @@ def test_docking_ligand_stale_discard(client, sid, monkeypatch):
         if d is not None:
             d["source_mode"] = "ppi"
 
+    before = set(docking_session.get(sid))  # 端点写入前键集基线
     threading.Timer(1.0, flip).start()
     body = client.post(f"/api/docking/{sid}/ligand",
                        json={"source": "smiles", "smiles": "CCO"}).json()
     assert body.get("ok") is False and body.get("stale") is True, body
-    dock = docking_session.get(sid)
-    assert "lig_pdbqt" not in dock and "cid" not in dock, "stale 配体不得写入会话"
+    leaked = set(docking_session.get(sid)) - before
+    assert not leaked, f"stale 配体任务不得向会话写入任何键,实际新增: {sorted(leaked)}"
 
 
 def test_docking_receptor_candidates_guard_and_flow(client, sid, monkeypatch):

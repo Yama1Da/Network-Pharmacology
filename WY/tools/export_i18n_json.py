@@ -60,6 +60,7 @@ WEB_ZH = {
     # ---- job 默认文案 ----
     "web.job.done": "完成",
     "web.job.fail": "失败",
+    "web.job.stale": "任务已过期：页面状态已变更，结果已丢弃",
     # ---- App 骨架 ----
     "web.app.foot": "© 2026 NPAP · 仅供科研使用",
     # ---- 未知路由兜底页 ----
@@ -765,6 +766,7 @@ WEB_EN = {
     # ---- job 默认文案 ----
     "web.job.done": "Done",
     "web.job.fail": "Failed",
+    "web.job.stale": "Job stale: page state changed, result discarded",
     # ---- App 骨架 ----
     "web.app.foot": "© 2026 NPAP · For research use only",
     # ---- 未知路由兜底页 ----
