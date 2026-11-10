@@ -258,6 +258,44 @@ def test_stats_shape(client):
     assert all(isinstance(v, int) for v in body.values())
 
 
+def test_stats_single_flight(monkeypatch):
+    """回归测试(2026-11-10 缓存审计):stats 过期重算必须 single-flight。
+
+    缺陷:_stats_cache 过期后并发请求,每个线程都各自跑一遍 _compute_stats
+    (全目录 CSV 扫描,drug/disease/merged/enrichment 四个目录),过期瞬间
+    N 个并发 = N 倍重复扫描,无锁无合并。
+    复现要点:桩替 _compute_stats(计数 + 0.3s 制造重算窗口)→ 强制置过期
+    → 4 线程并发调 home_stats → 修复(双检锁)前计数=4,修复后=1。
+    结束后恢复缓存状态,不污染后续测试。
+    """
+    import threading
+
+    import WY.api.stats as stats_mod
+
+    calls: list[int] = []
+    orig_compute = stats_mod._compute_stats
+
+    def slow_compute() -> dict:
+        calls.append(1)
+        time.sleep(0.3)  # 制造重算窗口:无锁时其余线程全部进入重算
+        return orig_compute()
+
+    monkeypatch.setattr(stats_mod, "_compute_stats", slow_compute)
+    stats_mod._stats_cache["data"] = None
+    stats_mod._stats_cache["at"] = 0.0  # 强制过期
+    try:
+        threads = [threading.Thread(target=stats_mod.home_stats) for _ in range(4)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        assert len(calls) == 1, \
+            f"过期重算必须只放一个线程进锁,实际重算 {len(calls)} 次"
+    finally:
+        stats_mod._stats_cache["data"] = None  # 还原:后续测试按自己的流程重建缓存
+        stats_mod._stats_cache["at"] = 0.0
+
+
 def test_settings_snapshot_shape(client):
     body = client.get("/api/settings").json()
     for key in ("keys", "vina_dir", "string_version", "known_versions",

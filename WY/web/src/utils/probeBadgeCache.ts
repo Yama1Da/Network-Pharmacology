@@ -9,7 +9,9 @@
 import type { MlProbeBatchItem } from '../api'
 
 const TTL_MS = 60 * 60 * 1000
-const MAX_ENTRIES = 300
+// 容量上限按长期重度会话定档:几千次批检操作的单会话不清上限会频繁淘汰
+// (2k 条 × ~2KB ≈ 4MB 浏览器内存,可忽略);超出按插入序淘汰最旧
+const MAX_ENTRIES = 2000
 
 interface Entry {
   item: MlProbeBatchItem
@@ -31,7 +33,11 @@ export function freshBadge(gse: string): MlProbeBatchItem | undefined {
 
 export function putBadge(item: MlProbeBatchItem): void {
   if (item.status === 'err') return
-  cache.set(item.gse, { item, at: Date.now() })
+  // 时间戳抖动(审计 2026-11-10):同批写入的条目时间戳只差微秒,无抖动则
+  // TTL 满一小时后同刻集体失效,一次批检点击即触发选中行全量重测;回拨
+  // 0~15% TTL 让条目在一个窗口内渐进过期,后续点击只补测已失效的那部分
+  const at = Date.now() - Math.random() * TTL_MS * 0.15
+  cache.set(item.gse, { item, at })
   while (cache.size > MAX_ENTRIES) {
     const oldest = cache.keys().next().value
     if (oldest === undefined) break
