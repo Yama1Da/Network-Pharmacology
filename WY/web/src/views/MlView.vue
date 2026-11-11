@@ -7,10 +7,11 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, artifactsUrl, type MlHistoryRun, type MlOverviewResult,
-         type MlProbeBatchItem, type MlProbeResult, type MlRunResult, type Row } from '../api'
+         type MlProbeResult, type MlRunResult, type Row } from '../api'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
+import { dropBadge, freshBadge, freshBadgeWithAge, pruneBadges, putBadge } from '../utils/probeBadgeCache'
 import { fmtSize } from '../utils/format'
 
 const { t } = useI18n()
@@ -29,8 +30,9 @@ const probe = ref<MlProbeResult | null>(null)
 const probeBusy = ref(false)
 let probedGse = ''
 
-/* 检索表体检徽章:行级预检状态(键=gse 大写)+ 勾选集 + 批检忙碌 */
-const rowProbes = ref<Record<string, MlProbeBatchItem>>({})
+/* 检索表体检徽章:行级预检状态存 utils/probeBadgeCache(模块级,切页不丢;
+ * 判定是 GEO 归档不可变属性,缓存安全;本地盘上状态变化由 overviewJob/
+ * forceJob 的 onDone 钩子精准失效,TTL 1h 兜底)+ 勾选集 + 批检忙碌 */
 const selectedRows = ref<Set<string>>(new Set())
 const probeBatchBusy = ref(false)
 const selectedCount = computed(() => selectedRows.value.size)
@@ -57,7 +59,7 @@ function toggleAll(): void {
 
 /* 体检后的 symbol_level 实测结论:i18n 键 + 语义色(空串=维持启发式原文) */
 function symbolVerdict(g: string): { key: string; tone: 'ok' | 'bad' | 'unknown' } | null {
-  const p = rowProbes.value[g]
+  const p = freshBadge(g)
   if (!p) return null
   if (p.status === 'err') return { key: 'web.ml.sym_unknown', tone: 'unknown' }
   const a = p.assess
@@ -72,26 +74,27 @@ function symbolVerdict(g: string): { key: string; tone: 'ok' | 'bad' | 'unknown'
 function dotClass(g: string): string {
   // 批检进行中:已勾选且未出结果的行亮琥珀脉冲(结果由同步端点一次性返回,
   // 期间全部选中行保持 busy 态,到齐后统一翻转为终态)
-  if (!rowProbes.value[g]) {
+  if (!freshBadge(g)) {
     return probeBatchBusy.value && selectedRows.value.has(g) ? 'busy' : 'unknown'
   }
   const v = symbolVerdict(g)!
   return v.tone === 'ok' ? 'ok' : v.tone === 'bad' ? 'bad' : 'unknown'
 }
 
-async function probeBatch(): Promise<void> {
+async function probeBatch(force = false): Promise<void> {
+  pruneBadges()
   const rows = searchResults.value
     .filter((r) => selectedRows.value.has(rowGse(r)))
-    // 已有体检结论的行跳过(判定与盘上状态同步,重复打网络无增量;重测=重新检索)
-    .filter((r) => !rowProbes.value[rowGse(r)])
+    // 已有新鲜结论(TTL 内)的行跳过,重复打网络无增量;过期/err 行自动重测;
+    // Shift+点击 = 强制重测(忽略缓存,QA 2026-11-09),本地数据集状态变化
+    // 另有失效钩子(overviewJob/forceJob onDone)精准作废对应条目
+    .filter((r) => force || !freshBadge(rowGse(r)))
     .map((r) => ({ gse: rowGse(r), ...searchPlatformFor(rowGse(r)) }))
   if (!rows.length) { flash(t('web.ml.probe_sel_cached')); return }
   probeBatchBusy.value = true
   try {
     const res = await api.mlProbeBatch(rows)
-    const next = { ...rowProbes.value }
-    for (const item of res.results) next[item.gse] = item
-    rowProbes.value = next
+    for (const item of res.results) putBadge(item)
     flash(t('web.ml.probe_batch_done', { n: res.results.length }))
   } catch (e) {
     flash(t('web.ml.probe_fail', { msg: e instanceof Error ? e.message : String(e) }))
@@ -119,7 +122,9 @@ async function search(): Promise<void> {
       gse.value = ''
       probe.value = null
       probedGse = ''
-      rowProbes.value = {}
+      badgeApplied.value = null
+      // 徽章缓存不清:判定不可变,换检索词同 GSE 即时复用;只剪过期条目
+      pruneBadges()
       selectedRows.value = new Set()
   } catch (e) {
     flash(t('web.ml.search_fail', { msg: e instanceof Error ? e.message : String(e) }))
@@ -146,10 +151,28 @@ function searchPlatformFor(g: string): { platform: string; type: string } {
   return { platform: String(row?.platform ?? ''), type: String(row?.type ?? '') }
 }
 
-/* GSE 确定后预检(每 GSE 一次) */
+/* GSE 确定后预检(每 GSE 一次;徽章命中则豁免,2026-11-10 QA 拍板):
+ * 批检与单检同走后端 _probe_one,1h TTL 内绿/红结论相同——命中即跳过单检
+ * (省一次 Range 请求与缓存命中时的全矩阵解析),红点直接锁定;灰(unknown)、
+ * err(不缓存,重试有真实价值)、无徽章(直填/超时)照旧单检。 */
+const badgeApplied = ref<{ status: 'ok' | 'unusable'; ageMin: number } | null>(null)
+
 async function probeGse(): Promise<void> {
   const g = gse.value.trim().toUpperCase()
-  if (!g || probedGse === g) return
+  badgeApplied.value = null
+  if (!g) return
+  // 徽章查询必须在"每 GSE 一次"去重之前:批检徽章常在单检已跑完后才落地
+  // (黄点期间点过该 GSE),再次 change 同一 GSE 仍要查——否则占位说明永远
+  // 不会出现,单检的旧结果(可能是 err)一直占着展示位
+  const b = freshBadgeWithAge(g)
+  if (b && (b.item.status === 'ok' || b.item.status === 'unusable')) {
+    probedGse = g
+    badgeApplied.value = { status: b.item.status, ageMin: b.ageMin }
+    probe.value = null
+    probeBusy.value = false
+    return
+  }
+  if (probedGse === g) return
   probedGse = g
   probeBusy.value = true
   try {
@@ -177,6 +200,9 @@ const probeR = computed(() => probe.value?.r ?? null)
 const probeErr = computed(() => probe.value?.err ?? '')
 const probeAssess = computed(() => probe.value?.assess ?? null)
 const unusable = computed(() => {
+  // 徽章直锁:批检判 unusable 的红点数据集跳过单检,选中即锁(2026-11-10 QA;
+  // 批检返回体无 annot_missing 字段,不能靠合成 assess 判定,须按 status 直锁)
+  if (hasGse.value && badgeApplied.value?.status === 'unusable') return true
   const p = probe.value
   const a = probeAssess.value
   return !!(hasGse.value && a && p?.gse === gse.value.trim().toUpperCase() &&
@@ -194,6 +220,8 @@ const fmtEta = (s: number): string =>
 const casePat = ref('')
 const ctrlPat = ref('')
 const overviewJob = useJob((result) => {
+  // 失效钩子:数据集已落盘,旧徽章(未实锤态)不再可信,立即回灰点重测
+  dropBadge(gse.value.trim().toUpperCase())
   overview.value = result as unknown as MlOverviewResult
   flash(t('web.ml.overview_done_flash'))
 })
@@ -243,12 +271,19 @@ function gpPickField(name: string): void {
   gpCtrl.value = f?.suggest_control ?? ''
 }
 
+/* 填入成功的按钮旁短反馈:2s 后消失(flash 在页顶,填按钮在页腰,容易两头都看不到) */
+const gpFilled = ref(false)
+let gpFilledTimer = 0
+
 function gpApply(): void {
   if (!gpValid.value?.ok) return
   const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   casePat.value = esc(gpCase.value)
   ctrlPat.value = esc(gpCtrl.value)
   flash(t('web.ml.gp_filled'))
+  gpFilled.value = true
+  window.clearTimeout(gpFilledTimer)
+  gpFilledTimer = window.setTimeout(() => { gpFilled.value = false }, 2000)
 }
 
 /* ---------------- counts 模式分组选择器 ----------------
@@ -274,6 +309,9 @@ const ctsSpill = computed(() => {
 const ctsValid = computed(() => {
   if (!ctsCase.value || !ctsCtrl.value) return null
   if (ctsCase.value === ctsCtrl.value) return { ok: false, reason: 'same' }
+  // 组内列名无公共前缀(如 run accession 混名)→ 建议为空,填入会得到空正则:
+  // 空正则匹配一切,canRun 也会因正则为空而锁死,必须在此拦下(QA 2026-11-09)
+  if (!ctsCaseGroup.value?.suggest || !ctsCtrlGroup.value?.suggest) return { ok: false, reason: 'no_lcp' }
   if ((ctsCaseGroup.value?.columns.length ?? 0) < 3
       || (ctsCtrlGroup.value?.columns.length ?? 0) < 3) return { ok: false, reason: 'small' }
   if (ctsSpill.value > 0) return { ok: false, reason: 'spill' }
@@ -287,18 +325,29 @@ function ctsPickField(name: string): void {
   ctsCtrl.value = f?.suggest_control ?? ''
 }
 
+const ctsFilled = ref(false)
+let ctsFilledTimer = 0
+
 function ctsApply(): void {
   if (!ctsValid.value?.ok) return
   const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   casePat.value = esc(ctsCaseGroup.value?.suggest ?? '')
   ctrlPat.value = esc(ctsCtrlGroup.value?.suggest ?? '')
   flash(t('web.ml.gp_filled'))
+  ctsFilled.value = true
+  window.clearTimeout(ctsFilledTimer)
+  ctsFilledTimer = window.setTimeout(() => { ctsFilled.value = false }, 2000)
 }
 
 async function loadOverview(): Promise<void> {
   const g = gse.value.trim().toUpperCase()
   if (!g) { flash(t('web.ml.need_gse')); return }
-  await overviewJob.run(api.mlOverview(g), { doneText: t('web.ml.overview_done_text') })
+  // 代际守卫(P0-F):发起时捕获 GSE 快照,期间切换则总览作废(否则旧数据集的
+  // group_picker 回填 ② 区,gpApply/ctsApply 会把旧分组正则填进新 GSE 的 run)
+  await overviewJob.run(api.mlOverview(g), {
+    doneText: t('web.ml.overview_done_text'),
+    stale: () => gse.value.trim().toUpperCase() !== g
+  })
 }
 
 /* 排序 CSV 候选 */
@@ -415,20 +464,34 @@ const canRun = computed(() =>
 async function run(): Promise<void> {
   if (sourceConflict.value) { flash(t('web.ml.conflict_flash')); return }
   if (localPartial.value) { flash(t('web.ml.partial_flash')); return }
+  // 代际守卫(P0-F 及其备案扩展):发起时捕获 GSE/疾病名/输入方式三重快照,
+  // 任一变化即视为数据上下文已变,在途结果作废不落④区(watch 只清展示,
+  // 不阻断 onDone 回填——守卫补上这段)
+  const g0 = gse.value.trim().toUpperCase()
+  const d0 = disease.value.trim().toLowerCase()
+  const tab0 = tab.value
   await runJob.run(api.mlRun({
     mode: useLocal.value ? 'local' : 'gse',
-    gse: gse.value.trim().toUpperCase(),
+    gse: g0,
     case_pattern: casePat.value, control_pattern: ctrlPat.value,
     expr: exprPath.value, labels: labelsPath.value, case_label: localCase.value,
     ranked_labels: [...rankedSel.value],
     top_k: topK.value, prefilter_top: prefilterN.value, bootstrap_rounds: bootstrapN.value
-  }), { doneText: t('web.ml.run_done_text') })
+  }), {
+    doneText: t('web.ml.run_done_text'),
+    stale: () => gse.value.trim().toUpperCase() !== g0
+      || disease.value.trim().toLowerCase() !== d0
+      || tab.value !== tab0
+  })
 }
 
 const forceJob = useJob(() => {
+  // 失效钩子:强制重下已落盘,旧徽章立即作废(gse 取值须在清 fallback 之前)
+  dropBadge(fallback.value?.gse ?? gse.value.trim().toUpperCase())
   fallback.value = null
   probedGse = ''
   probe.value = null
+  badgeApplied.value = null
   flash(t('web.ml.force_done_flash'))
 })
 
@@ -570,9 +633,11 @@ onMounted(() => {
           <p v-if="diseases.length" class="hint-line">{{ t('web.ml.diseases_hint', { n: diseases.length }) }}</p>
           <div v-if="searchResults.length" class="probe-row">
             <span class="hint-line">{{ t('web.ml.probe_sel_hint', { n: selectedCount }) }}</span>
-            <button class="bar-btn" :disabled="probeBatchBusy || !selectedCount" @click="probeBatch">
+            <button class="bar-btn" :disabled="probeBatchBusy || !selectedCount"
+                    @click="probeBatch($event.shiftKey)">
               {{ probeBatchBusy ? t('web.ml.probe_sel_running') : t('web.ml.probe_sel_btn') }}
             </button>
+            <span class="hint-line">{{ t('web.ml.probe_force_hint') }}</span>
           </div>
           <div v-if="searchResults.length" class="tbl-wrap">
             <p v-if="searchStale" class="stale">{{ t('web.ml.search_stale', { d: searchDisease }) }}</p>
@@ -640,9 +705,14 @@ onMounted(() => {
         <span class="hint-line">{{ t('web.ml.pick_row_hint') }}</span>
       </div>
 
-      <!-- 预检展示 -->
-      <template v-if="tab !== 'local' && gse && (probeBusy || probe)">
+      <!-- 预检展示(徽章豁免时显示占位说明,2026-11-10 QA) -->
+      <template v-if="tab !== 'local' && gse && (probeBusy || probe || badgeApplied)">
         <p v-if="probeBusy" class="hint-line">{{ t('web.ml.probing') }}</p>
+        <p v-else-if="badgeApplied" :class="badgeApplied.status === 'unusable' ? 'stale' : 'hint-line good'">
+          {{ badgeApplied.status === 'unusable'
+              ? t('web.ml.badge_unusable', { n: badgeApplied.ageMin })
+              : t('web.ml.badge_skip_probe', { n: badgeApplied.ageMin }) }}
+        </p>
         <template v-else>
           <p v-if="probeR" class="hint-line">
             {{ t('web.ml.probe_meta', { size: fmtSize(probeR.size_bytes),
@@ -680,10 +750,12 @@ onMounted(() => {
         <label class="set-label">{{ t('web.ml.ctrl_pat_label') }}</label>
         <div class="field wide"><input v-model="ctrlPat" :disabled="unusable"
                                        placeholder="healthy" spellcheck="false" /><i class="line"></i></div>
-        <button class="bar-btn" :disabled="!gse || overviewJob.running.value || unusable"
+        <!-- probeBusy 置灰:可用性判定出炉前不启动分钟级下载,免得对不可用数据集白跑(QA 2026-11-09) -->
+        <button class="bar-btn" :disabled="!gse || overviewJob.running.value || unusable || probeBusy"
                 @click="loadOverview">
           {{ overviewJob.running.value ? t('web.ml.overview_running') : t('web.ml.overview_btn') }}
         </button>
+        <span v-if="overviewJob.stale.value" class="state">{{ t('web.job.stale') }}</span>
       </div>
       <div v-if="overviewJob.running.value" class="progress">
         <div class="progress-track"><div class="progress-fill indeterminate"></div></div>
@@ -739,7 +811,7 @@ onMounted(() => {
                 <select class="sel inline" v-model="ctsCase" :disabled="unusable">
                   <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
                   <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
-                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · 建议 {{ g.suggest }}
+                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · {{ g.suggest ? `建议 ${g.suggest}` : t('web.ml.gp_no_lcp') }}
                   </option>
                 </select>
               </div>
@@ -748,7 +820,7 @@ onMounted(() => {
                 <select class="sel inline" v-model="ctsCtrl" :disabled="unusable">
                   <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
                   <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
-                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · 建议 {{ g.suggest }}
+                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · {{ g.suggest ? `建议 ${g.suggest}` : t('web.ml.gp_no_lcp') }}
                   </option>
                 </select>
               </div>
@@ -762,6 +834,7 @@ onMounted(() => {
               <button class="bar-btn" :disabled="!ctsValid?.ok || unusable" @click="ctsApply">
                 {{ t('web.ml.gp_fill') }}
               </button>
+              <span v-if="ctsFilled" class="state on">{{ t('web.ml.gp_filled') }}</span>
             </template>
           </template>
         </template>
@@ -820,6 +893,7 @@ onMounted(() => {
               <button class="bar-btn" :disabled="!gpValid?.ok || unusable" @click="gpApply">
                 {{ t('web.ml.gp_fill') }}
               </button>
+              <span v-if="gpFilled" class="state on">{{ t('web.ml.gp_filled') }}</span>
             </template>
           </template>
           <p v-if="overview.assess.n_samples != null && overview.assess.n_samples < 12" class="stale">
@@ -875,7 +949,9 @@ onMounted(() => {
       <p v-if="unusable" class="stale">{{ t('web.ml.run_locked') }}</p>
       <p v-else-if="sourceConflict" class="stale">{{ t('web.ml.conflict') }}</p>
       <p v-else-if="localPartial" class="stale">{{ t('web.ml.local_partial') }}</p>
-      <button class="build" :disabled="!canRun || runJob.running.value || overviewJob.running.value"
+      <!-- probeBusy 置灰是防御性双保险:换 GSE 会清空分组正则,canRun 理论上已为假;
+           显式挡住防止未来动线变化后在可用性判定出炉前启动分钟级 run(QA 2026-11-09) -->
+      <button class="build" :disabled="!canRun || runJob.running.value || overviewJob.running.value || probeBusy"
               @click="run">
         <svg viewBox="0 0 24 14" width="26" height="15">
           <path d="M1 7h20M15.5 1.5 21.5 7l-6 5.5" fill="none" stroke="currentColor"
@@ -899,6 +975,8 @@ onMounted(() => {
         <p v-if="runJob.text.value" class="hint-line">{{ runJob.text.value }}</p>
       </div>
       <p v-if="runJob.error.value" class="stale">{{ t('web.ml.run_fail', { msg: runJob.error.value }) }}</p>
+      <!-- 过期提示必须在 running 块外:useJob 的过期文案写在 text 里,随进度块一起消失 -->
+      <p v-if="runJob.stale.value" class="stale">{{ t('web.job.stale') }}</p>
 
       <div v-if="fallback" class="set-row" style="margin-top:14px">
         <span class="stale">{{ t('web.ml.fallback_warn', { date: fallback.date }) }}</span>

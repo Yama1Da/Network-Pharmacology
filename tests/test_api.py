@@ -258,6 +258,44 @@ def test_stats_shape(client):
     assert all(isinstance(v, int) for v in body.values())
 
 
+def test_stats_single_flight(monkeypatch):
+    """回归测试(2026-11-10 缓存审计):stats 过期重算必须 single-flight。
+
+    缺陷:_stats_cache 过期后并发请求,每个线程都各自跑一遍 _compute_stats
+    (全目录 CSV 扫描,drug/disease/merged/enrichment 四个目录),过期瞬间
+    N 个并发 = N 倍重复扫描,无锁无合并。
+    复现要点:桩替 _compute_stats(计数 + 0.3s 制造重算窗口)→ 强制置过期
+    → 4 线程并发调 home_stats → 修复(双检锁)前计数=4,修复后=1。
+    结束后恢复缓存状态,不污染后续测试。
+    """
+    import threading
+
+    import WY.api.stats as stats_mod
+
+    calls: list[int] = []
+    orig_compute = stats_mod._compute_stats
+
+    def slow_compute() -> dict:
+        calls.append(1)
+        time.sleep(0.3)  # 制造重算窗口:无锁时其余线程全部进入重算
+        return orig_compute()
+
+    monkeypatch.setattr(stats_mod, "_compute_stats", slow_compute)
+    stats_mod._stats_cache["data"] = None
+    stats_mod._stats_cache["at"] = 0.0  # 强制过期
+    try:
+        threads = [threading.Thread(target=stats_mod.home_stats) for _ in range(4)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        assert len(calls) == 1, \
+            f"过期重算必须只放一个线程进锁,实际重算 {len(calls)} 次"
+    finally:
+        stats_mod._stats_cache["data"] = None  # 还原:后续测试按自己的流程重建缓存
+        stats_mod._stats_cache["at"] = 0.0
+
+
 def test_settings_snapshot_shape(client):
     body = client.get("/api/settings").json()
     for key in ("keys", "vina_dir", "string_version", "known_versions",
@@ -483,6 +521,189 @@ def test_docking_ligand_manual_name_query_blocked(client, sid):
     # 纯数字 CID 经 resolve_cid 直通下载层,不触名称解析
     from WY.core.docking import resolve_cid
     assert resolve_cid("2244") == 2244  # 纯数字直通,不触网
+
+
+def test_docking_source_name_traversal_rejected(client, sid):
+    """回归测试(P1-C):ppi/enr 来源名不得携带路径分隔符或逃逸缓存根。
+
+    缺陷:mode=ppi 的 name 直传 read_ppi_dataset(os.path.join 无包含校验),
+    mode=enr 的 name 直拼 ENRICHMENT_CACHE_DIR 读 CSV——`../` 或盘符名可读
+    缓存根之外的文件内容(以 hub/enrichment 基因行集形式回显);对照
+    manual-file 分支早有 basename+形态校验,三模式口径不一。
+    复现要点:`name="../WY/API.env"` 与 `name="C:/Windows/win.ini"` 在修复前
+    均 400 之外的状态(ppi 以空集合 200 成功建会话,enr 读不到则 500);
+    修复后统一 400。合法纯名保绿(数据集不存在按空集合处理)。
+    """
+    for mode, name in (("ppi", "../WY/API.env"), ("ppi", "C:/Windows/win.ini"),
+                       ("enr", "../WY/API.env"), ("enr", "C:/Windows/win.ini"),
+                       ("ppi", "sub/dir_data"), ("enr", "a/b.csv")):
+        r = client.post(f"/api/docking/{sid}/source", json={"mode": mode, "name": name})
+        assert r.status_code == 400, f"{mode}/{name} 必须 400,实际 {r.status_code}"
+    # 保绿:合法纯名(数据集不存在,read_ppi_dataset 按空集合处理)
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "ppi", "name": "aspirin_cancer_data"}
+                       ).status_code == 200
+
+
+def test_docking_manual_guard_survives_source_switch(client, sid, monkeypatch):
+    """回归测试(P1-D):先选 ppi 再切 manual,防呆判据不得被残留键绕过。
+
+    缺陷:ppi/enr 分支写 dock["ppi_dir"]/["enr_file"],切 manual 时不清除,
+    reset_downstream 的失效清单也不含它们;防呆判据从「未挂 ppi/enr」反推,
+    残留使 is_manual_session 恒为 False——手动基因清单(如基因名被当药名)
+    可直送 PubChem 盲查(注释记载的事故形态)。
+    复现要点:mode=ppi(数据集不存在,read_ppi_dataset 按空集合处理)→ 切
+    manual → 非数字药名查询。修复前走 resolve_cid 盲查(桩替记录调用并返回
+    None,响应为「查无化合物」);修复后判据只看显式 source_mode,盲查不被
+    调用,返回手动模式拦截文案;manual→ppi 反向切换后药名查询恢复放行。
+    """
+    import WY.core.docking as docking
+
+    calls: list[str] = []
+    monkeypatch.setattr(docking, "resolve_cid",
+                        lambda query: (calls.append(query), None)[1])
+
+    # 先选 ppi 来源,再切 manual:残留 ppi_dir 曾使防呆判据失效
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "ppi", "name": "aspirin_cancer_data"}
+                       ).status_code == 200
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "manual", "manual_genes": "TP53"}
+                       ).status_code == 200
+    body = client.post(f"/api/docking/{sid}/ligand",
+                       json={"source": "pubchem", "query": "aspirin"}).json()
+    assert calls == [], f"不得发生 PubChem 盲查,实际调用了 {calls}"
+    assert body["ok"] is False and "CID" in body["error"], body["error"]
+
+    # 反向切换 manual → ppi:显式来源后,药名查询应恢复放行(走盲查路径)
+    assert client.post(f"/api/docking/{sid}/source",
+                       json={"mode": "ppi", "name": "aspirin_cancer_data"}
+                       ).status_code == 200
+    body = client.post(f"/api/docking/{sid}/ligand",
+                       json={"source": "pubchem", "query": "aspirin"}).json()
+    assert calls == ["aspirin"], f"ppi 来源的药名查询应放行解析: calls={calls}"
+    assert "查无化合物" in body["error"], body["error"]  # 桩返回 None 的固定文案
+
+
+def test_docking_receptor_prepare_stale_discard(client, sid, monkeypatch):
+    """回归测试(P0-B 后端兜底):受体准备任务写回前核对会话基因,被换即放弃写入。
+
+    缺陷:prepare 任务闭包直接写共享会话 dock["rec_pdbqt"]/["pdb_id"],无代际
+    核对——提交与写回之间基因被换(另一标签页/竞态),旧基因的受体会落进
+    新基因的会话,canRun 满足后 vina 对错误靶点运行。
+    复现要点:manual 会话种子 gene=TP53 → 提交 prepare(桩 download 2s)→
+    立即把会话 gene 改为 EGFR → 任务终态 result.stale=True 且会话无受体写入。
+    2026-11-10 升级:写回断言由固定键黑名单改为提交前后键集差分——stale 路径
+    未来新增任何写入键都会红,而夹具/其他路径的新增键不误报(差分只框定本任务
+    窗口;_touched 只变值不增键)。
+    """
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    client.post(f"/api/docking/{sid}/source",
+                json={"mode": "manual", "manual_genes": "TP53,EGFR"})
+    dock = docking_session.get(sid)
+    dock["gene"] = "TP53"
+    dock["genes"] = ["TP53", "EGFR"]
+
+    def slow_download(pdb_id):
+        time.sleep(2)
+        return f"C:/fake/{pdb_id}.pdb"
+
+    monkeypatch.setattr(docking, "download_pdb", slow_download)
+    monkeypatch.setattr(docking, "prepare_receptor_pdbqt", lambda p: "fake.pdbqt")
+
+    before = set(docking_session.get(sid))  # 任务写入前键集基线(夹具写入已完成)
+    job = client.post(f"/api/docking/{sid}/receptor/prepare",
+                      json={"gene": "TP53", "pdb_id": "1XQ8"}).json()["job_id"]
+    dock["gene"] = "EGFR"  # 提交后立刻换基因(模拟竞态)
+    body = _wait_job(client, job)
+    assert body["status"] == "done" and body["result"].get("stale") is True, body
+    leaked = set(docking_session.get(sid)) - before
+    assert not leaked, f"stale 受体任务不得向会话写入任何键,实际新增: {sorted(leaked)}"
+
+
+def test_docking_receptor_prepare_stale_during_conversion(client, sid, monkeypatch):
+    """回归测试(P0-B 残余窗口/检查③,2026-11-10):obabel 转换期间换基因,写回必须被拦。
+
+    缺陷(修复前):下载后核了一道,但 prepare_receptor_pdbqt(obabel 子进程,
+    最长 OBABEL_TIMEOUT=120s)的转换窗口内基因仍可能被换——转换完成后无检查
+    直接写 dock["rec_pdbqt"]/["pdb_sel"],且 pdb_id/pdb_path 在转换前就已写入;
+    换基因端点 pop 掉旧键后,旧基因的 rec_pdbqt 又落回新基因会话,重新推断盒子
+    后 canRun 满足,vina 将对旧基因受体运行。
+    复现要点:快下载 + 慢转换桩(2s);提交后 0.3s 翻基因(落点在转换窗口内)。
+    修复前 result 无 stale 标记且会话出现 rec_pdbqt/pdb_sel(及 pdb_id/pdb_path)
+    残留;修复后 stale=True 且受体相关五键全部不在会话(写入整体移到检查之后)。
+    2026-11-10 升级:写回断言由固定键黑名单改为提交前后键集差分(同
+    test_docking_receptor_prepare_stale_discard 的 docstring 说明)。
+    """
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    client.post(f"/api/docking/{sid}/source",
+                json={"mode": "manual", "manual_genes": "TP53,EGFR"})
+    dock = docking_session.get(sid)
+    dock["gene"] = "TP53"
+    dock["genes"] = ["TP53", "EGFR"]
+
+    monkeypatch.setattr(docking, "download_pdb",
+                        lambda pdb_id: f"C:/fake/{pdb_id}.pdb")
+
+    def slow_prepare(path):
+        time.sleep(2)
+        return "fake.pdbqt"
+
+    monkeypatch.setattr(docking, "prepare_receptor_pdbqt", slow_prepare)
+
+    before = set(docking_session.get(sid))  # 任务写入前键集基线(夹具写入已完成)
+    job = client.post(f"/api/docking/{sid}/receptor/prepare",
+                      json={"gene": "TP53", "pdb_id": "1XQ8"}).json()["job_id"]
+    time.sleep(0.3)  # 让任务越过下载、进入转换窗口
+    dock["gene"] = "EGFR"  # 转换进行中换基因(模拟另一标签页竞态)
+    body = _wait_job(client, job)
+    assert body["status"] == "done" and body["result"].get("stale") is True, body
+    leaked = set(docking_session.get(sid)) - before
+    assert not leaked, f"stale 受体任务不得向会话写入任何键,实际新增: {sorted(leaked)}"
+
+
+def test_docking_ligand_stale_discard(client, sid, monkeypatch):
+    """回归测试(P0-B 后端兜底):配体获取写回前核对来源上下文,被切即丢弃。
+
+    缺陷:配体端点直接写 dock["cid"]/["lig_pdbqt"],来源在获取期间被切换时,
+    旧来源的配体落进新来源会话,canRun 满足后 vina 对错误配体运行并打 ✓。
+    复现要点:manual 会话 → smiles 获取(桩 2s)→ 1 秒时后台线程把
+    source_mode 翻为 ppi → 响应 ok=False/stale=True 且会话无配体写入。
+    2026-11-10 升级:写回断言由固定键黑名单改为提交前后键集差分(同
+    test_docking_receptor_prepare_stale_discard 的 docstring 说明)。
+    """
+    import threading
+
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    client.post(f"/api/docking/{sid}/source",
+                json={"mode": "manual", "manual_genes": "TP53"})
+    assert docking_session.get(sid).get("source_mode") == "manual"
+
+    def slow_smiles(smiles, path):
+        time.sleep(2)
+        return path
+
+    monkeypatch.setattr(docking, "smiles_to_sdf_3d", slow_smiles)
+    monkeypatch.setattr(docking, "prepare_ligand_pdbqt", lambda p: "fake.pdbqt")
+
+    def flip():
+        d = docking_session.get(sid)
+        if d is not None:
+            d["source_mode"] = "ppi"
+
+    before = set(docking_session.get(sid))  # 端点写入前键集基线
+    threading.Timer(1.0, flip).start()
+    body = client.post(f"/api/docking/{sid}/ligand",
+                       json={"source": "smiles", "smiles": "CCO"}).json()
+    assert body.get("ok") is False and body.get("stale") is True, body
+    leaked = set(docking_session.get(sid)) - before
+    assert not leaked, f"stale 配体任务不得向会话写入任何键,实际新增: {sorted(leaked)}"
 
 
 def test_docking_receptor_candidates_guard_and_flow(client, sid, monkeypatch):
@@ -714,6 +935,41 @@ def test_ml_runs_zip_empty_ok(client):
     assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
 
 
+def test_ml_runs_zip_rejects_outside_root(client, tmp_path):
+    """回归测试(P1-B):zip 端点不得打包登记结果根之外的目录。
+
+    缺陷:zip_ml_runs 只查 os.path.isdir,POST /api/ml/runs/zip 传任意存在的
+    目录即整树打包返回(任意读)。对照 delete_ml_runs 早有「登记根包含 +
+    summary.json 存在」双重校验,zip 漏配。
+    复现要点:在登记结果根之外造一个含已知内容的目录,POST 其绝对路径;
+    修复前 200 且 zip 内含该文件(任意读),修复后 400 且 detail 带被拒路径。
+    顺带保绿:登记根下合法 run 仍 200,空列表仍 200(空目录包)。
+    """
+    import io as _io
+    import zipfile as _zipfile
+
+    outside = tmp_path / "outside_secret"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("TOP-SECRET", encoding="utf-8")
+
+    r = client.post("/api/ml/runs/zip", json={"paths": [str(outside)]})
+    assert r.status_code == 400, f"登记根外目录必须 400,实际 {r.status_code}"
+    assert "outside_secret" in (r.json().get("detail") or "")
+
+    # 保绿:登记根下的合法 run 仍 200;根外目录不会出现在任何包里
+    run_dir = os.path.join(config.GEO_RESULT_DIR, "GSEX_20260101_000000")
+    os.makedirs(run_dir, exist_ok=True)
+    with open(os.path.join(run_dir, "summary.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
+    r = client.post("/api/ml/runs/zip", json={"paths": [run_dir]})
+    assert r.status_code == 200
+    with _zipfile.ZipFile(_io.BytesIO(r.content)) as z:
+        assert "secret.txt" not in "".join(z.namelist())
+
+    # 保绿:空列表仍 200
+    assert client.post("/api/ml/runs/zip", json={"paths": []}).status_code == 200
+
+
 def test_ml_runs_cleanup_empty(client):
     assert client.post("/api/ml/runs/cleanup",
                        json={"keep": 3}).json() == {"deleted": []}
@@ -740,6 +996,47 @@ def test_spa_root_and_fallback(client):
     else:
         # dist 未构建的兜底分支
         assert "前端未构建" in text
+
+
+def test_spa_wildcard_blocks_drive_traversal(client, monkeypatch, tmp_path):
+    """回归测试(P1-A):SPA 通配路由必须挡住 Windows 盘符绝对路径穿越。
+
+    缺陷:旧实现仅以 `if ".." in full_path` 防穿越;Windows 下
+    os.path.join(_DIST, "C:/...") 会整段丢弃 dist 前缀,
+    GET /C:/... 可读任意盘任意文件(2026-11-08 实测确认)。
+    复现要点:沙箱 dist 外放一个已知内容的文件,请求其盘符绝对路径;
+    修复前返回 200 且内容命中(任意读),修复后 404。
+    修复:与 /api/artifacts 同款 realpath 包含校验;正常资产与 SPA 回退
+    (index.html + no-cache)响应形态不变。
+    CI 教训:盘符断言仅 Windows 可执行——POSIX 下 as_posix() 以 / 开头,
+    f"/{path}" 拼出的双斜杠 URL 会被客户端规范化剥成相对名(2026-11 CI
+    ubuntu runner 实测:请求落回 SPA 回退 200),故按 os.name 守卫。
+    """
+    import WY.api as api_mod
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>spa-ok</html>", encoding="utf-8")
+    (dist / "app.js").write_text("console.log(1)", encoding="utf-8")
+    monkeypatch.setattr(api_mod, "_DIST", str(dist))
+
+    # 盘符绝对路径(Windows 特有:join 丢前缀)→ 修复前 200 且命中内容,修复后 404
+    if os.name == "nt":
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP-SECRET-OUTSIDE-DIST", encoding="utf-8")
+        r = client.get(f"/{secret.as_posix()}")
+        assert r.status_code == 404, f"盘符绝对路径必须 404,实际 {r.status_code}"
+        assert "TOP-SECRET" not in r.text
+    # URL 编码穿越 → 404(编码段不被客户端规范化,可到达服务端;裸 ../ 会被
+    # httpx 规范化,TestClient 层测不到,不设断言)
+    assert client.get("/..%2f..%2f/etc/passwd").status_code == 404
+    # dist 内正常文件仍 200
+    r = client.get("/app.js")
+    assert r.status_code == 200 and "console.log" in r.text
+    # SPA 回退仍 200 + index.html + no-cache(R3:响应形态零变更)
+    r = client.get("/some/deep/route")
+    assert r.status_code == 200 and "spa-ok" in r.text
+    assert r.headers.get("cache-control") == "no-cache"
 
 
 # ======== 数据迁移:导出 job / 下载端点 / 两段式导入 ========

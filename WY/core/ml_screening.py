@@ -425,6 +425,13 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
         raise RuntimeError(
             f"矩阵方向疑似转置:X 为 {X.shape[0]}×{X.shape[1]}(行多于列)—— "
             "表达矩阵通常基因数 >> 样本数,请确认 X 已转置为样本×基因")
+    dup_cols = X.columns[X.columns.duplicated()]
+    if len(dup_cols):
+        # 入口防呆(2026-11 P0-C):重复基因列会在 ML 阶段以难懂的库错误崩溃,
+        # 且发生在 DEG 已算完之后。上游必须聚合去重(参见 ml_pipeline 的均值口径)
+        raise RuntimeError(
+            f"ML 输入矩阵存在重复基因列(共 {len(dup_cols)} 个,如 "
+            f"{sorted(set(dup_cols))[:5]})—— 上游映射/读取层应先按基因聚合去重")
 
     X = _standardize_features(X)  # 惩罚公平 + SAGA/liblinear 收敛(详见 helper 注释)
 
@@ -519,7 +526,10 @@ def deg_prefilter(deg: pd.DataFrame, top_n: int | None = None) -> tuple[pd.DataF
 
 
 def _read_ranked_csv(path: str) -> pd.DataFrame:
-    """读平台排序 CSV(gene 列 + 分数列),返回 gene|score|rank;格式不识别时报可读错误。"""
+    """读平台排序 CSV(gene 列 + 分数列),返回 gene|score|rank;格式不识别时报可读错误。
+    同一基因多行(多探针/多转录本)时取最高分——与 enrichment_gsea.build_ranked_list
+    的 groupby.max 同一口径;不去重会让 build_shortlist 的 set_index("gene") 产生
+    重复索引,map 阶段抛 InvalidIndexError,ML 已算完的共识全盘作废(2026-11 P0-D)。"""
     df = pd.read_csv(path, encoding="utf-8-sig")
     gene_col = next((c for c in df.columns
                      if str(c).strip().lower() in ("gene", "target", "symbol",
@@ -533,6 +543,7 @@ def _read_ranked_csv(path: str) -> pd.DataFrame:
     out = df[[gene_col, score_col]].copy()
     out.columns = ["gene", "score"]
     out["gene"] = out["gene"].astype(str).str.upper().str.strip()
+    out = out.groupby("gene", as_index=False)["score"].max()
     out = out.sort_values("score", ascending=False).reset_index(drop=True)
     out["rank"] = out.index + 1
     return out

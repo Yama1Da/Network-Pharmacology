@@ -103,20 +103,36 @@ def list_ml_runs(roots: list[str] | None = None) -> list[dict]:
     return rows
 
 
-def delete_ml_runs(paths: list[str], roots: list[str] | None = None) -> list[str]:
-    """带双重校验的删除:路径必须位于已登记结果根下,且必须是含 summary.json
-    的 run 目录。任一校验不过则跳过并 warning(防御性:绝不 rmtree 未知目录)。
-    每个成功删除 INFO 留痕。返回实际删除的路径列表。"""
+def _validate_run_paths(paths: list[str],
+                        roots: list[str] | None = None) -> tuple[list[str], list[str]]:
+    """run 目录的双重校验(登记根包含 + summary.json 存在),返回 (合法, 被拒)。
+    delete 对被拒"跳过+warning"(治理页勾选容错),zip 对被拒整单拒绝(调用方
+    是前端勾选列表,非法即请求错误,api 层转 400 带明细)——两种语义共用同一份
+    校验口径(2026-11 P1-B,原 zip 漏配该校验,任意目录可整树打包下载)。"""
     registered = [os.path.abspath(r) for r in (roots or _roots())]
-    deleted: list[str] = []
+    ok: list[str] = []
+    rejected: list[str] = []
     for p in paths:
         ap = os.path.abspath(p)
         if not any(ap == r or ap.startswith(r + os.sep) for r in registered):
-            logging.warning("拒绝删除登记结果根之外的路径: %s", p)
+            logging.warning("拒绝登记结果根之外的路径: %s", p)
+            rejected.append(p)
             continue
         if not os.path.isfile(os.path.join(ap, "summary.json")):
-            logging.warning("拒绝删除非 run 目录(缺 summary.json): %s", p)
+            logging.warning("拒绝非 run 目录(缺 summary.json): %s", p)
+            rejected.append(p)
             continue
+        ok.append(ap)
+    return ok, rejected
+
+
+def delete_ml_runs(paths: list[str], roots: list[str] | None = None) -> list[str]:
+    """带双重校验的删除:路径必须位于已登记结果根下,且必须是含 summary.json
+    的 run 目录(校验见 _validate_run_paths)。任一校验不过则跳过并 warning
+    (防御性:绝不 rmtree 未知目录)。每个成功删除 INFO 留痕。返回实际删除的路径列表。"""
+    ok, _rejected = _validate_run_paths(paths, roots)
+    deleted: list[str] = []
+    for ap in ok:
         shutil.rmtree(ap, ignore_errors=True)
         if not os.path.isdir(ap):
             deleted.append(ap)
@@ -126,9 +142,15 @@ def delete_ml_runs(paths: list[str], roots: list[str] | None = None) -> list[str
 
 def zip_ml_runs(paths: list[str]) -> bytes:
     """把一个/多个 run 目录打包为 zip 字节;单个用 make_dir_zip,多个用 make_dirs_zip
-    (zip 内以目录名为一层文件夹)。"""
+    (zip 内以目录名为一层文件夹)。
+    路径经 _validate_run_paths 双重校验(2026-11 P1-B):任一路径不在已登记
+    结果根下或缺 summary.json 即抛 ValueError(由 api 层转 400 带明细),
+    绝不打包未知目录。"""
     from .files import make_dir_zip, make_dirs_zip
-    dirs = [p for p in paths if os.path.isdir(p)]
+    dirs, rejected = _validate_run_paths(paths)
+    if rejected:
+        raise ValueError("以下路径不在已登记 ML 结果根下或非 run 目录: "
+                         + "; ".join(rejected))
     if not dirs:
         return b""
     if len(dirs) == 1:

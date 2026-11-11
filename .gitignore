@@ -31,3 +31,4 @@ results/
 htmlcov/
 coverage.xml
 /.acl-recovery-docking/
+/.zcode/

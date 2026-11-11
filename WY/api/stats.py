@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 import csv
 import os
+import threading
 import time
 from WY import config
 
@@ -13,6 +14,7 @@ router = APIRouter()
 # 视为"数据库"的来源文件前缀(其余前缀如 GSEA 是方法名,不计)
 _DB_FILE_PREFIXES = ("ChEMBL", "DGIdb", "OpenTargets", "DisGeNET", "gProfiler", "Enrichr")
 _stats_cache: dict = {"at": 0.0, "data": None}
+_stats_lock = threading.Lock()
 
 
 def _csv_rows(path: str) -> list[list[str]]:
@@ -101,9 +103,15 @@ def _compute_stats() -> dict:
 
 @router.get("/api/stats")
 def home_stats() -> dict:
-    """主页页脚统计:数据库(有本机缓存数据的外部库)/化合物/靶点/通路,60s 进程内缓存。"""
-    now = time.monotonic()
-    if _stats_cache["data"] is None or now - _stats_cache["at"] > 60:
-        _stats_cache["data"] = _compute_stats()
-        _stats_cache["at"] = now
+    """主页页脚统计:数据库(有本机缓存数据的外部库)/化合物/靶点/通路,60s 进程内缓存。
+
+    过期重算走 single-flight(2026-11-10 审计):并发请求只放一个线程进锁重算,
+    其余等锁后直接拿到新值——避免过期瞬间多线程重复全目录扫描(重算要遍历
+    drug/disease/merged/enrichment 四个目录的 CSV)。双检锁与 http_client.get_session
+    同款模式;锁外的快路径读 dict 字段无锁(GIL 下字段赋值原子,最坏读到刚过期的旧值)。"""
+    if _stats_cache["data"] is None or time.monotonic() - _stats_cache["at"] > 60:
+        with _stats_lock:
+            if _stats_cache["data"] is None or time.monotonic() - _stats_cache["at"] > 60:
+                _stats_cache["data"] = _compute_stats()
+                _stats_cache["at"] = time.monotonic()
     return _stats_cache["data"]

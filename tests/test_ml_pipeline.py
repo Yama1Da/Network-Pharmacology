@@ -154,8 +154,10 @@ def test_results_mgmt(tmp_path):
     summary 的目录拒删、zip 产出非空。"""
     from WY.core import ml_results
 
-    root = os.path.join(str(tmp_path), "mlscreen")
-    os.makedirs(root)
+    # zip 的双重校验(P1-B)针对登记结果根(_roots()),自造根须对齐:
+    # 沙箱里 default_results_root() = tmp_path/results,登记根即 results/mlscreen
+    root = os.path.join(str(tmp_path), "results", "mlscreen")
+    os.makedirs(root, exist_ok=True)
 
     def _mk(tag, ymd, hms):
         d = os.path.join(root, f"{tag}_{ymd}_{hms}")
@@ -260,3 +262,52 @@ def test_load_local_expr_ensembl_error_guides_map_ids(tmp_path):
         raise AssertionError("Ensembl 级矩阵未开 map_ids 应报错")
     except RuntimeError as e:
         assert "--map-ids" in str(e) and "mygene" in str(e)
+
+
+# ---------- counts 模式符号映射重复列回归(P0-C,2026-11-08 审查) ----------
+
+
+def test_pipeline_counts_duplicate_symbol_mapping(monkeypatch, tmp_path):
+    """回归测试:counts 模式两个 Ensembl ID 映射到同一符号时整链不得崩溃。
+
+    缺陷:counts 分支 rename 后只对 deg 去重,X 未去重——mygene 多对一映射
+    (常见)使 X 出现重复列,ML 阶段整链崩溃(审查记录旧栈:bootstrap 的
+    X.columns.get_loc(g) 对重复列返回布尔数组抛 ValueError;当前依赖版本由
+    sklearn/narwhals 列名校验先拦截,抛 DuplicateError——同一根因),且
+    DESeq2 已算完,结果全盘作废。
+    复现要点:两行不同 ENS ID 强信号 counts,桩替 map_ids_to_symbol 使二者
+    映射到同一符号;修复前 run_screen_chain 在 ML 阶段崩溃,修复后整链跑通,
+    重复符号按均值聚合(与 load_local_expr 本地矩阵既有口径一致)。
+    """
+    from WY.core import geo, ml_pipeline
+    from WY.core import expression as expr_mod
+
+    dup_a, dup_b = "ENSG000002DUPA", "ENSG000002DUPB"
+    rng = np.random.default_rng(7)
+    genes = [dup_a, dup_b] + [f"ENSG{i:08d}" for i in range(38)]
+    cols = ["CTL1", "CTL2", "CTL3", "PA1", "PA2", "PA3"]
+    ctrl = rng.poisson(50, size=(40, 3))
+    case = rng.poisson(50, size=(40, 3))
+    case[:20] = rng.poisson(200, size=(20, 3))  # 前 20 行强信号,必进预过滤池
+    case[:2] = rng.poisson(400, size=(2, 3))    # 重复对最响,保证二者同入池
+    counts = pd.DataFrame(np.hstack([ctrl, case]), index=genes, columns=cols)
+    monkeypatch.setattr(geo, "fetch_gse_count_matrix",
+                        lambda gse, prefer=None: {
+                            "counts": counts, "source_file": "SYNTH_raw_counts.tsv.gz",
+                            "candidates": [], "transposed": False})
+    # 桩替 mygene 批量映射:两个 ENS ID 映射到同一符号,其余未命中(None 保留原 ID)
+    monkeypatch.setattr(expr_mod, "map_ids_to_symbol",
+                        lambda ids: {g: ("TP53" if g in (dup_a, dup_b) else None)
+                                     for g in ids})
+
+    res = ml_pipeline.run_screen_chain(
+        gse="SYNTHDUP", counts_mode=True, case_pattern="PA",
+        control_pattern="CTL", bootstrap_rounds=3, prefilter_top=20,
+        top_k=8, out_base=str(tmp_path))
+
+    cons = res["consensus"]
+    assert not cons.index.duplicated().any(), "共识表基因必须唯一(X 重复列已聚合)"
+    assert (cons.index == "TP53").sum() == 1, "重复符号应聚合为一条(均值口径)"
+    assert (res["deg"]["gene"] == "TP53").sum() == 1, "deg 重复符号 keep=first"
+    for fname in ("ml_consensus_scores.csv", "shortlist.csv", "summary.json"):
+        assert os.path.isfile(os.path.join(res["out_dir"], fname)), f"缺产物 {fname}"

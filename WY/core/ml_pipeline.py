@@ -379,11 +379,23 @@ def run_screen_chain(*, gse: str | None = None,
             deg = deg.copy()
             deg["gene"] = deg["gene"].map(lambda g: rename_map.get(g, g))
             deg = deg.drop_duplicates("gene", keep="first")  # 防止 shortlist join 行爆炸
+            # 多个 Ensembl 映射到同一符号(mygene 多对一,常见)会让 X 出现重复列,
+            # ML 阶段整链崩溃(2026-11 P0-C):按符号取均值聚合,与 load_local_expr
+            # 本地矩阵重复符号的均值口径一致;deg 的 keep=first 只保 shortlist join 不炸
+            X = X.T.groupby(level=0).mean().T
     else:
         X = matrix[labeled].T[genes]  # 转置为样本×基因(仅已标记样本)
+        # GEO 符号级矩阵行符号重复(多探针)→ deg/genes 含重复 → X 重复列,
+        # 与 counts 分支同口径处理(2026-11 P0-C):X 按均值聚合,deg keep=first
+        if X.columns.duplicated().any():
+            X = X.T.groupby(level=0).mean().T
+            deg = deg.drop_duplicates("gene", keep="first")
     # CV 无泄漏口径:传全基因矩阵供折内重筛(测试折标签不参与池圈定与标准化;
     # counts 分支用重命名前的 ml_matrix 列,与折内 DEG 自洽,共识表仍以符号呈现)
     cv_universe = ml_matrix.loc[labeled] if counts_mode else matrix[labeled].T
+    if not counts_mode and cv_universe.columns.duplicated().any():
+        # 折内重筛的全基因矩阵同样不能有重复列(符号级重复场景,与 X 同口径)
+        cv_universe = cv_universe.T.groupby(level=0).mean().T
     res = run_ml_screening(X, label_series.loc[X.index], bootstrap_rounds=bootstrap_rounds,
                            cv_matrix=cv_universe, cv_top_n=prefilter_top,
                            cv_repeats=cv_repeats)

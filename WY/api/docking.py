@@ -53,6 +53,20 @@ def _session(sid: str) -> dict:
     return dock
 
 
+def _require_registered_name(name: str, base_dir: str) -> None:
+    """ppi/enr 来源名校验(P1-C):拒绝路径分隔符(../、子路径、盘符名)与
+    realpath 逃逸出缓存根的名字。manual-file 分支此前已有 basename+形态校验,
+    本函数把 ppi/enr 两分支拉齐到同一口径;core 侧 read_ppi_dataset 不动——
+    页面/CLI 既有调用方以可信输入使用,收紧入口比放宽校验面更小。"""
+    if not name or name != os.path.basename(name):
+        raise HTTPException(status_code=400,
+                            detail="name 必须为缓存目录下的纯文件名(不含路径分隔符)")
+    real_base = os.path.realpath(base_dir)
+    full = os.path.realpath(os.path.join(real_base, name))
+    if not full.startswith(real_base + os.sep):
+        raise HTTPException(status_code=400, detail="name 逃逸出缓存目录")
+
+
 @router.post("/api/docking/session")
 def docking_create_session() -> dict:
     return {"sid": docking_session.create()}
@@ -154,12 +168,16 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
 
     hub_genes: list[str] = []
     if body.mode == "ppi":
+        _require_registered_name(body.name, config.DOWNLOADS_DIR)
+        dock["source_mode"] = body.mode
         dock["ppi_dir"] = body.name
         dock["hub_genes"], dock["enrichment_genes"] = read_ppi_dataset(body.name)
         prefix = body.name[:-5] if body.name.endswith("_data") else body.name
         dock["label"] = prefix
         dock["drug"], dock["disease"] = split_result_prefix(prefix)
     elif body.mode == "enr":
+        _require_registered_name(body.name, config.ENRICHMENT_CACHE_DIR)
+        dock["source_mode"] = body.mode
         dock["enr_file"] = body.name
         df = pd.read_csv(os.path.join(config.ENRICHMENT_CACHE_DIR, body.name),
                          encoding="utf-8-sig", comment="#")
@@ -172,6 +190,12 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
         # 手动基因对接专属入口:基因列表来自输入框(manual)或历史桶元数据
         # (manual-file,读 analysis_meta.json)。无药病语境,label 只作来源标识,
         # 以 manual 开头 —— ligand 端点据此拦截"按药名查 PubChem"。
+        # 来源模式显式记录(P1-D):防呆判据只看它,不得从 ppi_dir/enr_file
+        # 残留反推;此处顺带清掉对侧来源键(先选 ppi/enr 再切 manual 的会话
+        # 曾因残留绕过盲查防线——防御纵深,判据本身已不依赖它们)
+        dock["source_mode"] = body.mode
+        dock.pop("ppi_dir", None)
+        dock.pop("enr_file", None)
         if body.mode == "manual":
             genes = sorted({g.strip().upper() for g in re.split(r"[,;\s]+", body.manual_genes)
                             if g.strip()})
@@ -265,15 +289,24 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
     from WY.core.docking import (PubChemUnavailable, fetch_ligand_sdf_3d,
                                  prepare_ligand_pdbqt, resolve_cid, smiles_to_sdf_3d)
 
+    # 会话兜底(P0-B):来源上下文在获取期间被切换(另一标签页/竞态)则放弃写入,
+    # 不让旧配体落到新上下文会话里(前端代际守卫为主,此为 API 层第二道)
+    src_ctx = (dock.get("source_mode"), dock.get("ppi_dir"),
+               dock.get("enr_file"), dock.get("label"))
+
+    def _src_ctx_changed() -> bool:
+        return (dock.get("source_mode"), dock.get("ppi_dir"),
+                dock.get("enr_file"), dock.get("label")) != src_ctx
+
     if body.source == "pubchem":
         query = body.query.strip()
         if not query:
             return {"ok": False, "error": "未提供药物名或 CID"}
         # 手动基因会话无药名语境:按名称盲查必然是"把来源标识当药名"的误用
         #(曾把 "manual" 直接送进 PubChem 报"查无化合物");CID 直查(纯数字)放行。
-        # 判据 = 会话由手动入口建立(label 为空串或 manual_*,且未挂 PPI/富集来源)
-        is_manual_session = (not (dock.get("ppi_dir") or dock.get("enr_file"))
-                             and not (dock.get("label") or "").startswith(("gProfiler", "Enrichr"))
+        # 判据 = 会话由手动入口建立(显式 source_mode,P1-D:不从 ppi_dir/enr_file
+        # 残留反推——先选 ppi 再切 manual 的会话曾绕过本防线)
+        is_manual_session = (dock.get("source_mode") in ("manual", "manual-file")
                              and bool(dock.get("genes")))
         if is_manual_session and not query.isdigit():
             return {"ok": False,
@@ -290,6 +323,8 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
             return {"ok": False, "error": f"配体获取失败:{exc}"}
         if not sdf_path:
             return {"ok": False, "error": f"CID {cid} 无 3D 结构,请换一个条目或用 SMILES"}
+        if _src_ctx_changed():
+            return {"ok": False, "stale": True, "error": "来源已切换，配体结果已丢弃"}
         dock["cid"] = cid
         try:
             dock["lig_pdbqt"] = prepare_ligand_pdbqt(sdf_path)
@@ -304,6 +339,8 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
                 body.smiles,
                 os.path.join(config.DOCKING_RAW_CACHE_DIR,
                              f"ligand_smiles_{datetime.now():%Y%m%d_%H%M%S}.sdf"))
+            if _src_ctx_changed():
+                return {"ok": False, "stale": True, "error": "来源已切换，配体结果已丢弃"}
             dock["cid"] = None
             dock["lig_pdbqt"] = prepare_ligand_pdbqt(sdf_path)
         except Exception as exc:
@@ -374,18 +411,33 @@ def docking_receptor_prepare(sid: str, body: DockReceptorPrepareBody) -> dict:
                                      prepare_receptor_pdbqt)
 
         progress(fraction=0.2, text="下载受体结构…")
+        # 会话兜底(P0-B):提交与写回之间基因被换(另一标签页/竞态)则放弃写入,
+        # 结果带 stale 标记,不污染新基因的会话(前端代际守卫为主,此为第二道)
+        if dock.get("gene") != body.gene:
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
         if body.pdb_id.startswith("AFDB:"):
             pdb_path, af_acc = fetch_alphafold_receptor(
                 body.gene, taxon=int(config.SPECIES_MAP["Human"]["ncbi_taxon"]))
-            dock["pdb_id"] = f"AFDB:{af_acc}"
-            dock["receptor_source"] = "alphafold"
+            new_pdb_id, new_source = f"AFDB:{af_acc}", "alphafold"
         else:
             pdb_path = download_pdb(body.pdb_id)
-            dock["pdb_id"] = body.pdb_id
-            dock["receptor_source"] = "experiment"
+            new_pdb_id, new_source = body.pdb_id, "experiment"
         progress(fraction=0.7, text="受体转 pdbqt…")
+        if dock.get("gene") != body.gene:  # 下载期间被换基因:写前再核一道
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+        rec_pdbqt = prepare_receptor_pdbqt(pdb_path)
+        # 检查③(2026-11-10 残余窗口封堵):obabel 转换最长 OBABEL_TIMEOUT=120s,
+        # 这段窗口内基因同样可能被换——转换完成、写回会话前最后核一道,并把全部
+        # 会话写入移到该检查之后,杜绝「新基因会话挂旧基因受体」的混合状态
+        if dock.get("gene") != body.gene:
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+        dock["pdb_id"] = new_pdb_id
+        dock["receptor_source"] = new_source
         dock["pdb_path"] = pdb_path
-        dock["rec_pdbqt"] = prepare_receptor_pdbqt(pdb_path)
+        dock["rec_pdbqt"] = rec_pdbqt
         dock["pdb_sel"] = body.pdb_id
         dock.pop("result", None)
         return {"pdb_id": dock["pdb_id"], "receptor_source": dock["receptor_source"],
