@@ -25,7 +25,7 @@ identifiers:
   - type: doi
     value: 10.5281/zenodo.23981877
     description: Concept DOI, always resolving to the latest version
-version: 1.0.0
+version: 1.0.1
 date-released: "2026-11-05"
 license: Apache-2.0
 repository-code: "https://github.com/Yama1Da/Network-Pharmacology"

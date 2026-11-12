@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "npap"
-version = "1.0.0"
+version = "1.0.1"
 description = "Network pharmacology pipeline CLI (shares cache & settings with the web UI)"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
