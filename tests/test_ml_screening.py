@@ -195,6 +195,61 @@ def test_permutation_test():
         f"obs {perm['obs_auc']} 应高于置换均值 {perm_mean:.3f}"
 
 
+def test_cv_fold_audit(monkeypatch):
+    """折审计(优化期 A2):meta 记录 CV 成功/总折数;失败折不计入且计数如实下降。
+
+    6v6 → LOOCV 12 折。前半段干净跑 done==total==12;后半段自第 2 次调用起
+    选择器恒失败(第 1 次是全量共识选择,须放行,否则主链在 CV 之前就抛错):
+    12 个 CV 折全部跳过 → cv_folds_done=0、cv_auc=None——断言的是审计字段,
+    不是统计量。"""
+    X, y, _, _ = _make_synthetic(n_ctrl=6, n_case=6, n_genes=40, seed=42)
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=1, cv_repeats=1)
+    m = res["meta"]
+    assert m["cv_folds_total"] == 12, f"LOOCV 12 样本应 12 折,实际 {m['cv_folds_total']}"
+    assert m["cv_folds_done"] == 12, "干净跑无失败折,done 应等于 total"
+
+    calls = {"n": 0}
+
+    def fail_from_second(Xr, yr, seed, boruta_iter=None):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("模拟选择器失败")
+        return {alg: pd.Series(np.arange(len(Xr.columns), dtype=float),
+                               index=Xr.columns)
+                for alg in ("lasso", "enet", "ridge", "rf_boruta", "svm_rfe", "xgboost")}
+
+    monkeypatch.setattr(ml, "_select_all", fail_from_second)
+    res2 = ml.run_ml_screening(X, y, bootstrap_rounds=1, cv_repeats=1)
+    m2 = res2["meta"]
+    assert m2["cv_folds_done"] == 0 and m2["cv_folds_total"] == 12, \
+        f"全折失败时审计字段应如实反映(0/12),实际 {m2['cv_folds_done']}/{m2['cv_folds_total']}"
+    assert m2["cv_auc"] is None, "全部折失败后池化 AUC 应为 None 而非伪值"
+    assert m2["cv_auc_ci"] is None, "无 AUC 就无区间:全折失败后 CI 同步为 None"
+
+
+def test_bootstrap_auc_ci():
+    """池化 AUC bootstrap CI(A3):可复现 / 界有序 / 配对口径 / 单类守卫。
+
+    seed 从 ML_SEED 派生固定偏移 → 同输入两次运行 CI 逐值一致(summary.json
+    不允许运行间漂移);主链里的 CI 必须与对 (y_true, scores) 的独立调用
+    完全相等(证明挂的是同一份池化打分,不是另起炉灶)。"""
+    X, y, _, _ = _make_synthetic(n_ctrl=6, n_case=6, n_genes=40, seed=42)
+    res = ml.run_ml_screening(X, y, bootstrap_rounds=1, cv_repeats=1)
+    ci = res["meta"]["cv_auc_ci"]
+    assert ci is not None, "可分合成信号下 CI 不应缺省"
+    assert 0 <= ci["ci_lower"] <= ci["ci_upper"] <= 1, f"CI 界越轨: {ci}"
+    assert ci["n_valid"] == ci["n_boot"] == ml._AUC_CI_BOOT_ROUNDS, \
+        "分层配对重采样下每个 replicate 两类都在,有效轮数应等于总轮数"
+    # 可复现:同输入复跑,seed 派生固定 → CI 逐值一致
+    res2 = ml.run_ml_screening(X, y, bootstrap_rounds=1, cv_repeats=1)
+    assert res2["meta"]["cv_auc_ci"] == ci, "同输入两次运行 CI 不一致(seed 未固定)"
+    # 配对口径:主链 CI 与对池化 (y_true, scores) 的独立调用完全相等
+    direct = ml._bootstrap_auc_ci(res["roc"]["y_true"], res["roc"]["scores"], seed=0)
+    assert direct == ci, "主链 CI 与池化打分的独立重算不等(挂错了对象)"
+    # 单类守卫:任一类 <2 样本 → None(区间无意义不硬造)
+    assert ml._bootstrap_auc_ci([0, 0, 1], [0.1, 0.2, 0.9]) is None
+
+
 # ---------- 平台排序 CSV 重复基因回归(P0-D,2026-11-08 审查) ----------
 
 

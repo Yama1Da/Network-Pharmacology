@@ -21,6 +21,9 @@ import pandas as pd
 # Boruta 影子特征筛选的迭代轮数:全数据 12 轮(确认/拒绝),bootstrap 内 5 轮(降耗时)
 _BORUTA_ITER_FULL = 12
 _BORUTA_ITER_BOOT = 5
+# 池化 AUC 的 bootstrap CI 重采样轮数(优化期 A3):2000 次分位估计已稳定,
+# 每次 O(样本数) 级、总耗时可忽略(12 样本实测 <1s)
+_AUC_CI_BOOT_ROUNDS = 2000
 # _rf_gain 单棵森林的树数(Boruta 每轮迭代与增益选择共用):生产 200。
 # 与 Boruta 迭代同款的「调用时读模块常量」模式——测试瘦身开关可整体下调,
 # 生产路径行为不变(见 tests/conftest.py 的降耗开关)
@@ -253,7 +256,11 @@ def bootstrap_stability(X, y, rounds, seed):
 
 
 def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None, repeats: int = 1):
-    """折内完整选择 + 折内训练、折外打分;返回 (auc, y_true, scores, mode, aucs)。
+    """折内完整选择 + 折内训练、折外打分;返回 (auc, y_true, scores, mode, aucs, fold_stats)。
+
+    fold_stats = {"folds_done", "folds_total"}(优化期 A2):选择/折内预筛失败的
+    折被跳过且不计入 AUC,成功折数必须落盘可审计——done<total 时池化 AUC
+    的样本基础缩水,调用方应透出(meta/summary)。
 
     最小类 ≤ 6 自动切 LOOCV;否则 5 折分层(折数受最小类限制)。
     repeats:分层 CV 重复次数(每轮 random_state=seed+r*977 重排划分),
@@ -300,6 +307,8 @@ def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None, repeats: int = 1)
             for r in range(max(1, repeats))]
     y_true, scores = [], []
     aucs: list[float] = []
+    folds_total = sum(len(s) for s in split_sets)
+    folds_done = 0
     for r, splits in enumerate(split_sets):
         r_true, r_scores = [], []
         for fold_i, (tr, te) in enumerate(splits):
@@ -320,26 +329,41 @@ def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None, repeats: int = 1)
                                        index=X.index[te], columns=pool)
                 else:
                     Xtr, Xte = X.iloc[tr], X.iloc[te]
-                imps = _select_all(Xtr, ytr, seed + fold_i + 101,
+                # 选择 seed 随重复轮独立(r*1000):同一 fold 序号跨重复轮不再复用
+                # 随机性(训练数据本就随划分不同,旧写法不构成泄漏,仅叙事不干净)
+                imps = _select_all(Xtr, ytr, seed + r * 1000 + fold_i + 101,
                                    boruta_iter=_BORUTA_ITER_BOOT)
                 rank = sum(imp.rank(ascending=False, method="average")
                            for imp in imps.values())
                 genes = list(rank.sort_values().head(k).index)
-                m = LogisticRegression(C=1.0, solver="lbfgs",
-                                       max_iter=5000).fit(Xtr[genes], ytr)
+                # 类平衡(优化期 A1,TCMDATA nested 折内 weights 档同款):类悬殊
+                # (如 3v20)时损失被多数类主导,病例信号被稀释;逆频率加权只改
+                # 折外打分用的最终模型。六选择器不加(系数/增益的重要性语义不因
+                # 权重漂移);对称分组下权重恒等,结果与改前一致
+                m = LogisticRegression(C=1.0, solver="lbfgs", max_iter=5000,
+                                       class_weight="balanced").fit(Xtr[genes], ytr)
                 s = m.decision_function(Xte[genes])
             except Exception:
                 logging.exception("CV repeat %d fold %d selection failed; fold skipped",
                                   r, fold_i)
                 continue
+            # 折审计(优化期 A2):只在 decision_function 产出后计成功——try 块内
+            # 多个失败点(选择器异常/折内池为空)必须落到这里之前
+            folds_done += 1
             r_true.extend(y_arr[te].tolist())
             r_scores.extend(np.asarray(s).ravel().tolist())
         y_true.extend(r_true)
         scores.extend(r_scores)
         aucs.append(float(roc_auc_score(r_true, r_scores))
                     if len(set(r_true)) > 1 else float("nan"))
+    if folds_done < folds_total:
+        logging.warning("CV: %d/%d 折失败被跳过,AUC 按成功折数计",
+                        folds_total - folds_done, folds_total)
     auc = float(roc_auc_score(y_true, scores)) if len(set(y_true)) > 1 else float("nan")
-    return auc, np.array(y_true), np.array(scores), mode, aucs
+    # 第 6 元素为折审计 dict:调用方(共识主链)写入 meta,失败折多时 AUC 的
+    # 可信度随之下降,必须可追溯(对齐 bootstrap_rounds_done 的审计惯例)
+    return (auc, np.array(y_true), np.array(scores), mode, aucs,
+            {"folds_done": folds_done, "folds_total": folds_total})
 
 
 def permutation_test(X, y, *, cv_matrix=None, cv_top_n=None,
@@ -364,14 +388,14 @@ def permutation_test(X, y, *, cv_matrix=None, cv_top_n=None,
     seed = config.ML_SEED if seed is None else seed
     cv_top_n = config.ML_DEG_PREFILTER_TOP_N if cv_top_n is None else cv_top_n
     y_arr = np.asarray(y)
-    obs_auc, _, _, _, _ = crossval_roc(X, y, seed, cv_matrix=cv_matrix,
-                                       cv_top_n=cv_top_n, repeats=1)
+    obs_auc, _, _, _, _, _ = crossval_roc(X, y, seed, cv_matrix=cv_matrix,
+                                          cv_top_n=cv_top_n, repeats=1)
     rng = np.random.default_rng(seed + 31337)
     aucs: list[float] = []
     for i in range(max(1, n_perm)):
         y_perm = pd.Series(rng.permutation(y_arr), index=X.index)
-        auc_p, _, _, _, _ = crossval_roc(X, y_perm, seed, cv_matrix=cv_matrix,
-                                         cv_top_n=cv_top_n, repeats=1)
+        auc_p, _, _, _, _, _ = crossval_roc(X, y_perm, seed, cv_matrix=cv_matrix,
+                                            cv_top_n=cv_top_n, repeats=1)
         aucs.append(auc_p)
         if progress:
             progress(None, f"置换 {i + 1}/{n_perm}: AUC={auc_p:.4f}")
@@ -380,6 +404,47 @@ def permutation_test(X, y, *, cv_matrix=None, cv_top_n=None,
             "aucs": [round(float(a), 4) if np.isfinite(a) else None for a in aucs],
             "p_value": round((1 + n_ge) / (1 + len(aucs)), 4),
             "n_perm": len(aucs)}
+
+
+def _bootstrap_auc_ci(y_true, scores, *, n_boot: int | None = None,
+                      seed: int | None = None) -> dict | None:
+    """池化 AUC 的 95% bootstrap 置信区间(优化期 A3)。
+
+    重采样单位是 (打分, 标签) **配对**——按类别分层、类内有放回;每次重采样
+    算一个 AUC,取 2.5/97.5 分位为 CI。分层保证每个 replicate 两类都在(单类
+    replicate 结构上不可能),守卫仅防御未来改动;每类样本 <2 时返回 None
+    (区间无意义不硬造,与 crossval_roc 的 nan 口径一致)。
+
+    seed 从 config.ML_SEED 派生固定偏移:同输入两次调用必须逐值一致——
+    summary.json 不允许运行间漂移。CI 只挂在池化口径的 cv_auc 上,不挂
+    cv_mean(后者是"逐次 AUC 的均值",已有 cv_sd 表征精度,两者估计对象不同)。
+    返回 {"ci_lower", "ci_upper", "n_valid", "n_boot"} 或 None。
+    """
+    from sklearn.metrics import roc_auc_score
+
+    y = np.asarray(y_true)
+    s = np.asarray(scores)
+    n_boot = _AUC_CI_BOOT_ROUNDS if n_boot is None else n_boot
+    classes = np.unique(y)
+    per_cls = [np.where(y == c)[0] for c in classes]
+    if any(len(idx) < 2 for idx in per_cls):
+        return None
+    config = _config()
+    seed = config.ML_SEED if seed is None else seed
+    rng = np.random.default_rng(seed + 709394)  # 固定偏移:独立于 CV/置换/Boruta 的 seed 空间
+    aucs: list[float] = []
+    for _ in range(n_boot):
+        idx = np.concatenate([rng.choice(p, size=len(p), replace=True)
+                              for p in per_cls])
+        y_b, s_b = y[idx], s[idx]
+        if len(np.unique(y_b)) < 2:  # 分层下不可达,防御保留(与 bootstrap_stability 同款)
+            continue
+        aucs.append(float(roc_auc_score(y_b, s_b)))
+    if not aucs:
+        return None
+    lo, hi = np.percentile(aucs, [2.5, 97.5])
+    return {"ci_lower": round(float(lo), 4), "ci_upper": round(float(hi), 4),
+            "n_valid": len(aucs), "n_boot": int(n_boot)}
 
 
 # ---------------- 共识与主入口 ----------------
@@ -440,8 +505,10 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
     imps = _select_all(X, y, seed)
     rank_scores = {alg: _rank_score(imp) for alg, imp in imps.items()}
     freq, n_boot_done = bootstrap_stability(X, y, rounds, seed)
-    auc, y_true, scores, cv_mode, auc_list = crossval_roc(
+    auc, y_true, scores, cv_mode, auc_list, fold_stats = crossval_roc(
         X, y, seed, cv_matrix=cv_matrix, cv_top_n=cv_top_n, repeats=repeats)
+    # 池化 AUC 的 95% bootstrap CI(优化期 A3):全部折失败时 auc=NaN,CI 同步为 None
+    auc_ci = None if np.isnan(auc) else _bootstrap_auc_ci(y_true, scores, seed=seed)
 
     genes = list(X.columns)
     consensus = pd.DataFrame(index=genes)
@@ -478,6 +545,10 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
         "n_case": int(np.asarray(y).sum()), "n_control": int(len(y) - int(np.asarray(y).sum())),
         "bootstrap_rounds": int(rounds), "bootstrap_rounds_done": int(n_boot_done),
         "cv_mode": cv_mode,
+        # 折审计(优化期 A2):失败折不计入 AUC,done<total 表示池化 AUC 的
+        # 样本基础缩水,summary/页面应可追溯(与 bootstrap_rounds_done 同惯例)
+        "cv_folds_done": int(fold_stats["folds_done"]),
+        "cv_folds_total": int(fold_stats["folds_total"]),
         # CV 候选池口径:fold=折内重筛(无泄漏,泛化口径)/ pool=与共识同池(一致性口径)
         "cv_pool": "fold" if cv_matrix is not None else "pool",
         "cv_top_n": (min(cv_top_n, cv_matrix.shape[1])
@@ -492,6 +563,9 @@ def run_ml_screening(X: pd.DataFrame, y, bootstrap_rounds: int | None = None,
         "cv_sd": (round(float(np.nanstd(auc_list, ddof=1)), 4)
                   if len(auc_list) > 1 and not all(np.isnan(auc_list)) else None),
         "cv_auc": None if np.isnan(auc) else round(auc, 4),  # NaN → null(合法 JSON,审核 BUG-6)
+        # 95% bootstrap CI(优化期 A3):只配池化口径的 cv_auc;论文引用格式
+        # "AUC=x (95% CI a–b)",点估计与区间同源同口径
+        "cv_auc_ci": auc_ci,
         "seed": seed, "top_k_rule": _top_k(X.shape[1]),
         "consensus_weights": {"rank": config.ML_CONSENSUS_RANK_W,
                               "freq": config.ML_CONSENSUS_FREQ_W},
@@ -623,7 +697,7 @@ def build_shortlist(consensus: pd.DataFrame, deg: pd.DataFrame,
 # ---------------- 出图 ----------------
 
 
-def write_roc_png(path: str, y_true, scores, title: str) -> None:
+def write_roc_png(path: str, y_true, scores, title: str, ci: dict | None = None) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -632,12 +706,20 @@ def write_roc_png(path: str, y_true, scores, title: str) -> None:
     fpr, tpr, _ = roc_curve(y_true, scores)
     from sklearn.metrics import roc_auc_score
     auc = roc_auc_score(y_true, scores)
+    # CI 上图(A3):图自证可信度,报告/论文直接引用标题不必翻 summary。
+    # CI 独立成第二行:并排一行在 4.2in 图宽下超界(GSE281291 实测溢出)
+    ci_line = ""
+    if ci and ci.get("ci_lower") is not None:
+        ci_line = f"95% CI [{ci['ci_lower']:.3f}, {ci['ci_upper']:.3f}]"
+    title_text = f"{title} CV-ROC (AUC={auc:.3f})"
+    if ci_line:
+        title_text += f"\n{ci_line}"
     fig, ax = plt.subplots(figsize=(4.2, 4.0), dpi=150)
     ax.plot(fpr, tpr, lw=1.6, color="#1f6fb4")
     ax.plot([0, 1], [0, 1], ls="--", lw=0.8, color="#999999")
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
-    ax.set_title(f"{title} CV-ROC (AUC={auc:.3f})", fontsize=10)
+    ax.set_title(title_text, fontsize=10)
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)

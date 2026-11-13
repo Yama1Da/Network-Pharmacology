@@ -647,8 +647,20 @@ def differential_expression(matrix: pd.DataFrame, labels: pd.Series) -> pd.DataF
     if n_const:
         logging.info("DEG: %d near-constant gene(s) dropped before t-test", n_const)
     a, b = a[keep], b[keep]
-    with np.errstate(invalid="ignore", divide="ignore"):
+    # 上面的池化护栏拦"全样本恒定",拦不住"组内恒定"(如对照组 3 个取值完全
+    # 相同、病例组有变化):scipy 逐组 demean 时恒定组 max|x−mean|=0,触发
+    # RuntimeWarning "catastrophic cancellation"。该场景下 Welch 数学上良定义
+    # (恒定组方差 0,分母由另一组承担),告警是通用矩检查的误报 → 定向静默
+    # 这一条 message(不掩其他 RuntimeWarning)。已知未处理的相邻病理:两组
+    # 同时恒定但均值不同 → t=∞/p≈0 假显著,属 DEG 语义决策,交生物侧讨论。
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="Precision loss occurred in moment calculation.*",
+            category=RuntimeWarning)
         t_stat, pvals = ttest_ind(a, b, axis=1, equal_var=False, nan_policy="omit")
+    with np.errstate(invalid="ignore", divide="ignore"):
         log2fc = (np.nanmean(a, axis=1) - np.nanmean(b, axis=1))
     valid = np.isfinite(pvals)
     res = pd.DataFrame({

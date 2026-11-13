@@ -403,8 +403,13 @@ def run_screen_chain(*, gse: str | None = None,
     auc_text = f"{m['cv_mean']}" if m.get("cv_mean") is not None else f"{m['cv_auc']}"
     if m.get("cv_sd") is not None:
         auc_text += f" ± {m['cv_sd']}"
+    ci = m.get("cv_auc_ci") or {}
+    ci_text = (f" CI[{ci['ci_lower']:.3f}~{ci['ci_upper']:.3f}]"
+               if ci.get("ci_lower") is not None else "")
     _report(None, f"ML 输入: {m['n_samples']}样本 × {m['n_genes']}基因 | "
-                  f"{m['cv_mode']} AUC={auc_text}({m.get('cv_repeats', 1)} 次) | "
+                  f"{m['cv_mode']} AUC={auc_text}{ci_text}"
+                  f"({m.get('cv_repeats', 1)} 次) | "
+                  f"CV 折 {m.get('cv_folds_done', '?')}/{m.get('cv_folds_total', '?')} | "
                   f"算法一致性={m['algo_spearman_mean']} | "
                   f"耗时 {m['elapsed_s']}s")
 
@@ -445,7 +450,8 @@ def run_screen_chain(*, gse: str | None = None,
     deg.to_csv(os.path.join(out_dir, "deg_results.csv"), index=False, encoding="utf-8-sig")
     from .ml_screening import write_consensus_curve_png, write_roc_png
     write_roc_png(os.path.join(out_dir, f"ml_roc_{tag}_{m['cv_mode']}.png"),
-                  res["roc"]["y_true"], res["roc"]["scores"], str(tag))
+                  res["roc"]["y_true"], res["roc"]["scores"], str(tag),
+                  ci=res["meta"].get("cv_auc_ci"))
     write_consensus_curve_png(os.path.join(out_dir, "consensus_curve.png"),
                               res["consensus"], resolved_top_k)
     if symbol_map:

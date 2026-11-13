@@ -533,8 +533,9 @@ GEO_DOWNLOAD_CONCURRENCY = 4         # 大文件分段并发连接数:跨境对 
                                      # (实测 8.5MB 爬 16 分钟),Range 分段多连接聚合提速;E-utilities 的
                                      # 3 req/s 限流只约束检索接口不约束文件服务器,4 连接在容忍范围内
 GEO_DOWNLOAD_STALL_TIMEOUT = 90      # 单连接断流判定(秒):连续无任何字节到达即断开该段;重试按段续传
-ML_SCREENING_VERSION = 2             # 算法/权重变更时 +1,旧结果自动失效(仿 TARGET_FILTER_VERSION)
+ML_SCREENING_VERSION = 3             # 算法/权重变更时 +1,旧结果自动失效(仿 TARGET_FILTER_VERSION)
                                      # v2:CV 改重复分层 + 折内重筛口径(2026-11)
+                                     # v3:折内打分模型类平衡(A1)+ CV 折数审计(A2)+ 池化 AUC bootstrap CI(A3)+ 折内 seed 随重复轮独立(A4)(优化期,2026-11)
 ML_MIN_SAMPLES_PER_GROUP = 3         # 每组样本低于此数直接报错,不降级硬跑
 ML_SEED = 0                          # 全模块固定随机种子,可复现
 ML_BOOTSTRAP_ROUNDS = 30             # bootstrap 稳定性重采样轮次(2026-10 实测定档:500基因×30轮 ML 段约3.5分钟,页面/CLI 统一)
