@@ -240,7 +240,8 @@ def bootstrap_stability(X, y, rounds, seed):
                          index=X.columns), n_done)
 
 
-def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None, repeats: int = 1):
+def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None, repeats: int = 1,
+                 select_fn=None, select_seed=None):
     """折内完整选择 + 折内训练、折外打分;返回 (auc, y_true, scores, mode, aucs, fold_stats)。
 
     fold_stats = {"folds_done", "folds_total"}(优化期 A2):选择/折内预筛失败的
@@ -259,6 +260,14 @@ def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None, repeats: int = 1)
     折内预筛复用 differential_expression 的 Welch t+BH(输入 ML 同款
     log2 矩阵),不逐折重跑 DESeq2:预筛只是池缩减启发式,正确性要求是
     「不碰测试折标签」,无需与全量 DEG 同方法。
+
+    select_fn(优化期 B1 消融钩子):(Xtr, ytr, sel_seed, k) → 基因名列表。
+    提供时折内选基因由它接管(单算法/裸 DEG/随机抽签各臂经此注入),折循环
+    、折内重筛、折外打分与生产完全同源——消融臂间是配对比较,九臂共用同一
+    份折划分。缺省 None = 现行「六算法秩和 + head(k)」,生产路径零变化。
+    select_seed:选基因随机流基值,缺省 None → 沿用 seed(生产行为不变)。
+    B1 random 臂用「固定 seed(划分不变)+ 变 select_seed(只换抽签)」整
+    CV 重跑 N 次,得到同划分下的选基因零分布。
     """
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import roc_auc_score
@@ -314,13 +323,21 @@ def crossval_roc(X, y, seed, *, cv_matrix=None, cv_top_n=None, repeats: int = 1)
                                        index=X.index[te], columns=pool)
                 else:
                     Xtr, Xte = X.iloc[tr], X.iloc[te]
-                # 选择 seed 随重复轮独立(r*1000):同一 fold 序号跨重复轮不再复用
-                # 随机性(训练数据本就随划分不同,旧写法不构成泄漏,仅叙事不干净)
-                imps = _select_all(Xtr, ytr, seed + r * 1000 + fold_i + 101,
-                                   boruta_iter=_BORUTA_ITER_BOOT)
-                rank = sum(imp.rank(ascending=False, method="average")
-                           for imp in imps.values())
-                genes = list(rank.sort_values().head(k).index)
+                # 选基因随机流与划分 seed 解耦(B1 random 臂:同划分只换抽签);
+                # 缺省沿用 seed,生产行为不变。选择 seed 仍随重复轮独立(r*1000,
+                # A4 同款):同一 fold 序号跨重复轮不复用随机性
+                sel_seed = (seed if select_seed is None else select_seed) \
+                    + r * 1000 + fold_i + 101
+                if select_fn is not None:
+                    # 消融钩子(优化期 B1):select_fn(Xtr, ytr, sel_seed, k) → 基因
+                    # 列表。九臂共用此折循环(配对比较的前提),缺省路径零变化
+                    genes = list(select_fn(Xtr, ytr, sel_seed, k))
+                else:
+                    imps = _select_all(Xtr, ytr, sel_seed,
+                                       boruta_iter=_BORUTA_ITER_BOOT)
+                    rank = sum(imp.rank(ascending=False, method="average")
+                               for imp in imps.values())
+                    genes = list(rank.sort_values().head(k).index)
                 # 类平衡(优化期 A1,TCMDATA nested 折内 weights 档同款):类悬殊
                 # (如 3v20)时损失被多数类主导,病例信号被稀释;逆频率加权只改
                 # 折外打分用的最终模型。六选择器不加(系数/增益的重要性语义不因

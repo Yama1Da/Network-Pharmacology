@@ -13,7 +13,7 @@ from WY.core.files import (list_cache_files, list_download_dirs,
 from WY.core.management import enrichment_display_name
 from WY.core.sources import disease_spec, drug_spec
 from WY.core.sources import file_path as spec_file_path
-from .common import (_ZIP_NAMES)
+from .common import (_ZIP_NAMES, _zip_response)
 
 
 router = APIRouter()
@@ -136,10 +136,7 @@ def collection_zip(kind: str, body: NamesBody) -> Response:
         data = make_ppi_zip({n: p for n, p in pairs})
     else:
         data = make_dirs_zip({n: p for n, p in pairs})
-    return Response(
-        content=data,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{_ZIP_NAMES[kind]}"'})
+    return _zip_response(data, _ZIP_NAMES[kind])
 
 
 @router.post("/api/collections/{kind}/delete")

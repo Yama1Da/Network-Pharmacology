@@ -227,6 +227,29 @@ def test_cv_fold_audit(monkeypatch):
     assert m2["cv_auc_ci"] is None, "无 AUC 就无区间:全折失败后 CI 同步为 None"
 
 
+def test_select_fn_hook():
+    """消融钩子(B1):select_fn 接管折内选基因且确定性可复现;植入基因臂优于
+    噪声基因臂——证明钩子确实在驱动折内选择,而折循环/折外打分与生产同源。
+
+    40 基因非折内口径 _top_k(40)=10;植入=前 10、噪声=第 30-40,各跑一次。
+    select_seed 变换对确定性钩子无影响(钩子自持随机流),断言两次一致。"""
+    X, y, genes, planted = _make_synthetic(n_ctrl=6, n_case=6, n_genes=40, seed=42)
+
+    def _pick(idx):
+        return lambda Xtr, ytr, s, k: [genes[i] for i in idx][:k]
+
+    auc_planted = ml.crossval_roc(X, y, seed=0, repeats=1,
+                                  select_fn=_pick(range(10)))[0]
+    auc_planted_2 = ml.crossval_roc(X, y, seed=0, repeats=1,
+                                    select_fn=_pick(range(10)), select_seed=7)[0]
+    auc_noise = ml.crossval_roc(X, y, seed=0, repeats=1,
+                                select_fn=_pick(range(30, 40)))[0]
+    assert auc_planted == auc_planted_2, "确定性钩子下 select_seed 不应影响结果"
+    assert 0.5 <= auc_planted <= 1.0
+    assert auc_noise < auc_planted, \
+        f"噪声基因臂({auc_noise})不应优于植入基因臂({auc_planted})"
+
+
 def test_bootstrap_auc_ci():
     """池化 AUC bootstrap CI(A3):可复现 / 界有序 / 配对口径 / 单类守卫。
 

@@ -138,3 +138,23 @@ def request_with_retry(
     if raise_on_exhausted and last_exc is not None:
         raise last_exc
     return None
+
+
+def probe_range_total(url: str, *, headers: dict | None = None, timeout,
+                      log_failures: bool = False) -> int:
+    """1 字节 Range GET 实测下载源的分段支持:206 + Content-Range 才算数
+    (部分服务器 HEAD 不回 Accept-Ranges),返回文件总字节数,0 = 不支持/探测失败。
+    stream=True 即开即关,不会把 200 的完整响应体拉下来;headers 传入调用方的
+    UA 等基础头,Range 由本函数统一追加;探测失败属预期场景时保持静默
+    (log_failures=True 供排查意外失败)。"""
+    try:
+        with requests.get(url, headers=dict(headers or {}, Range="bytes=0-0"),
+                          stream=True, timeout=timeout) as resp:
+            if resp.status_code != 206:
+                return 0
+            total = resp.headers.get("Content-Range", "").rsplit("/", 1)[-1]
+            return int(total) if total.isdigit() else 0
+    except Exception:
+        if log_failures:
+            logging.exception("Range probe failed: %s", url)
+        return 0

@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from WY.core import transfer
 from WY.core.logging_setup import setup_logging
+from .common import _resolve_under
 
 
 setup_logging()
@@ -76,9 +77,8 @@ if os.path.isdir(os.path.join(_DIST, "assets")):
         # realpath 包含校验(与 /api/artifacts 同款,2026-11 P1-A):仅挡 ".."
         # 挡不住 Windows 盘符绝对路径——os.path.join(_DIST, "C:/...") 会整段
         # 丢弃 dist 前缀,任意文件可读
-        base = os.path.realpath(_DIST)
-        full = os.path.realpath(os.path.join(base, full_path))
-        if not (full == base or full.startswith(base + os.sep)):
+        full = _resolve_under(_DIST, full_path, allow_root=True)
+        if full is None:
             raise HTTPException(status_code=404)
         if full_path and os.path.isfile(full):
             return FileResponse(full)

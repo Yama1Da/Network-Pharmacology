@@ -4,3 +4,5 @@
 pytest==9.1.1
 pytest-cov==7.1.0
 httpx==0.28.1
+# benchmark/ 内存采样(ml_scale_benchmark)用,非测试运行时依赖
+psutil==7.2.2

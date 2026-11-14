@@ -9,17 +9,7 @@ import pytest
 from WY import config
 from WY.core.text_utils import remember_name_mapping, safe_name
 import WY.core.docking as dock
-
-
-def _atom(rec, serial, name, resn, chain, resi, x, y, z, elem="C"):
-    return (f"{rec:<6s}{serial:5d}  {name:<3s} {resn:>3s} {chain}{resi:>4d}    "
-            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {elem:>2s}\n")
-
-
-def _write_pdb(path, lines):
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("".join(lines))
-    return path
+from conftest import _atom_line, _write_tmp
 
 
 # ---------- 指纹与防覆盖 ----------
@@ -44,10 +34,10 @@ def test_docking_fingerprint_and_unique_path(tmp_path):
 
 def test_parse_hetatm_and_pdb_coords(tmp_path):
     """共晶配体识别:HETATM 保留、水(HOH)剔除;坐标按蛋白/非水其他分子分列。"""
-    pdb = _write_pdb(str(tmp_path / "x.pdb"), [
-        _atom("ATOM", 1, "CA", "ALA", "A", 10, 0.0, 0.0, 0.0),
-        _atom("HETATM", 2, "O", "HOH", "A", 999, 50.0, 50.0, 50.0),   # 水 → 剔
-        _atom("HETATM", 3, "FE", "HEM", "A", 200, 10.0, 10.0, 10.0),  # 辅因子 → 留
+    pdb = _write_tmp(str(tmp_path / "x.pdb"), [
+        _atom_line("ATOM", 1, "CA", "ALA", "A", 10, 0.0, 0.0, 0.0),
+        _atom_line("HETATM", 2, "O", "HOH", "A", 999, 50.0, 50.0, 50.0),   # 水 → 剔
+        _atom_line("HETATM", 3, "FE", "HEM", "A", 200, 10.0, 10.0, 10.0),  # 辅因子 → 留
     ])
     het = dock.parse_hetatm(pdb)
     assert [(h[0], h[3]) for h in het] == [("HEM", (10.0, 10.0, 10.0))]
@@ -57,10 +47,10 @@ def test_parse_hetatm_and_pdb_coords(tmp_path):
 
 def test_residues_in_box(tmp_path):
     """盒内残基清单:按 链+残基号:残基名 去重排序,盒外残基不进。"""
-    pdb = _write_pdb(str(tmp_path / "x.pdb"), [
-        _atom("ATOM", 1, "CA", "ALA", "A", 10, 1.0, 1.0, 1.0),     # 盒内
-        _atom("ATOM", 2, "CA", "GLY", "A", 11, 2.0, 2.0, 2.0),     # 盒内
-        _atom("ATOM", 3, "CA", "VAL", "B", 12, 99.0, 99.0, 99.0),  # 盒外
+    pdb = _write_tmp(str(tmp_path / "x.pdb"), [
+        _atom_line("ATOM", 1, "CA", "ALA", "A", 10, 1.0, 1.0, 1.0),     # 盒内
+        _atom_line("ATOM", 2, "CA", "GLY", "A", 11, 2.0, 2.0, 2.0),     # 盒内
+        _atom_line("ATOM", 3, "CA", "VAL", "B", 12, 99.0, 99.0, 99.0),  # 盒外
     ])
     box = {"center": (1.5, 1.5, 1.5), "size": (4.0, 4.0, 4.0)}
     assert dock.residues_in_box(pdb, box) == ["A10:ALA", "A11:GLY"]
@@ -68,14 +58,14 @@ def test_residues_in_box(tmp_path):
 
 def test_infer_box_from_cofactor_prefers_ligand(tmp_path):
     """盒子推断:优先用共晶辅因子定位;无辅因子时退回全蛋白范围;完全无坐标报错。"""
-    pdb = _write_pdb(str(tmp_path / "x.pdb"), [
-        _atom("ATOM", 1, "CA", "ALA", "A", 10, 100.0, 100.0, 100.0),
-        _atom("HETATM", 2, "FE", "HEM", "A", 200, 10.0, 20.0, 30.0),
+    pdb = _write_tmp(str(tmp_path / "x.pdb"), [
+        _atom_line("ATOM", 1, "CA", "ALA", "A", 10, 100.0, 100.0, 100.0),
+        _atom_line("HETATM", 2, "FE", "HEM", "A", 200, 10.0, 20.0, 30.0),
     ])
     box = dock.infer_box_from_cofactor(pdb, padding=8.0)
     assert box["center"] == (10.0, 20.0, 30.0)          # 只按辅因子算中心
     assert box["size"] == (16.0, 16.0, 16.0)            # 单点 + 2*padding
-    empty = _write_pdb(str(tmp_path / "e.pdb"), ["END\n"])
+    empty = _write_tmp(str(tmp_path / "e.pdb"), ["END\n"])
     with pytest.raises(RuntimeError, match="no coordinates"):
         dock.infer_box_from_cofactor(empty)
 

@@ -12,6 +12,7 @@ import requests
 
 from WY import config
 import WY.core.docking as dock
+from conftest import _atom_line, _write_tmp
 
 
 def _json_nonempty(path):
@@ -20,19 +21,6 @@ def _json_nonempty(path):
             return bool(json.load(f))
     except Exception:
         return False
-
-
-def _atom_line(rec: str, serial: int, name: str, resn: str, chain: str,
-               resi: int, x: float, y: float, z: float, elem: str) -> str:
-    """按 PDB/pdbqt 列格式拼一条原子记录(elem 处 pdbqt 传 AutoDock 原子类型)。"""
-    return (f"{rec:<6s}{serial:5d}  {name:<3s} {resn:>3s} {chain}{resi:>4d}    "
-            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {elem:>2s}\n")
-
-
-def _write_tmp(path: str, lines: list[str]) -> str:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("".join(lines))
-    return path
 
 
 def test_clamp_box():

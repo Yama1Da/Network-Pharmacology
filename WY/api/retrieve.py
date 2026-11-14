@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from WY.core import jobs
 from WY.core.files import make_bytes_zip
 from WY.core.text_utils import safe_name
+from .common import _attachment
 
 
 router = APIRouter()
@@ -151,17 +152,6 @@ _EXPORT_ITEMS = {
     "venn_png": "venn_{d}_{p}.png",
     "venn_svg": "venn_{d}_{p}.svg",
 }
-
-
-def _attachment(fname: str) -> str:
-    """Content-Disposition: attachment 头。文件名含非 ASCII(中文药名等)时补 RFC 5987 的
-    filename*:FastAPI 响应头按 latin-1 编码,直接放中文会 500。"""
-    if fname.isascii():
-        return f'attachment; filename="{fname}"'
-    from urllib.parse import quote
-
-    fallback = fname.encode("ascii", "replace").decode().replace('"', "_")
-    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(fname)}'
 
 
 def _targets_csv_bytes(df) -> bytes:

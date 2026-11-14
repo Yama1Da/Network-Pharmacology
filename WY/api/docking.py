@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from WY import config
 from WY.core import jobs
 from WY.core.text_utils import safe_name
+from .common import _rel_downloads, _resolve_under, _zip_response
 from functools import lru_cache
 from WY.core import docking_session
 
@@ -56,9 +57,7 @@ def _require_registered_name(name: str, base_dir: str) -> None:
     if not name or name != os.path.basename(name):
         raise HTTPException(status_code=400,
                             detail="name 必须为缓存目录下的纯文件名(不含路径分隔符)")
-    real_base = os.path.realpath(base_dir)
-    full = os.path.realpath(os.path.join(real_base, name))
-    if not full.startswith(real_base + os.sep):
+    if _resolve_under(base_dir, name) is None:
         raise HTTPException(status_code=400, detail="name 逃逸出缓存目录")
 
 
@@ -731,7 +730,7 @@ def docking_save3d(sid: str, body: DockSave3dBody) -> dict:
         dock["pdb_path"], pose_path,
         os.path.join(dock["result_dir"], file_name), body.caption,
         pocket=pocket, interactions=interactions)
-    rel = os.path.relpath(out_path, config.DOWNLOADS_DIR).replace(os.sep, "/")
+    rel = _rel_downloads(out_path)
     return {"path": out_path, "artifact_rel": rel, "offline_ok": offline_ok}
 
 
@@ -743,6 +742,4 @@ def docking_zip(sid: str) -> Response:
     if not dock.get("result_dir"):
         raise HTTPException(status_code=400, detail="save the result first")
     data = make_dir_zip(dock["result_dir"])
-    return Response(content=data, media_type="application/zip",
-                    headers={"Content-Disposition":
-                             f'attachment; filename="{os.path.basename(dock["result_dir"])}.zip"'})
+    return _zip_response(data, os.path.basename(dock["result_dir"]) + ".zip")

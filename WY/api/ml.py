@@ -11,7 +11,7 @@ from WY import config
 from WY.core import jobs
 from WY.core.ml_pipeline import STAGES, run_screen_chain
 from WY.core.ppi import list_ranked_csv_candidates
-from .common import (_df_rows)
+from .common import (_df_rows, _rel_downloads, _zip_response)
 
 
 router = APIRouter()
@@ -298,17 +298,6 @@ class MlRunBody(BaseModel):
     cv_repeats: int | None = None  # 分层 CV 重复次数(None → config.ML_CV_REPEATS)
 
 
-def _rel_downloads(path: str) -> str | None:
-    try:
-        real = os.path.realpath(path)
-        base = os.path.realpath(config.DOWNLOADS_DIR)
-        if real.startswith(base + os.sep):
-            return os.path.relpath(real, base).replace(os.sep, "/")
-    except OSError:
-        pass
-    return None
-
-
 @router.post("/api/ml/run")
 def ml_run(body: MlRunBody) -> dict:
     """ML 筛选全链(经 job:DEG + ML 共识,本机实测数分钟)。"""
@@ -439,8 +428,7 @@ def ml_runs_zip(body: MlRunsBody) -> Response:
         # 登记根外/非 run 目录一律视为请求错误,400 带被拒路径明细(P1-B;
         # 与 delete 的"跳过+warning"语义不同:zip 的调用方是前端勾选列表)
         raise HTTPException(status_code=400, detail=str(exc))
-    return Response(content=data, media_type="application/zip",
-                    headers={"Content-Disposition": "attachment; filename=\"ML_runs.zip\""})
+    return _zip_response(data, "ML_runs.zip")
 
 
 class MlCleanupBody(BaseModel):

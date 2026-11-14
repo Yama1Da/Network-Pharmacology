@@ -14,13 +14,7 @@ import pytest
 from WY import config
 from WY.core import transfer
 from WY.core.transfer import TransferError
-
-
-def _mkfile(path: str, content: str = "x") -> str:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return path
+from conftest import _mkfile
 
 
 def _mk_analysis(name: str = "aspirin_cancer_data") -> str:

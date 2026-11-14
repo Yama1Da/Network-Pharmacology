@@ -4,9 +4,11 @@
 测试函数把夹具名写进参数表,pytest 就在测试开始前把东西准备好、
 结束后自动回收。
 """
+import glob
 import os
 import sys
 
+import networkx as nx
 import pytest
 
 # ---- 让 from WY import config / from WY.core.* 生效(与业务代码同款绝对导入)----
@@ -123,3 +125,52 @@ def _ml_slim_params(monkeypatch):
     monkeypatch.setattr(ml, "_BORUTA_ITER_BOOT", 3)
     monkeypatch.setattr(ml, "_RF_N_TREES", 100)
     yield
+
+
+# ---- 跨文件共享的测试小助手(多个 test_*.py 逐字重复,统一于此防漂移) ----
+# 变体版的假响应类(test_disgenet/fetch_chains/interactome 各有 payload/headers/
+# 流式差异)仍留在各自文件,不强行归一。
+
+class _FakeResp:
+    """最小假响应:只需要 .json()。"""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def _mkfile(path: str, content: str = "x") -> str:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+
+def _karate() -> nx.Graph:
+    G = nx.karate_club_graph()
+    return nx.relabel_nodes(G, {i: f"G{i:02d}" for i in G.nodes()})
+
+
+def _purge(pattern):
+    """按 glob 模式删除旧缓存文件,文件不存在时为无害空操作。"""
+    for old in glob.glob(pattern):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+
+
+def _atom_line(rec: str, serial: int, name: str, resn: str, chain: str,
+               resi: int, x: float, y: float, z: float, elem: str = "C") -> str:
+    """按 PDB/pdbqt 列格式拼一条原子记录(elem 处 pdbqt 传 AutoDock 原子类型);
+    列宽是唯一正确性要点,只保留一份防两处漂移。"""
+    return (f"{rec:<6s}{serial:5d}  {name:<3s} {resn:>3s} {chain}{resi:>4d}    "
+            f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {elem:>2s}\n")
+
+
+def _write_tmp(path: str, lines: list[str]) -> str:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("".join(lines))
+    return path

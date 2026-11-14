@@ -8,14 +8,6 @@ import pandas as pd
 import WY.core.chembl as chembl
 
 
-class _FakeResp:
-    def __init__(self, payload):
-        self._payload = payload
-
-    def json(self):
-        return self._payload
-
-
 def test_sort_by_pchembl_desc_nan_last():
     """pChEMBL 降序排列,无活性值的排最后。"""
     df = pd.DataFrame({"approvedSymbol": ["A", "B", "C"],

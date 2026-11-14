@@ -11,11 +11,7 @@ from WY.core.ppi import (
     pick_top_mcc_genes,
     render_core_target_plot,
 )
-
-
-def _karate() -> nx.Graph:
-    G = nx.karate_club_graph()
-    return nx.relabel_nodes(G, {i: f"G{i:02d}" for i in G.nodes()})
+from conftest import _karate
 
 
 def test_mcc_known_values():

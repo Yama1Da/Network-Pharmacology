@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from WY import config
 from WY.core import jobs
 from WY.core.analysis import run_ppi_analysis
-from .common import (_df_rows)
+from .common import (_attachment, _df_rows, _rel_downloads, _resolve_under)
 
 
 router = APIRouter()
@@ -63,12 +63,7 @@ def _serialize_ppi(ppi: dict) -> dict:
     downloads 相对路径,大表截断。"""
     saved = ppi["saved"]
 
-    def rel(path) -> str | None:
-        if not path:
-            return None
-        return os.path.relpath(path, config.DOWNLOADS_DIR).replace(os.sep, "/")
-
-    artifacts = {k: rel(v) for k, v in saved.items()
+    artifacts = {k: _rel_downloads(v) for k, v in saved.items()
                  if isinstance(v, str) and k != "directory"}
 
     views = ["interactive", "static"]
@@ -106,7 +101,7 @@ def _serialize_ppi(ppi: dict) -> dict:
     enr_df = ppi.get("enrichment_df")
     return {
         "prefix": ppi["prefix"],
-        "directory_rel": rel(saved["directory"]),
+        "directory_rel": _rel_downloads(saved["directory"]),
         "params": list(ppi["params"]),
         "hub_rule": ppi.get("hub_rule", ""),
         "hub_method_eff": ppi.get("hub_method_eff", ""),
@@ -165,18 +160,16 @@ def ppi_analyze(body: AnalyzeBody) -> dict:
 def artifact(rel: str, download: int = 0) -> FileResponse:
     """伺服 downloads/ 下分析产物(PNG/SVG/HTML/CSV/graphml/json)。
     rel 为 downloads 相对路径,realpath 校验防穿越。"""
-    base = os.path.realpath(config.DOWNLOADS_DIR)
-    full = os.path.realpath(os.path.join(base, rel))
-    if not (full == base or full.startswith(base + os.sep)) or not os.path.isfile(full):
+    full = _resolve_under(config.DOWNLOADS_DIR, rel, allow_root=True)
+    if full is None or not os.path.isfile(full):
         raise HTTPException(status_code=404, detail="no such artifact")
     media = {
         ".png": "image/png", ".svg": "image/svg+xml", ".html": "text/html",
         ".csv": "text/csv", ".graphml": "application/xml", ".json": "application/json",
     }.get(os.path.splitext(full)[1].lower(), "application/octet-stream")
     fname = os.path.basename(full)
-    disposition = "attachment" if download else "inline"
-    return FileResponse(full, media_type=media,
-                        headers={"Content-Disposition": f'{disposition}; filename="{fname}"'})
+    return FileResponse(full, media_type=media, headers={"Content-Disposition": _attachment(
+        fname, "attachment" if download else "inline")})
 
 
 class RerunModulesBody(BaseModel):
@@ -187,9 +180,8 @@ class RerunModulesBody(BaseModel):
 @router.post("/api/ppi/rerun-modules")
 def ppi_rerun_modules(body: RerunModulesBody) -> dict:
     """交互区手动重跑模块检测:从落盘 nodes/edges CSV 无状态重建图,与展示一致。"""
-    base = os.path.realpath(config.DOWNLOADS_DIR)
-    directory = os.path.realpath(os.path.join(base, body.directory_rel))
-    if not directory.startswith(base + os.sep) or not os.path.isdir(directory):
+    directory = _resolve_under(config.DOWNLOADS_DIR, body.directory_rel)
+    if directory is None or not os.path.isdir(directory):
         raise HTTPException(status_code=404, detail="no such analysis directory")
 
     def task(progress) -> dict:
