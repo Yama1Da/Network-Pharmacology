@@ -18,7 +18,6 @@ import logging
 import os
 import re
 import shutil
-import time
 
 # run 目录名以 _YYYYMMDD_HHMMSS 结尾;tag 自身可含下划线(本地矩阵文件名)
 _RUN_TS = re.compile(r"_(\d{8})_(\d{6})$")

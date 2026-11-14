@@ -4,7 +4,6 @@
 config 模块常量,测试自行快照并恢复。
 """
 import json
-import os
 
 from WY import config
 

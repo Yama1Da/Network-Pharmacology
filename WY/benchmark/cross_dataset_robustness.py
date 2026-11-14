@@ -32,9 +32,9 @@ import pandas as pd
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
-from core.geo import assign_groups, fetch_geo_dataset, group_fields_overview
+from core.geo import assign_groups, fetch_geo_dataset
 from core.expression import differential_expression, map_probe_to_symbol, preprocess
-from core.ml_screening import deg_prefilter, run_ml_screening
+from core.ml_screening import deg_prefilter
 
 
 def run_one_dataset(gse, case_pattern, control_pattern, top_genes, bootstrap, seed):
@@ -92,8 +92,6 @@ def main():
     ap.add_argument("--out", help="结果输出目录")
     args = ap.parse_args()
 
-    from core.ml_screening import deg_prefilter
-
     out_dir = args.out or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "results", "cross_robustness")
@@ -112,7 +110,7 @@ def main():
     jaccard = len(overlap) / len(top_a | top_b) if (top_a | top_b) else 0.0
 
     print(f"\n{'='*60}")
-    print(f"跨数据集稳健性结果")
+    print("跨数据集稳健性结果")
     print(f"  {args.gse_a} 共识 top-{args.top_k}: {len(top_a)} 个")
     print(f"  {args.gse_b} 共识 top-{args.top_k}: {len(top_b)} 个")
     print(f"  交集: {len(overlap)} 个")

@@ -4,7 +4,6 @@
 """
 import os
 
-import pandas as pd
 import pytest
 
 from WY import config

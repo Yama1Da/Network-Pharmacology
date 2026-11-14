@@ -4,7 +4,6 @@
 阶段三第 2 批新写。打桩层级在 _chembl_get(带缓存的 GET 统一入口),不联网。
 """
 import pandas as pd
-import pytest
 
 import WY.core.chembl as chembl
 

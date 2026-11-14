@@ -5,7 +5,6 @@ daemon,轮询带超时防挂死。
 """
 import time
 
-import pytest
 
 from WY.core import jobs
 

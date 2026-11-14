@@ -4,16 +4,11 @@ from fastapi import APIRouter
 import os
 import re
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from WY import config
-from WY.core import jobs, transfer
-from WY.core.enrichment import parse_enrichment_filename
-from WY.core.files import (list_cache_files, list_download_dirs, list_log_files,
-                           make_bytes_zip, make_dirs_zip, make_ppi_zip)
-from WY.core.management import (enrichment_display_name, save_api_env,
-                                save_ui_settings, update_all_cache_files)
+from WY.core import jobs
 from WY.core.text_utils import safe_name
 from functools import lru_cache
 from WY.core import docking_session
@@ -162,11 +157,9 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
 
     from WY.core.docking import split_result_prefix
     from WY.core.enrichment import enrichment_filename_label
-    from WY.core.files import list_cache_files
     from WY.core.ppi import read_ppi_dataset
     from WY.core.text_utils import genes_from_dataframe
 
-    hub_genes: list[str] = []
     if body.mode == "ppi":
         _require_registered_name(body.name, config.DOWNLOADS_DIR)
         dock["source_mode"] = body.mode

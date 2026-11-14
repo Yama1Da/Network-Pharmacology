@@ -22,8 +22,7 @@ from WY.i18n import t
 # 结构解析/相互作用(docking_interactions)与 3D 视图导出(docking_3d)已拆分为子模块;
 # 此处再导入以维持 WY.core.docking 既有对外接口(api/cli/tests 均从本模块导入这些名字)。
 from .docking_3d import (build_interactive_3d_html, cofactor_hetatm_pdb,
-                         interactive_3d_html, pose_pdbqt_to_pdb,
-                         save_interactive_3d_html)
+                         pose_pdbqt_to_pdb, save_interactive_3d_html)
 from .docking_interactions import (_pdb_coords, _run_obabel, _strip_receptor_pdb,
                                    interactions_near_ligand,
                                    parse_hetatm, residues_in_box, residues_near_ligand)

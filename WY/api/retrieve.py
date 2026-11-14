@@ -1,12 +1,11 @@
 """主页四库检索(App.py 检索职责的 TS 化)。"""
 
 from fastapi import APIRouter
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
-from WY.core import jobs, transfer
-from WY.core.files import (list_cache_files, list_download_dirs, list_log_files,
-                           make_bytes_zip, make_dirs_zip, make_ppi_zip)
+from WY.core import jobs
+from WY.core.files import make_bytes_zip
 from WY.core.text_utils import safe_name
 
 
@@ -109,8 +108,6 @@ def targets_retrieve(body: RetrieveBody) -> dict:
         common_df = None
         common_rows: list[dict] = []
         if drug_rows and disease_rows:
-            import pandas as pd
-
             common_df = drug_df.drop(columns=["source_count"]).merge(
                 disease_df.drop(columns=["source_count"]),
                 on="approvedSymbol", how="inner")

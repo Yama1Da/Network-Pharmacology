@@ -1077,7 +1077,6 @@ def test_transfer_export_job_and_download(client):
 
 def test_transfer_import_two_stage_flow(client):
     """导入两段式:上传有效包 → 预览报告 → commit 全 skip → 会话自动销毁。"""
-    from WY.core import transfer as tr
 
     _mk_analysis_dir()
     export = client.post("/api/transfer/export", json={"scopes": ["analysis"]})

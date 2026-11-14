@@ -4,15 +4,13 @@ from fastapi import APIRouter
 import logging
 import os
 import time
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from WY import config
-from WY.core import jobs, transfer
+from WY.core import jobs
 from WY.core.ml_pipeline import STAGES, run_screen_chain
-from WY.core.ppi import (base_disease_of, list_analyzed_diseases,
-                        list_analyzed_drugs,
-                        list_ranked_csv_candidates)
+from WY.core.ppi import list_ranked_csv_candidates
 from .common import (_df_rows)
 
 
@@ -202,8 +200,6 @@ class MlOverviewBody(BaseModel):
 def ml_overview(body: MlOverviewBody) -> dict:
     """分组总览(经 job:可能触发数据集下载,数秒到数分钟):
     分组字段分布 + counts 列清单(空矩阵类)+ 可用性权威判定。"""
-    import pandas as pd
-
     from WY.core.expression import (assess_expression_dataset, counts_picker_fields,
                                     group_picker_fields)
     from WY.core.geo import fetch_gse_count_matrix, fetch_geo_dataset, group_fields_overview
@@ -403,8 +399,6 @@ def _ml_run_rows() -> list[dict]:
 
     rows = []
     for r in list_ml_runs():
-        s = r["summary"] or {}
-        m = s.get("ml_meta", {})
         rows.append({"name": r["name"], "path": r["path"],
                      "dir_rel": _rel_downloads(r["path"]),
                      "size_bytes": r["size_bytes"], "mtime": r["mtime"],

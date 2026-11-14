@@ -1,11 +1,10 @@
 """设置(App.py 齿轮职责的 TS 化):四栏侧边栏。"""
 
 from fastapi import APIRouter
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException
 from pydantic import BaseModel
 from WY import config
-from WY.core.management import (enrichment_display_name, save_api_env,
-                                save_ui_settings, update_all_cache_files)
+from WY.core.management import save_api_env, save_ui_settings
 from .common import (_settings_snapshot)
 
 

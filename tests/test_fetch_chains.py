@@ -7,7 +7,6 @@ import pytest
 
 from WY import config
 import WY.core.docking as dock
-import WY.core.expression as expr
 import WY.core.geo as geo
 import WY.core.http_client as http_client
 
@@ -157,7 +156,6 @@ def test_run_obabel_missing_tool_friendly_error(tmp_path, monkeypatch):
 
 def test_search_geo_datasets_parses(monkeypatch):
     """GEO 检索:esearch 取 UID 列表 → esummary 解析标题/样本数/平台;细胞系关键词标注。"""
-    import pandas as pd
 
     class Resp:
         def __init__(self, payload):

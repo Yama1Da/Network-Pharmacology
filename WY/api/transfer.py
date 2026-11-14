@@ -3,9 +3,9 @@
 from fastapi import APIRouter
 import os
 import uuid
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from WY import config
 from WY.core import jobs, transfer

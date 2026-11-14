@@ -28,7 +28,6 @@ def test_ball_sprite_shape_and_cache():
 def test_save_module_computation_and_read_ppi_dataset(tmp_path, monkeypatch):
     """模块计算落盘 + 结果目录回读:hub 集合来自 is_hub 列、富集基因集来自
     genes 列;缺列/缺文件按空集合兜底。"""
-    from WY.core.ppi import save_module_results
 
     monkeypatch.setattr(config, "DOWNLOADS_DIR", str(tmp_path))
     directory = str(tmp_path / "metformin_T2D_data")

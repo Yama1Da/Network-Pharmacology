@@ -4,7 +4,6 @@ skip 守卫/g:Profiler 与 Enrichr 入口。
 深水区冲线批 II。契约:request 以零参闭包被 _call_with_request_guard 调用。
 """
 import pandas as pd
-import pytest
 
 import WY.core.enrichment as en
 
@@ -52,7 +51,7 @@ def test_fetch_key_mismatch_recomputes():
         return [{"x": 1}]
 
     st: dict = {}
-    df = _run_fetch(["KRAS"], request=request, status=st)
+    _run_fetch(["KRAS"], request=request, status=st)
     assert st["reason"] == "success" and calls["n"] == 1
 
 

@@ -1,9 +1,9 @@
 """背景互作组:状态与一键重建(Data_Management 的另一半)。"""
 
 from fastapi import APIRouter
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException
 from WY import config
-from WY.core import jobs, transfer
+from WY.core import jobs
 from WY.core.interactome import (build_interactome, clean_old_version_caches,
                                  interactome_age_days, is_built, is_stale,
                                  require_meta)

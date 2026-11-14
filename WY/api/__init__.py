@@ -8,11 +8,11 @@
 """
 import logging
 import os
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from WY.core import jobs, transfer
-from WY.core.logging_setup import set_logging_level, setup_logging
+from WY.core import transfer
+from WY.core.logging_setup import setup_logging
 
 
 setup_logging()

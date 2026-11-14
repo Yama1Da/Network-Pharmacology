@@ -6,7 +6,6 @@ conftest 沙箱隔离,配额阈值经 monkeypatch 调小以离线复现限流分
 import os
 import time
 
-import pandas as pd
 import pytest
 
 from WY import config

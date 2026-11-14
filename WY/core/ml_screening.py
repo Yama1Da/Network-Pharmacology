@@ -382,8 +382,6 @@ def permutation_test(X, y, *, cv_matrix=None, cv_top_n=None,
     并行化留待真实需求(各轮完全独立,理论可按核数铺开)。
     返回 {obs_auc, aucs, p_value, n_perm}。
     """
-    from sklearn.metrics import roc_auc_score
-
     config = _config()
     seed = config.ML_SEED if seed is None else seed
     cv_top_n = config.ML_DEG_PREFILTER_TOP_N if cv_top_n is None else cv_top_n
@@ -644,8 +642,6 @@ def build_shortlist(consensus: pd.DataFrame, deg: pd.DataFrame,
     pool = sig_genes if sig_genes else set(deg["gene"])
 
     ranked = {name: _read_ranked_csv(path) for name, path in ranked_csvs.items()} if ranked_csvs else {}
-    ml_top = consensus.head(top_k).index.tolist()
-    ml_set = set(ml_top)
 
     sl = consensus.head(top_k).copy()
     sl.insert(0, "gene", sl.index)

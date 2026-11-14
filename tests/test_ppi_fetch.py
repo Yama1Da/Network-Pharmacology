@@ -5,10 +5,8 @@
 import os
 
 import pandas as pd
-import pytest
 
 from WY import config
-from WY.core.text_utils import safe_name
 import WY.core.ppi as ppi
 
 

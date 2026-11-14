@@ -4,7 +4,6 @@
 阶段三第 2 批新写(仿原方案示例 B 的打桩手法)。
 """
 import pandas as pd
-import pytest
 
 from WY import config
 from WY.core.caching import save_csv_cache

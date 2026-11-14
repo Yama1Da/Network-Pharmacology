@@ -7,7 +7,6 @@ import json
 import os
 
 import pandas as pd
-import pytest
 
 from WY import config
 from WY import cli
@@ -65,7 +64,6 @@ def test_rwr_command_success(tmp_path, monkeypatch):
 
 def test_save_json_locked_is_none(tmp_path, monkeypatch):
     """JSON 落盘被占用(PermissionError):警告并返回 None,不崩溃。"""
-    from WY.core.caching import save_json_file
     monkeypatch.setattr(cli, "save_json_file",
                         lambda *a, **k: (_ for _ in ()).throw(PermissionError("locked")))
     assert cli._save_json({"a": 1}, str(tmp_path / "x.json")) is None

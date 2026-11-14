@@ -2,14 +2,12 @@
 
 from fastapi import APIRouter
 import os
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException
 from pydantic import BaseModel
 from WY import config
-from WY.core.files import (list_cache_files, list_download_dirs, list_log_files,
-                           make_bytes_zip, make_dirs_zip, make_ppi_zip)
-from WY.core.logging_setup import set_logging_level, setup_logging
-from WY.core.management import (enrichment_display_name, save_api_env,
-                                save_ui_settings, update_all_cache_files)
+from WY.core.files import list_log_files
+from WY.core.logging_setup import set_logging_level
+from WY.core.management import save_ui_settings
 from .common import (_ALLOWED_LEVELS, _LOG_TAIL_MAX)
 
 

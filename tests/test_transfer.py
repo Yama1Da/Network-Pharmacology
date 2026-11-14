@@ -39,7 +39,6 @@ def _mk_geo(name: str = "GSE123_20261023_225313", summary: bool = True) -> str:
 
 def _mk_ui_settings(raw: dict | None = None) -> dict:
     raw = raw if raw is not None else {"UI_THEME": "dark", "EVIL_KEY": "x"}
-    import os as _os
     from WY.core.caching import save_json_file
 
     save_json_file(config.UI_SETTINGS_FILE, raw)

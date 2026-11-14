@@ -2,11 +2,11 @@
 
 from fastapi import APIRouter
 import os
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from WY import config
-from WY.core import jobs, transfer
+from WY.core import jobs
 from WY.core.analysis import run_ppi_analysis
 from .common import (_df_rows)
 
