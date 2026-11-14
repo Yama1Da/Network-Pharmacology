@@ -83,35 +83,20 @@ def _cv_auc_pick(model_fn, X, y, seed):
     return m, best_c
 
 
-def _sel_lasso(X, y, seed):
+def _sel_logistic(X, y, seed, *, solver, l1_ratio=None):
+    """线性基座选择器共用模板,lasso/enet/ridge 仅 (solver, l1_ratio) 超参不同。
+    tol 放宽到 1e-3(默认 1e-4):小样本+共相关基因下 SAGA 系数在等价基因间震荡,
+    默认判据常打满 5000 轮仍不收敛(实测 C=1.0 档 5000→198 轮);
+    重要性按秩排序消费,系数精度损失不影响排序。lbfgs 收敛稳定,保持默认 tol。"""
     from sklearn.linear_model import LogisticRegression
-    # tol 放宽到 1e-3(默认 1e-4):小样本+共相关基因下 SAGA 系数在等价基因间震荡,
-    # 默认判据常打满 5000 轮仍不收敛(实测 C=1.0 档 5000→198 轮);
-    # 重要性按秩排序消费,系数精度损失不影响排序
-    m, c = _cv_auc_pick(
-        lambda cc: LogisticRegression(C=cc, solver="saga", l1_ratio=1.0,
-                                      max_iter=5000, tol=1e-3, random_state=seed),
-        X, y, seed)
-    imp = pd.Series(np.abs(m.coef_.ravel()), index=X.columns)
-    return imp, c
 
+    def _model(cc):
+        kw = {"C": cc, "solver": solver, "max_iter": 5000}
+        if solver == "saga":  # saga 需显式随机种子与放宽 tol;lbfgs 确定性,无需
+            kw.update(tol=1e-3, l1_ratio=l1_ratio, random_state=seed)
+        return LogisticRegression(**kw)
 
-def _sel_enet(X, y, seed):
-    from sklearn.linear_model import LogisticRegression
-    # tol 放宽理由同 _sel_lasso
-    m, c = _cv_auc_pick(
-        lambda cc: LogisticRegression(C=cc, solver="saga", l1_ratio=0.5,
-                                      max_iter=5000, tol=1e-3, random_state=seed),
-        X, y, seed)
-    imp = pd.Series(np.abs(m.coef_.ravel()), index=X.columns)
-    return imp, c
-
-
-def _sel_ridge(X, y, seed):
-    from sklearn.linear_model import LogisticRegression
-    m, c = _cv_auc_pick(
-        lambda cc: LogisticRegression(C=cc, solver="lbfgs", max_iter=5000),
-        X, y, seed)
+    m, c = _cv_auc_pick(_model, X, y, seed)
     imp = pd.Series(np.abs(m.coef_.ravel()), index=X.columns)
     return imp, c
 
@@ -200,9 +185,9 @@ def _select_all(X, y, seed, boruta_iter=None):
     if boruta_iter is None:
         boruta_iter = _BORUTA_ITER_FULL
     out = {}
-    out["lasso"], _ = _sel_lasso(X, y, seed)
-    out["enet"], _ = _sel_enet(X, y, seed)
-    out["ridge"], _ = _sel_ridge(X, y, seed)
+    out["lasso"], _ = _sel_logistic(X, y, seed, solver="saga", l1_ratio=1.0)
+    out["enet"], _ = _sel_logistic(X, y, seed, solver="saga", l1_ratio=0.5)
+    out["ridge"], _ = _sel_logistic(X, y, seed, solver="lbfgs")
     out["rf_boruta"], _ = _sel_rf_boruta(X, y, seed, boruta_iter)
     out["svm_rfe"], _ = _sel_svm_rfe(X, y, seed)
     out["xgboost"], _ = _sel_xgboost(X, y, seed)

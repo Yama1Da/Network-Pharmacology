@@ -22,12 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 
-import config
 import core.ml_screening as ml
-
-
-def _config():
-    return config
 
 
 def make_synthetic(nc, na, ng, seed):

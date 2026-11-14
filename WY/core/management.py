@@ -22,7 +22,7 @@ import pandas as pd
 from WY.i18n import t
 from WY.core.enrichment import parse_enrichment_filename
 from WY.core.http_client import clear_http_cache
-from WY.core.sources import cache_file_hosts
+from WY.core.sources import cache_file_hosts, file_path
 from WY.core.text_utils import resolve_original_name, safe_name
 
 # ui_settings.json 的进程内读写锁:齿轮面板与对接页都会高频保存设置
@@ -157,13 +157,6 @@ def enrichment_display_name(file_name: str) -> str:
 # ---------- 数据管理页公共逻辑(药物/疾病两个管理页共用) ----------
 
 
-def _mgmt_file_path(filename: str, spec: dict) -> str:
-    """整合前缀的文件位于 merged 目录,其余位于来源缓存目录。"""
-    if filename.startswith(spec["merged_prefix"]):
-        return os.path.join(spec["merged_dir"], filename)
-    return os.path.join(spec["cache_dir"], filename)
-
-
 def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None,
                        clear_http: bool = True) -> dict:
     """按文件名重新抓取或整合数据,更新指定文件(药物/疾病管理页共用)。
@@ -190,7 +183,7 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
             if result["Status"] == "FAILED":  # 来源 0 靶点(EMPTY)不算失败,继续重建
                 return {"Status": "FAILED",
                         "Message": f"source '{source}' update failed: {result['Message']}"}
-        merged_path = _mgmt_file_path(filename, spec)
+        merged_path = file_path(filename, spec)
         if os.path.exists(merged_path):
             os.remove(merged_path)  # 可能已在上一步删除,这里兜底再删一次
         df = spec["fetch_merged"](name)
@@ -199,7 +192,7 @@ def refresh_cache_file(filename: str, spec: dict, cache_hours: int | None = None
                 "Message": f"{len(df)} targets"}
 
     # 来源文件:先备份,抓取成功才替换,失败则恢复旧文件
-    path = _mgmt_file_path(filename, spec)
+    path = file_path(filename, spec)
     backup = path + ".bak"
     if os.path.exists(path):
         os.replace(path, backup)
@@ -311,25 +304,18 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
 
         results: dict[str, dict] = {}
         workers = max(1, min(max_workers, len(jobs)))
-        if workers == 1:
-            for done, filename in enumerate(jobs, 1):
+        # 串行与并发统一走线程池:workers=1 时任务按提交顺序完成,
+        # 进度推进顺序与原串行循环一致;结果输出端本就按文件名排序
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_run_one, f): f for f in jobs}
+            for done, fut in enumerate(as_completed(futures), 1):
+                filename = futures[fut]
                 try:
-                    results[filename] = _run_one(filename)
+                    results[filename] = fut.result()
                 except Exception:
                     results[filename] = {"Status": "FAILED", "Message": "update error"}
                 _tick(0.8 * done / len(jobs), "mgmt.prog.sources",
                       done=done, total=len(jobs), latest=_short(filename))
-        else:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {pool.submit(_run_one, f): f for f in jobs}
-                for done, fut in enumerate(as_completed(futures), 1):
-                    filename = futures[fut]
-                    try:
-                        results[filename] = fut.result()
-                    except Exception:
-                        results[filename] = {"Status": "FAILED", "Message": "update error"}
-                    _tick(0.8 * done / len(jobs), "mgmt.prog.sources",
-                          done=done, total=len(jobs), latest=_short(filename))
         # 按文件名排序输出,与并发完成顺序无关
         rows = [{"File": f, **results[f]} for f in sorted(results)]
 

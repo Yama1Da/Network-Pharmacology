@@ -8,14 +8,14 @@ import socket
 
 import pandas as pd
 
-from .caching import save_csv_cache, save_json_file
+from .caching import save_json_file
 
 # 缓存命名/命中判定/状态写入(enrichment_common)与 GSEA 排序富集(enrichment_gsea)已拆分,
 # 再导入以维持既有对外接口(api/cli/management/analysis/ppi 从本模块导入),也是保留段自身依赖。
 from .enrichment_common import (_clean_cache_dir_limited, _enrichment_cache_key,
                                 _hit_csv_cache, _set_status, enrichment_cache_filename,
                                 enrichment_filename_label, migrate_legacy_cache_names,
-                                parse_enrichment_filename)
+                                parse_enrichment_filename, save_enrichment_result)
 from .enrichment_gsea import (build_ranked_list, fetch_enrichment_gsea_prerank,
                               gsea_gene_sets, render_gsea_plot,
                               _gsea_cache_file, _normalize_enrichment_gsea)
@@ -369,15 +369,9 @@ def _fetch_enrichment_cached(
         _set_status(status, True, "no_significant")
         return pd.DataFrame()
     df = normalize(res)
-    if df.empty:
-        # 结果整理后为空时不写缓存，避免下次把异常空表当成有效结果
-        logging.warning("%s result normalized to empty — skip caching (%d genes)", source_name, len(genes))
-        _set_status(status, False, "normalize_empty")
-        return df
-    _set_status(status, True, "success")
-    save_csv_cache(df, cache_file, header_lines=[md5])
-    logging.info("%s enrichment for %d genes: %d terms cached", source_name, len(genes), len(df))
-    return df
+    return save_enrichment_result(df, cache_file, md5, status,
+                                  log_prefix=f"{source_name} enrichment",
+                                  n_genes=len(genes))
 
 
 def fetch_enrichment_gprofiler(

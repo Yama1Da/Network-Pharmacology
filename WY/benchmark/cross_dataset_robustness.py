@@ -34,7 +34,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 from core.geo import assign_groups, fetch_geo_dataset
 from core.expression import differential_expression, map_probe_to_symbol, preprocess
-from core.ml_screening import deg_prefilter
+from core.ml_screening import deg_prefilter, run_ml_screening
 
 
 def run_one_dataset(gse, case_pattern, control_pattern, top_genes, bootstrap, seed):
@@ -62,19 +62,13 @@ def run_one_dataset(gse, case_pattern, control_pattern, top_genes, bootstrap, se
     X = matrix[labeled].T[genes]
     print(f"  ML 输入: {len(labeled)} 样本 x {len(genes)} 基因")
 
-    res = ml_screening(X, labels.loc[X.index], bootstrap, seed)
+    res = run_ml_screening(X, labels.loc[X.index], bootstrap_rounds=bootstrap, seed=seed)
     m = res["meta"]
     print(f"  {m['cv_mode']} AUC={m['cv_auc']} | 耗时 {m['elapsed_s']}s")
     return res["consensus"], deg, {"gse": gse, "n_samples": m["n_samples"],
         "n_case": m["n_case"], "n_control": m["n_control"],
         "cv_mode": m["cv_mode"], "cv_auc": m["cv_auc"],
         "n_genes": m["n_genes"]}
-
-
-def ml_screening(X, y, bootstrap, seed):
-    """调用 core.ml_screening 并确保结果包含共识打分。"""
-    from core.ml_screening import run_ml_screening
-    return run_ml_screening(X, y, bootstrap_rounds=bootstrap, seed=seed)
 
 
 def main():
