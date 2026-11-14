@@ -25,7 +25,7 @@ from .docking_3d import (build_interactive_3d_html, cofactor_hetatm_pdb,
                          interactive_3d_html, pose_pdbqt_to_pdb,
                          save_interactive_3d_html)
 from .docking_interactions import (_pdb_coords, _run_obabel, _strip_receptor_pdb,
-                                   interactions_near_ligand, interactions_table,
+                                   interactions_near_ligand,
                                    parse_hetatm, residues_in_box, residues_near_ligand)
 
 

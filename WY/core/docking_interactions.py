@@ -8,10 +8,6 @@ obabel 格式转换封装,以及配体-受体相互作用(氢键/盐桥/疏水�
 import os
 from typing import Iterator, NamedTuple
 
-import pandas as pd
-
-from WY.i18n import t
-
 
 # PDB 结构中的水分子残基名,不参与结合位点定位与共晶配体识别
 _WATER_RESNAMES = ("HOH", "H2O", "WAT", "DOD")
@@ -253,21 +249,6 @@ def interactions_near_ligand(receptor_pdb: str, ligand_pdbqt: str) -> list[dict]
     out.sort(key=lambda it: (rank[it["kind"]], it["dist"], it["chain"],
                              _resi_num(it["resi"]), it["resi"]))
     return out
-
-
-def interactions_table(interactions: list[dict]) -> pd.DataFrame:
-    """把相互作用原子对列表转成展示表格(类型本地化,残基带链号),列顺序固定。"""
-    kind_label = {"hbond": t("dock.inter_hbond"), "salt": t("dock.inter_salt"),
-                  "hydro": t("dock.inter_hydro")}
-    rows = [{
-        t("dock.inter_col_kind"): kind_label.get(it["kind"], it["kind"]),
-        t("dock.inter_col_residue"): (it["chain"] + "/" if it["chain"] else "")
-                                     + f'{it["resn"]}{it["resi"]}',
-        t("dock.inter_col_res_atom"): it["res_atom"],
-        t("dock.inter_col_lig_atom"): it["lig_atom"],
-        t("dock.inter_col_dist"): it["dist"],
-    } for it in interactions]
-    return pd.DataFrame(rows)
 
 
 def cif_atom_site_to_pdb(cif_path: str, out_path: str) -> int:

@@ -16,26 +16,16 @@ import argparse
 import json
 import os
 import sys
-import time
 import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import numpy as np
-import pandas as pd
 import requests
-
-import config
-from i18n import t
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 _OT_URL = "https://api.platform.opentargets.org/api/v4/graphql"
 _HEADERS = {"User-Agent": "Mozilla/5.0"}
-
-
-def _config():
-    return config
 
 
 def _ot_drug_indications(chembl_id: str) -> dict:
@@ -85,26 +75,6 @@ def _ot_drug_indications(chembl_id: str) -> dict:
 
 def _ot_disease_targets(mondo_id: str, exclude_targets: list) -> list:
     """查 Open Targets 获取疾病的关联靶点,排除指定药物的直接靶点(防泄漏)。"""
-    import config
-    from core.http_client import request_with_retry
-
-    query = """
-    query($eid: String!, $index: Int!, $size: Int!) {
-      disease(ekgsId: $eid) {
-        id
-      }
-      associatedTargets(diseaseId: $eid, index: $index, size: $size) {
-        count
-        rows {
-          target {
-            approvedSymbol
-          }
-          score
-        }
-      }
-    }
-    """
-    # 使用 disease 查询
     query2 = """
     query($id: String!, $index: Int!, $size: Int!) {
       associatedTargets(diseaseId: $id, index: $index, size: $size) {
@@ -143,48 +113,11 @@ def _ot_disease_targets(mondo_id: str, exclude_targets: list) -> list:
     return all_rows
 
 
-def recovery_ranking(ranked_genes: list, known_drug_targets: list) -> dict:
-    """计算已知药物靶点在平台排名中的回收情况。"""
-    rank_map = {g: i + 1 for i, g in enumerate(ranked_genes)}
-    rankings = []
-    for t in known_drug_targets:
-        if t in rank_map:
-            rankings.append({"target": t, "rank": rank_map[t], "found": True})
-        else:
-            rankings.append({"target": t, "rank": None, "found": False})
-    found = [r for r in rankings if r["found"]]
-    if not found:
-        return {"found_count": 0, "top10": 0, "top20": 0, "top50": 0, "detail": rankings}
-    ranks = sorted(r["rank"] for r in found)
-    return {
-        "found_count": len(found),
-        "best_rank": ranks[0],
-        "median_rank": sorted(ranks)[len(ranks)//2] if ranks else None,
-        "top10": sum(1 for r in ranks if r <= 10),
-        "top20": sum(1 for r in ranks if r <= 20),
-        "top50": sum(1 for r in ranks if r <= 50),
-        "detail": rankings,
-    }
-
-
-def permutation_p_value(observed_best_rank: int, n_all: int, n_known: int,
-                        n_perm: int = 1000, seed: int = 0) -> float:
-    """经验 p 值:随机抽 n_known 个位置的排名,统计出现 ≤ observed_best_rank 的比例。"""
-    rng = np.random.default_rng(seed)
-    count = 0
-    for _ in range(n_perm):
-        sample = rng.choice(n_all, size=min(n_known, n_all), replace=False)
-        if min(sample) + 1 <= observed_best_rank:
-            count += 1
-    return (count + 1) / (n_perm + 1)  # +1 校正
-
-
 def main():
     ap = argparse.ArgumentParser(description="恢复型 benchmark:平台能否把已知药物重新排回来")
     ap.add_argument("--chembl", required=True, help="药物的 ChEMBL ID")
     ap.add_argument("--disease-mondo", required=True, help="疾病的 MONDO ID(如 MONDO_0005148)")
     ap.add_argument("--disease-name", required=True, help="疾病名称(用于展示)")
-    ap.add_argument("--n-perm", type=int, default=1000, help="置换次数(默认 1000)")
     ap.add_argument("--out", help="结果输出目录")
     args = ap.parse_args()
 
@@ -219,8 +152,6 @@ def main():
     # 从平台 CLI 调用(或直接导入)—— 此处用 open targets 数据集做 RWR 种子
     # 实际实现:用平台已有的 RWR 排名输出(results 下)或调用 core 的 RWR 函数
     # 简化:用疾病靶点做 RWR 种子,检查药物靶点在非种子基因中的排名
-    from core.targets import get_common_targets
-
     drug_target_set = set(known_targets)
     disease_genes = [r["gene"] for r in disease_targets]
     all_targets = list(drug_target_set) + disease_genes

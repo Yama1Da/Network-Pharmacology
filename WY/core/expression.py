@@ -534,21 +534,6 @@ def _deg_table_from_results(res: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("p").reset_index(drop=True)
 
 
-def differential_expression_counts(counts: pd.DataFrame,
-                                   labels: pd.Series) -> pd.DataFrame:
-    """raw counts 的差异表达(pyDESeq2 负二项 GLM + Wald 检验,二期 RNA-seq 路径)。
-
-    输入与 differential_expression 同构: counts 为 基因×样本 整数矩阵,
-    labels 样本→1(case)/0(control)。输出同构 DEG 表:
-    gene|log2FC|stat|p|FDR|direction —— stat 为 Wald 统计量;FDR 取
-    pyDESeq2 的 padj(BH + 独立过滤,优于朴素 BH)。全零/未通过检验的基因
-    (p 为 NaN)按现路径 valid 口径过滤。行标识可为 Ensembl ID,符号映射由
-    调用方决定(职责同 map_probe_to_symbol)。需要 pydeseq2(见 requirements)。
-    """
-    res, _ = _deseq2_run(counts, labels)
-    return _deg_table_from_results(res)
-
-
 def rnaseq_deg_and_matrix(counts: pd.DataFrame,
                           labels: pd.Series) -> tuple[pd.DataFrame, pd.DataFrame]:
     """DESeq2 一次拟合,同时产出 DEG 表与 ML 用表达矩阵。
