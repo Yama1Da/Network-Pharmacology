@@ -700,6 +700,7 @@ onBeforeUnmount(() => {
                   @click="uploadReceptor">
             {{ recJob.running.value ? t('web.docking.uploading') : t('web.docking.upload_btn') }}
           </button>
+          <p v-if="!gene" class="hint-line">{{ t('web.docking.upload_need_gene') }}</p>
         </template>
         <!-- 进度/错误/stale 为两条入路共用 -->
         <div v-if="recJob.running.value" class="progress">

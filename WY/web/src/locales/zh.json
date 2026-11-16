@@ -965,6 +965,7 @@
  "web.docking.upload_btn": "上传并准备受体",
  "web.docking.upload_fail": "上传受体失败",
  "web.docking.upload_hint": "支持 .pdb / .ent / .cif 结构文件(同源模建、MD 快照、突变体等自带结构);水、共晶配体与冗余构象会在制备时自动清除,建议使用只含目标蛋白的文件。",
+ "web.docking.upload_need_gene": "请先在上方下拉框选择靶点基因 —— 上传的受体将挂到该靶点的会话与归档命名。",
  "web.docking.upload_no_lig_note": "上传结构未检出共晶配体,盒子按全蛋白推断并已按上限收紧 —— 请按口袋位置手动微调。",
  "web.docking.upload_pick": "选择结构文件",
  "web.docking.upload_ready": "自定义受体已就绪",

@@ -952,6 +952,27 @@ def test_docking_box_upload_without_ligand_clamped(client, sid, monkeypatch):
     assert body["clamped"] is False, body
 
 
+def test_docking_candidates_gene_set_before_fetch(client, sid, monkeypatch):
+    """RCSB 检索失败也必须完成基因切换(切换先于检索落地):否则后续上传/准备
+    的 stale 守卫仍对着旧基因,报错会变成莫名其妙的「基因已切换为旧值」;
+    且换基因失效清单照常执行,旧基因受体不得残留。"""
+    import WY.api.docking as api_docking
+    from WY.core import docking_session
+
+    dock = _upload_session(client, sid)
+    dock["rec_pdbqt"] = "old_gene_receptor.pdbqt"  # 旧基因残留受体
+
+    def boom(gene, allow_af):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(api_docking, "_pdb_candidates_cached", boom)
+    r = client.post(f"/api/docking/{sid}/receptor/candidates", json={"gene": "EGFR"})
+    assert r.status_code == 200 and "RCSB 检索失败" in r.json()["error"]
+    d = docking_session.get(sid)
+    assert d["gene"] == "EGFR", "检索失败时基因也必须切过去"
+    assert "rec_pdbqt" not in d, "换基因必须失效旧受体"
+
+
 # ======== GEO 表达谱 + ML 筛选页 ========
 
 def test_ml_diseases_empty(client):

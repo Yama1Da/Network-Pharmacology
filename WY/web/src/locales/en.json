@@ -965,6 +965,7 @@
  "web.docking.upload_btn": "Upload & prepare receptor",
  "web.docking.upload_fail": "Receptor upload failed",
  "web.docking.upload_hint": "Accepts .pdb / .ent / .cif structure files (homology models, MD snapshots, mutants, etc.); waters, co-crystal ligands and alternate conformations are removed automatically — prefer a file containing only your target protein.",
+ "web.docking.upload_need_gene": "Pick a target gene in the dropdown above first — the uploaded receptor is attached to that gene's session and archive naming.",
  "web.docking.upload_no_lig_note": "No co-crystal ligand in the uploaded structure: the box was inferred from the whole protein and tightened to the size cap — adjust it manually to your pocket.",
  "web.docking.upload_pick": "Choose structure file",
  "web.docking.upload_ready": "Custom receptor ready",

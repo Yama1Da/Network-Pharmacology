@@ -370,19 +370,21 @@ def docking_receptor_candidates(sid: str, body: DockReceptorQueryBody) -> dict:
     dock = _session(sid)
     if body.gene not in (dock.get("genes") or []):
         raise HTTPException(status_code=400, detail=f"gene {body.gene} not in confirmed genes")
-    try:
-        cand = (dock.get("batch_results") or {}).get(body.gene)
-        if cand is None:
-            cand = _pdb_candidates_cached(body.gene, bool(body.allow_af and config.ALPHAFOLD_ENABLED))
-    except Exception as exc:
-        return {"error": f"RCSB 检索失败:{exc}", "rows": []}
-    # 换基因:失效下游(与原页面一致)
+    # 换基因:失效下游(与原页面一致)。必须在检索前落地——检索失败(断网/RCSB
+    # 抖动)时基因也要切过去,否则上传/准备的 stale 守卫仍对着旧基因,报错文案
+    # 会变成莫名其妙的「基因已切换为旧值」;前端下拉框展示与此处写值保持一致
     if dock.get("gene") != body.gene:
         dock["gene"] = body.gene
         for _k in ("rec_pdbqt", "pdb_path", "pdb_id", "box", "result", "result_dir",
                    "starred", "receptor_source", "pdb_sel", "pose_sel", "conclusion",
                    "upload_report", "upload_meta"):
             dock.pop(_k, None)
+    try:
+        cand = (dock.get("batch_results") or {}).get(body.gene)
+        if cand is None:
+            cand = _pdb_candidates_cached(body.gene, bool(body.allow_af and config.ALPHAFOLD_ENABLED))
+    except Exception as exc:
+        return {"error": f"RCSB 检索失败:{exc}", "rows": []}
     return {"rows": _candidate_rows(cand) if cand is not None else [],
             "af_enabled": bool(config.ALPHAFOLD_ENABLED)}
 
