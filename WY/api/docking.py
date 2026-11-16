@@ -3,8 +3,10 @@
 from fastapi import APIRouter
 import os
 import re
+import uuid
 from datetime import datetime
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from pydantic import BaseModel
 from WY import config
@@ -378,7 +380,8 @@ def docking_receptor_candidates(sid: str, body: DockReceptorQueryBody) -> dict:
     if dock.get("gene") != body.gene:
         dock["gene"] = body.gene
         for _k in ("rec_pdbqt", "pdb_path", "pdb_id", "box", "result", "result_dir",
-                   "starred", "receptor_source", "pdb_sel", "pose_sel", "conclusion"):
+                   "starred", "receptor_source", "pdb_sel", "pose_sel", "conclusion",
+                   "upload_report", "upload_meta"):
             dock.pop(_k, None)
     return {"rows": _candidate_rows(cand) if cand is not None else [],
             "af_enabled": bool(config.ALPHAFOLD_ENABLED)}
@@ -438,6 +441,93 @@ def docking_receptor_prepare(sid: str, body: DockReceptorPrepareBody) -> dict:
     return {"job_id": jobs.submit(task, f"docking receptor {body.gene}/{body.pdb_id}")}
 
 
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+@router.post("/api/docking/{sid}/receptor/upload")
+async def docking_receptor_upload(sid: str, request: Request,
+                                  gene: str = "", name: str = "") -> dict:
+    """Step 3 自带受体上传:原始请求体流式落盘(仿 transfer 惯例,不引 multipart)→
+    入舱体检(硬伤 400,隐患进 warnings 报告)→ job 里 obabel 转 pdbqt。
+    客户端文件名永不参与服务端路径:暂存名 upload_{uuid}{ext},展示名净化后
+    进 pdb_id 与归档 meta(原始文件名 + sha256,与证据链分层配套)。"""
+    dock = _session(sid)
+    from WY.core.docking_interactions import (UPLOAD_CIF_EXTS, UPLOAD_PDB_EXTS,
+                                              inspect_uploaded_pdb)
+
+    if gene not in (dock.get("genes") or []):
+        raise HTTPException(status_code=400,
+                            detail=f"gene {gene or '(空)'} not in confirmed genes")
+    ext = os.path.splitext(os.path.basename(name.strip()))[1].lower()
+    if ext not in UPLOAD_PDB_EXTS + UPLOAD_CIF_EXTS:
+        raise HTTPException(status_code=400,
+                            detail=f"仅支持 {' / '.join(UPLOAD_PDB_EXTS + UPLOAD_CIF_EXTS)}"
+                                   f" 结构文件,收到:{ext or '(无扩展名)'}")
+    # 展示名只取净化词干(扩展名点号不能进 safe_name,否则会被替换掉)
+    display_name = (safe_name(os.path.splitext(os.path.basename(name.strip()))[0])[:60]
+                    + ext)
+
+    os.makedirs(config.DOCKING_RAW_CACHE_DIR, exist_ok=True)
+    staged = os.path.join(config.DOCKING_RAW_CACHE_DIR, f"upload_{uuid.uuid4().hex[:12]}{ext}")
+    received = 0
+    try:
+        with open(staged, "wb") as f:
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > config.DOCKING_MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过上传上限({config.DOCKING_MAX_UPLOAD_BYTES // (1024 * 1024)} MiB)")
+                f.write(chunk)
+    except BaseException:
+        _remove_quietly(staged)
+        raise
+    if received == 0:
+        _remove_quietly(staged)
+        raise HTTPException(status_code=400, detail="空文件")
+
+    # 体检放线程池:64 MiB 级文本全量扫描,同步做会阻塞事件循环拖慢其他请求
+    try:
+        report = await run_in_threadpool(inspect_uploaded_pdb, staged, ext)
+    except RuntimeError as exc:
+        _remove_quietly(staged)
+        _remove_quietly(os.path.splitext(staged)[0] + "_conv.pdb")
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    pdb_path = report.pop("pdb_path")
+
+    def task(progress) -> dict:
+        from WY.core.docking import prepare_receptor_pdbqt
+
+        progress(fraction=0.3, text="受体转 pdbqt…")
+        # 会话兜底(P0-B):提交与写回之间基因被换(另一标签页/竞态)则放弃写入,
+        # 与 receptor/prepare 同款判据;转换是唯一长操作,前后各核一道
+        if dock.get("gene") != gene:
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+        rec_pdbqt = prepare_receptor_pdbqt(pdb_path)
+        if dock.get("gene") != gene:  # 转换期间被换基因:写前再核一道
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+        dock["pdb_id"] = f"upload:{display_name}"
+        dock["receptor_source"] = "upload"
+        dock["pdb_path"] = pdb_path
+        dock["rec_pdbqt"] = rec_pdbqt
+        dock["pdb_sel"] = dock["pdb_id"]
+        dock["upload_report"] = report
+        dock["upload_meta"] = {"original_name": display_name,
+                               "sha256": report["sha256"]}
+        dock.pop("result", None)
+        return {"pdb_id": dock["pdb_id"], "receptor_source": dock["receptor_source"],
+                "pdb_path": pdb_path, "report": report}
+
+    return {"job_id": jobs.submit(task, f"docking receptor upload {gene}/{display_name}")}
+
+
 class DockBoxBody(BaseModel):
     infer: bool = False
     center: list[float] | None = None
@@ -454,7 +544,11 @@ def docking_box(sid: str, body: DockBoxBody) -> dict:
     if body.infer:
         box = infer_box_from_cofactor(dock["pdb_path"])
         clamped = False
-        if (dock.get("receptor_source") == "alphafold"
+        # AlphaFold 模型与无共晶配体的上传结构都没有口袋参照,盒子会退化为整个
+        # 蛋白的外包围盒;任一边超限(埃)时自动向中心收拢,仅为可用起点,需人工微调
+        upload_no_lig = (dock.get("receptor_source") == "upload"
+                         and not parse_hetatm(dock["pdb_path"]))
+        if ((dock.get("receptor_source") == "alphafold" or upload_no_lig)
                 and max(box["size"]) > config.DOCKING_BOX_MAX_SIZE_AF):
             box = clamp_box(box, config.DOCKING_BOX_MAX_SIZE_AF)
             clamped = True
@@ -568,7 +662,8 @@ def docking_save(sid: str, body: DockSaveBody) -> dict:
         prefix, gene, dock.get("pdb_id", ""), dock.get("cid"), dock["box"],
         dock["result"]["out"], scores, body.conclusion,
         receptor_source=dock.get("receptor_source", "experiment"),
-        pose_mode=int(body.pose_mode))
+        pose_mode=int(body.pose_mode),
+        extra_meta=dock.get("upload_meta") if dock.get("receptor_source") == "upload" else None)
     dock["result_dir"] = result_dir
     dock["drug_name"], dock["disease_name"] = drug, disease
     dock.pop("starred", None)

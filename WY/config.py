@@ -349,6 +349,8 @@ GEO_RESULT_DIR = os.path.join(DOWNLOADS_DIR, "GEOresult")
 # ======== 分子对接数据源 ========
 # 受体蛋白 PDB 结构下载地址({pdb_id} 为 4 位 PDB 编号);配体 SDF 由 PubChem 获取。
 PDB_DOWNLOAD_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
+# 自带受体结构上传的单文件上限(PDB/mmCIF 均为纯文本,64 MiB 已远超常规受体)
+DOCKING_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 # ======== 分子对接:AlphaFold 预测结构兜底 ========
 # 总开关:还需在页面上另行开启(页面开关默认关闭)才使用 AlphaFold 兜底

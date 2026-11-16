@@ -58,8 +58,12 @@ async function setLevel(next: 'INFO' | 'DEBUG'): Promise<void> {
 }
 
 function refresh(): void {
+  // 内容缓存必须随刷新失效(2026-11 审计 M4):已展开的日志命中旧缓存会让
+  // "刷新"后看到的仍是几分钟前的内容,Debug 验证场景必然踩中。
+  contents.value = {}
   void loadFiles()
   void loadLevel()
+  if (expanded.value) void loadContent(expanded.value)
 }
 
 onMounted(() => {

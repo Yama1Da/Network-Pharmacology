@@ -173,3 +173,111 @@ def test_split_result_prefix_uses_name_map(tmp_path):
     assert drug == "Salicylic acid" and disease == "type 2 diabetes"
     drug2, disease2 = dock.split_result_prefix("aspirin_cancer")
     assert drug2 == "aspirin" and disease2 == "cancer"  # 无映射退回旧拆法
+
+
+# ---------- 自带受体上传:入舱体检 ----------
+
+
+def test_inspect_uploaded_pdb_counts(tmp_path):
+    """分类计数:蛋白/核酸/非标准残基/水/共晶配体各归其位;纯蛋白零警告,
+    sha256 与 size 对原始文件计算,pdb_path 原样返回。"""
+    from WY.core.docking_interactions import inspect_uploaded_pdb
+
+    pdb = _write_tmp(str(tmp_path / "s.pdb"), [
+        _atom_line("ATOM", 1, "CA", "ALA", "A", 1, 0.0, 0.0, 0.0),
+        _atom_line("ATOM", 2, "CA", "GLY", "A", 2, 1.0, 0.0, 0.0),
+        _atom_line("HETATM", 3, "O", "HOH", "A", 100, 9.0, 9.0, 9.0),
+        _atom_line("HETATM", 4, "FE", "HEM", "A", 200, 5.0, 5.0, 5.0),
+    ])
+    rep = inspect_uploaded_pdb(pdb, ".pdb")
+    assert rep["pdb_path"] == pdb
+    assert rep["n_protein"] == 2 and rep["n_nucleic"] == 0 and rep["n_other_atom"] == 0
+    assert rep["n_water"] == 1 and rep["n_lig_het"] == 1
+    assert rep["chains"] == ["A"] and rep["warnings"] == []
+    assert len(rep["sha256"]) == 64 and rep["size_bytes"] == os.path.getsize(pdb)
+
+
+def test_inspect_uploaded_pdb_warnings(tmp_path):
+    """隐患进 warnings:核酸组分、非标准残基、多链各出一条提示。"""
+    from WY.core.docking_interactions import inspect_uploaded_pdb
+
+    pdb = _write_tmp(str(tmp_path / "s.pdb"), [
+        _atom_line("ATOM", 1, "CA", "ALA", "A", 1, 0.0, 0.0, 0.0),
+        _atom_line("ATOM", 2, "P", "DA", "A", 101, 1.0, 0.0, 0.0),   # 核酸
+        _atom_line("ATOM", 3, "CA", "MSE", "B", 2, 2.0, 0.0, 0.0),   # 非标准残基
+    ])
+    rep = inspect_uploaded_pdb(pdb, ".pdb")
+    assert rep["n_nucleic"] == 1 and rep["n_other_atom"] == 1
+    joined = "\n".join(rep["warnings"])
+    assert "核酸组分" in joined and "非标准残基" in joined and "多条链" in joined
+
+
+def test_inspect_uploaded_pdb_hard_errors(tmp_path):
+    """硬伤三连必须拒绝入舱:无 ATOM(改名文件)、全非标准残基、纯核酸。"""
+    from WY.core.docking_interactions import inspect_uploaded_pdb
+
+    garbage = _write_tmp(str(tmp_path / "g.pdb"), ["this is not a pdb\n"])
+    with pytest.raises(RuntimeError, match="ATOM"):
+        inspect_uploaded_pdb(garbage, ".pdb")
+    nonstd = _write_tmp(str(tmp_path / "n.pdb"), [
+        _atom_line("ATOM", 1, "CA", "MSE", "A", 1, 0.0, 0.0, 0.0),
+    ])
+    with pytest.raises(RuntimeError, match="标准蛋白"):
+        inspect_uploaded_pdb(nonstd, ".pdb")
+    dna = _write_tmp(str(tmp_path / "d.pdb"), [
+        _atom_line("ATOM", 1, "P", "DA", "A", 1, 0.0, 0.0, 0.0),
+    ])
+    with pytest.raises(RuntimeError, match="纯核酸"):
+        inspect_uploaded_pdb(dna, ".pdb")
+
+
+def test_inspect_uploaded_pdb_cif_transcribed(tmp_path):
+    """mmCIF 上传:入舱前先转写为 *_conv.pdb,pdb_path 指向转写产物。"""
+    from WY.core.docking_interactions import inspect_uploaded_pdb
+
+    cif = _write_tmp(str(tmp_path / "s.cif"), [
+        "data_test\n",
+        "loop_\n",
+        "_atom_site.group_PDB\n",
+        "_atom_site.auth_atom_id\n",
+        "_atom_site.label_alt_id\n",
+        "_atom_site.auth_comp_id\n",
+        "_atom_site.auth_asym_id\n",
+        "_atom_site.auth_seq_id\n",
+        "_atom_site.pdbx_PDB_ins_code\n",
+        "_atom_site.Cartn_x\n",
+        "_atom_site.Cartn_y\n",
+        "_atom_site.Cartn_z\n",
+        "_atom_site.occupancy\n",
+        "_atom_site.B_iso_or_equiv\n",
+        "_atom_site.type_symbol\n",
+        "ATOM CA . ALA A 1 ? 1.0 1.0 1.0 1.00 0.00 C\n",
+        "ATOM N . ALA A 2 ? 2.0 2.0 2.0 1.00 0.00 N\n",
+    ])
+    rep = inspect_uploaded_pdb(cif, ".cif")
+    assert rep["pdb_path"] != cif and rep["pdb_path"].endswith("_conv.pdb")
+    assert os.path.exists(rep["pdb_path"])
+    assert rep["n_protein"] == 2 and rep["warnings"] == []
+
+
+def test_save_docking_result_extra_meta(tmp_path, monkeypatch):
+    """上传溯源入档:extra_meta 合并进 meta 文件,receptor_source=upload 一并记录。"""
+    import pandas as pd
+
+    monkeypatch.setattr(config, "MD_RESULT_DIR", str(tmp_path))
+    scores = pd.DataFrame([{"mode": 1, "affinity": -7.1}])
+    out = _write_tmp(str(tmp_path / "out.pdbqt"), [
+        "MODEL 1\n",
+        "REMARK VINA RESULT:    -7.100      0.000      0.000\n",
+        "ENDMDL\n",
+    ])
+    result_dir = dock.save_docking_result(
+        "aspirin_cancer_TP53", "TP53", "upload:m.pdb", None,
+        {"center": (0.0, 0.0, 0.0), "size": (10.0, 10.0, 10.0)},
+        out, scores, "", receptor_source="upload",
+        extra_meta={"structure_original_name": "m.pdb", "structure_sha256": "ab" * 32})
+    meta_name = next(f for f in os.listdir(result_dir) if f.startswith("meta_"))
+    text = open(os.path.join(result_dir, meta_name), encoding="utf-8").read()
+    assert "# receptor_source: upload" in text
+    assert f"# structure_sha256: {'ab' * 32}" in text
+    assert "# structure_original_name: m.pdb" in text

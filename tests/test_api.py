@@ -133,6 +133,40 @@ def test_interactome_build_job_flow(client, monkeypatch):
     assert job["status"] == "done" and job["result"]["nodes"] == 2
 
 
+def test_interactome_build_inflight_dedupe(client, monkeypatch):
+    """在途防重(2026-11 审计 M):构建进行中重复提交返回同一 job_id 且带
+    already_running 标记,不并发起第二个构建;结束后再次提交拿到新 job_id
+    (登记已按结束状态清掉,防重不粘连)。"""
+    import threading
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_build(progress_cb=None):
+        started.set()
+        release.wait(timeout=10)
+        return {"n_nodes": 2, "n_edges": 1}
+
+    monkeypatch.setattr("WY.api.interactome.build_interactome", slow_build)
+    monkeypatch.setattr("WY.api.interactome.clean_old_version_caches", lambda name: 0)
+
+    r1 = client.post("/api/interactome/build")
+    assert started.wait(timeout=5), "构建任务线程未按期启动"
+    jid1 = r1.json()["job_id"]
+
+    r2 = client.post("/api/interactome/build")
+    assert r2.status_code == 200
+    assert r2.json() == {"job_id": jid1, "already_running": True}
+
+    release.set()
+    job = _wait_job(client, jid1)
+    assert job["status"] == "done"
+
+    r3 = client.post("/api/interactome/build")
+    jid3 = r3.json()["job_id"]
+    assert jid3 != jid1 and "already_running" not in r3.json()
+    _wait_job(client, jid3)
+
+
 def test_jobs_unknown_id_404(client):
     assert client.get("/api/jobs/no-such-job").status_code == 404
 
@@ -746,6 +780,176 @@ def test_docking_downstream_guards_without_receptor(client, sid):
     assert client.post(f"/api/docking/{sid}/save3d",
                        json={"pose": 1}).status_code == 400
     assert client.get(f"/api/docking/{sid}/zip").status_code == 400
+
+
+# ======== 自带受体上传(receptor/upload)========
+
+
+def _protein_pdb_text() -> bytes:
+    """小蛋白 PDB 文本:三个标准残基原子,无水无配体(上传体检零警告路径)。"""
+    from conftest import _atom_line
+
+    return "".join([
+        _atom_line("ATOM", 1, "CA", "ALA", "A", 1, 0.0, 0.0, 0.0),
+        _atom_line("ATOM", 2, "CA", "GLY", "A", 2, 1.5, 0.0, 0.0),
+        _atom_line("ATOM", 3, "CA", "VAL", "A", 3, 3.0, 0.0, 0.0),
+    ]).encode("utf-8")
+
+
+def _upload_session(client, sid) -> dict:
+    """手动基因会话 + 预置 gene(与 receptor/prepare 系列测试的夹具同款)。"""
+    from WY.core import docking_session
+
+    client.post(f"/api/docking/{sid}/source",
+                json={"mode": "manual", "manual_genes": "TP53,EGFR"})
+    dock = docking_session.get(sid)
+    dock["gene"] = "TP53"
+    dock["genes"] = ["TP53", "EGFR"]
+    return dock
+
+
+def test_docking_receptor_upload_ok(client, sid, monkeypatch):
+    """上传→体检→转换全链路:会话键齐(receptor_source=upload、pdb_id 带 upload:
+    前缀、upload_meta 含 sha256),体检报告透传给 job 结果供前端展示。"""
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    _upload_session(client, sid)
+    monkeypatch.setattr(docking, "prepare_receptor_pdbqt", lambda p: "fake.pdbqt")
+
+    r = client.post(f"/api/docking/{sid}/receptor/upload",
+                    params={"gene": "TP53", "name": "my model.pdb"},
+                    content=_protein_pdb_text(),
+                    headers={"Content-Type": "application/octet-stream"})
+    assert r.status_code == 200, r.text
+    body = _wait_job(client, r.json()["job_id"])
+    assert body["status"] == "done", body
+    res = body["result"]
+    assert res["receptor_source"] == "upload"
+    assert res["pdb_id"].startswith("upload:") and "my_model" in res["pdb_id"]
+    assert res["report"]["n_protein"] == 3 and res["report"]["warnings"] == []
+
+    d = docking_session.get(sid)
+    assert d["receptor_source"] == "upload" and d["rec_pdbqt"] == "fake.pdbqt"
+    assert d["pdb_path"] == res["pdb_path"]
+    assert d["pdb_sel"] == d["pdb_id"]
+    assert len(d["upload_meta"]["sha256"]) == 64
+    assert d["upload_meta"]["original_name"].endswith(".pdb")
+    assert "result" not in d
+
+
+def test_docking_receptor_upload_guards(client, sid, monkeypatch):
+    """上传防呆:gene 不在会话/非法扩展名/无扩展名/空文件/无 ATOM 内容/纯核酸
+    一律 400 且 detail 可读;超限 413(上限 monkeypatch 缩小)。"""
+    from conftest import _atom_line
+
+    from WY import config as _config
+
+    _upload_session(client, sid)
+    url = f"/api/docking/{sid}/receptor/upload"
+
+    r = client.post(url, params={"gene": "MMGT1", "name": "a.pdb"}, content=b"ATOM")
+    assert r.status_code == 400 and "not in confirmed genes" in r.json()["detail"]
+
+    r = client.post(url, params={"gene": "TP53", "name": "a.zip"}, content=b"PK")
+    assert r.status_code == 400 and "仅支持" in r.json()["detail"]
+
+    r = client.post(url, params={"gene": "TP53", "name": "noext"}, content=b"x")
+    assert r.status_code == 400 and "仅支持" in r.json()["detail"]
+
+    r = client.post(url, params={"gene": "TP53", "name": "empty.pdb"}, content=b"")
+    assert r.status_code == 400
+
+    r = client.post(url, params={"gene": "TP53", "name": "garbage.pdb"},
+                    content=b"not a structure at all\n")
+    assert r.status_code == 400 and "ATOM" in r.json()["detail"]
+
+    dna = "".join([
+        _atom_line("ATOM", 1, "P", "DA", "A", 1, 0.0, 0.0, 0.0),
+        _atom_line("ATOM", 2, "O5'", "DT", "A", 2, 1.0, 0.0, 0.0),
+    ]).encode("utf-8")
+    r = client.post(url, params={"gene": "TP53", "name": "dna.pdb"}, content=dna)
+    assert r.status_code == 400 and "纯核酸" in r.json()["detail"]
+
+    monkeypatch.setattr(_config, "DOCKING_MAX_UPLOAD_BYTES", 8)
+    r = client.post(url, params={"gene": "TP53", "name": "big.pdb"},
+                    content=b"x" * 100)
+    assert r.status_code == 413
+
+
+def test_docking_receptor_upload_stale_discard(client, sid, monkeypatch):
+    """上传转换窗口内换基因:stale=True 且会话零写入(键集差分,与 prepare 系列同口径)。"""
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    dock = _upload_session(client, sid)
+
+    def slow_prepare(path):
+        time.sleep(2)
+        return "fake.pdbqt"
+
+    monkeypatch.setattr(docking, "prepare_receptor_pdbqt", slow_prepare)
+
+    before = set(docking_session.get(sid))
+    job = client.post(f"/api/docking/{sid}/receptor/upload",
+                      params={"gene": "TP53", "name": "m.pdb"},
+                      content=_protein_pdb_text()).json()["job_id"]
+    dock["gene"] = "EGFR"  # 提交后立刻换基因,必落在转换窗口内
+    body = _wait_job(client, job)
+    assert body["status"] == "done" and body["result"].get("stale") is True, body
+    leaked = set(docking_session.get(sid)) - before
+    assert not leaked, f"stale 上传任务不得向会话写入任何键,实际新增: {sorted(leaked)}"
+
+
+def test_docking_upload_state_cleared_on_gene_switch(client, sid, monkeypatch):
+    """换基因的失效清单必须覆盖上传态:upload_report/upload_meta 一并弹出。"""
+    import WY.api.docking as api_docking
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    _upload_session(client, sid)
+    monkeypatch.setattr(docking, "prepare_receptor_pdbqt", lambda p: "fake.pdbqt")
+    monkeypatch.setattr(api_docking, "_pdb_candidates_cached",
+                        lambda gene, allow_af: pd.DataFrame())
+
+    r = client.post(f"/api/docking/{sid}/receptor/upload",
+                    params={"gene": "TP53", "name": "m.pdb"},
+                    content=_protein_pdb_text())
+    assert _wait_job(client, r.json()["job_id"])["status"] == "done"
+    d = docking_session.get(sid)
+    assert "upload_report" in d and "upload_meta" in d
+
+    assert client.post(f"/api/docking/{sid}/receptor/candidates",
+                       json={"gene": "EGFR"}).status_code == 200
+    d = docking_session.get(sid)
+    assert d["gene"] == "EGFR"
+    assert "upload_report" not in d and "upload_meta" not in d
+
+
+def test_docking_box_upload_without_ligand_clamped(client, sid, monkeypatch):
+    """无共晶配体的上传结构:盒子退化为全蛋白范围,超限时按 AlphaFold 同款钳制;
+    同一结构标回 experiment 来源则不钳制(条件只对 upload 且无配体生效)。"""
+    from conftest import _atom_line
+
+    import WY.core.docking as docking
+    from WY.core import docking_session
+
+    _upload_session(client, sid)
+    monkeypatch.setattr(docking, "prepare_receptor_pdbqt", lambda p: "fake.pdbqt")
+    wide = "".join([
+        _atom_line("ATOM", 1, "CA", "ALA", "A", 1, 0.0, 0.0, 0.0),
+        _atom_line("ATOM", 2, "CA", "GLY", "A", 2, 60.0, 0.0, 0.0),
+    ]).encode("utf-8")
+    r = client.post(f"/api/docking/{sid}/receptor/upload",
+                    params={"gene": "TP53", "name": "wide.pdb"}, content=wide)
+    assert _wait_job(client, r.json()["job_id"])["status"] == "done"
+
+    body = client.post(f"/api/docking/{sid}/box", json={"infer": True}).json()
+    assert body["clamped"] is True, body
+
+    docking_session.get(sid)["receptor_source"] = "experiment"
+    body = client.post(f"/api/docking/{sid}/box", json={"infer": True}).json()
+    assert body["clamped"] is False, body
 
 
 # ======== GEO 表达谱 + ML 筛选页 ========

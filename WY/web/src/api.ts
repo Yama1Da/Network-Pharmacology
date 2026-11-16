@@ -400,13 +400,10 @@ export interface TransferDecisionBody {
   new_name?: string
 }
 
+/** 统一响应解包:失败时优先取 FastAPI 的 detail 文本(设置校验、来源校验等都
+ * 写成了人话,只在状态码上断掉会让用户看到裸 "HTTP 400"),取不到再退回状态码
+ * (2026-11 审计 M5:原 json() 丢弃 detail,全端点 4xx 只剩 "HTTP 400")。 */
 async function json<T>(r: Response): Promise<T> {
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
-  return (await r.json()) as T
-}
-
-/** 同 json(),但把后端 400/413 的 detail 文本带出来(导入包校验错误要给用户看)。 */
-async function jsonWithDetail<T>(r: Response): Promise<T> {
   if (!r.ok) {
     let detail = ''
     try {
@@ -418,6 +415,9 @@ async function jsonWithDetail<T>(r: Response): Promise<T> {
   }
   return (await r.json()) as T
 }
+
+/** 兼容别名:detail 提取已并入 json(),所有端点统一受益。 */
+const jsonWithDetail = json
 
 async function post<T>(url: string, body: unknown): Promise<T> {
   return fetch(url, {
@@ -617,6 +617,14 @@ export const api = {
     body: { gene: string; pdb_id: string }
   ): Promise<{ job_id: string }> =>
     post(`/api/docking/${sid}/receptor/prepare`, body),
+
+  // 自带受体上传:原始请求体直传(仿 transferImport,不引 multipart),后端
+  // detail(扩展名/大小/体检硬伤)经 jsonWithDetail 直达 UI
+  dockingReceptorUpload: (sid: string, gene: string, file: File): Promise<{ job_id: string }> =>
+    fetch(
+      `/api/docking/${sid}/receptor/upload?gene=${encodeURIComponent(gene)}&name=${encodeURIComponent(file.name)}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file }
+    ).then((r) => jsonWithDetail<{ job_id: string }>(r)),
 
   dockingBox: (
     sid: string,

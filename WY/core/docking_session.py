@@ -40,7 +40,8 @@ def reset_downstream(dock: dict) -> None:
               "pdb_path", "box", "result", "result_dir", "starred", "receptor_source",
               "gene_structures", "candidate_pre", "batch_results",
               "gene_sel", "pdb_sel", "pose_sel", "conclusion",
-              "drug_name", "disease_name", "lig_query"):
+              "drug_name", "disease_name", "lig_query",
+              "upload_report", "upload_meta"):
         dock.pop(k, None)
 
 
