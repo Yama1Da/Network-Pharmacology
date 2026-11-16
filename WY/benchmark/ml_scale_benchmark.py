@@ -21,14 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
-import psutil
 
-import config
 import core.ml_screening as ml
-
-
-def _config():
-    return config
 
 
 def make_synthetic(nc, na, ng, seed):
@@ -50,7 +44,6 @@ def run_levels(levels, seed, bootstrap):
     results = []
     for ns, ng in levels:
         X, y = make_synthetic(ns, ns, ng, seed)
-        mem_before = mem_mb()
         t0 = time.time()
         res = ml.run_ml_screening(X, y, bootstrap_rounds=bootstrap)
         elapsed = time.time() - t0

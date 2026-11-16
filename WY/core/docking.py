@@ -22,10 +22,9 @@ from WY.i18n import t
 # 结构解析/相互作用(docking_interactions)与 3D 视图导出(docking_3d)已拆分为子模块;
 # 此处再导入以维持 WY.core.docking 既有对外接口(api/cli/tests 均从本模块导入这些名字)。
 from .docking_3d import (build_interactive_3d_html, cofactor_hetatm_pdb,
-                         interactive_3d_html, pose_pdbqt_to_pdb,
-                         save_interactive_3d_html)
+                         pose_pdbqt_to_pdb, save_interactive_3d_html)
 from .docking_interactions import (_pdb_coords, _run_obabel, _strip_receptor_pdb,
-                                   interactions_near_ligand, interactions_table,
+                                   interactions_near_ligand,
                                    parse_hetatm, residues_in_box, residues_near_ligand)
 
 
@@ -820,9 +819,11 @@ def split_result_prefix(prefix: str) -> tuple[str, str]:
 def save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, box: dict,
                         out_pdbqt: str, scores: pd.DataFrame, conclusion: str,
                         receptor_source: str = "experiment",
-                        pose_mode: int | None = None) -> str:
+                        pose_mode: int | None = None,
+                        extra_meta: dict | None = None) -> str:
     """归档本次对接成果:打分表、所选构象和参数信息存入结果文件夹,并清理旧版本。
-    pose_mode 提供时归档用户选定的 pose,未提供(默认)归档打分最佳的构象。"""
+    pose_mode 提供时归档用户选定的 pose,未提供(默认)归档打分最佳的构象。
+    extra_meta 由调用方补充额外溯源字段(如自带上传结构的原始文件名与 sha256)。"""
     from WY import config
 
     gene = safe_name(gene)  # 清理基因名中的非法字符,再用于文件命名
@@ -846,7 +847,7 @@ def save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, bo
     extract_model(out_pdbqt, save_mode, best_path)
 
     # 参数信息(药物、靶点、对接盒、打分等),便于日后复查
-    write_docking_metadata(os.path.join(result_dir, f"meta_{ts}.txt"), {
+    meta = {
         "drug": prefix.split("_")[0] if "_" in prefix else prefix,
         "disease": prefix.split("_", 1)[1] if "_" in prefix else "",
         "gene": gene,
@@ -862,7 +863,10 @@ def save_docking_result(prefix: str, gene: str, pdb_id: str, cid: int | None, bo
         "best_affinity": float(
             summary.loc[summary["mode"] == save_mode, "affinity"].iloc[0]),
         "conclusion": conclusion,
-    })
+    }
+    if extra_meta:
+        meta.update(extra_meta)
+    write_docking_metadata(os.path.join(result_dir, f"meta_{ts}.txt"), meta)
 
     # 同名结果只保留最近几版,并清理过期中间文件
     prune_docking_results(result_dir)

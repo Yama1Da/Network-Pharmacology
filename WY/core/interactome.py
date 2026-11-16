@@ -91,21 +91,12 @@ _RANGED_MAX_ROUNDS = 3
 def _probe_range_support(url: str) -> int:
     """探测下载源是否支持 HTTP Range 分段:支持返回文件总字节数,否则返回 0。
     用 1 字节区间实测(部分服务器 HEAD 不回 Accept-Ranges,206 + Content-Range 才算数);
-    stream=True 下立即关闭,不会把 200 的完整响应体拉下来。"""
-    import requests
-
+    GET 实测统一在 http_client.probe_range_total,本模块只定超时与日志口径。"""
     from WY import config
 
-    try:
-        with requests.get(url, headers={"Range": "bytes=0-0"}, stream=True,
-                          timeout=config.API_TIMEOUT) as resp:
-            if resp.status_code != 206:
-                return 0
-            total = resp.headers.get("Content-Range", "").rsplit("/", 1)[-1]
-            return int(total) if total.isdigit() else 0
-    except Exception:
-        logging.exception("Range probe failed: %s", url)
-        return 0
+    from .http_client import probe_range_total
+
+    return probe_range_total(url, timeout=config.API_TIMEOUT, log_failures=True)
 
 
 def string_version_exists(version: str) -> bool:

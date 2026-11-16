@@ -8,10 +8,6 @@ obabel 格式转换封装,以及配体-受体相互作用(氢键/盐桥/疏水�
 import os
 from typing import Iterator, NamedTuple
 
-import pandas as pd
-
-from WY.i18n import t
-
 
 # PDB 结构中的水分子残基名,不参与结合位点定位与共晶配体识别
 _WATER_RESNAMES = ("HOH", "H2O", "WAT", "DOD")
@@ -39,6 +35,97 @@ def _strip_receptor_pdb(pdb_path: str, out_path: str) -> None:
         raise RuntimeError(f"no ATOM records in receptor PDB: {pdb_path}")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+
+# 自带受体上传接受的扩展名:.pdb/.ent 为 PDB 格式,.cif/.mmcif 为 mmCIF(入舱前转写)
+UPLOAD_PDB_EXTS = (".pdb", ".ent")
+UPLOAD_CIF_EXTS = (".cif", ".mmcif")
+
+# PDB 规范的核酸残基名(DNA 三字母 / RNA 单字母);纯核酸结构与 dna_only 候选同口径拦截
+_NUCLEIC_RESNAMES = frozenset({"DA", "DT", "DG", "DC", "DI", "T",
+                               "A", "U", "G", "C", "I"})
+# 标准氨基酸(PDB 三字母);ATOM 记录里其余残基名按"非标准残基"计数并提示
+_STANDARD_AA = frozenset({"ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY",
+                          "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER",
+                          "THR", "TRP", "TYR", "VAL"})
+# 超过该原子数的上传结构提示"偏大"(常规受体在 1 万原子量级)
+_UPLOAD_LARGE_ATOMS = 200_000
+
+
+def inspect_uploaded_pdb(path: str, ext: str) -> dict:
+    """自带受体上传的入舱体检:解析 ATOM/HETATM 组成,硬伤抛 RuntimeError(API 层转 400),
+    隐患写进 warnings 由前端展示。
+
+    返回 report dict:pdb_path(下游实际可用的 PDB 路径,mmCIF 已转写)、
+    n_atom/n_protein/n_nucleic/n_other_atom/n_lig_het/n_water 原子计数、
+    chains、sha256、size_bytes、warnings(中文,前端原样展示)。
+    mmCIF 先经 cif_atom_site_to_pdb 转写为同目录 *_conv.pdb;sha256 始终对原始上传文件计算。
+    """
+    import hashlib
+
+    def _die(msg: str) -> None:
+        raise RuntimeError(f"{msg}(上传的文件:{os.path.basename(path)})")
+
+    if ext.lower() in UPLOAD_CIF_EXTS:
+        conv_path = os.path.splitext(path)[0] + "_conv.pdb"
+        n = cif_atom_site_to_pdb(path, conv_path)
+        if n == 0:
+            _die("mmCIF 转写后没有原子记录:请确认是含 _atom_site 的结构文件")
+        src = conv_path
+    else:
+        src = path
+
+    n_protein = n_nucleic = n_other = n_lig_het = n_water = 0
+    chains: set[str] = set()
+    for r in _iter_atom_records(src):
+        if r.rec == "ATOM":
+            if r.resn in _STANDARD_AA:
+                n_protein += 1
+            elif r.resn in _NUCLEIC_RESNAMES:
+                n_nucleic += 1
+            else:
+                n_other += 1
+            chains.add(r.chain.strip())
+        elif r.resn in _WATER_RESNAMES:
+            n_water += 1
+        else:
+            n_lig_het += 1
+
+    n_atom = n_protein + n_nucleic + n_other
+    if n_atom == 0:
+        _die("文件中没有可解析的 ATOM 原子记录:请确认上传的是 PDB/mmCIF 结构本体,"
+             "而不是改名的其他文件")
+    if n_protein == 0 and n_nucleic == 0:
+        _die("ATOM 记录里没有标准蛋白/核酸残基(全是修饰残基或未知残基),"
+             "无法制备受体:请先整理结构再上传")
+    if n_protein == 0:
+        _die("纯核酸结构不含蛋白,不能作为对接受体 —— 请上传蛋白或蛋白-核酸复合物结构")
+
+    sha = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            sha.update(chunk)
+            size += len(chunk)
+
+    warnings = []
+    if n_nucleic:
+        warnings.append(f"含核酸组分({n_nucleic} 个原子),制备时将一并保留 —— "
+                        "若口袋在蛋白-核酸界面,结果解读需谨慎")
+    if n_other:
+        warnings.append(f"含 {n_other} 个非标准残基原子(修饰残基/UNK 等),"
+                        "格式转换时可能被丢弃,建议先整理结构")
+    if len(chains) > 1:
+        names = ", ".join(c if c else "(无链标识)" for c in sorted(chains))
+        warnings.append(f"含多条链({names}),受体按整个文件制备;"
+                        "若只需其中一条链,请先拆分再上传")
+    if n_atom > _UPLOAD_LARGE_ATOMS:
+        warnings.append(f"结构偏大({n_atom} 个原子),转换与对接都会明显变慢")
+
+    return {"pdb_path": src, "n_atom": n_atom, "n_protein": n_protein,
+            "n_nucleic": n_nucleic, "n_other_atom": n_other,
+            "n_lig_het": n_lig_het, "n_water": n_water, "chains": sorted(chains),
+            "sha256": sha.hexdigest(), "size_bytes": size, "warnings": warnings}
 
 
 class _AtomRecord(NamedTuple):
@@ -253,21 +340,6 @@ def interactions_near_ligand(receptor_pdb: str, ligand_pdbqt: str) -> list[dict]
     out.sort(key=lambda it: (rank[it["kind"]], it["dist"], it["chain"],
                              _resi_num(it["resi"]), it["resi"]))
     return out
-
-
-def interactions_table(interactions: list[dict]) -> pd.DataFrame:
-    """把相互作用原子对列表转成展示表格(类型本地化,残基带链号),列顺序固定。"""
-    kind_label = {"hbond": t("dock.inter_hbond"), "salt": t("dock.inter_salt"),
-                  "hydro": t("dock.inter_hydro")}
-    rows = [{
-        t("dock.inter_col_kind"): kind_label.get(it["kind"], it["kind"]),
-        t("dock.inter_col_residue"): (it["chain"] + "/" if it["chain"] else "")
-                                     + f'{it["resn"]}{it["resi"]}',
-        t("dock.inter_col_res_atom"): it["res_atom"],
-        t("dock.inter_col_lig_atom"): it["lig_atom"],
-        t("dock.inter_col_dist"): it["dist"],
-    } for it in interactions]
-    return pd.DataFrame(rows)
 
 
 def cif_atom_site_to_pdb(cif_path: str, out_path: str) -> int:

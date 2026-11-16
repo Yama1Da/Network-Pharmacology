@@ -11,9 +11,9 @@ import os
 
 import pandas as pd
 
-from .caching import save_csv_cache
 from .enrichment_common import (_clean_cache_dir_limited, _hit_csv_cache,
-                                _set_status, enrichment_cache_filename)
+                                _set_status, enrichment_cache_filename,
+                                save_enrichment_result)
 
 
 # ---------- 排序富集（GSEA prerank，仅智人） ----------
@@ -258,15 +258,8 @@ def fetch_enrichment_gsea_prerank(
 
     raw = pd.concat(frames, ignore_index=True)
     df = _normalize_enrichment_gsea(raw)
-    if df.empty:
-        # 结果整理后为空时不写缓存
-        logging.warning("GSEA result normalized to empty — skip caching (%d genes)", len(rnk))
-        _set_status(status, False, "normalize_empty")
-        return df
-    _set_status(status, True, "success")
-    save_csv_cache(df, cache_file, header_lines=[gsea_md5])
-    logging.info("GSEA prerank for %d genes: %d terms cached", len(rnk), len(df))
-    return df
+    return save_enrichment_result(df, cache_file, gsea_md5, status,
+                                  log_prefix="GSEA prerank", n_genes=len(rnk))
 
 
 def render_gsea_plot(df: pd.DataFrame) -> "matplotlib.figure.Figure | None":

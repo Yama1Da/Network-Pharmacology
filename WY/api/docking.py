@@ -3,18 +3,16 @@
 from fastapi import APIRouter
 import os
 import re
+import uuid
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import Response
 from pydantic import BaseModel
 from WY import config
-from WY.core import jobs, transfer
-from WY.core.enrichment import parse_enrichment_filename
-from WY.core.files import (list_cache_files, list_download_dirs, list_log_files,
-                           make_bytes_zip, make_dirs_zip, make_ppi_zip)
-from WY.core.management import (enrichment_display_name, save_api_env,
-                                save_ui_settings, update_all_cache_files)
+from WY.core import jobs
 from WY.core.text_utils import safe_name
+from .common import _rel_downloads, _resolve_under, _zip_response
 from functools import lru_cache
 from WY.core import docking_session
 
@@ -61,9 +59,7 @@ def _require_registered_name(name: str, base_dir: str) -> None:
     if not name or name != os.path.basename(name):
         raise HTTPException(status_code=400,
                             detail="name 必须为缓存目录下的纯文件名(不含路径分隔符)")
-    real_base = os.path.realpath(base_dir)
-    full = os.path.realpath(os.path.join(real_base, name))
-    if not full.startswith(real_base + os.sep):
+    if _resolve_under(base_dir, name) is None:
         raise HTTPException(status_code=400, detail="name 逃逸出缓存目录")
 
 
@@ -162,11 +158,9 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
 
     from WY.core.docking import split_result_prefix
     from WY.core.enrichment import enrichment_filename_label
-    from WY.core.files import list_cache_files
     from WY.core.ppi import read_ppi_dataset
     from WY.core.text_utils import genes_from_dataframe
 
-    hub_genes: list[str] = []
     if body.mode == "ppi":
         _require_registered_name(body.name, config.DOWNLOADS_DIR)
         dock["source_mode"] = body.mode
@@ -376,18 +370,21 @@ def docking_receptor_candidates(sid: str, body: DockReceptorQueryBody) -> dict:
     dock = _session(sid)
     if body.gene not in (dock.get("genes") or []):
         raise HTTPException(status_code=400, detail=f"gene {body.gene} not in confirmed genes")
+    # 换基因:失效下游(与原页面一致)。必须在检索前落地——检索失败(断网/RCSB
+    # 抖动)时基因也要切过去,否则上传/准备的 stale 守卫仍对着旧基因,报错文案
+    # 会变成莫名其妙的「基因已切换为旧值」;前端下拉框展示与此处写值保持一致
+    if dock.get("gene") != body.gene:
+        dock["gene"] = body.gene
+        for _k in ("rec_pdbqt", "pdb_path", "pdb_id", "box", "result", "result_dir",
+                   "starred", "receptor_source", "pdb_sel", "pose_sel", "conclusion",
+                   "upload_report", "upload_meta"):
+            dock.pop(_k, None)
     try:
         cand = (dock.get("batch_results") or {}).get(body.gene)
         if cand is None:
             cand = _pdb_candidates_cached(body.gene, bool(body.allow_af and config.ALPHAFOLD_ENABLED))
     except Exception as exc:
         return {"error": f"RCSB 检索失败:{exc}", "rows": []}
-    # 换基因:失效下游(与原页面一致)
-    if dock.get("gene") != body.gene:
-        dock["gene"] = body.gene
-        for _k in ("rec_pdbqt", "pdb_path", "pdb_id", "box", "result", "result_dir",
-                   "starred", "receptor_source", "pdb_sel", "pose_sel", "conclusion"):
-            dock.pop(_k, None)
     return {"rows": _candidate_rows(cand) if cand is not None else [],
             "af_enabled": bool(config.ALPHAFOLD_ENABLED)}
 
@@ -446,6 +443,93 @@ def docking_receptor_prepare(sid: str, body: DockReceptorPrepareBody) -> dict:
     return {"job_id": jobs.submit(task, f"docking receptor {body.gene}/{body.pdb_id}")}
 
 
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+@router.post("/api/docking/{sid}/receptor/upload")
+async def docking_receptor_upload(sid: str, request: Request,
+                                  gene: str = "", name: str = "") -> dict:
+    """Step 3 自带受体上传:原始请求体流式落盘(仿 transfer 惯例,不引 multipart)→
+    入舱体检(硬伤 400,隐患进 warnings 报告)→ job 里 obabel 转 pdbqt。
+    客户端文件名永不参与服务端路径:暂存名 upload_{uuid}{ext},展示名净化后
+    进 pdb_id 与归档 meta(原始文件名 + sha256,与证据链分层配套)。"""
+    dock = _session(sid)
+    from WY.core.docking_interactions import (UPLOAD_CIF_EXTS, UPLOAD_PDB_EXTS,
+                                              inspect_uploaded_pdb)
+
+    if gene not in (dock.get("genes") or []):
+        raise HTTPException(status_code=400,
+                            detail=f"gene {gene or '(空)'} not in confirmed genes")
+    ext = os.path.splitext(os.path.basename(name.strip()))[1].lower()
+    if ext not in UPLOAD_PDB_EXTS + UPLOAD_CIF_EXTS:
+        raise HTTPException(status_code=400,
+                            detail=f"仅支持 {' / '.join(UPLOAD_PDB_EXTS + UPLOAD_CIF_EXTS)}"
+                                   f" 结构文件,收到:{ext or '(无扩展名)'}")
+    # 展示名只取净化词干(扩展名点号不能进 safe_name,否则会被替换掉)
+    display_name = (safe_name(os.path.splitext(os.path.basename(name.strip()))[0])[:60]
+                    + ext)
+
+    os.makedirs(config.DOCKING_RAW_CACHE_DIR, exist_ok=True)
+    staged = os.path.join(config.DOCKING_RAW_CACHE_DIR, f"upload_{uuid.uuid4().hex[:12]}{ext}")
+    received = 0
+    try:
+        with open(staged, "wb") as f:
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > config.DOCKING_MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过上传上限({config.DOCKING_MAX_UPLOAD_BYTES // (1024 * 1024)} MiB)")
+                f.write(chunk)
+    except BaseException:
+        _remove_quietly(staged)
+        raise
+    if received == 0:
+        _remove_quietly(staged)
+        raise HTTPException(status_code=400, detail="空文件")
+
+    # 体检放线程池:64 MiB 级文本全量扫描,同步做会阻塞事件循环拖慢其他请求
+    try:
+        report = await run_in_threadpool(inspect_uploaded_pdb, staged, ext)
+    except RuntimeError as exc:
+        _remove_quietly(staged)
+        _remove_quietly(os.path.splitext(staged)[0] + "_conv.pdb")
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    pdb_path = report.pop("pdb_path")
+
+    def task(progress) -> dict:
+        from WY.core.docking import prepare_receptor_pdbqt
+
+        progress(fraction=0.3, text="受体转 pdbqt…")
+        # 会话兜底(P0-B):提交与写回之间基因被换(另一标签页/竞态)则放弃写入,
+        # 与 receptor/prepare 同款判据;转换是唯一长操作,前后各核一道
+        if dock.get("gene") != gene:
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+        rec_pdbqt = prepare_receptor_pdbqt(pdb_path)
+        if dock.get("gene") != gene:  # 转换期间被换基因:写前再核一道
+            return {"stale": True, "ok": False,
+                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+        dock["pdb_id"] = f"upload:{display_name}"
+        dock["receptor_source"] = "upload"
+        dock["pdb_path"] = pdb_path
+        dock["rec_pdbqt"] = rec_pdbqt
+        dock["pdb_sel"] = dock["pdb_id"]
+        dock["upload_report"] = report
+        dock["upload_meta"] = {"original_name": display_name,
+                               "sha256": report["sha256"]}
+        dock.pop("result", None)
+        return {"pdb_id": dock["pdb_id"], "receptor_source": dock["receptor_source"],
+                "pdb_path": pdb_path, "report": report}
+
+    return {"job_id": jobs.submit(task, f"docking receptor upload {gene}/{display_name}")}
+
+
 class DockBoxBody(BaseModel):
     infer: bool = False
     center: list[float] | None = None
@@ -462,7 +546,11 @@ def docking_box(sid: str, body: DockBoxBody) -> dict:
     if body.infer:
         box = infer_box_from_cofactor(dock["pdb_path"])
         clamped = False
-        if (dock.get("receptor_source") == "alphafold"
+        # AlphaFold 模型与无共晶配体的上传结构都没有口袋参照,盒子会退化为整个
+        # 蛋白的外包围盒;任一边超限(埃)时自动向中心收拢,仅为可用起点,需人工微调
+        upload_no_lig = (dock.get("receptor_source") == "upload"
+                         and not parse_hetatm(dock["pdb_path"]))
+        if ((dock.get("receptor_source") == "alphafold" or upload_no_lig)
                 and max(box["size"]) > config.DOCKING_BOX_MAX_SIZE_AF):
             box = clamp_box(box, config.DOCKING_BOX_MAX_SIZE_AF)
             clamped = True
@@ -576,7 +664,8 @@ def docking_save(sid: str, body: DockSaveBody) -> dict:
         prefix, gene, dock.get("pdb_id", ""), dock.get("cid"), dock["box"],
         dock["result"]["out"], scores, body.conclusion,
         receptor_source=dock.get("receptor_source", "experiment"),
-        pose_mode=int(body.pose_mode))
+        pose_mode=int(body.pose_mode),
+        extra_meta=dock.get("upload_meta") if dock.get("receptor_source") == "upload" else None)
     dock["result_dir"] = result_dir
     dock["drug_name"], dock["disease_name"] = drug, disease
     dock.pop("starred", None)
@@ -738,7 +827,7 @@ def docking_save3d(sid: str, body: DockSave3dBody) -> dict:
         dock["pdb_path"], pose_path,
         os.path.join(dock["result_dir"], file_name), body.caption,
         pocket=pocket, interactions=interactions)
-    rel = os.path.relpath(out_path, config.DOWNLOADS_DIR).replace(os.sep, "/")
+    rel = _rel_downloads(out_path)
     return {"path": out_path, "artifact_rel": rel, "offline_ok": offline_ok}
 
 
@@ -750,6 +839,4 @@ def docking_zip(sid: str) -> Response:
     if not dock.get("result_dir"):
         raise HTTPException(status_code=400, detail="save the result first")
     data = make_dir_zip(dock["result_dir"])
-    return Response(content=data, media_type="application/zip",
-                    headers={"Content-Disposition":
-                             f'attachment; filename="{os.path.basename(dock["result_dir"])}.zip"'})
+    return _zip_response(data, os.path.basename(dock["result_dir"]) + ".zip")

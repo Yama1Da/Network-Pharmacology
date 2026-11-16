@@ -114,6 +114,8 @@ function resetDownstream(): void {
   candError.value = ''
   pdbSel.value = ''
   gene.value = ''
+  pickedFile.value = null
+  uploadReport.value = null
   box.value = null
   boxMeta.value = null
   dockState.value = null
@@ -180,11 +182,59 @@ const candRows = ref<{ pdb_id: string; resolution: string; method: string; title
 const candError = ref('')
 const pdbSel = ref('')
 const receptor = ref<{ pdb_id: string; receptor_source: string } | null>(null)
+/** 受体来源:RCSB 检索 / 自带结构上传(两条入路,下游盒子-Vina-归档共用) */
+const recSource = ref<'rcsb' | 'upload'>('rcsb')
+const pickedFile = ref<File | null>(null)
+const uploadReport = ref<{ n_atom: number; n_protein: number; n_nucleic: number;
+                           n_other_atom: number; n_lig_het: number; n_water: number;
+                           chains: string[]; sha256: string; size_bytes: number;
+                           warnings: string[] } | null>(null)
+
 const recJob = useJob((result) => {
-  receptor.value = result as unknown as { pdb_id: string; receptor_source: string }
+  const r = result as unknown as { pdb_id: string; receptor_source: string;
+                                   report?: typeof uploadReport.value }
+  receptor.value = r
+  uploadReport.value = r.report ?? null
   resetSteps4to6()
-  flash(t('web.docking.receptor_ready'))
+  flash(t(r.report ? 'web.docking.upload_ready' : 'web.docking.receptor_ready'))
 })
+
+const recFailLabel = computed(() =>
+  recSource.value === 'upload' ? t('web.docking.upload_fail') : t('web.docking.prep_fail'))
+
+/** 切换受体来源:清 receptor 与下游(两条入路的结果互斥),候选表保留便于切回 */
+function setRecSource(mode: 'rcsb' | 'upload'): void {
+  if (recSource.value === mode || recJob.running.value) return
+  recSource.value = mode
+  receptor.value = null
+  pdbSel.value = ''
+  pickedFile.value = null
+  uploadReport.value = null
+  resetSteps4to6()
+}
+
+function onFilePicked(e: Event): void {
+  const input = e.target as HTMLInputElement
+  const f = input.files?.[0] ?? null
+  input.value = '' // 允许重复选择同一个文件重新上传
+  if (!f) return
+  pickedFile.value = f
+  uploadReport.value = null
+  if (receptor.value) {  // 换文件即换结构:旧受体作废
+    receptor.value = null
+    resetSteps4to6()
+  }
+}
+
+async function uploadReceptor(): Promise<void> {
+  if (!gene.value || !pickedFile.value) return
+  sid.value = await ensureSession()
+  // 代际守卫(P0-B):基因切换或切回 RCSB 分支都视为上下文失效
+  const g0 = gene.value
+  await recJob.run(api.dockingReceptorUpload(sid.value, gene.value, pickedFile.value),
+    { doneText: t('web.docking.upload_ready'),
+      stale: () => gene.value !== g0 || recSource.value !== 'upload' })
+}
 
 /** 换基因 / 换受体后清空 Step 4-6 的旧结果:盒子、对接得分、归档、3D 视图
  * 都绑定在具体受体上,留着上一受体的缓存展示会误导。 */
@@ -274,15 +324,25 @@ async function applyManualBox(): Promise<void> {
   }
 }
 
+/** 盒坐标输入解析(2026-11 审计 M2):空串 Number('')===0 会把坐标静默清零,
+ * '-'/'.' 等逐字符中间态是 NaN 会被后端 422 拒掉——两类都直接放弃本次编辑,
+ * 保留旧值,等用户输完整数字再落。 */
+function parseBoxInput(e: Event): number | null {
+  const raw = (e.target as HTMLInputElement).value
+  if (raw.trim() === '') return null
+  const v = Number(raw)
+  return Number.isFinite(v) ? v : null
+}
+
 function editCenter(i: number, e: Event): void {
-  const v = Number((e.target as HTMLInputElement).value)
-  if (!box.value) return
+  const v = parseBoxInput(e)
+  if (v === null || !box.value) return
   box.value = { center: box.value.center.map((c, j) => (j === i ? v : c)),
                 size: box.value.size }
 }
 function editSize(i: number, e: Event): void {
-  const v = Number((e.target as HTMLInputElement).value)
-  if (!box.value) return
+  const v = parseBoxInput(e)
+  if (v === null || !box.value) return
   box.value = { center: box.value.center,
                 size: box.value.size.map((s, j) => (j === i ? v : s)) }
 }
@@ -593,40 +653,74 @@ onBeforeUnmount(() => {
           <option value="" disabled>{{ t('web.docking.sel_gene_ph') }}</option>
           <option v-for="g in genes" :key="g" :value="g">{{ g }}</option>
         </select>
-        <p v-if="candError" class="stale">{{ candError }}</p>
-        <template v-if="candRows.length">
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <thead><tr><th>PDB</th><th>{{ t('web.docking.th_res') }}</th><th>{{ t('web.docking.th_method') }}</th><th>{{ t('web.docking.th_title') }}</th><th>{{ t('web.docking.th_note') }}</th></tr></thead>
-              <tbody>
-                <tr v-for="r in candRows" :key="r.pdb_id" :class="{ selrow: pdbSel === r.pdb_id }"
-                    @click="!flagBlocked(r.flag) && (pdbSel = r.pdb_id)">
-                  <td>{{ r.pdb_id }}</td><td>{{ r.resolution }}</td><td>{{ r.method }}</td>
-                  <td class="ttl">{{ r.title }}</td>
-                  <td :class="{ warn: !!r.note }">{{ r.note }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <p v-if="selFlag === 'dna_only'" class="stale">{{ t('web.docking.dna_only') }}</p>
-          <button class="bar-btn" :disabled="!pdbSel || flagBlocked(selFlag) || recJob.running.value"
-                  @click="prepareReceptor">
-            {{ recJob.running.value ? t('web.docking.prepping') : t('web.docking.prep_btn') }}
-          </button>
-          <div v-if="recJob.running.value" class="progress">
-            <div class="progress-track">
-              <div class="progress-fill" :style="{ width: `${((recJob.fraction.value ?? 0) * 100).toFixed(0)}%` }"></div>
+        <!-- 受体来源:RCSB 检索 / 自带结构上传(同源模建、MD 快照、突变体等) -->
+        <div class="lv-group">
+          <button class="lv" :class="{ on: recSource === 'rcsb' }" :disabled="recJob.running.value"
+                  @click="setRecSource('rcsb')">{{ t('web.docking.rec_src_rcsb') }}</button>
+          <i class="lv-sep">/</i>
+          <button class="lv" :class="{ on: recSource === 'upload' }" :disabled="recJob.running.value"
+                  @click="setRecSource('upload')">{{ t('web.docking.rec_src_upload') }}</button>
+        </div>
+        <template v-if="recSource === 'rcsb'">
+          <p v-if="candError" class="stale">{{ candError }}</p>
+          <template v-if="candRows.length">
+            <div class="tbl-wrap">
+              <table class="tbl">
+                <thead><tr><th>PDB</th><th>{{ t('web.docking.th_res') }}</th><th>{{ t('web.docking.th_method') }}</th><th>{{ t('web.docking.th_title') }}</th><th>{{ t('web.docking.th_note') }}</th></tr></thead>
+                <tbody>
+                  <tr v-for="r in candRows" :key="r.pdb_id" :class="{ selrow: pdbSel === r.pdb_id }"
+                      @click="!flagBlocked(r.flag) && (pdbSel = r.pdb_id)">
+                    <td>{{ r.pdb_id }}</td><td>{{ r.resolution }}</td><td>{{ r.method }}</td>
+                    <td class="ttl">{{ r.title }}</td>
+                    <td :class="{ warn: !!r.note }">{{ r.note }}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
-            <p class="progress-text">{{ recJob.text.value }}</p>
-          </div>
-          <p v-if="recJob.error.value" class="notice err">{{ t('web.docking.prep_fail') }}:{{ recJob.error.value }}</p>
-          <p v-if="recJob.stale.value" class="stale">{{ t('web.job.stale') }}</p>
-          <p v-if="receptor?.receptor_source === 'alphafold'" class="stale">
-            {{ t('web.docking.af_warn', { pdb: receptor.pdb_id.split(':')[1] }) }}
+            <p v-if="selFlag === 'dna_only'" class="stale">{{ t('web.docking.dna_only') }}</p>
+            <button class="bar-btn" :disabled="!pdbSel || flagBlocked(selFlag) || recJob.running.value"
+                    @click="prepareReceptor">
+              {{ recJob.running.value ? t('web.docking.prepping') : t('web.docking.prep_btn') }}
+            </button>
+          </template>
+          <p v-else-if="gene && !candError && !recJob.running.value" class="hint-line">
+            {{ t('web.docking.rcsb_empty') }}
           </p>
         </template>
-        <p v-else-if="gene && !candError && !recJob.running.value" class="hint-line">
-          {{ t('web.docking.rcsb_empty') }}
+        <template v-else>
+          <p class="hint-line">{{ t('web.docking.upload_hint') }}</p>
+          <div class="upload-row">
+            <label class="bar-btn upload-btn">
+              <input type="file" accept=".pdb,.ent,.cif,.mmcif" @change="onFilePicked" />
+              {{ t('web.docking.upload_pick') }}
+            </label>
+            <span v-if="pickedFile" class="hint-line">{{ pickedFile.name }}</span>
+          </div>
+          <button class="bar-btn" :disabled="!gene || !pickedFile || recJob.running.value"
+                  @click="uploadReceptor">
+            {{ recJob.running.value ? t('web.docking.uploading') : t('web.docking.upload_btn') }}
+          </button>
+          <p v-if="!gene" class="hint-line">{{ t('web.docking.upload_need_gene') }}</p>
+        </template>
+        <!-- 进度/错误/stale 为两条入路共用 -->
+        <div v-if="recJob.running.value" class="progress">
+          <div class="progress-track">
+            <div class="progress-fill" :style="{ width: `${((recJob.fraction.value ?? 0) * 100).toFixed(0)}%` }"></div>
+          </div>
+          <p class="progress-text">{{ recJob.text.value }}</p>
+        </div>
+        <p v-if="recJob.error.value" class="notice err">{{ recFailLabel }}:{{ recJob.error.value }}</p>
+        <p v-if="recJob.stale.value" class="stale">{{ t('web.job.stale') }}</p>
+        <!-- 上传体检报告:自动清洗说明 + 逐条隐患提示(后端中文文案原样展示) -->
+        <template v-if="uploadReport">
+          <p class="hint-line">
+            {{ t('web.docking.upload_report', { n: uploadReport.n_protein + uploadReport.n_nucleic + uploadReport.n_other_atom,
+                                                lig: uploadReport.n_lig_het, water: uploadReport.n_water }) }}
+          </p>
+          <p v-for="(w, i) in uploadReport.warnings" :key="i" class="stale">{{ w }}</p>
+        </template>
+        <p v-if="receptor?.receptor_source === 'alphafold'" class="stale">
+          {{ t('web.docking.af_warn', { pdb: receptor.pdb_id.split(':')[1] }) }}
         </p>
       </template>
       <p v-else class="hint-line">{{ t('web.docking.need_s1') }}</p>
@@ -638,7 +732,10 @@ onBeforeUnmount(() => {
       <button class="bar-btn" :disabled="!receptor || boxBusy" @click="inferBox">
         {{ boxBusy ? t('web.docking.inferring') : t('web.docking.infer_box') }}
       </button>
-      <p v-if="boxMeta?.clamped" class="stale">{{ t('web.docking.clamped_note') }}</p>
+      <p v-if="boxMeta?.clamped && receptor?.receptor_source === 'upload'" class="stale">
+        {{ t('web.docking.upload_no_lig_note') }}
+      </p>
+      <p v-else-if="boxMeta?.clamped" class="stale">{{ t('web.docking.clamped_note') }}</p>
       <p v-else-if="boxMeta?.inferred_ligands?.length" class="hint-line">
         {{ t('web.docking.ref_ligands', { names: boxMeta.inferred_ligands.join(', ') }) }}
       </p>
@@ -773,4 +870,17 @@ onBeforeUnmount(() => {
     </section>
   </div>
 </template>
+
+<style scoped>
+/* 自带受体上传:隐藏原生 file input(原生控件不入整体风格),整行 label 可点击 */
+.upload-btn input[type="file"] {
+  display: none;
+}
+.upload-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+</style>
 

@@ -23,6 +23,7 @@ const props = defineProps<{
 const items = ref<CollectionItem[]>([])
 const mode = ref<'files' | 'dirs'>('files')
 const loaded = ref(false)
+const loadFail = ref(false)
 const { notice, flash } = useNotice(2600)
 
 /* ---------------- 搜索 / 筛选 / 选择 / 分页(客户端) ---------------- */
@@ -65,20 +66,23 @@ const { selected, toggle: toggleSel, allSelected, toggleAll, retain } = useSelec
 const { armed: confirmArm, tap: confirmTap } = useConfirmArm()
 
 async function load(): Promise<void> {
-  const listing = await api.collection(props.kind)
-  items.value = listing.items
-  mode.value = listing.mode
-  loaded.value = true
-  retain(listing.items.map((it) => it.name))
+  // 失败在内部吸收并置 loadFail(2026-11 审计 M8):首载/15s 定时刷新都是裸
+  // void load(),异常无人接;首载失败时 loaded 停 false,页面停在无提示的空白。
+  try {
+    const listing = await api.collection(props.kind)
+    items.value = listing.items
+    mode.value = listing.mode
+    loaded.value = true
+    loadFail.value = false
+    retain(listing.items.map((it) => it.name))
+  } catch {
+    loadFail.value = true
+  }
 }
 
 async function refresh(): Promise<void> {
-  try {
-    await load()
-    flash(t('web.common.refreshed'))
-  } catch {
-    flash(t('web.common.list_fail'))
-  }
+  await load()
+  flash(loadFail.value ? t('web.common.list_fail') : t('web.common.refreshed'))
 }
 
 async function download(names: string[], single?: string): Promise<void> {
@@ -180,6 +184,10 @@ onBeforeUnmount(() => {
     </div>
 
     <ul class="files">
+      <li v-if="loadFail && !loaded" class="empty">
+        {{ t('web.common.list_fail') }}
+        <button class="bar-btn" @click="load">{{ t('web.common.retry') }}</button>
+      </li>
       <li v-if="loaded && !filtered.length" class="empty">
         {{ query ? t('web.common.no_match') : t('web.common.empty_dir') }}
       </li>

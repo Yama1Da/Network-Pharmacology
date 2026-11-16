@@ -3,13 +3,13 @@
 from fastapi import APIRouter
 import os
 import uuid
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from WY import config
 from WY.core import jobs, transfer
-from .common import (_settings_snapshot)
+from .common import (_attachment, _settings_snapshot)
 
 
 router = APIRouter()
@@ -56,7 +56,7 @@ def transfer_export_download(filename: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="export bundle not found (expired?)")
     return FileResponse(
         path, media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        headers={"Content-Disposition": _attachment(filename)})
 
 
 @router.post("/api/transfer/import")

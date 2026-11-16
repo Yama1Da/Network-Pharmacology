@@ -32,7 +32,7 @@ import pandas as pd
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
-from core.geo import assign_groups, fetch_geo_dataset, group_fields_overview
+from core.geo import assign_groups, fetch_geo_dataset
 from core.expression import differential_expression, map_probe_to_symbol, preprocess
 from core.ml_screening import deg_prefilter, run_ml_screening
 
@@ -62,19 +62,13 @@ def run_one_dataset(gse, case_pattern, control_pattern, top_genes, bootstrap, se
     X = matrix[labeled].T[genes]
     print(f"  ML 输入: {len(labeled)} 样本 x {len(genes)} 基因")
 
-    res = ml_screening(X, labels.loc[X.index], bootstrap, seed)
+    res = run_ml_screening(X, labels.loc[X.index], bootstrap_rounds=bootstrap, seed=seed)
     m = res["meta"]
     print(f"  {m['cv_mode']} AUC={m['cv_auc']} | 耗时 {m['elapsed_s']}s")
     return res["consensus"], deg, {"gse": gse, "n_samples": m["n_samples"],
         "n_case": m["n_case"], "n_control": m["n_control"],
         "cv_mode": m["cv_mode"], "cv_auc": m["cv_auc"],
         "n_genes": m["n_genes"]}
-
-
-def ml_screening(X, y, bootstrap, seed):
-    """调用 core.ml_screening 并确保结果包含共识打分。"""
-    from core.ml_screening import run_ml_screening
-    return run_ml_screening(X, y, bootstrap_rounds=bootstrap, seed=seed)
 
 
 def main():
@@ -91,8 +85,6 @@ def main():
     ap.add_argument("--seed", type=int, default=0, help="随机种子(默认 0)")
     ap.add_argument("--out", help="结果输出目录")
     args = ap.parse_args()
-
-    from core.ml_screening import deg_prefilter
 
     out_dir = args.out or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -112,7 +104,7 @@ def main():
     jaccard = len(overlap) / len(top_a | top_b) if (top_a | top_b) else 0.0
 
     print(f"\n{'='*60}")
-    print(f"跨数据集稳健性结果")
+    print("跨数据集稳健性结果")
     print(f"  {args.gse_a} 共识 top-{args.top_k}: {len(top_a)} 个")
     print(f"  {args.gse_b} 共识 top-{args.top_k}: {len(top_b)} 个")
     print(f"  交集: {len(overlap)} 个")

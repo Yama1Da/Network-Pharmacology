@@ -4,16 +4,14 @@ from fastapi import APIRouter
 import logging
 import os
 import time
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from WY import config
-from WY.core import jobs, transfer
+from WY.core import jobs
 from WY.core.ml_pipeline import STAGES, run_screen_chain
-from WY.core.ppi import (base_disease_of, list_analyzed_diseases,
-                        list_analyzed_drugs,
-                        list_ranked_csv_candidates)
-from .common import (_df_rows)
+from WY.core.ppi import list_ranked_csv_candidates
+from .common import (_df_rows, _rel_downloads, _zip_response)
 
 
 router = APIRouter()
@@ -202,8 +200,6 @@ class MlOverviewBody(BaseModel):
 def ml_overview(body: MlOverviewBody) -> dict:
     """分组总览(经 job:可能触发数据集下载,数秒到数分钟):
     分组字段分布 + counts 列清单(空矩阵类)+ 可用性权威判定。"""
-    import pandas as pd
-
     from WY.core.expression import (assess_expression_dataset, counts_picker_fields,
                                     group_picker_fields)
     from WY.core.geo import fetch_gse_count_matrix, fetch_geo_dataset, group_fields_overview
@@ -302,17 +298,6 @@ class MlRunBody(BaseModel):
     cv_repeats: int | None = None  # 分层 CV 重复次数(None → config.ML_CV_REPEATS)
 
 
-def _rel_downloads(path: str) -> str | None:
-    try:
-        real = os.path.realpath(path)
-        base = os.path.realpath(config.DOWNLOADS_DIR)
-        if real.startswith(base + os.sep):
-            return os.path.relpath(real, base).replace(os.sep, "/")
-    except OSError:
-        pass
-    return None
-
-
 @router.post("/api/ml/run")
 def ml_run(body: MlRunBody) -> dict:
     """ML 筛选全链(经 job:DEG + ML 共识,本机实测数分钟)。"""
@@ -403,8 +388,6 @@ def _ml_run_rows() -> list[dict]:
 
     rows = []
     for r in list_ml_runs():
-        s = r["summary"] or {}
-        m = s.get("ml_meta", {})
         rows.append({"name": r["name"], "path": r["path"],
                      "dir_rel": _rel_downloads(r["path"]),
                      "size_bytes": r["size_bytes"], "mtime": r["mtime"],
@@ -445,8 +428,7 @@ def ml_runs_zip(body: MlRunsBody) -> Response:
         # 登记根外/非 run 目录一律视为请求错误,400 带被拒路径明细(P1-B;
         # 与 delete 的"跳过+warning"语义不同:zip 的调用方是前端勾选列表)
         raise HTTPException(status_code=400, detail=str(exc))
-    return Response(content=data, media_type="application/zip",
-                    headers={"Content-Disposition": "attachment; filename=\"ML_runs.zip\""})
+    return _zip_response(data, "ML_runs.zip")
 
 
 class MlCleanupBody(BaseModel):

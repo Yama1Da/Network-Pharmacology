@@ -3,18 +3,17 @@
 from fastapi import APIRouter
 import os
 import shutil
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from WY import config
 from WY.core.enrichment import parse_enrichment_filename
-from WY.core.files import (list_cache_files, list_download_dirs, list_log_files,
-                           make_bytes_zip, make_dirs_zip, make_ppi_zip)
-from WY.core.management import (enrichment_display_name, save_api_env,
-                                save_ui_settings, update_all_cache_files)
+from WY.core.files import (list_cache_files, list_download_dirs,
+                           make_dirs_zip, make_ppi_zip)
+from WY.core.management import enrichment_display_name
 from WY.core.sources import disease_spec, drug_spec
 from WY.core.sources import file_path as spec_file_path
-from .common import (_ZIP_NAMES)
+from .common import (_ZIP_NAMES, _zip_response)
 
 
 router = APIRouter()
@@ -137,10 +136,7 @@ def collection_zip(kind: str, body: NamesBody) -> Response:
         data = make_ppi_zip({n: p for n, p in pairs})
     else:
         data = make_dirs_zip({n: p for n, p in pairs})
-    return Response(
-        content=data,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{_ZIP_NAMES[kind]}"'})
+    return _zip_response(data, _ZIP_NAMES[kind])
 
 
 @router.post("/api/collections/{kind}/delete")

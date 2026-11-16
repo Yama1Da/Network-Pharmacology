@@ -32,6 +32,7 @@ const head = computed(() => HEAD.value[props.kind])
 
 const items = ref<CollectionItem[]>([])
 const loaded = ref(false)
+const loadFail = ref(false)
 const { notice, flash } = useNotice(3200)
 const query = ref('')
 const { page, paged, nPages, goto } = usePager<CollectionItem>(() => filtered.value)
@@ -128,13 +129,20 @@ function deleteSelected(): void {
 /* ---------------- 生命周期 ---------------- */
 
 async function load(): Promise<void> {
-  const listing = await api.collection(collectionKind.value)
-  items.value = listing.items
-  loaded.value = true
-  retain(listing.items.map((it) => it.name))
-  // 来源筛选项按实际清单初始化(默认全开)
-  for (const s of sourceNames.value) {
-    if (!(s in srcOn.value)) srcOn.value[s] = true
+  // 失败在内部吸收并置 loadFail(2026-11 审计 M8):首载/15s 定时刷新都是裸
+  // void load(),异常无人接;首载失败时页面停在无提示的空白。
+  try {
+    const listing = await api.collection(collectionKind.value)
+    items.value = listing.items
+    loaded.value = true
+    loadFail.value = false
+    retain(listing.items.map((it) => it.name))
+    // 来源筛选项按实际清单初始化(默认全开)
+    for (const s of sourceNames.value) {
+      if (!(s in srcOn.value)) srcOn.value[s] = true
+    }
+  } catch {
+    loadFail.value = true
   }
 }
 
@@ -214,6 +222,10 @@ onBeforeUnmount(() => {
     <p v-if="job.error.value" class="notice">{{ job.error.value }}</p>
 
     <ul class="files">
+      <li v-if="loadFail && !loaded" class="empty">
+        {{ t('web.common.list_fail') }}
+        <button class="bar-btn" @click="load">{{ t('web.common.retry') }}</button>
+      </li>
       <li v-if="loaded && !filtered.length" class="empty">
         {{ query ? t('web.common.no_match') : t('web.sources.empty') }}
       </li>

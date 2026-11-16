@@ -14,13 +14,7 @@ import pytest
 from WY import config
 from WY.core import transfer
 from WY.core.transfer import TransferError
-
-
-def _mkfile(path: str, content: str = "x") -> str:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return path
+from conftest import _mkfile
 
 
 def _mk_analysis(name: str = "aspirin_cancer_data") -> str:
@@ -39,7 +33,6 @@ def _mk_geo(name: str = "GSE123_20261023_225313", summary: bool = True) -> str:
 
 def _mk_ui_settings(raw: dict | None = None) -> dict:
     raw = raw if raw is not None else {"UI_THEME": "dark", "EVIL_KEY": "x"}
-    import os as _os
     from WY.core.caching import save_json_file
 
     save_json_file(config.UI_SETTINGS_FILE, raw)

@@ -319,8 +319,11 @@ def _probe_range_support(url: str) -> int | None:
     """探测目标是否支持 Range 分段下载:返回文件总字节数;不支持返回 None。
 
     先 HEAD 看 Accept-Ranges;HEAD 不给准信再用 1 字节 Range GET 复探
-    (看 206 与 Content-Range 总长)。两个探测请求都极小,不占实质带宽。
+    (看 206 与 Content-Range 总长,GET 实测统一在 http_client.probe_range_total)。
+    两个探测请求都极小,不占实质带宽。
     """
+    from .http_client import probe_range_total
+
     try:
         r = requests.head(url, timeout=(30, 30), headers=_NCBI_HEADERS,
                           allow_redirects=True)
@@ -329,21 +332,7 @@ def _probe_range_support(url: str) -> int | None:
             return total
     except requests.RequestException:
         pass
-    try:
-        r = requests.get(url, timeout=(30, 30),
-                         headers=dict(_NCBI_HEADERS, Range="bytes=0-0"),
-                         stream=True)
-        try:
-            if r.status_code == 206:
-                cr = r.headers.get("content-range", "")  # 形如 bytes 0-0/8471521
-                total = int(cr.rsplit("/", 1)[-1]) if "/" in cr else 0
-                if total:
-                    return total
-        finally:
-            r.close()
-    except (requests.RequestException, ValueError):
-        pass
-    return None
+    return probe_range_total(url, headers=_NCBI_HEADERS, timeout=(30, 30)) or None
 
 
 def _fetch_segment(url: str, start: int, end: int, seg_path: str,

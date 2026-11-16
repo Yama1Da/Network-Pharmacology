@@ -4,7 +4,6 @@
 (network_proximity/build_sparse_adj/rwr_prioritize)原样搬自自检脚本,
 是 core 中纯本地算法的独立对照,仅供交叉验证。
 """
-import glob
 import logging
 import os
 
@@ -24,20 +23,7 @@ from WY.core.network_algorithms import (
     run_proximity_cached,
     run_rwr_cached,
 )
-
-
-def _karate() -> nx.Graph:
-    G = nx.karate_club_graph()
-    return nx.relabel_nodes(G, {i: f"G{i:02d}" for i in G.nodes()})
-
-
-def _purge(pattern):
-    """按 glob 模式删除旧缓存文件,文件不存在时为无害空操作。"""
-    for old in glob.glob(pattern):
-        try:
-            os.remove(old)
-        except OSError:
-            pass
+from conftest import _karate, _purge
 
 
 # ---------- 参考实现(原 core.network_algorithms 中的纯本地实现,仅供交叉验证) ----------

@@ -138,7 +138,7 @@ def cmd_screen(args) -> int:
             step["i"] += 1
             print(f"[{step['i']}/{len(STAGES)}] {message}")
 
-    res = run_screen_chain(
+    run_screen_chain(
         gse=args.gse, case_pattern=args.case_pattern,
         control_pattern=args.control_pattern,
         expr=args.expr, labels=args.labels, case_label=args.case_label,

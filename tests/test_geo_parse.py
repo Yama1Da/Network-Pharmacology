@@ -3,8 +3,6 @@
 阶段三第 5 批新写。不发真实网络(下载打桩),series matrix 用合成 gz 喂解析器。
 """
 import gzip
-import io
-import os
 
 import pytest
 

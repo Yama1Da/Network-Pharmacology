@@ -1,13 +1,13 @@
 """主页四库检索(App.py 检索职责的 TS 化)。"""
 
 from fastapi import APIRouter
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi import HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
-from WY.core import jobs, transfer
-from WY.core.files import (list_cache_files, list_download_dirs, list_log_files,
-                           make_bytes_zip, make_dirs_zip, make_ppi_zip)
+from WY.core import jobs
+from WY.core.files import make_bytes_zip
 from WY.core.text_utils import safe_name
+from .common import _attachment
 
 
 router = APIRouter()
@@ -109,8 +109,6 @@ def targets_retrieve(body: RetrieveBody) -> dict:
         common_df = None
         common_rows: list[dict] = []
         if drug_rows and disease_rows:
-            import pandas as pd
-
             common_df = drug_df.drop(columns=["source_count"]).merge(
                 disease_df.drop(columns=["source_count"]),
                 on="approvedSymbol", how="inner")
@@ -154,17 +152,6 @@ _EXPORT_ITEMS = {
     "venn_png": "venn_{d}_{p}.png",
     "venn_svg": "venn_{d}_{p}.svg",
 }
-
-
-def _attachment(fname: str) -> str:
-    """Content-Disposition: attachment 头。文件名含非 ASCII(中文药名等)时补 RFC 5987 的
-    filename*:FastAPI 响应头按 latin-1 编码,直接放中文会 500。"""
-    if fname.isascii():
-        return f'attachment; filename="{fname}"'
-    from urllib.parse import quote
-
-    fallback = fname.encode("ascii", "replace").decode().replace('"', "_")
-    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(fname)}'
 
 
 def _targets_csv_bytes(df) -> bytes:

@@ -412,7 +412,7 @@ def run_pair(drug: str, disease: str, out_dir: str) -> dict:
 
     # ---- PPI / 富集 / 邻近度 / RWR(相互独立,某步失败不影响其余) ----
     if common:
-        p_res = _run("ppi", lambda: _ppi_step(genes, out_dir, label=prefix))
+        _run("ppi", lambda: _ppi_step(genes, out_dir, label=prefix))
         _run("enrichment", lambda: _enrichment_step(genes, out_dir, label=prefix))
         drug_syms = sorted({str(g).strip().upper()
                             for g in t_res["drug"]["approvedSymbol"].dropna()})

@@ -206,10 +206,6 @@ LOUVAIN_SEED = 0
 # 参与富集的模块规模下限与数量上限:基因太少的模块不做富集
 LOUVAIN_MIN_MODULE_SIZE = 5
 LOUVAIN_MAX_ENRICH_MODULES = 10
-# 每个模块页面展示的富集条目上限(完整结果见 CSV 下载)
-LOUVAIN_TOP_TERMS_PER_MODULE = 5
-# 若最大模块占网络比例超过该值,页面会提示调整分辨率
-LOUVAIN_MAX_MODULE_RATIO = 0.6
 
 # ======== 排序富集（GSEA prerank，仅智人） ========
 # Enrichr 基因集库:首次使用时自动下载保存到本地,之后不再重复下载
@@ -297,8 +293,6 @@ RWR_ALPHA = 0.7
 # 收敛阈值与最大迭代次数
 RWR_TOL = 1e-8
 RWR_MAX_ITER = 200
-# 页面展示的非种子基因数量(已知靶点单独全量展示,不占此数)
-RWR_TOP_N = 50
 # RWR 扩展靶点数:分析时取 RWR 得分最高的前 N 个非种子基因与交集靶点取并集
 # 作为查询集(0 = 关闭扩展)。默认 30,与文献交叉靶点规模对齐。
 RWR_EXPAND_TOP_N = 30
@@ -355,6 +349,8 @@ GEO_RESULT_DIR = os.path.join(DOWNLOADS_DIR, "GEOresult")
 # ======== 分子对接数据源 ========
 # 受体蛋白 PDB 结构下载地址({pdb_id} 为 4 位 PDB 编号);配体 SDF 由 PubChem 获取。
 PDB_DOWNLOAD_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
+# 自带受体结构上传的单文件上限(PDB/mmCIF 均为纯文本,64 MiB 已远超常规受体)
+DOCKING_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 # ======== 分子对接:AlphaFold 预测结构兜底 ========
 # 总开关:还需在页面上另行开启(页面开关默认关闭)才使用 AlphaFold 兜底
@@ -372,9 +368,8 @@ UNIPROT_LOOKUP_CACHE = os.path.join(DOCKING_CACHE_DIR, "uniprot_gene_map.json")
 # AlphaFold 结构没有共晶配体,对接盒初始取整个蛋白的外包围盒;任一边超过该值(埃)
 # 时自动向中心收拢。仅为可用起点,页面会提示人工确认口袋并微调。
 DOCKING_BOX_MAX_SIZE_AF = 40.0
-# RCSB 检索失败重试次数;RCSB 元数据下载并发数
+# RCSB 检索失败重试次数
 RCSB_SEARCH_MAX_RETRIES = 3
-RCSB_DATA_MAX_WORKERS = 4
 # 对接口袋残基判定半径(埃):配体周围该距离内的受体残基视为结合位点残基,文献常用 4 Å。
 # 属于分析参数,可在主页齿轮(Analysis settings)调整,持久化到 ui_settings.json。
 POCKET_CUTOFF = 4.0
@@ -394,10 +389,6 @@ HOST_MIN_REQUEST_INTERVAL = {
 # 齿轮面板修改的分析参数会写入 Static/data/cache/ui_settings.json,
 # 启动时在此套用,保证重启后设置仍生效。只允许覆盖白名单内的键。
 UI_SETTINGS_FILE = os.path.join(CACHE_DIR, "ui_settings.json")
-# 搜索历史持久化文件:各页面搜索框的历史按搜索框 key 分组存放,重启仍生效
-SEARCH_HISTORY_FILE = os.path.join(CACHE_DIR, "search_history.json")
-# 每个搜索框最多保留的历史条数(最新的在前)
-SEARCH_HISTORY_MAX = 6
 UI_SETTINGS_KEYS = (
     "CHEMBL_PCHEMBL_THRESHOLD", "DGIDB_MIN_SCORE", "OT_MIN_SCORE",
     "ENRICHMENT_PVALUE", "LOUVAIN_RESOLUTION", "POCKET_CUTOFF",
@@ -533,8 +524,9 @@ GEO_DOWNLOAD_CONCURRENCY = 4         # 大文件分段并发连接数:跨境对 
                                      # (实测 8.5MB 爬 16 分钟),Range 分段多连接聚合提速;E-utilities 的
                                      # 3 req/s 限流只约束检索接口不约束文件服务器,4 连接在容忍范围内
 GEO_DOWNLOAD_STALL_TIMEOUT = 90      # 单连接断流判定(秒):连续无任何字节到达即断开该段;重试按段续传
-ML_SCREENING_VERSION = 2             # 算法/权重变更时 +1,旧结果自动失效(仿 TARGET_FILTER_VERSION)
+ML_SCREENING_VERSION = 3             # 算法/权重变更时 +1,旧结果自动失效(仿 TARGET_FILTER_VERSION)
                                      # v2:CV 改重复分层 + 折内重筛口径(2026-11)
+                                     # v3:折内打分模型类平衡(A1)+ CV 折数审计(A2)+ 池化 AUC bootstrap CI(A3)+ 折内 seed 随重复轮独立(A4)(优化期,2026-11)
 ML_MIN_SAMPLES_PER_GROUP = 3         # 每组样本低于此数直接报错,不降级硬跑
 ML_SEED = 0                          # 全模块固定随机种子,可复现
 ML_BOOTSTRAP_ROUNDS = 30             # bootstrap 稳定性重采样轮次(2026-10 实测定档:500基因×30轮 ML 段约3.5分钟,页面/CLI 统一)
@@ -551,9 +543,6 @@ ML_RESULTS_KEEP_PER_GSE = 6           # 结果保留语义(§10 增补):同 tag 
                                       # 理更旧的;跨数据集总量永不自动清(实验记录),治理走结果管理页
 
 
-# ======== API.env 可视化设置(齿轮面板:数据源板块的密钥 + 分子对接板块的本机工具路径) ========
-# 键名与 API.env 文件内一致;落盘由 core.management.save_api_env 负责(set_key 保留注释与其他行),
-# 落盘后经 apply_api_env 回填运行时,免重启生效。密钥类键不回显当前值,输入新值即覆盖。
 # ======== 数据迁移(设置页导出/导入结果文件) ========
 # 暂存目录:导出包与导入会话的解压暂存都在 CACHE_DIR 下,过期由启动/新建会话时清扫
 TRANSFER_DIR = os.path.join(CACHE_DIR, "transfer")

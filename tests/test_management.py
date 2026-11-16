@@ -135,7 +135,6 @@ def _fake_spec(src_dir, merged_dir, fetch_results=None, merged_df=None):
     def fake_fetcher(name, cache_hours=None):
         df, state = fake_fetch(name, cache_hours)
         if not df.empty:  # 与真实抓取器一致:成功才落盘
-            import pandas as pd
             df.to_csv(os.path.join(src_dir, f"ChEMBL_{safe_name(name)}.csv"),
                       index=False)
         return df, state

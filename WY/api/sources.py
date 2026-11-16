@@ -1,11 +1,10 @@
 """来源刷新(药物/疾病管理页):单文件与批量,经 job 提交-轮询。"""
 
 from fastapi import APIRouter
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException
 from pydantic import BaseModel
-from WY.core import jobs, transfer
-from WY.core.management import (enrichment_display_name, save_api_env,
-                                save_ui_settings, update_all_cache_files)
+from WY.core import jobs
+from WY.core.management import update_all_cache_files
 from WY.core.sources import disease_spec, drug_spec
 
 

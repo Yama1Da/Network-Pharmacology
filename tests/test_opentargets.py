@@ -3,8 +3,6 @@
 
 阶段三第 2 批新写。打桩层级在 opentargets_post(模块内统一 POST 入口),不联网。
 """
-import pandas as pd
-import pytest
 
 from WY import config
 import WY.core.opentargets as ot

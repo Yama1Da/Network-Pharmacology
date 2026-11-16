@@ -11,6 +11,7 @@ from typing import TypedDict
 
 import pandas as pd
 
+from .caching import clean_expired_cache_files, save_json_file
 from .enrichment import (
     _ENRICHR_ORGANISM_MAP,
     _enrichment_cache_key,
@@ -552,34 +553,11 @@ def _load_json_cache(cache_path: str, label: str, validate=None) -> dict | None:
         return None
 
 
-def _save_json_cache(cache_path: str, result: dict) -> None:
-    """计算成功后把结果写入 JSON 缓存(临时文件+原子替换,并发写不会留下半截文件)。"""
-    from .caching import save_json_file
-
-    save_json_file(cache_path, result)
-
-
 def _clean_expired_caches(directory: str) -> None:
     """删除目录里超过缓存有效期(CACHE_TTL_SECONDS)的 JSON 缓存;调用方进入缓存读写前调用一次即可。
     这些结果已永久保存在分析结果目录(<prefix>_data)中,过期计算缓存删除即可,下次分析会重算并覆盖。
     """
-    import time
-
-    from WY import config
-
-    if not os.path.isdir(directory):
-        return
-    cutoff = time.time() - config.CACHE_TTL_SECONDS
-    for name in os.listdir(directory):
-        if not name.endswith(".json"):
-            continue
-        path = os.path.join(directory, name)
-        try:
-            if os.path.getmtime(path) < cutoff:
-                os.remove(path)
-                logging.info("Expired cache removed: %s", name)
-        except OSError:
-            logging.exception("Failed to remove expired cache %s", path)
+    clean_expired_cache_files(directory, exts=(".json",))
 
 
 def run_proximity_cached(drug_genes: list, disease_genes: list,
@@ -625,7 +603,7 @@ def run_proximity_cached(drug_genes: list, disease_genes: list,
                 "p_empirical": None, "coverage": {}, "cached": False}
     if result.get("ok"):
         result["cache_key"] = md5
-        _save_json_cache(cache_path, result)
+        save_json_file(cache_path, result)
     return result
 
 
@@ -800,6 +778,6 @@ def run_rwr_cached(seed_genes: list, species: str = "Human", label: str | None =
                 "coverage": {}, "cached": False}
     if result.get("ok"):
         result["cache_key"] = md5
-        _save_json_cache(cache_path, result)
+        save_json_file(cache_path, result)
         result["cached"] = False
     return result

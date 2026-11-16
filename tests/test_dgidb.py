@@ -4,22 +4,12 @@
 阶段三第 2 批新写(仿原方案示例 B 的打桩手法)。
 """
 import pandas as pd
-import pytest
 
 from WY import config
 from WY.core.caching import save_csv_cache
 from WY.core.text_utils import safe_name
 import WY.core.dgidb as dgidb
-
-
-class _FakeResp:
-    """最小假响应:只需要 .json()。"""
-
-    def __init__(self, payload):
-        self._payload = payload
-
-    def json(self):
-        return self._payload
+from conftest import _FakeResp
 
 
 # 仿照 DGIdb GraphQL 真实返回结构捏造的假数据:两条交互 + 一条同基因同药重复

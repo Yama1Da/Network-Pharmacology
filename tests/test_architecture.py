@@ -145,6 +145,8 @@ def test_sys_path_zero():
         "WY/benchmark/ml_scale_benchmark.py",
         "WY/benchmark/cross_dataset_robustness.py",
         "WY/benchmark/recovery_benchmark.py",
+        "WY/benchmark/ml_ablation_benchmark.py",
+        "WY/benchmark/shortlist_disease_benchmark.py",
     }
     bad = []
     for rel, abs_path in _py_files():

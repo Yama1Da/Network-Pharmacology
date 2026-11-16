@@ -384,34 +384,30 @@ def list_analyzed_pairs() -> list[dict]:
     return out
 
 
-def list_analyzed_diseases() -> list[str]:
-    """去重后的已分析疾病清单(剥 rwrNN 后缀的干净名,最近分析在前)。
-
-    供 ML 筛选页的疾病下拉直接使用(方案 §M4);大小写不敏感去重,
-    保留首次出现的写法。"""
+def _list_analyzed_unique(key: str) -> list[str]:
+    """已分析清单的大小写不敏感去重(保留首次出现的写法,最近分析在前)。"""
     seen: set[str] = set()
     out: list[str] = []
     for rec in list_analyzed_pairs():
-        d = rec["base_disease"].strip()
+        d = rec[key].strip()
         if d and d.lower() not in seen:
             seen.add(d.lower())
             out.append(d)
     return out
+
+
+def list_analyzed_diseases() -> list[str]:
+    """去重后的已分析疾病清单(剥 rwrNN 后缀的干净名,最近分析在前)。
+
+    供 ML 筛选页的疾病下拉直接使用(方案 §M4)。"""
+    return _list_analyzed_unique("base_disease")
 
 
 def list_analyzed_drugs() -> list[str]:
     """去重后的已分析药物清单(最近分析在前)。
 
-    供 ML 筛选页排序文件的药物过滤下拉使用;大小写不敏感去重,
-    保留首次出现的写法。"""
-    seen: set[str] = set()
-    out: list[str] = []
-    for rec in list_analyzed_pairs():
-        d = rec["drug"].strip()
-        if d and d.lower() not in seen:
-            seen.add(d.lower())
-            out.append(d)
-    return out
+    供 ML 筛选页排序文件的药物过滤下拉使用(方案 §M4)。"""
+    return _list_analyzed_unique("drug")
 
 
 def list_ranked_csv_candidates() -> list[dict]:

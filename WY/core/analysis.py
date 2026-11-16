@@ -155,12 +155,6 @@ def expand_targets_with_rwr(genes: list[str], rwr_expand: int,
     return genes, f"{prefix}_rwr{int(rwr_expand)}", info
 
 
-def compute_ppi_modules(graph, organism, directory, prefix) -> dict:
-    """模块检测 + 富集 + 结果落盘（交互区手动重跑入口）。目录须已存在。"""
-    return save_module_computation(directory, prefix,
-                                   compute_module_analysis(graph, organism, label_prefix=prefix))
-
-
 def gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
     """对药物/疾病一侧构建排秩表并运行 GSEA prerank（Build Report 自动流程与手动重跑共用）；
     返回 (结果表, 排秩统计, 状态原因)。"""

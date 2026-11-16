@@ -11,7 +11,8 @@ import re
 
 import pandas as pd
 
-from .caching import (clean_expired_cache_files, is_cache_fresh, read_cache_key)
+from .caching import (clean_expired_cache_files, is_cache_fresh, read_cache_key,
+                      save_csv_cache)
 
 
 def _enrichment_cache_key(genes: list[str], organism: str, sources, pvalue: float) -> str:
@@ -163,6 +164,24 @@ def _set_status(status: dict | None, ok: bool, reason: str) -> None:
     """把本次调用状态写入 status(若调用方提供)，供页面区分"真无显著项"与"服务失败"。"""
     if status is not None:
         status.update(ok=ok, reason=reason)
+
+
+def save_enrichment_result(df: pd.DataFrame, cache_file: str, key_line: str,
+                           status: dict | None, *, log_prefix: str,
+                           n_genes: int) -> pd.DataFrame:
+    """富集抓取尾段共用(gprofiler/enrichr 双源与 GSEA prerank 同构):空表不落盘
+    (避免把异常空表当成有效结果),非空标记 success 后写缓存并记命中数日志。
+    缓存文件首行写 "# key_line" 缓存键 —— 与 _hit_csv_cache 的读取端约定强耦合,
+    改动须两端同步。"""
+    if df.empty:
+        logging.warning("%s result normalized to empty — skip caching (%d genes)",
+                        log_prefix, n_genes)
+        _set_status(status, False, "normalize_empty")
+        return df
+    _set_status(status, True, "success")
+    save_csv_cache(df, cache_file, header_lines=[key_line])
+    logging.info("%s: %d terms cached (%d genes)", log_prefix, len(df), n_genes)
+    return df
 
 
 def _hit_csv_cache(cache_file: str, md5: str, label: str) -> pd.DataFrame | None:

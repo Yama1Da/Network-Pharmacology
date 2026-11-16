@@ -774,6 +774,11 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
+        <!-- counts 解析失败独立通道:后端正常完成的 job 也可能带 counts_error
+             (counts 文件损坏/格式异常),不渲染的话用户会把失败误判成"没有 counts" -->
+        <p v-if="overview.counts_error" class="stale">
+          {{ t('web.ml.counts_error', { msg: overview.counts_error }) }}
+        </p>
         <p v-if="overview.issues?.length && !overview.counts_rows?.length" class="stale">
           {{ t('web.ml.issues', { issues: overview.issues.join('; ') }) }}
         </p>

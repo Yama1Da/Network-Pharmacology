@@ -1,5 +1,9 @@
 """API 层共享 helper(被多个路由模块复用)。"""
 
+import os
+
+from fastapi import Response
+
 from WY import config
 
 
@@ -17,6 +21,50 @@ _ZIP_NAMES = {
     "stars": "Starred_results.zip",
     "downloads": "Data_files.zip",
 }
+
+
+def _resolve_under(base: str, rel: str, *, allow_root: bool = False) -> str | None:
+    """realpath 包含校验(2026-11 P1-A 口径的公共件):把 rel 拼到 base 下并解析
+    符号链接/../穿越,逃逸出 base 时返回 None。allow_root 决定恰好等于 base 本身
+    (请求根目录)是否放行;Windows 盘符绝对路径会让 os.path.join 整段丢弃 base
+    前缀,realpath 后同样逃逸,一并拦下。"""
+    base_real = os.path.realpath(base)
+    full = os.path.realpath(os.path.join(base_real, rel))
+    contained = full.startswith(base_real + os.sep) or (allow_root and full == base_real)
+    return full if contained else None
+
+
+def _rel_downloads(path: str) -> str | None:
+    """downloads 绝对路径 → 相对路径(统一正斜杠,前端拼 /api/artifacts?rel=…);
+    空路径/越界/解析失败返回 None。"""
+    if not path:
+        return None
+    try:
+        real = os.path.realpath(path)
+        base = os.path.realpath(config.DOWNLOADS_DIR)
+        if real.startswith(base + os.sep):
+            return os.path.relpath(real, base).replace(os.sep, "/")
+    except OSError:
+        pass
+    return None
+
+
+def _attachment(fname: str, disposition: str = "attachment") -> str:
+    """Content-Disposition 头(自 retrieve.py 升为公共件)。文件名含非 ASCII(中文药名等)
+    时按 RFC 5987 补 filename*:FastAPI 响应头按 latin-1 编码,直接放中文会 500。
+    disposition 支持 attachment(下载)/ inline(内嵌展示)。"""
+    if fname.isascii():
+        return f'{disposition}; filename="{fname}"'
+    from urllib.parse import quote
+
+    fallback = fname.encode("ascii", "replace").decode().replace('"', "_")
+    return f'{disposition}; filename="{fallback}"; filename*=UTF-8\'\'{quote(fname)}'
+
+
+def _zip_response(data: bytes, filename: str) -> Response:
+    """字节 zip 的统一下载响应:attachment 头走 _attachment(非 ASCII 文件名安全)。"""
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition": _attachment(filename)})
 
 
 def _df_rows(df, limit: int | None = None) -> list[dict]:

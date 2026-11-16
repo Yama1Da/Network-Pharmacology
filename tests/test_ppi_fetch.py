@@ -5,19 +5,10 @@
 import os
 
 import pandas as pd
-import pytest
 
 from WY import config
-from WY.core.text_utils import safe_name
 import WY.core.ppi as ppi
-
-
-class _FakeResp:
-    def __init__(self, payload):
-        self._payload = payload
-
-    def json(self):
-        return self._payload
+from conftest import _FakeResp
 
 
 def test_fetch_string_ppi_full_flow_and_cache(monkeypatch):

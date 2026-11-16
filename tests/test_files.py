@@ -15,13 +15,7 @@ from WY.core.files import (
     make_fig_zip,
     make_ppi_zip,
 )
-
-
-def _mkfile(path: str, content: str = "x") -> str:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return path
+from conftest import _mkfile
 
 
 def test_list_cache_files_filters(tmp_path):
