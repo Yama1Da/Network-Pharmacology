@@ -43,6 +43,7 @@ from . import collections
 import WY.api.transfer as transfer_routes
 from . import sources
 from . import interactome
+from . import pk_mirror
 from . import logs
 from . import ppi
 from . import stats
@@ -55,6 +56,7 @@ app.include_router(collections.router)
 app.include_router(transfer_routes.router)
 app.include_router(sources.router)
 app.include_router(interactome.router)
+app.include_router(pk_mirror.router)
 app.include_router(logs.router)
 app.include_router(ppi.router)
 app.include_router(stats.router)

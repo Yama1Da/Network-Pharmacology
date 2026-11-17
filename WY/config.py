@@ -144,6 +144,16 @@ DISGENET_RATE_LIMIT_STATE_FILE = os.path.join(CACHE_DIR, "disgenet_rate_limit.js
 # 数据源 HTTP 响应缓存(DGIdb/Open Targets/DisGeNET)的 sqlite 落盘位置
 HTTP_CACHE_FILE = os.path.join(CACHE_DIR, "http_cache.sqlite")
 
+# ======== PK-DB 镜像(浓度可达性数据底座,二期方案 §3.1 第 1 层) ========
+# pk-db.com:开放药代动力学数据库(文献策展的 Cmax/AUC/fu 等参数记录)。镜像层
+# (core/pk_mirror.py)只搬运不换算——单位换算/剂量过滤/聚合在归一化层
+# (reachability.py,PK_NORM_VERSION 控制);TTL 过期只在管理页提示"可更新",
+# 用户手动触发,无后台自动任务(2026-11-13 定稿的更新规则)。
+PKDB_API_BASE = "https://pk-db.com/api/v1"
+PKDB_MEDIA_BASE = "https://pk-db.com/media/data"
+PKDB_CACHE_SUBDIR = "pkdb_raw"   # 相对子目录名,运行时由 CACHE_DIR 拼接(沙箱随 CACHE_DIR 走)
+PK_MIRROR_TTL_DAYS = 180         # 文献策展节奏慢,过期周期可比四源(60 天)长一档
+
 # CLI 结果目录:取 API.env 里的 CLI_RESULTS_DIR(配一次永久生效,与 VINA_DIR 同类的本机路径,不入库);
 # 未配置时为空串,cli.py 兜底落到 ./results。供 cli.py 的 --out 三级解析作第二优先级。
 CLI_RESULTS_DIR = os.getenv("CLI_RESULTS_DIR", "").strip()
@@ -383,6 +393,7 @@ HOST_MIN_REQUEST_INTERVAL = {
     "ebi_proteins": 1.1,  # EBI 官方建议 ≤1 次/秒（UniProt 基因查询）
     "alphafold": 1.1,     # AlphaFold 文件下载（EBI 同域）
     "uniprot": 1.1,       # UniProt REST 兜底
+    "pkdb": 0.2,          # PK-DB 镜像批量搬运(803 研究 + 万级源表)的礼貌间隔
 }
 
 # ======== 页面设置覆盖(主页面板齿轮保存的运行时设置) ========
