@@ -17,8 +17,6 @@ const runs = ref<MlRunRow[]>([])
 const runsLoaded = ref(false)
 const runsQuery = ref('')
 const { notice, flash } = useNotice(4200)
-const { page: runsPage, paged: runsPaged, nPages: runsNPages, goto: runsGoto } =
-  usePager<MlRunRow>(() => runsFiltered.value)
 const { selected: runsSel, toggle: runsToggle, allSelected: runsAllSelected,
         toggleAll: runsToggleAll, retain: runsRetain } = useSelection(
   () => runs.value.map((r) => r.name))
@@ -48,6 +46,11 @@ const runsFiltered = computed(() => {
     String(r.gse ?? '').toLowerCase().includes(q) ||
     String(r.source ?? '').toLowerCase().includes(q))
 })
+
+/* 分页:必须在 runsFiltered 声明之后调用——usePager 内部 watch(nPages) 首轮
+ * 求值 getter,前置引用撞 TDZ(2026-11-17 修复,同 SourcesView)。 */
+const { page: runsPage, paged: runsPaged, nPages: runsNPages, goto: runsGoto } =
+  usePager<MlRunRow>(() => runsFiltered.value)
 function runsPaths(names: Iterable<string>): string[] {
   return [...names].map((n) => runs.value.find((r) => r.name === n)?.path ?? '').filter(Boolean)
 }

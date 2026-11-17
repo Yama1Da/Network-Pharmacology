@@ -172,6 +172,18 @@ export interface InteractomeStatus {
   stale?: boolean
 }
 
+/* ---- PK-DB 镜像(浓度可达性数据底座,二期):字段与 core.pk_mirror.mirror_status 一一对应 ---- */
+export interface PkMirrorStatus {
+  built: boolean
+  studies?: number
+  tsv_files?: number
+  failures?: number
+  built_at?: string
+  age?: number | null
+  stale?: boolean
+  ttl_days?: number
+}
+
 /* ---- GEO 表达谱 + ML(阶段 3c)共享类型:字段与 core 一一对应 ---- */
 
 /** 数据集可用性判定(core.expression.assess_expression_dataset)。 */
@@ -494,6 +506,13 @@ export const api = {
 
   buildInteractome: (): Promise<{ job_id: string }> =>
     post('/api/interactome/build', {}),
+
+  /* ---- PK-DB 镜像(二期) ---- */
+  pkMirror: (): Promise<PkMirrorStatus> =>
+    fetch('/api/pk-mirror').then((r) => json(r)),
+
+  buildPkMirror: (force = false): Promise<{ job_id: string }> =>
+    post('/api/pk-mirror/build', { force }),
 
   /* ---- PPI 分析(阶段 3a) ---- */
   analyzePpi: (body: PpiAnalyzeBody): Promise<{ job_id: string }> =>

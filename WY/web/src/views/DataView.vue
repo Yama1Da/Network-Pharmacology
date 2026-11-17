@@ -1,20 +1,27 @@
 <script setup lang="ts">
-/** 数据管理(阶段 2):背景互作组状态与一键重建(job)+ 分析产物目录(CollectionView)。 */
+/** 数据管理:背景互作组 + PK-DB 镜像(浓度可达性数据底座,二期)的状态与一键构建(job)、分析产物目录。 */
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, type InteractomeStatus } from '../api'
+import { api, type InteractomeStatus, type PkMirrorStatus } from '../api'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
 import CollectionView from './CollectionView.vue'
 
 const { t } = useI18n()
 const itx = ref<InteractomeStatus | null>(null)
+const pk = ref<PkMirrorStatus | null>(null)
 const loaded = ref(false)
+const pkLoaded = ref(false)
 const { notice, flash } = useNotice(3200)
 
 const job = useJob((result) => {
   flash(t('web.data.built_flash', { nodes: result.nodes, edges: result.edges }) +
     (result.cleaned ? t('web.data.built_cleaned', { n: result.cleaned }) : ''))
+  void load()
+})
+
+const pkJob = useJob((result) => {
+  flash(t('web.data.pk_build_done', { studies: result.studies_built, tsv: result.tsv_files }))
   void load()
 })
 
@@ -25,10 +32,20 @@ async function load(): Promise<void> {
   } catch {
     flash(t('web.data.status_fail'))
   }
+  try {
+    pk.value = await api.pkMirror()
+    pkLoaded.value = true
+  } catch {
+    flash(t('web.data.pk_status_fail'))
+  }
 }
 
 function build(): void {
   void job.run(api.buildInteractome(), { doneText: t('web.data.build_done') })
+}
+
+function buildPk(): void {
+  void pkJob.run(api.buildPkMirror(), { doneText: t('web.data.build_done') })
 }
 
 onMounted(() => {
@@ -72,6 +89,46 @@ onMounted(() => {
       <p class="progress-text">{{ job.text.value || t('web.data.building') }}</p>
     </div>
     <p v-if="job.error.value" class="notice">{{ t('web.data.build_fail', { msg: job.error.value }) }}</p>
+    <Transition name="note">
+      <p v-if="notice" class="notice">{{ notice }}</p>
+    </Transition>
+  </div>
+
+  <div class="panel s5">
+    <div class="controls">
+      <span class="ctl-label">{{ t('web.data.pk_label') }}</span>
+      <span v-if="pkLoaded && pk?.built" class="count">
+        {{ t('web.data.pk_built', { studies: pk.studies, tsv: pk.tsv_files, at: pk.built_at,
+                                     age: pk.age ?? '-' }) }}
+      </span>
+      <span v-else-if="pkLoaded" class="count" style="color:var(--c-danger)">
+        {{ t('web.data.pk_missing') }}
+      </span>
+      <button class="go" :title="t('web.data.rebuild_title')" :disabled="pkJob.running.value" @click="buildPk">
+        <svg viewBox="0 0 20 20" width="15" height="15">
+          <path d="M16.5 10a6.5 6.5 0 1 1-1.9-4.6M16.5 2.5v3.4h-3.4" fill="none"
+                stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                stroke-linejoin="round" />
+        </svg>
+      </button>
+    </div>
+
+    <p v-if="pkLoaded && pk?.built && pk?.stale" class="notice">
+      {{ t('web.data.pk_stale', { age: pk.age }) }}
+    </p>
+    <p v-if="pkLoaded && pk?.built && (pk.failures ?? 0) > 0" class="notice"
+       style="color:var(--c-danger)">
+      {{ t('web.data.pk_failures', { n: pk.failures }) }}
+    </p>
+
+    <div v-if="pkJob.running.value" class="progress">
+      <div class="progress-track">
+        <div class="progress-fill"
+             :style="{ width: `${((pkJob.fraction.value ?? 0) * 100).toFixed(0)}%` }"></div>
+      </div>
+      <p class="progress-text">{{ pkJob.text.value || t('web.data.pk_building') }}</p>
+    </div>
+    <p v-if="pkJob.error.value" class="notice">{{ t('web.data.build_fail', { msg: pkJob.error.value }) }}</p>
     <Transition name="note">
       <p v-if="notice" class="notice">{{ notice }}</p>
     </Transition>

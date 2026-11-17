@@ -35,7 +35,6 @@ const loaded = ref(false)
 const loadFail = ref(false)
 const { notice, flash } = useNotice(3200)
 const query = ref('')
-const { page, paged, nPages, goto } = usePager<CollectionItem>(() => filtered.value)
 const { selected, toggle: toggleSel, allSelected, toggleAll, retain } = useSelection(
   () => items.value.map((it) => it.name))
 
@@ -68,6 +67,10 @@ const filtered = computed<CollectionItem[]>(() => {
   if (q) list = list.filter((it) => it.name.toLowerCase().includes(q))
   return list
 })
+
+/* 分页:必须在 filtered 声明之后调用——usePager 内部 watch(nPages) 首轮求值
+ * getter,前置引用会撞 TDZ(2026-11-17 修复来源页空渲染)。 */
+const { page, paged, nPages, goto } = usePager<CollectionItem>(() => filtered.value)
 
 /* ---------------- 更新(长任务,job 轮询) ---------------- */
 

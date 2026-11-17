@@ -118,7 +118,7 @@ WEB_ZH = {
     # ---- 数据管理 ----
     "web.data.kicker": "DATA MANAGEMENT",
     "web.data.title": "数据管理",
-    "web.data.sub": "背景互作组 · 分析产物目录",
+    "web.data.sub": "背景互作组 · PK-DB 镜像 · 分析产物目录",
     "web.data.itx_label": "背景互作组",
     "web.data.itx_built": "{nodes} 节点 · {edges} 边 · STRING {version} · 置信度 {conf} · 构建于 {at}(已 {age} 天)",
     "web.data.itx_missing": "未构建 —— 邻近度与 RWR 需要它,请先构建",
@@ -130,6 +130,15 @@ WEB_ZH = {
     "web.data.status_fail": "互作组状态读取失败",
     "web.data.built_flash": "背景互作组构建完成:{nodes} 节点 / {edges} 边",
     "web.data.built_cleaned": ",清理旧版本缓存 {n} 项",
+    # PK-DB 镜像(浓度可达性数据底座,二期)
+    "web.data.pk_label": "PK-DB 镜像(浓度可达性数据底座)",
+    "web.data.pk_built": "{studies} 研究 · {tsv} 源表 · 构建于 {at}(已 {age} 天)",
+    "web.data.pk_missing": "未镜像 —— 浓度可达性需要它,请先构建",
+    "web.data.pk_stale": "PK-DB 镜像已 {age} 天,数据可能陈旧 —— 建议更新。",
+    "web.data.pk_building": "镜像中…(803 个研究,约 2–3 小时;关闭页面构建不受影响,重进页面刷新状态)",
+    "web.data.pk_build_done": "PK-DB 镜像完成:{studies} 研究 / {tsv} 源表",
+    "web.data.pk_status_fail": "PK-DB 镜像状态读取失败",
+    "web.data.pk_failures": "{n} 个研究镜像失败 —— 重新构建可补齐",
     # ---- 文件集合(4 个复用页的页头 props) ----
     "web.collection.ppi_kicker": "PPI NETWORK FILES",
     "web.collection.ppi_title": "PPI 文件",
@@ -840,7 +849,7 @@ WEB_EN = {
     # ---- 数据管理 ----
     "web.data.kicker": "DATA MANAGEMENT",
     "web.data.title": "Data Management",
-    "web.data.sub": "Background interactome · analysis artifacts",
+    "web.data.sub": "Background interactome · PK-DB mirror · analysis artifacts",
     "web.data.itx_label": "Background interactome",
     "web.data.itx_built": "{nodes} nodes · {edges} edges · STRING {version} · confidence {conf} · built {at} ({age} days ago)",
     "web.data.itx_missing": "Not built — proximity and RWR depend on it; build it first",
@@ -852,6 +861,15 @@ WEB_EN = {
     "web.data.status_fail": "Failed to read the interactome status",
     "web.data.built_flash": "Interactome built: {nodes} nodes / {edges} edges",
     "web.data.built_cleaned": ", cleaned {n} old cache entries",
+    # PK-DB mirror (exposure data for reachability, phase 2)
+    "web.data.pk_label": "PK-DB mirror (exposure data for reachability)",
+    "web.data.pk_built": "{studies} studies · {tsv} tables · built {at} ({age} days ago)",
+    "web.data.pk_missing": "Not mirrored — reachability depends on it; build it first",
+    "web.data.pk_stale": "The PK-DB mirror is {age} days old and may be stale — an update is recommended.",
+    "web.data.pk_building": "Mirroring… (803 studies, ~2–3 hours; closing the page won't stop the build — reopen to refresh status)",
+    "web.data.pk_build_done": "PK-DB mirror complete: {studies} studies / {tsv} tables",
+    "web.data.pk_status_fail": "Failed to read the PK-DB mirror status",
+    "web.data.pk_failures": "{n} studies failed to mirror — re-run the build to fill them in",
     # ---- 文件集合(4 个复用页的页头 props) ----
     "web.collection.ppi_kicker": "PPI NETWORK FILES",
     "web.collection.ppi_title": "PPI Files",
