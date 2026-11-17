@@ -24,6 +24,7 @@ TEXT_ZH: dict[str, str] = {
     "app.btn_data_network": "数据网络药理学分析",
     "app.btn_molecular_docking": "分子对接",
     "app.btn_expression_ml": "表达谱与ML筛选",
+    "app.btn_synergy": "协同预测",
 
     # ---- Expression_ML_Screening.py(M4 GEO+ML 页面) ----
     "eml.page_title": "表达谱与ML筛选",

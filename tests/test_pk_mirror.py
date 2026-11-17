@@ -3,7 +3,8 @@
 - 逐字保存(单位/数值保持原始字符串,不做任何换算——分层红线,见 §0.3);
 - licence/access 保留;非文本文件(png)记入 skipped 不丢弃;
 - 断点续传:已存在的 sid 跳过(force=False),不发起该研究的任何请求;
-- 单研究失败不断批(失败进 _meta.json);
+- 单研究失败不断批(失败进 _meta.json);研究级 404 归 missing,不算失败不进补试;
+- 确定性截断的源表靠 Range 断点续传拿全(2026-11-17 定案 Fix A);
 - 状态读取(读目录 + _meta.json,不联网)。
 
 打桩手法仿 tests/test_dgidb.py(monkeypatch 模块的 request_with_retry);
@@ -225,6 +226,12 @@ def test_404_tsv_recorded_as_missing(monkeypatch):
                 calls.append("404:" + name)     # 计数:验证 404 不重试
                 return _FakeResp(payload=None, text=None, status_code=404)
             return _FakeResp(text=_tsv([["a", "b"], ["1", "2"]]))
+        if "/info_nodes/" in url:
+            # 物质映射(2026-11-17 审查后 studies_failed 会把映射失败计入,
+            # 不 mock 会让与断言无关的映射失败污染 studies_failed 计数)
+            return _FakeResp(payload={"current_page": 1, "last_page": 1,
+                                      "next_page_url": None,
+                                      "data": {"count": 0, "data": []}})
         raise AssertionError(f"假响应未覆盖的 URL: {url}")
 
     monkeypatch.setattr(pk_mirror, "request_with_retry", fake)
@@ -277,6 +284,115 @@ def test_retry_pass_recovers_transient_failure(monkeypatch):
     meta = pk_mirror.build_mirror()
     assert meta["studies_failed"] == 0 and meta["studies_built"] == 2
     assert meta["retry_passes"] == 1
+
+
+def test_study_404_recorded_as_missing(monkeypatch):
+    """研究级 404(索引有名字、文件集未发布的悬空引用,如真实 PKDB00965):归
+    missing 立账,不算失败、不进补试(retry_passes=0),也不落 sid.json——
+    下次构建仍会探测,上游补发布即自动收入。"""
+    calls: list = []
+
+    def fake(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/pkdata/studies/"):
+            return _FakeResp(payload={"current_page": 1, "last_page": 1,
+                                      "next_page_url": None,
+                                      "data": {"count": 1, "data": [
+                                          {"sid": "PKDB00965", "name": "Dangling",
+                                           "licence": "open", "access": "public",
+                                           "date": "", "substances": [],
+                                           "reference_pmid": "",
+                                           "reference_title": ""}]}})
+        if "/pkdata/studies/" in url:
+            return _FakeResp(payload={"sid": "PKDB00965", "name": "Dangling",
+                                      "licence": "open", "access": "public",
+                                      "date": "", "substances": [],
+                                      "reference_pmid": "", "reference_title": ""})
+        if "/_studies/" in url:
+            return _FakeResp(payload=None, text=None, status_code=404)  # 文件集 404
+        if "/info_nodes/" in url:
+            return _FakeResp(payload={"current_page": 1, "last_page": 1,
+                                      "next_page_url": None,
+                                      "data": {"count": 0, "data": []}})
+        raise AssertionError(f"假响应未覆盖的 URL: {url}")
+
+    monkeypatch.setattr(pk_mirror, "request_with_retry", fake)
+    meta = pk_mirror.build_mirror()
+    assert meta["studies_failed"] == 0 and meta["studies_missing"] == 1
+    assert meta["failures"] == [] and meta["missing"][0]["sid"] == "PKDB00965"
+    assert meta["retry_passes"] == 0   # 缺失是永久状态,不烧补试
+    assert not os.path.exists(os.path.join(config.CACHE_DIR, config.PKDB_CACHE_SUBDIR,
+                                           "PKDB00965.json"))
+
+
+def test_truncated_tsv_recovers_via_range_resume(monkeypatch):
+    """确定性截断的源表(实测上游恒断于固定字节,重试永不过关):缓存路径耗尽后
+    转 Range 断点续传拼接拿全,研究照常落盘(2026-11-17 定案 Fix A)。
+    假服务端按 urllib3 真实语义掐断:iter_content 只给整块,不足一块的断前
+    尾部随 IncompleteRead 一起丢弃——首版续传正是栽在这上面(截断点 65269 <
+    64KB 首块 ⇒ 每轮零进展空转),自适应缩块(16384→…→1)是唯一活路。"""
+    import requests
+
+    calls: list = []
+    ranges_used: list = []
+    base = _mk_fake(calls)
+
+    # 造 ~210KB TSV(2 万行,必须大于断点,否则服务端"断点"永远落不到流中间)
+    rows = [["col_a", "col_b"]] + [[str(i), str(i * 7)] for i in range(1, 20000)]
+    whole = _tsv(rows).encode("utf-8")
+    break_at = 65269
+
+    def fake_rwr(url, **kwargs):
+        if "/media/data/" in url and url.lower().endswith(".tsv"):
+            return None   # 模拟全量 GET 重试耗尽(IncompleteRead 五连)
+        return base(url, **kwargs)
+
+    class _TruncResp:
+        """stream=True 假响应:按块给数,截断段的不足一块尾部被丢弃(真实语义)。"""
+
+        def __init__(self, data, broken, status_code):
+            self.status_code = status_code
+            self._data = data
+            self._broken = broken
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def iter_content(self, chunk_size=1):
+            data = self._data
+            pos = 0
+            while len(data) - pos >= chunk_size:
+                yield data[pos:pos + chunk_size]
+                pos += chunk_size
+            if self._broken:
+                raise OSError("IncompleteRead")       # 不足一块的断前尾部:丢弃
+            if len(data) - pos > 0:
+                yield data[pos:]                       # 未截断段的正常 EOF 尾块
+
+    def fake_stream_get(url, headers=None, timeout=None, stream=False):
+        rng = (headers or {}).get("Range")
+        start = 0
+        if rng:
+            start = int(rng.split("=")[1].split("-")[0])
+        ranges_used.append(rng)
+        view = whole[start:]
+        limit = max(0, break_at - start)   # 服务端只肯给绝对偏移 break_at 之前的数据
+        broken = 0 < limit < len(view)     # 截断点落在本段中间才断;越过断点一路到 EOF
+        return _TruncResp(view[:limit] if broken else view, broken,
+                          206 if rng else 200)
+
+    monkeypatch.setattr(pk_mirror, "request_with_retry", fake_rwr)
+    monkeypatch.setattr(requests, "get", fake_stream_get)
+    meta = pk_mirror.build_mirror(max_studies=1)
+    assert meta["studies_built"] == 1 and meta["studies_failed"] == 0
+    assert ranges_used[0] is None and any(ranges_used)          # 先全量后 Range 续传
+    payload = _load("PKDB000001")
+    tab = next(t for t in payload["tsv"] if t["file"].endswith("Tab1.tsv"))
+    assert len(tab["rows"]) == 20000                             # 表头 + 19999 行,拼接全文无损
+    assert tab["rows"][1][0] == "1" and tab["rows"][-1][0] == "19999"
 
 
 def test_api_pk_mirror_status_mounted():

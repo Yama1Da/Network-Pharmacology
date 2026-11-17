@@ -154,6 +154,10 @@ PKDB_MEDIA_BASE = "https://pk-db.com/media/data"
 PKDB_CACHE_SUBDIR = "pkdb_raw"   # 相对子目录名,运行时由 CACHE_DIR 拼接(沙箱随 CACHE_DIR 走)
 PK_MIRROR_TTL_DAYS = 180         # 文献策展节奏慢,过期周期可比四源(60 天)长一档
 PKDB_RETRY_DELAY = 2.0           # 镜像请求失败后的重试间隔(秒),2026-11-17 定稿:2 秒
+PKDB_DOWNLOAD_WORKERS = 4        # 镜像并发 worker 数(2026-11-17 定稿):下载是纯 I/O 等待,
+# 线程池只重叠回包等待;0.2s 礼貌间隔有全局锁,请求发起节奏与串行一致(不加压),
+# 4 个已到节流吞吐上限(5 请求/秒),再多白费且推高缓存文件写竞争
+# (HTTP 缓存是 JSON 文件锁,caching.py _path_locks,非 sqlite——2026-11-17 审查勘误)
 
 # CLI 结果目录:取 API.env 里的 CLI_RESULTS_DIR(配一次永久生效,与 VINA_DIR 同类的本机路径,不入库);
 # 未配置时为空串,cli.py 兜底落到 ./results。供 cli.py 的 --out 三级解析作第二优先级。

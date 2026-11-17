@@ -178,6 +178,7 @@ export interface PkMirrorStatus {
   studies?: number
   tsv_files?: number
   failures?: number
+  missing?: number
   built_at?: string
   age?: number | null
   stale?: boolean

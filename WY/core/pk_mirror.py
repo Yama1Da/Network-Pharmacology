@@ -15,6 +15,15 @@
   且带 intervention 列回链给药方案表(剂型/途径/剂量),供归一化层做"治疗剂量
   过滤"与暴露-活性配对。
 
+可靠性三件套(2026-11-17 定案,当日实跑 3 个失败全定性后加):
+  ① 并发搬运——下载是纯 I/O 等待,线程池重叠回包等待提速 2.5–3 倍;http_client
+    的 0.2s 礼貌间隔有全局锁,请求发起节奏与串行完全一致(加 worker 不加压);
+  ② Range 断点续传兜底——上游对个别较大源表做"确定性"chunked 截断(实测
+    .Lenuzza2016_Fig1.tsv 恒断于 65269/310696 字节,每次重试死在同一位置),
+    全量 GET 永远拿不全;实测服务器支持 Range(206),从断点续传拼接即拿全;
+  ③ 研究级 404 归"缺失"——索引有名字、文件集从未发布的悬空引用(如
+    PKDB00965),重试无意义:不算镜像失败、不进补试,单独立账。
+
 每研究落盘 {CACHE_DIR}/{PKDB_CACHE_SUBDIR}/<sid>.json:
   研究摘要(sid/name/date/licence/access/substances/pmid/title) + files 清单 +
   tsv:[{file,url,rows}] (rows 为字符串二维表,逐字保存) + skipped + fetched_at。
@@ -29,11 +38,13 @@ import io
 import json
 import logging
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from WY import config
-from WY.core.http_client import request_with_retry
+from WY.core.http_client import request_with_retry, throttle
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +56,11 @@ class MirrorIndexError(RuntimeError):
     """研究清单拉取失败(无法继续镜像,整批终止)。"""
 
 
+class StudyMissingError(RuntimeError):
+    """研究文件集上游缺失(summary 或 _studies 端点 404,悬空引用):重试无意义,
+    不算镜像失败、不进补试,单独立账进 _meta.json 的 missing 清单。"""
+
+
 def _raw_dir() -> str:
     """镜像落盘目录:调用时读 config(沙箱/测试改 CACHE_DIR 即生效)。"""
     return os.path.join(config.CACHE_DIR, config.PKDB_CACHE_SUBDIR)
@@ -54,34 +70,97 @@ def _meta_path() -> str:
     return os.path.join(_raw_dir(), "_meta.json")
 
 
-def _get_json(url: str, label: str):
+def _get_json(url: str, label: str) -> tuple[dict | None, int | None]:
+    """拉 JSON。返回 (payload, status):网络重试耗尽 → (None, None);
+    404(上游悬空引用,短路不重试) → (None, 404);成功 → (payload, 200)。"""
     resp = request_with_retry(
         url, method="get", max_retries=config.LIGHT_API_MAX_RETRIES,
         timeout=config.API_TIMEOUT, label=label, throttle_key="pkdb",
         use_cache=True, retry_delay=config.PKDB_RETRY_DELAY,
+        no_retry_status=(404,),
         cache_ttl_hours=24,   # PK-DB 缓存 1 天(2026-11-17 定稿):补试近零成本,>1 天的"更新"能拿到策展修订
     )
     if resp is None:
-        return None
-    return resp.json()
+        return None, None
+    if resp.status_code == 404:
+        return None, 404
+    return resp.json(), int(resp.status_code)
+
+
+def _stream_with_resume(url: str, label: str, max_parts: int = 30) -> str | None:
+    """流式下载 + Range 断点续传兜底(2026-11-17 定案):上游对个别较大源表做
+    确定性 chunked 截断(实测 .Lenuzza2016_Fig1.tsv 恒断于 65269 字节),全量
+    GET 永远不完整、逐次重试只会死在同一位置;实测服务器支持 Range(206),
+    从断点续传拼接即可拿全。返回 UTF-8 全文;超轮限/非 200|206 → None。
+    只在上游缓存路径重试耗尽后才走这里(正常文件不受影响),故不走 sqlite
+    HTTP 缓存——残缺响应不能进缓存,整文件本地持久化在 <sid>.json 里。
+
+    两个实现细节(2026-11-17 实跑教训,首版续传空手而归的根因):
+    - 强制 Accept-Encoding: identity——requests 默认发 gzip,服务端若压缩,
+      Range 偏移是对压缩流的,而 iter_content 给的是解码后字节,拼接必错位;
+    - 自适应缩块——urllib3 的 iter_content 不足一块的断前尾部随 IncompleteRead
+      一起丢弃(截断点 65269 < 64KB 首块 ⇒ 首版每轮零进展、20 轮空转),
+      零进展轮把块 16384→…→1 收缩,块小于"到截断点的余量"后断前字节即可全部入袋。"""
+    import requests
+
+    parts: list[bytes] = []
+    got = 0
+    chunk = 16384
+    for round_no in range(1, max_parts + 1):
+        throttle("pkdb")   # 续传请求同样守 0.2s 礼貌间隔
+        headers = {"Accept-Encoding": "identity"}
+        if got:
+            headers["Range"] = f"bytes={got}-"
+        try:
+            with requests.get(url, headers=headers, timeout=config.API_TIMEOUT,
+                              stream=True) as resp:
+                if resp.status_code == 200 and got:
+                    # 服务器无视 Range 回了整段:丢弃旧断片从头收
+                    parts, got = [], 0
+                elif resp.status_code not in (200, 206):
+                    logger.warning("%s: 续传响应异常 status=%s", label, resp.status_code)
+                    return None
+                got_before = got
+                for piece in resp.iter_content(chunk_size=chunk):
+                    parts.append(piece)
+                    got += len(piece)
+                # 读到尾即拿全(200 一次拿全 / 206 收到段尾)
+                if round_no > 1:
+                    logger.info("%s: Range 续传完成,共 %d 字节(%d 轮)", label, got, round_no)
+                return b"".join(parts).decode("utf-8", errors="replace")
+        except Exception as exc:
+            if got == got_before and chunk > 1:
+                # 本轮零进展:截断点落在本轮首块内部,不足一块的断前尾部被整块丢弃
+                chunk = max(1, chunk // 8)
+                logger.warning("%s: 零进展轮,块缩至 %d 字节(%s 于 %d 字节)",
+                               label, chunk, type(exc).__name__, got)
+            else:
+                logger.warning("%s: 传输中断于 %d 字节(%s),第 %d 轮续传",
+                               label, got, type(exc).__name__, round_no + 1)
+    logger.error("%s: Range 续传 %d 轮仍未拿全", label, max_parts)
+    return None
 
 
 def _get_text(url: str, label: str) -> tuple[str | None, int | None]:
-    """下载文本。返回 (text, status)：网络重试耗尽 → (None, None)；
-    404(上游引用悬空,重试无意义) → (None, 404)；成功 → (text, 200)。"""
+    """下载文本。返回 (text, status):404(上游引用悬空,重试无意义) → (None, 404);
+    成功 → (text, 200);缓存路径重试耗尽 → Range 续传兜底,仍败 → (None, None)。"""
     resp = request_with_retry(
         url, method="get", max_retries=config.API_MAX_RETRIES,
         timeout=config.API_TIMEOUT, label=label, throttle_key="pkdb",
         use_cache=True, no_retry_status=(404,),
         retry_delay=config.PKDB_RETRY_DELAY, cache_ttl_hours=24,
     )
-    if resp is None:
+    if resp is not None:
+        if resp.status_code == 404:
+            return None, 404
+        # 显式按 UTF-8 解码:requests 对无 charset 的 text/* 默认按 latin-1,
+        # 作者名/化学品名的非 ASCII 字符(如 König)会变乱码——镜像要逐字保存原文。
+        return resp.content.decode("utf-8", errors="replace"), int(resp.status_code)
+    # 重试耗尽多为确定性截断(IncompleteRead),重试永不过关:转 Range 续传
+    text = _stream_with_resume(url, label)
+    if text is None:
         return None, None
-    if resp.status_code == 404:
-        return None, 404
-    # 显式按 UTF-8 解码:requests 对无 charset 的 text/* 默认按 latin-1,
-    # 作者名/化学品名的非 ASCII 字符(如 König)会变乱码——镜像要逐字保存原文。
-    return resp.content.decode("utf-8", errors="replace"), int(resp.status_code)
+    return text, 200
 
 
 def _fetch_index(progress=None) -> list[dict]:
@@ -90,7 +169,7 @@ def _fetch_index(progress=None) -> list[dict]:
     url: str | None = f"{config.PKDB_API_BASE}/pkdata/studies/"
     pages = 0
     while url:
-        payload = _get_json(url, "PK-DB study index")
+        payload, _ = _get_json(url, "PK-DB study index")
         if payload is None:
             raise MirrorIndexError("PK-DB 研究清单拉取失败(重试后仍不可达)")
         page = payload.get("data", {})
@@ -132,7 +211,7 @@ def _fetch_substance_map(progress=None) -> list[dict]:
     nodes: list[dict] = []
     url: str | None = f"{config.PKDB_API_BASE}/info_nodes/?ntype=substance"
     while url:
-        payload = _get_json(url, "PK-DB substance map")
+        payload, _ = _get_json(url, "PK-DB substance map")
         if payload is None:
             raise RuntimeError("PK-DB 物质映射拉取失败")
         page = payload.get("data", {})
@@ -144,13 +223,16 @@ def _fetch_substance_map(progress=None) -> list[dict]:
 
 
 def _fetch_study_payload(sid: str) -> dict:
-    """单研究全量搬运:摘要 + 嵌套文件清单 + 逐个下载 .tsv 解析为二维表。"""
-    summary = _get_json(f"{config.PKDB_API_BASE}/pkdata/studies/{sid}/",
-                        f"PK-DB study summary {sid}")
-    full = _get_json(f"{config.PKDB_API_BASE}/_studies/{sid}/",
-                     f"PK-DB study files {sid}")
+    """单研究全量搬运:摘要 + 嵌套文件清单 + 逐个下载 .tsv 解析为二维表。
+    摘要或文件清单 404(上游悬空引用) → StudyMissingError,由调用方归缺失立账。"""
+    summary, s_status = _get_json(f"{config.PKDB_API_BASE}/pkdata/studies/{sid}/",
+                                  f"PK-DB study summary {sid}")
+    full, f_status = _get_json(f"{config.PKDB_API_BASE}/_studies/{sid}/",
+                               f"PK-DB study files {sid}")
     if summary is None or full is None:
-        raise RuntimeError(f"{sid}: 研究摘要/文件清单拉取失败")
+        if 404 in (s_status, f_status):
+            raise StudyMissingError(f"{sid}: 研究摘要或文件集上游缺失(404)")
+        raise RuntimeError(f"{sid}: 研究摘要/文件清单拉取失败(网络)")
     download, skipped = _collect_media(full)
     tsv_entries: list[dict] = []
     for url in download:
@@ -190,10 +272,14 @@ def _atomic_write_json(path: str, obj) -> None:
 
 def build_mirror(force: bool = False, progress=None,
                  max_studies: int | None = None) -> dict:
-    """全量镜像:研究清单 → 逐研究(摘要+嵌套+源表) → 落盘。
+    """全量镜像:研究清单 → 并发搬运(线程池,礼貌间隔不变) → 落盘。
 
-    断点续传:已存在的 <sid>.json 在 force=False 时跳过;单研究失败记入
-    failures 不断批(失败清单随 _meta.json 持久化,重跑 force=True 可补齐)。
+    并发(2026-11-17 定案):下载是纯 I/O 等待,worker 只重叠回包等待;0.2s
+    礼貌间隔有全局锁,请求发起节奏与串行完全一致,对 PK-DB 不加压。主循环与
+    失败补试共用 _run_batch,记账同锁。
+    断点续传:已存在的 <sid>.json 在 force=False 时跳过(顺序先筛掉,不进池);
+    单研究失败记入 failures 不断批(失败清单随 _meta.json 持久化,重跑可补齐);
+    研究级 404 归 missing 立账,不算失败、不进补试。
     返回统计 dict(同时持久化到 _meta.json,供管理页状态查询)。
     """
     started = time.time()
@@ -201,57 +287,94 @@ def build_mirror(force: bool = False, progress=None,
     studies = _fetch_index()
     if max_studies:
         studies = studies[:max_studies]
-    total = len(studies)
-    built = skipped_existing = 0
-    tsv_files = skipped_files = 0
-    failures: list[dict] = []
+    sids = [str(item.get("sid", "") or "") for item in studies]
+    sids = [s for s in sids if s]
+    total = len(sids)
+
+    lock = threading.Lock()
+    stats = {"built": 0, "skipped_existing": 0, "tsv": 0, "skipped_files": 0,
+             "done": 0, "failures": [], "missing": []}
 
     def _attempt(sid: str) -> None:
-        """单研究搬运(下载+落盘);失败抛异常由调用方记账。"""
-        nonlocal built, tsv_files, skipped_files
+        """单研究搬运(下载+落盘);缺失抛 StudyMissingError、失败抛异常,
+        由 _run_batch 统一记账。"""
         payload = _fetch_study_payload(sid)
         _atomic_write_json(os.path.join(_raw_dir(), f"{sid}.json"), payload)
-        built += 1
-        tsv_files += len(payload["tsv"])
-        skipped_files += len(payload["skipped"])
+        with lock:
+            stats["built"] += 1
+            stats["tsv"] += len(payload["tsv"])
+            stats["skipped_files"] += len(payload["skipped"])
 
-    for i, item in enumerate(studies, start=1):
-        sid = str(item.get("sid", "") or "")
-        if progress:
-            progress(fraction=(i - 1) / max(total, 1) * 0.95,
-                     text=f"镜像研究 {i}/{total}: {sid}")
-        if not sid:
-            continue
+    def _run_batch(batch: list[str], *, frac: float | None,
+                   text_prefix: str) -> None:
+        """一批研究并发搬运:完成顺序不定,进度按完成数推进(不能按下标)。
+        frac=None 时进度条随完成数爬升(主循环);给定 frac 时定格(补试)。"""
+        if not batch:
+            return
+        workers = max(1, int(getattr(config, "PKDB_DOWNLOAD_WORKERS", 4)))
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="pkdb-mirror") as pool:
+            futures = {pool.submit(_attempt, sid): sid for sid in batch}
+            done_local = 0   # 仅 as_completed 循环线程(调用方主线程)读写,无需锁
+            for fut in as_completed(futures):
+                sid = futures[fut]
+                try:
+                    fut.result()
+                except StudyMissingError as exc:
+                    with lock:
+                        stats["missing"].append({"sid": sid, "reason": str(exc)})
+                    logger.info("PK-DB 镜像研究 %s 上游缺失(404),归 missing 不算失败", sid)
+                except Exception as exc:
+                    with lock:
+                        stats["failures"].append({"sid": sid,
+                                                  "error": f"{type(exc).__name__}: {exc}"})
+                    logger.exception("PK-DB 镜像研究 %s 失败", sid)
+                finally:
+                    with lock:
+                        stats["done"] += 1
+                        d = stats["done"]
+                    done_local += 1
+                if progress:
+                    # 主批按全局完成数/总数(含续传跳过);补试批按本批进度——
+                    # 此时全局 done 已 ≥ total,再当分母会显示"804/803"(2026-11-17 审查)
+                    shown = (f"{d}/{total}" if frac is None
+                             else f"{done_local}/{len(batch)}")
+                    p_frac = (min(d / max(total, 1) * 0.95, 0.95)
+                              if frac is None else frac)
+                    progress(fraction=p_frac, text=f"{text_prefix} {shown}: {sid}")
+
+    todo: list[str] = []
+    for sid in sids:
         if not force and os.path.exists(os.path.join(_raw_dir(), f"{sid}.json")):
-            skipped_existing += 1
+            with lock:
+                stats["skipped_existing"] += 1
+                stats["done"] += 1
+                d = stats["done"]
+            if progress:
+                progress(fraction=min(d / max(total, 1) * 0.95, 0.95),
+                         text=f"续传跳过 {d}/{total}: {sid}")
             continue
-        try:
-            _attempt(sid)
-        except Exception as exc:
-            failures.append({"sid": sid, "error": f"{type(exc).__name__}: {exc}"})
-            logger.exception("PK-DB 镜像研究 %s 失败", sid)
+        todo.append(sid)
+    _run_batch(todo, frac=None, text_prefix="镜像研究")
 
     # 失败补试:网络抖动/上游瞬时故障多数一轮内恢复;连续两轮补试仍败才最终
-    # 记失败。失败研究无落盘文件,下次构建断点续传仍会自动补(不会被跳过)。
+    # 记失败。缺失(missing)不进补试——404 是永久状态,重试无意义。失败研究
+    # 无落盘文件,下次构建断点续传仍会自动补(不会被跳过)。
     retry_passes_used = 0
     for pass_no in (1, 2):
-        if not failures:
+        with lock:
+            pending = [f["sid"] for f in stats["failures"]]
+            stats["failures"] = []
+        if not pending:
             break
         retry_passes_used += 1
         if progress:
             progress(fraction=0.96,
-                     text=f"失败补试第 {pass_no} 轮({len(failures)} 个研究)")
-        retry_sids = [f["sid"] for f in failures]
-        failures = []
-        for sid in retry_sids:
-            try:
-                if progress:
-                    progress(text=f"补试 {sid}")
-                _attempt(sid)
-            except Exception as exc:
-                failures.append({"sid": sid, "error": f"{type(exc).__name__}: {exc}"})
-                logger.exception("PK-DB 镜像补试 %s 失败(第 %d 轮)", sid, pass_no)
-    failed = len(failures)
+                     text=f"失败补试第 {pass_no} 轮({len(pending)} 个研究)")
+        _run_batch(pending, frac=0.96, text_prefix=f"补试第 {pass_no} 轮")
+    with lock:
+        failures = list(stats["failures"])
+        missing = list(stats["missing"])
     substance_nodes = 0
     substance_map_ok = True
     try:
@@ -266,26 +389,34 @@ def build_mirror(force: bool = False, progress=None,
         substance_map_ok = False
         failures.append({"sid": "_substance_map", "error": f"{type(exc).__name__}: {exc}"})
         logger.exception("PK-DB 物质映射拉取失败")
+    # 在物质映射记账之后取值(2026-11-17 审查修正:此前提前取值,映射失败会
+    # 漏计——failures 清单含 _substance_map 但 studies_failed 不增,前端据此
+    # 不出失败警告与重试入口,静默半失败)
+    failed = len(failures)
     meta = {
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "studies_indexed": total,
-        "studies_built": built,
-        "studies_skipped_existing": skipped_existing,
+        "studies_built": stats["built"],
+        "studies_skipped_existing": stats["skipped_existing"],
         "studies_failed": failed,
+        "studies_missing": len(missing),
         "retry_passes": retry_passes_used,
         "failures": failures,
-        "tsv_files": tsv_files,
-        "skipped_files": skipped_files,
+        "missing": missing,
+        "tsv_files": stats["tsv"],
+        "skipped_files": stats["skipped_files"],
         "substance_nodes": substance_nodes,
         "substance_map_ok": substance_map_ok,
         "duration_sec": round(time.time() - started, 1),
     }
     _atomic_write_json(_meta_path(), meta)
     if progress:
-        done_text = f"完成:新建 {built},续传跳过 {skipped_existing}"
+        done_text = f"完成:新建 {stats['built']},续传跳过 {stats['skipped_existing']}"
         if failed:
             # 收尾警告(2026-11-17):补试双轮仍失败的计数要明确提示用户(404 缺失不计)
             done_text += f",仍有 {failed} 个研究失败(404 缺失不计,可点重试)"
+        if missing:
+            done_text += f";{len(missing)} 个研究上游文件集缺失(404)"
         progress(fraction=1.0, text=done_text)
     return meta
 
@@ -323,4 +454,5 @@ def mirror_status() -> dict:
             logger.exception("PK-DB 镜像建库时间解析失败: %s", built_at)
     return {"built": len(sids) > 0, "studies": len(sids),
             "tsv_files": meta.get("tsv_files"), "failures": meta.get("studies_failed", 0),
+            "missing": meta.get("studies_missing", 0),
             "built_at": built_at[:10], "age": age, "stale": stale, "ttl_days": ttl}

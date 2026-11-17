@@ -24,6 +24,7 @@ TEXT_EN: dict[str, str] = {
     "app.btn_data_network": "Data Network Pharmacology Analysis",
     "app.btn_molecular_docking": "Molecular Docking",
     "app.btn_expression_ml": "Expression & ML Screening",
+    "app.btn_synergy": "Synergy Prediction",
 
     # ---- Expression_ML_Screening.py(M4 GEO+ML page) ----
     "eml.page_title": "Expression & ML Screening",

@@ -4,8 +4,8 @@
 WY/web/src/locales/{zh,en}.json 由本脚本生成(勿手改,重跑即刷新);
 同时并入 TS 前端自己的 web.* 命名空间(导航 / 通用控件 / 各视图文案),
 zh 与 en 各有独立取值 —— 新增或修改前端文案先改这里,再重跑本脚本。
-运行方式(在 WY 目录下):
-    python tools/export_i18n_json.py
+运行方式(在仓库根目录,2026-11-17 审查勘误:直接 python tools/… 会 ModuleNotFoundError):
+    python -m WY.tools.export_i18n_json
 """
 
 import json
@@ -135,11 +135,17 @@ WEB_ZH = {
     "web.data.pk_built": "{studies} 研究 · {tsv} 源表 · 构建于 {at}(已 {age} 天)",
     "web.data.pk_missing": "未镜像 —— 浓度可达性需要它,请先构建",
     "web.data.pk_stale": "PK-DB 镜像已 {age} 天,数据可能陈旧 —— 建议更新。",
-    "web.data.pk_building": "镜像中…(803 个研究,约 2–3 小时;关闭页面构建不受影响,重进页面刷新状态)",
+    "web.data.pk_building": "镜像中…(803 个研究,4 并发约 45–70 分钟;关闭页面构建不受影响,重进页面刷新状态)",
     "web.data.pk_build_done": "PK-DB 镜像完成:{studies} 研究 / {tsv} 源表",
     "web.data.pk_status_fail": "PK-DB 镜像状态读取失败",
     "web.data.pk_failures": "本次镜像失败 {n} 个研究(404 缺失不计;重试只补失败项,已成功的不重拉)",
+    "web.data.pk_missing_studies": "另有 {n} 个研究上游文件集缺失(404 悬空引用)—— 非镜像故障,已单独立账",
     "web.data.pk_retry_btn": "重试",
+    # ---- 协同预测(二期占位页) ----
+    "web.synergy.kicker": "SYNERGY PREDICTION",
+    "web.synergy.title": "协同预测",
+    "web.synergy.sub": "网络分离度协同预测 · 靶点浓度可达性标注",
+    "web.synergy.building": "建设中 —— 协同预测引擎二期开发中;上线后在此完成药物对协同/拮抗预测与浓度可达性标注。",
     # ---- 文件集合(4 个复用页的页头 props) ----
     "web.collection.ppi_kicker": "PPI NETWORK FILES",
     "web.collection.ppi_title": "PPI 文件",
@@ -867,11 +873,17 @@ WEB_EN = {
     "web.data.pk_built": "{studies} studies · {tsv} tables · built {at} ({age} days ago)",
     "web.data.pk_missing": "Not mirrored — reachability depends on it; build it first",
     "web.data.pk_stale": "The PK-DB mirror is {age} days old and may be stale — an update is recommended.",
-    "web.data.pk_building": "Mirroring… (803 studies, ~2–3 hours; closing the page won't stop the build — reopen to refresh status)",
+    "web.data.pk_building": "Mirroring… (803 studies, ~45–70 min with 4 concurrent workers; closing the page won't stop the build — reopen to refresh status)",
     "web.data.pk_build_done": "PK-DB mirror complete: {studies} studies / {tsv} tables",
     "web.data.pk_status_fail": "Failed to read the PK-DB mirror status",
     "web.data.pk_failures": "{n} studies failed this run (404s not counted; retry fetches only the failed ones)",
+    "web.data.pk_missing_studies": "{n} studies have no published file set upstream (404 dangling refs) — not a mirror failure, tracked separately",
     "web.data.pk_retry_btn": "Retry",
+    # ---- Synergy prediction (phase 2 placeholder page) ----
+    "web.synergy.kicker": "SYNERGY PREDICTION",
+    "web.synergy.title": "Synergy Prediction",
+    "web.synergy.sub": "Network-separation synergy prediction · target concentration reachability annotation",
+    "web.synergy.building": "Under construction — the synergy prediction engine is in development; drug-pair synergy/antagonism prediction with reachability annotation will live here.",
     # ---- 文件集合(4 个复用页的页头 props) ----
     "web.collection.ppi_kicker": "PPI NETWORK FILES",
     "web.collection.ppi_title": "PPI Files",

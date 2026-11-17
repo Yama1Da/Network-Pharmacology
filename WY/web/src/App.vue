@@ -17,6 +17,7 @@ import MlResultsView from './views/MlResultsView.vue'
 import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import SourcesView from './views/SourcesView.vue'
+import SynergyView from './views/SynergyView.vue'
 
 const { t, locale } = useI18n()
 
@@ -38,7 +39,8 @@ const NAV_GROUPS: NavGroup[] = [
     key: 'validation', label: 'app.popover_docking', items: [
       { route: 'analysis', label: 'app.btn_data_network' },
       { route: 'docking', label: 'app.btn_molecular_docking' },
-      { route: 'ml', label: 'app.btn_expression_ml' }
+      { route: 'ml', label: 'app.btn_expression_ml' },
+      { route: 'synergy', label: 'app.btn_synergy' }
     ]
   }
 ]
@@ -173,6 +175,7 @@ onBeforeUnmount(() => {
       <DataView v-else-if="route === 'data'" />
       <MlView v-else-if="route === 'ml'" />
       <MlResultsView v-else-if="route === 'ml-results'" />
+      <SynergyView v-else-if="route === 'synergy'" />
       <SettingsView v-else-if="route === 'settings'" />
       <!-- 未知 hash 兜底:书签过期 / 手改地址时不至于白屏 -->
       <div v-else class="notfound">

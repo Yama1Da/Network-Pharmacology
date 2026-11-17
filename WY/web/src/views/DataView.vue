@@ -116,6 +116,11 @@ onMounted(() => {
     <p v-if="pkLoaded && pk?.built && pk?.stale" class="notice">
       {{ t('web.data.pk_stale', { age: pk.age }) }}
     </p>
+    <!-- 上游文件集缺失(404 悬空引用):永久状态非故障,灰色弱化,不与失败混淆 -->
+    <p v-if="pkLoaded && pk?.built && (pk.missing ?? 0) > 0" class="count"
+       style="display:block; color:var(--c-ink3)">
+      {{ t('web.data.pk_missing_studies', { n: pk.missing }) }}
+    </p>
     <div v-if="pkLoaded && pk?.built && (pk.failures ?? 0) > 0" class="controls">
       <span class="count" style="color:var(--c-danger)">
         {{ t('web.data.pk_failures', { n: pk.failures }) }}
