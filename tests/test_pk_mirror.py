@@ -60,11 +60,13 @@ _TSV_TEXTS = {
 
 
 class _FakeResp:
-    """比 conftest._FakeResp 多 text/content:镜像层要下载 TSV 文本。"""
+    """比 conftest._FakeResp 多 text/content/status_code:镜像层要下载 TSV 文本,
+    并模拟 404(上游文件缺失)与网络重试语义。"""
 
-    def __init__(self, payload=None, text=None):
+    def __init__(self, payload=None, text=None, status_code=200):
         self._payload = payload
         self.text = text
+        self.status_code = status_code
         self.content = text.encode("utf-8") if text is not None else b""
 
     def json(self):
@@ -105,7 +107,10 @@ def _mk_fake(calls: list, fail_sids: tuple = ()):
             return _FakeResp(payload=_STUDY_SUMMARIES[sid])
         if "/media/data/" in url:
             name = url.rsplit("/", 1)[-1]
-            return _FakeResp(text=_TSV_TEXTS[name])
+            if name in _TSV_TEXTS:
+                return _FakeResp(text=_TSV_TEXTS[name])
+            # 未收录的 .tsv 视为上游 404(模拟引用悬空文件)
+            return _FakeResp(payload=None, text=None, status_code=404)
         raise AssertionError(f"假响应未覆盖的 URL: {url}")
 
     return fake
@@ -189,6 +194,89 @@ def test_index_failure_aborts(monkeypatch):
         raise AssertionError("应抛 MirrorIndexError")
     except pk_mirror.MirrorIndexError:
         pass
+
+
+def test_404_tsv_recorded_as_missing(monkeypatch):
+    """上游 404 的源表:记入 skipped(缺失)、不算研究失败,且不重试(404 只请求一次)。"""
+    calls: list = []
+
+    def fake(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/pkdata/studies/"):
+            return _FakeResp(payload={"current_page": 1, "last_page": 1,
+                                      "next_page_url": None,
+                                      "data": {"count": 1, "data": [
+                                          {"sid": "PKDB00900", "name": "S",
+                                           "licence": "open", "access": "public",
+                                           "date": "", "substances": [],
+                                           "reference_pmid": "", "reference_title": ""}]}})
+        if "/_studies/" in url:
+            return _FakeResp(payload={"files": [
+                "https://pk-db.com/media/data/.PKDB00900_Tab1.tsv",
+                "https://pk-db.com/media/data/.PKDB00900_Gone.tsv",   # 上游 404
+            ]})
+        if "/pkdata/studies/" in url:
+            return _FakeResp(payload={"sid": "PKDB00900", "name": "S", "licence": "open",
+                                      "access": "public", "date": "", "substances": [],
+                                      "reference_pmid": "", "reference_title": ""})
+        if "/media/data/" in url:
+            name = url.rsplit("/", 1)[-1]
+            if name == ".PKDB00900_Gone.tsv":
+                calls.append("404:" + name)     # 计数:验证 404 不重试
+                return _FakeResp(payload=None, text=None, status_code=404)
+            return _FakeResp(text=_tsv([["a", "b"], ["1", "2"]]))
+        raise AssertionError(f"假响应未覆盖的 URL: {url}")
+
+    monkeypatch.setattr(pk_mirror, "request_with_retry", fake)
+    meta = pk_mirror.build_mirror(max_studies=1)
+    assert meta["studies_failed"] == 0 and meta["studies_built"] == 1
+    assert sum(1 for c in calls if c.startswith("404:")) == 1   # 404 无重试
+    payload = _load("PKDB00900")
+    assert any("404" in s["reason"] for s in payload["skipped"])
+
+
+def test_retry_pass_recovers_transient_failure(monkeypatch):
+    """瞬时故障:主循环失败一轮、补试成功 → 最终 failed=0 且计入 built。"""
+    calls: list = []
+    hits = {"PKDB000002": 0}
+
+    def fake(url, **kwargs):
+        calls.append(url)
+        if "/_studies/" in url:
+            sid = url.rstrip("/").rsplit("/", 1)[-1]
+            if sid == "PKDB000002":
+                hits[sid] += 1
+                if hits[sid] == 1:
+                    raise OSError("transient")   # 首次失败,补试即恢复
+            base = "https://pk-db.com/media/data/"
+            return _FakeResp(payload={"files": [base + f".{sid}_Tab1.tsv"]})
+        if url.endswith("/pkdata/studies/"):
+            return _FakeResp(payload={"current_page": 1, "last_page": 1,
+                                      "next_page_url": None,
+                                      "data": {"count": 2, "data": [
+                                          {"sid": "PKDB000001", "name": "A", "licence": "open",
+                                           "access": "public", "date": "", "substances": [],
+                                           "reference_pmid": "", "reference_title": ""},
+                                          {"sid": "PKDB000002", "name": "B", "licence": "open",
+                                           "access": "public", "date": "", "substances": [],
+                                           "reference_pmid": "", "reference_title": ""}]}})
+        if "/pkdata/studies/" in url:
+            sid = url.rstrip("/").rsplit("/", 1)[-1]
+            return _FakeResp(payload={"sid": sid, "name": sid, "licence": "open",
+                                      "access": "public", "date": "", "substances": [],
+                                      "reference_pmid": "", "reference_title": ""})
+        if "/info_nodes/" in url:
+            return _FakeResp(payload={"current_page": 1, "last_page": 1,
+                                      "next_page_url": None,
+                                      "data": {"count": 0, "data": []}})
+        if "/media/data/" in url:
+            return _FakeResp(text=_tsv([["a"], ["1"]]))
+        raise AssertionError(f"假响应未覆盖的 URL: {url}")
+
+    monkeypatch.setattr(pk_mirror, "request_with_retry", fake)
+    meta = pk_mirror.build_mirror()
+    assert meta["studies_failed"] == 0 and meta["studies_built"] == 2
+    assert meta["retry_passes"] == 1
 
 
 def test_api_pk_mirror_status_mounted():

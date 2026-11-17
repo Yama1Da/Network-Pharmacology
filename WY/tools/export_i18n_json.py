@@ -138,7 +138,8 @@ WEB_ZH = {
     "web.data.pk_building": "镜像中…(803 个研究,约 2–3 小时;关闭页面构建不受影响,重进页面刷新状态)",
     "web.data.pk_build_done": "PK-DB 镜像完成:{studies} 研究 / {tsv} 源表",
     "web.data.pk_status_fail": "PK-DB 镜像状态读取失败",
-    "web.data.pk_failures": "{n} 个研究镜像失败 —— 重新构建可补齐",
+    "web.data.pk_failures": "本次镜像失败 {n} 个研究(404 缺失不计;重试只补失败项,已成功的不重拉)",
+    "web.data.pk_retry_btn": "重试",
     # ---- 文件集合(4 个复用页的页头 props) ----
     "web.collection.ppi_kicker": "PPI NETWORK FILES",
     "web.collection.ppi_title": "PPI 文件",
@@ -869,7 +870,8 @@ WEB_EN = {
     "web.data.pk_building": "Mirroring… (803 studies, ~2–3 hours; closing the page won't stop the build — reopen to refresh status)",
     "web.data.pk_build_done": "PK-DB mirror complete: {studies} studies / {tsv} tables",
     "web.data.pk_status_fail": "Failed to read the PK-DB mirror status",
-    "web.data.pk_failures": "{n} studies failed to mirror — re-run the build to fill them in",
+    "web.data.pk_failures": "{n} studies failed this run (404s not counted; retry fetches only the failed ones)",
+    "web.data.pk_retry_btn": "Retry",
     # ---- 文件集合(4 个复用页的页头 props) ----
     "web.collection.ppi_kicker": "PPI NETWORK FILES",
     "web.collection.ppi_title": "PPI Files",

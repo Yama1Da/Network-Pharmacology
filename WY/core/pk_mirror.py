@@ -58,24 +58,30 @@ def _get_json(url: str, label: str):
     resp = request_with_retry(
         url, method="get", max_retries=config.LIGHT_API_MAX_RETRIES,
         timeout=config.API_TIMEOUT, label=label, throttle_key="pkdb",
-        use_cache=True,
+        use_cache=True, retry_delay=config.PKDB_RETRY_DELAY,
+        cache_ttl_hours=24,   # PK-DB 缓存 1 天(2026-11-17 定稿):补试近零成本,>1 天的"更新"能拿到策展修订
     )
     if resp is None:
         return None
     return resp.json()
 
 
-def _get_text(url: str, label: str) -> str | None:
+def _get_text(url: str, label: str) -> tuple[str | None, int | None]:
+    """下载文本。返回 (text, status)：网络重试耗尽 → (None, None)；
+    404(上游引用悬空,重试无意义) → (None, 404)；成功 → (text, 200)。"""
     resp = request_with_retry(
-        url, method="get", max_retries=config.LIGHT_API_MAX_RETRIES,
+        url, method="get", max_retries=config.API_MAX_RETRIES,
         timeout=config.API_TIMEOUT, label=label, throttle_key="pkdb",
-        use_cache=True,
+        use_cache=True, no_retry_status=(404,),
+        retry_delay=config.PKDB_RETRY_DELAY, cache_ttl_hours=24,
     )
     if resp is None:
-        return None
+        return None, None
+    if resp.status_code == 404:
+        return None, 404
     # 显式按 UTF-8 解码:requests 对无 charset 的 text/* 默认按 latin-1,
     # 作者名/化学品名的非 ASCII 字符(如 König)会变乱码——镜像要逐字保存原文。
-    return resp.content.decode("utf-8", errors="replace")
+    return resp.content.decode("utf-8", errors="replace"), int(resp.status_code)
 
 
 def _fetch_index(progress=None) -> list[dict]:
@@ -149,9 +155,13 @@ def _fetch_study_payload(sid: str) -> dict:
     tsv_entries: list[dict] = []
     for url in download:
         name = url.rsplit("/", 1)[-1]
-        text = _get_text(url, f"PK-DB tsv {name}")
+        text, status = _get_text(url, f"PK-DB tsv {name}")
         if text is None:
-            raise RuntimeError(f"{sid}: 源表下载失败 {name}")
+            if status == 404:
+                # 上游引用了已删除/未发布的文件:重试无意义,记缺失不算研究失败
+                skipped.append({"file": name, "reason": "404 上游缺失"})
+                continue
+            raise RuntimeError(f"{sid}: 源表下载失败(网络) {name}")
         tsv_entries.append({"file": name, "url": url, "rows": _parse_tsv(text)})
     return {
         "sid": sid,
@@ -192,9 +202,19 @@ def build_mirror(force: bool = False, progress=None,
     if max_studies:
         studies = studies[:max_studies]
     total = len(studies)
-    built = skipped_existing = failed = 0
+    built = skipped_existing = 0
     tsv_files = skipped_files = 0
     failures: list[dict] = []
+
+    def _attempt(sid: str) -> None:
+        """单研究搬运(下载+落盘);失败抛异常由调用方记账。"""
+        nonlocal built, tsv_files, skipped_files
+        payload = _fetch_study_payload(sid)
+        _atomic_write_json(os.path.join(_raw_dir(), f"{sid}.json"), payload)
+        built += 1
+        tsv_files += len(payload["tsv"])
+        skipped_files += len(payload["skipped"])
+
     for i, item in enumerate(studies, start=1):
         sid = str(item.get("sid", "") or "")
         if progress:
@@ -202,20 +222,36 @@ def build_mirror(force: bool = False, progress=None,
                      text=f"镜像研究 {i}/{total}: {sid}")
         if not sid:
             continue
-        path = os.path.join(_raw_dir(), f"{sid}.json")
-        if not force and os.path.exists(path):
+        if not force and os.path.exists(os.path.join(_raw_dir(), f"{sid}.json")):
             skipped_existing += 1
             continue
         try:
-            payload = _fetch_study_payload(sid)
-            _atomic_write_json(path, payload)
-            built += 1
-            tsv_files += len(payload["tsv"])
-            skipped_files += len(payload["skipped"])
+            _attempt(sid)
         except Exception as exc:
-            failed += 1
             failures.append({"sid": sid, "error": f"{type(exc).__name__}: {exc}"})
             logger.exception("PK-DB 镜像研究 %s 失败", sid)
+
+    # 失败补试:网络抖动/上游瞬时故障多数一轮内恢复;连续两轮补试仍败才最终
+    # 记失败。失败研究无落盘文件,下次构建断点续传仍会自动补(不会被跳过)。
+    retry_passes_used = 0
+    for pass_no in (1, 2):
+        if not failures:
+            break
+        retry_passes_used += 1
+        if progress:
+            progress(fraction=0.96,
+                     text=f"失败补试第 {pass_no} 轮({len(failures)} 个研究)")
+        retry_sids = [f["sid"] for f in failures]
+        failures = []
+        for sid in retry_sids:
+            try:
+                if progress:
+                    progress(text=f"补试 {sid}")
+                _attempt(sid)
+            except Exception as exc:
+                failures.append({"sid": sid, "error": f"{type(exc).__name__}: {exc}"})
+                logger.exception("PK-DB 镜像补试 %s 失败(第 %d 轮)", sid, pass_no)
+    failed = len(failures)
     substance_nodes = 0
     substance_map_ok = True
     try:
@@ -236,6 +272,7 @@ def build_mirror(force: bool = False, progress=None,
         "studies_built": built,
         "studies_skipped_existing": skipped_existing,
         "studies_failed": failed,
+        "retry_passes": retry_passes_used,
         "failures": failures,
         "tsv_files": tsv_files,
         "skipped_files": skipped_files,
@@ -245,7 +282,11 @@ def build_mirror(force: bool = False, progress=None,
     }
     _atomic_write_json(_meta_path(), meta)
     if progress:
-        progress(fraction=1.0, text=f"完成:新建 {built},续传跳过 {skipped_existing},失败 {failed}")
+        done_text = f"完成:新建 {built},续传跳过 {skipped_existing}"
+        if failed:
+            # 收尾警告(2026-11-17):补试双轮仍失败的计数要明确提示用户(404 缺失不计)
+            done_text += f",仍有 {failed} 个研究失败(404 缺失不计,可点重试)"
+        progress(fraction=1.0, text=done_text)
     return meta
 
 

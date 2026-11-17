@@ -116,10 +116,14 @@ onMounted(() => {
     <p v-if="pkLoaded && pk?.built && pk?.stale" class="notice">
       {{ t('web.data.pk_stale', { age: pk.age }) }}
     </p>
-    <p v-if="pkLoaded && pk?.built && (pk.failures ?? 0) > 0" class="notice"
-       style="color:var(--c-danger)">
-      {{ t('web.data.pk_failures', { n: pk.failures }) }}
-    </p>
+    <div v-if="pkLoaded && pk?.built && (pk.failures ?? 0) > 0" class="controls">
+      <span class="count" style="color:var(--c-danger)">
+        {{ t('web.data.pk_failures', { n: pk.failures }) }}
+      </span>
+      <button class="bar-btn strong" :disabled="pkJob.running.value" @click="buildPk">
+        {{ t('web.data.pk_retry_btn') }}
+      </button>
+    </div>
 
     <div v-if="pkJob.running.value" class="progress">
       <div class="progress-track">

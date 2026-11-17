@@ -153,6 +153,7 @@ PKDB_API_BASE = "https://pk-db.com/api/v1"
 PKDB_MEDIA_BASE = "https://pk-db.com/media/data"
 PKDB_CACHE_SUBDIR = "pkdb_raw"   # 相对子目录名,运行时由 CACHE_DIR 拼接(沙箱随 CACHE_DIR 走)
 PK_MIRROR_TTL_DAYS = 180         # 文献策展节奏慢,过期周期可比四源(60 天)长一档
+PKDB_RETRY_DELAY = 2.0           # 镜像请求失败后的重试间隔(秒),2026-11-17 定稿:2 秒
 
 # CLI 结果目录:取 API.env 里的 CLI_RESULTS_DIR(配一次永久生效,与 VINA_DIR 同类的本机路径,不入库);
 # 未配置时为空串,cli.py 兜底落到 ./results。供 cli.py 的 --out 三级解析作第二优先级。
