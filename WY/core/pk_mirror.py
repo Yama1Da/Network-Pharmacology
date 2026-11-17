@@ -292,7 +292,21 @@ def build_mirror(force: bool = False, progress=None,
     total = len(sids)
 
     lock = threading.Lock()
-    stats = {"built": 0, "skipped_existing": 0, "tsv": 0, "skipped_files": 0,
+    # 计数续传累计(2026-11-17 修复):tsv/skipped 原本只计本次新建,断点续传
+    # 一跑(全部命中已存文件)就把上一轮累计覆盖清零,状态页出现"645 研究 ·
+    # 0 源表"。force 全量重建从零起算;续传时接上上一轮 meta 的累计值。
+    # 上一轮 meta 缺失(首次构建被中断)时从 0 起算——完成一轮后恢复精确。
+    prev_tsv = prev_skipped = 0
+    if not force and os.path.exists(_meta_path()):
+        try:
+            with open(_meta_path(), encoding="utf-8") as f:
+                _prev = json.load(f)
+            prev_tsv = int(_prev.get("tsv_files") or 0)
+            prev_skipped = int(_prev.get("skipped_files") or 0)
+        except (OSError, ValueError):
+            logger.warning("PK-DB 镜像上一轮 _meta.json 不可读,源表计数从 0 重新累计")
+    stats = {"built": 0, "skipped_existing": 0, "tsv": prev_tsv,
+             "skipped_files": prev_skipped,
              "done": 0, "failures": [], "missing": []}
 
     def _attempt(sid: str) -> None:

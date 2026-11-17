@@ -26,11 +26,12 @@ from WY.i18n.translations_zh import TEXT_ZH
 WEB_ZH = {
     # ---- 导航 ----
     # 顶栏只留 直达项 + 两个下拉组(分组/条目名复用 app.popover_* / app.btn_* 词典);
-    # 收藏 / ML 结果 / 数据管理为从属页,入口在各自宿主页顶部(web.nav.*_link)。
+    # 收藏 / ML 结果 / 分析产物目录为从属页,入口在各自宿主页顶部(web.nav.*_link);
+    # 背景数据库(原数据管理)入信息来源管理组,词条 app.btn_db_mgmt(2026-11-17 迁移)。
     "web.nav.home": "主页",
     "web.nav.logs": "日志",
     "web.nav.settings": "设置",
-    "web.nav.data_link": "数据管理",
+    "web.nav.artifacts_link": "分析产物目录",
     "web.nav.stars_link": "★ 收藏的对接结果",
     "web.nav.results_link": "ML 结果管理",
     # ---- 通用控件 ----
@@ -116,9 +117,9 @@ WEB_ZH = {
     "web.logs.level_set": "日志级别已切换为 {level},对后续日志即时生效",
     "web.logs.level_set_fail": "级别切换失败",
     # ---- 数据管理 ----
-    "web.data.kicker": "DATA MANAGEMENT",
-    "web.data.title": "数据管理",
-    "web.data.sub": "背景互作组 · PK-DB 镜像 · 分析产物目录",
+    "web.data.kicker": "BACKGROUND DATABASES",
+    "web.data.title": "背景数据库",
+    "web.data.sub": "背景互作组 · PK-DB 镜像",
     "web.data.itx_label": "背景互作组",
     "web.data.itx_built": "{nodes} 节点 · {edges} 边 · STRING {version} · 置信度 {conf} · 构建于 {at}(已 {age} 天)",
     "web.data.itx_missing": "未构建 —— 邻近度与 RWR 需要它,请先构建",
@@ -137,6 +138,7 @@ WEB_ZH = {
     "web.data.pk_stale": "PK-DB 镜像已 {age} 天,数据可能陈旧 —— 建议更新。",
     "web.data.pk_building": "镜像中…(803 个研究,4 并发约 45–70 分钟;关闭页面构建不受影响,重进页面刷新状态)",
     "web.data.pk_build_done": "PK-DB 镜像完成:{studies} 研究 / {tsv} 源表",
+    "web.data.pk_uptodate": "镜像已是最新 —— 本次续传跳过 {studies} 个已存研究,无新增",
     "web.data.pk_status_fail": "PK-DB 镜像状态读取失败",
     "web.data.pk_failures": "本次镜像失败 {n} 个研究(404 缺失不计;重试只补失败项,已成功的不重拉)",
     "web.data.pk_missing_studies": "另有 {n} 个研究上游文件集缺失(404 悬空引用)—— 非镜像故障,已单独立账",
@@ -145,7 +147,7 @@ WEB_ZH = {
     "web.synergy.kicker": "SYNERGY PREDICTION",
     "web.synergy.title": "协同预测",
     "web.synergy.sub": "网络分离度协同预测 · 靶点浓度可达性标注",
-    "web.synergy.building": "建设中 —— 协同预测引擎二期开发中;上线后在此完成药物对协同/拮抗预测与浓度可达性标注。",
+    "web.synergy.building": "建设中 —— 协同预测引擎二期开发中;上线后在此完成药物对网络分离度分析与浓度可达性标注。",
     # ---- 文件集合(4 个复用页的页头 props) ----
     "web.collection.ppi_kicker": "PPI NETWORK FILES",
     "web.collection.ppi_title": "PPI 文件",
@@ -768,7 +770,7 @@ WEB_EN = {
     "web.nav.home": "Home",
     "web.nav.logs": "Logs",
     "web.nav.settings": "Settings",
-    "web.nav.data_link": "Data Management",
+    "web.nav.artifacts_link": "Analysis Artifacts",
     "web.nav.stars_link": "★ Starred Docking Results",
     "web.nav.results_link": "ML Results",
     # ---- 通用控件 ----
@@ -854,9 +856,9 @@ WEB_EN = {
     "web.logs.level_set": "Log level switched to {level}; effective for subsequent logs immediately",
     "web.logs.level_set_fail": "Failed to switch the log level",
     # ---- 数据管理 ----
-    "web.data.kicker": "DATA MANAGEMENT",
-    "web.data.title": "Data Management",
-    "web.data.sub": "Background interactome · PK-DB mirror · analysis artifacts",
+    "web.data.kicker": "BACKGROUND DATABASES",
+    "web.data.title": "Background Databases",
+    "web.data.sub": "Background interactome · PK-DB mirror",
     "web.data.itx_label": "Background interactome",
     "web.data.itx_built": "{nodes} nodes · {edges} edges · STRING {version} · confidence {conf} · built {at} ({age} days ago)",
     "web.data.itx_missing": "Not built — proximity and RWR depend on it; build it first",
@@ -875,6 +877,7 @@ WEB_EN = {
     "web.data.pk_stale": "The PK-DB mirror is {age} days old and may be stale — an update is recommended.",
     "web.data.pk_building": "Mirroring… (803 studies, ~45–70 min with 4 concurrent workers; closing the page won't stop the build — reopen to refresh status)",
     "web.data.pk_build_done": "PK-DB mirror complete: {studies} studies / {tsv} tables",
+    "web.data.pk_uptodate": "Mirror is up to date — {studies} existing studies skipped, nothing new",
     "web.data.pk_status_fail": "Failed to read the PK-DB mirror status",
     "web.data.pk_failures": "{n} studies failed this run (404s not counted; retry fetches only the failed ones)",
     "web.data.pk_missing_studies": "{n} studies have no published file set upstream (404 dangling refs) — not a mirror failure, tracked separately",
@@ -883,7 +886,7 @@ WEB_EN = {
     "web.synergy.kicker": "SYNERGY PREDICTION",
     "web.synergy.title": "Synergy Prediction",
     "web.synergy.sub": "Network-separation synergy prediction · target concentration reachability annotation",
-    "web.synergy.building": "Under construction — the synergy prediction engine is in development; drug-pair synergy/antagonism prediction with reachability annotation will live here.",
+    "web.synergy.building": "Under construction — the synergy prediction engine is in development; drug-pair network-separation analysis with reachability annotation will live here.",
     # ---- 文件集合(4 个复用页的页头 props) ----
     "web.collection.ppi_kicker": "PPI NETWORK FILES",
     "web.collection.ppi_title": "PPI Files",

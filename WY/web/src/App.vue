@@ -22,7 +22,8 @@ import SynergyView from './views/SynergyView.vue'
 const { t, locale } = useI18n()
 
 /* 下拉导航:分组名/条目名复用旧版 popover 词典(app.*),分组方式与 Streamlit 版一致。
- * 收藏 / ML 结果 / 数据管理三个从属页退出顶栏,入口移到各自宿主页(Docking/Ml/Analysis)。 */
+ * 收藏 / ML 结果 / 分析产物目录为从属页,入口在各自宿主页顶部(Docking/Ml/Analysis);
+ * 背景数据库(原"数据管理")是来源数据,入信息来源管理组(2026-11-17 迁移)。 */
 interface NavItem { route: string; label: string }
 interface NavGroup { key: string; label: string; items: NavItem[] }
 
@@ -32,7 +33,8 @@ const NAV_GROUPS: NavGroup[] = [
       { route: 'drug-sources', label: 'app.btn_drug_mgmt' },
       { route: 'disease-sources', label: 'app.btn_disease_mgmt' },
       { route: 'ppi', label: 'app.btn_ppi_info' },
-      { route: 'enrichment', label: 'app.btn_enrichment_info' }
+      { route: 'enrichment', label: 'app.btn_enrichment_info' },
+      { route: 'data', label: 'app.btn_db_mgmt' }
     ]
   },
   {
@@ -173,6 +175,9 @@ onBeforeUnmount(() => {
       <CollectionView v-else-if="route === 'stars'" kind="stars" :kicker="t('web.collection.stars_kicker')"
                       :title="t('web.collection.stars_title')" :sub="t('web.collection.stars_sub')" />
       <DataView v-else-if="route === 'data'" />
+      <CollectionView v-else-if="route === 'artifacts'" kind="downloads"
+                      :kicker="t('web.collection.dl_kicker')" :title="t('web.collection.dl_title')"
+                      :sub="t('web.collection.dl_sub')" />
       <MlView v-else-if="route === 'ml'" />
       <MlResultsView v-else-if="route === 'ml-results'" />
       <SynergyView v-else-if="route === 'synergy'" />

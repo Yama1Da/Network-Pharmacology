@@ -1,27 +1,34 @@
 <script setup lang="ts">
-/** 数据管理:背景互作组 + PK-DB 镜像(浓度可达性数据底座,二期)的状态与一键构建(job)、分析产物目录。 */
+/** 背景数据库(数据底座,二期随 PK-DB 镜像扩容):背景互作组 + PK-DB 镜像(浓度
+ * 可达性数据底座)的状态与一键构建(job)。分析产物目录已拆为独立从属页
+ * (#/artifacts),入口在数据网络药理学分析页顶栏(2026-11-17 迁移)。
+ * 两面板各自持有独立 notice(2026-11-17 修复:原先共用一个 useNotice,
+ * PK 完成提示会在互作组面板里同时冒出来)。 */
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, type InteractomeStatus, type PkMirrorStatus } from '../api'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
-import CollectionView from './CollectionView.vue'
 
 const { t } = useI18n()
 const itx = ref<InteractomeStatus | null>(null)
 const pk = ref<PkMirrorStatus | null>(null)
 const loaded = ref(false)
 const pkLoaded = ref(false)
-const { notice, flash } = useNotice(3200)
+const { notice: itxNotice, flash: flashItx } = useNotice(3200)
+const { notice: pkNotice, flash: flashPk } = useNotice(3200)
 
 const job = useJob((result) => {
-  flash(t('web.data.built_flash', { nodes: result.nodes, edges: result.edges }) +
+  flashItx(t('web.data.built_flash', { nodes: result.nodes, edges: result.edges }) +
     (result.cleaned ? t('web.data.built_cleaned', { n: result.cleaned }) : ''))
   void load()
 })
 
 const pkJob = useJob((result) => {
-  flash(t('web.data.pk_build_done', { studies: result.studies_built, tsv: result.tsv_files }))
+  // 纯续传(0 新建)不再喊"完成:0 研究 / 0 源表",改报"已是最新"
+  flashPk(result.studies_built
+    ? t('web.data.pk_build_done', { studies: result.studies_built, tsv: result.tsv_files })
+    : t('web.data.pk_uptodate', { studies: result.studies_skipped_existing ?? 0 }))
   void load()
 })
 
@@ -30,13 +37,13 @@ async function load(): Promise<void> {
     itx.value = await api.interactome()
     loaded.value = true
   } catch {
-    flash(t('web.data.status_fail'))
+    flashItx(t('web.data.status_fail'))
   }
   try {
     pk.value = await api.pkMirror()
     pkLoaded.value = true
   } catch {
-    flash(t('web.data.pk_status_fail'))
+    flashPk(t('web.data.pk_status_fail'))
   }
 }
 
@@ -90,7 +97,7 @@ onMounted(() => {
     </div>
     <p v-if="job.error.value" class="notice">{{ t('web.data.build_fail', { msg: job.error.value }) }}</p>
     <Transition name="note">
-      <p v-if="notice" class="notice">{{ notice }}</p>
+      <p v-if="itxNotice" class="notice">{{ itxNotice }}</p>
     </Transition>
   </div>
 
@@ -139,10 +146,7 @@ onMounted(() => {
     </div>
     <p v-if="pkJob.error.value" class="notice">{{ t('web.data.build_fail', { msg: pkJob.error.value }) }}</p>
     <Transition name="note">
-      <p v-if="notice" class="notice">{{ notice }}</p>
+      <p v-if="pkNotice" class="notice">{{ pkNotice }}</p>
     </Transition>
   </div>
-
-  <CollectionView kind="downloads" :kicker="t('web.collection.dl_kicker')"
-                  :title="t('web.collection.dl_title')" :sub="t('web.collection.dl_sub')" />
 </template>

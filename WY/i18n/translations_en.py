@@ -20,6 +20,7 @@ TEXT_EN: dict[str, str] = {
     "app.btn_disease_mgmt": "Disease Target Information Management",
     "app.btn_ppi_info": "PPI Information",
     "app.btn_enrichment_info": "Enrichment Information",
+    "app.btn_db_mgmt": "Background Databases",
     "app.popover_docking": "Analysis & Validation",
     "app.btn_data_network": "Data Network Pharmacology Analysis",
     "app.btn_molecular_docking": "Molecular Docking",

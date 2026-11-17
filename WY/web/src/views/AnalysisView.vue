@@ -232,7 +232,7 @@ onMounted(() => {
   <!-- ================= 表单 ================= -->
   <div class="panel wide s4">
     <div class="xlinks">
-      <a class="bar-btn" href="#/data">{{ t('web.nav.data_link') }}</a>
+      <a class="bar-btn" href="#/artifacts">{{ t('web.nav.artifacts_link') }}</a>
     </div>
     <div class="mode-row">
       <span class="ctl-label">{{ t('web.analysis.mode_label') }}</span>

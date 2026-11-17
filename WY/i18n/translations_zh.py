@@ -20,6 +20,7 @@ TEXT_ZH: dict[str, str] = {
     "app.btn_disease_mgmt": "疾病靶点信息管理",
     "app.btn_ppi_info": "PPI 信息",
     "app.btn_enrichment_info": "富集信息",
+    "app.btn_db_mgmt": "背景数据库",
     "app.popover_docking": "分析与验证",
     "app.btn_data_network": "数据网络药理学分析",
     "app.btn_molecular_docking": "分子对接",
