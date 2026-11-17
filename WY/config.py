@@ -302,6 +302,13 @@ PROXIMITY_MIN_COVERAGE = 0.3
 # 邻近度结果缓存目录(只在计算成功时保存)
 PROXIMITY_CACHE_DIR = os.path.join(CACHE_DIR, "proximity")
 
+# ======== 分离度协同预测(二期,依赖背景互作组) ========
+# s_AB 零分布度匹配重采样次数(方案 §2.1"对 T_A/T_B 分别重采样得 s_AB 与
+# z_AB 的零分布";z_AB 一侧复用邻近度检验自带的 PROXIMITY_N_PERM,不重复配)
+SYNERGY_N_PERM = 200
+# s_AB 零分布随机种子(结果可复现,与 PROXIMITY_SEED 分开配互不影响)
+SYNERGY_SEED = 0
+
 # ======== RWR 靶点优先级排序(依赖背景互作组) ========
 # 重启概率 α:越大游走越远、排序越偏全局,越小越贴近已知靶点;0.7 为常用取值。
 RWR_ALPHA = 0.7
@@ -419,6 +426,7 @@ UI_SETTINGS_KEYS = (
     "RWR_ALPHA",  # RWR 重启概率:越大游走越远越全局,越小越贴已知靶点
     "GSEA_PERMUTATION_NUM",  # GSEA 置换次数:越大 p 值越稳,耗时线性增长
     "PROXIMITY_N_PERM",  # 网络邻近度随机置换次数:同上
+    "SYNERGY_N_PERM",  # 分离度 s_AB 零分布重采样次数:同上(2026-11-17 二期新增)
     "RWR_NULL_PERMS",  # RWR 度匹配校正的置换次数:同上
     "GSEA_SET_MIN_SIZE",  # GSEA 基因集规模下限(与上限配对,保存时校验 min<max)
     "GSEA_SET_MAX_SIZE",  # GSEA 基因集规模上限

@@ -372,6 +372,21 @@ def _build_degree_bins(degree_map: dict, bin_size: int) -> dict:
     return bins
 
 
+def normalize_genes(genes: list) -> list[str]:
+    """基因列表规范化去重(大写、去空白),不做网络过滤:入网率保护与 coverage
+    统计必须以原始输入数为分母。旧实现先用 get_network_coverage 过滤成在网基因
+    再传入,导致低入网率保护失效、coverage 分母虚高(只统计 LCC 占比)。
+    模块级导出(2026-11-17 二期):synergy 预检同口径复用,禁止各处自抄一份漂移。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in genes:
+        g = str(raw).strip().upper()
+        if g and g not in seen:
+            seen.add(g)
+            out.append(g)
+    return out
+
+
 def degree_matched_sample(degree_map: dict, seeds: list, bin_size: int, rng,
                           bins: dict | None = None) -> list[str]:
     """度匹配随机抽样（置换检验的零分布）：为每个种子从其度数箱内随机取一个替换节点,使随机集与真实集
@@ -509,17 +524,8 @@ def proximity_zscore(drug_genes: list, disease_genes: list, species: str = "Huma
     ctx = _lcc_context(species)
 
     def _norm(genes: list) -> list[str]:
-        """规范化去重(大写、去空白),不做网络过滤:入网率保护与 coverage 统计
-        必须以原始输入数为分母。旧实现先用 get_network_coverage 过滤成在网基因
-        再传入,导致低入网率保护失效、coverage 分母虚高(只统计 LCC 占比)。"""
-        seen: set[str] = set()
-        out: list[str] = []
-        for raw in genes:
-            g = str(raw).strip().upper()
-            if g and g not in seen:
-                seen.add(g)
-                out.append(g)
-        return out
+        """规范化去重:委托模块级 normalize_genes(2026-11-17 二期起 synergy 同口径复用)。"""
+        return normalize_genes(genes)
 
     return _proximity_zscore_from_context(
         ctx, _norm(drug_genes), _norm(disease_genes), n_perm=n_perm, seed=seed,
