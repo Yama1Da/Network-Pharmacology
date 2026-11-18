@@ -29,6 +29,9 @@ from WY.core.logging_setup import setup_logging
 from WY.core.network_algorithms import run_proximity_cached, run_rwr_cached
 from WY.core.ppi import (build_ppi_graph, compute_mcc_scores, compute_ppi_metrics,
                       fetch_string_ppi, mark_hub_genes, pick_top_mcc_genes)
+from WY.core.interactome import InteractomeNotBuiltError
+from WY.core.synergy import (SORT_RULE, SynergyPrecheckError, analyze_pair,
+                          archive_run, slice_targets_top_n)
 from WY.core.targets import (get_disease_targets_merged, get_drug_targets_merged,
                           get_targets_concurrent, intersect_target_symbols)
 from WY.core.analysis import expand_targets_with_rwr, pair_prefix
@@ -841,6 +844,215 @@ def cmd_batch(args) -> int:
     return 1 if failed_n else 0
 
 
+# ======== 子命令:synergy(分离度协同预测) ========
+
+_SYNERGY_SUMMARY_COLUMNS = ("drug_a", "drug_b", "disease", "status", "s_ab",
+                            "geometry_label", "p_lower", "z_sep", "power_limited",
+                            "detail", "seconds", "directory")
+
+
+def _setup_synergy(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--a", default=None,
+                   help="Drug A name (single-pair mode; mutually exclusive with --input)")
+    p.add_argument("--b", default=None,
+                   help="Drug B name (required with --a; with --input it fixes B for every row, "
+                        "letting the CSV carry only the drug_a column)")
+    p.add_argument("--disease", default=None,
+                   help="Disease name to anchor the analysis (omit for geometry-only, no disease module)")
+    p.add_argument("--input", default=None,
+                   help="Batch CSV with a 'drug_a' column (case-insensitive header); optional "
+                        "'drug_b' and 'disease' columns; row = one pair, no cartesian product")
+    p.add_argument("--top-n", type=int, default=config.SYNERGY_TOP_N,
+                   help=f"Target slice size per drug, 0 = full sets "
+                        f"(default: {config.SYNERGY_TOP_N}, same as the web page default)")
+    p.add_argument("--n-perm", type=int, default=None,
+                   help="Permutation rounds driving the s_AB null AND the three proximity "
+                        f"Z-scores (default: config {config.SYNERGY_N_PERM}; must be >= 10)")
+    p.add_argument("--out", default=None,
+                   help="Directory for synergy_batch_summary.csv "
+                        "(default: CLI_RESULTS_DIR from API.env, else ./results); "
+                        "each successful pair is also archived into the shared "
+                        "synergy-results/ store shown on the web results page")
+
+
+def _read_synergy_csv(path: str, default_b: str | None,
+                      default_disease: str) -> tuple[list[tuple[str, str, str]],
+                                                     list[tuple[int, str]]]:
+    """读协同批量 CSV:drug_a 列必需;drug_b 列在给了 --b 时可省(--b 对整批生效,
+    兼容只带 drug_a 的旧两列清单);disease 列可省(整批用 --disease,两者都缺 =
+    无疾病锚的纯几何对)。行 = 一对,同药多病写多行,不做笛卡尔积。
+    返回 ((a, b, disease) 列表, 非法行列表[(行号, 原因)]);缺 drug_a 列抛 ValueError。"""
+    df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
+    by_lower = {str(c).strip().lower(): c for c in df.columns}
+    if "drug_a" not in by_lower:
+        raise ValueError(f"synergy batch CSV must have a 'drug_a' column; "
+                         f"got: {', '.join(str(c) for c in df.columns)}")
+    a_col = by_lower["drug_a"]
+    b_col = by_lower.get("drug_b")
+    d_col = by_lower.get("disease")
+    rows: list[tuple[str, str, str]] = []
+    bad: list[tuple[int, str]] = []
+    for i, row in df.iterrows():
+        a = str(row[a_col]).strip() if pd.notna(row[a_col]) else ""
+        cell_b = str(row[b_col]).strip() if (b_col and pd.notna(row[b_col])) else ""
+        b = default_b or cell_b  # --b 优先:整批固定 B,CSV 列(如有)被忽略
+        disease = ((str(row[d_col]).strip() if pd.notna(row[d_col]) else "")
+                   if d_col else "") or default_disease
+        if a and b:
+            rows.append((a, b, disease))
+        else:
+            bad.append((i + 2, "empty drug_a or drug_b"))  # +2:首行为表头,行号从 1 计
+    return rows, bad
+
+
+def _synergy_progress_printer(prefix: str):
+    """CLI 侧进度:核心只发 fraction(无文案纪律),这里每 ~20% 打一行避免刷屏。"""
+    state = {"last": -1}
+
+    def progress(fraction=None, **kw) -> None:
+        pct = int(round((fraction or 0.0) * 100))
+        if pct // 20 > state["last"] // 20:
+            state["last"] = pct
+            print(f"{prefix} {pct}%")
+
+    return progress
+
+
+def _synergy_one(a: str, b: str, disease: str, *, top_n: int | None,
+                 n_perm: int | None, prefix: str) -> tuple[dict | None, str, float]:
+    """单对执行:四库合并靶点 → 证据切片(disease 不切片,与网页同语义)→
+    core.analyze_pair → archive_run 进共享 synergy-results/。
+    返回 (契约或 None, 明细, 耗时秒, 归档目录名或 None);明细里错误用稳定令牌
+    (与 API/前端同词表)。"""
+    t0 = time.monotonic()
+    progress = _synergy_progress_printer(prefix)
+    progress(fraction=0.02)
+    d_genes: list[str] = []
+    if disease:
+        d_df = get_disease_targets_merged(disease)
+        d_genes = sorted({str(g) for g in d_df["approvedSymbol"].dropna()}) \
+            if d_df is not None and not d_df.empty else []
+        if not d_genes:
+            return None, f"synergy:no_targets_disease: {disease}", time.monotonic() - t0, None
+    a_genes = slice_targets_top_n(get_drug_targets_merged(a), top_n)
+    if not a_genes:
+        return None, f"synergy:no_targets_a: {a}", time.monotonic() - t0, None
+    b_genes = slice_targets_top_n(get_drug_targets_merged(b), top_n)
+    if not b_genes:
+        return None, f"synergy:no_targets_b: {b}", time.monotonic() - t0, None
+    try:
+        contract = analyze_pair(
+            a_genes, b_genes, d_genes, drug_a=a, drug_b=b,
+            disease_name=disease, disease_source="platform_targets",
+            n_perm=n_perm, proximity_n_perm=n_perm,
+            top_n=top_n, sort_rule=SORT_RULE, progress=progress,
+        )
+    except (SynergyPrecheckError, InteractomeNotBuiltError) as e:
+        # 稳定令牌进汇总表(与 API/前端同词表);带 reason/detail 结构的按结构拼,避免重复
+        reason, body = getattr(e, "reason", None), getattr(e, "detail", None)
+        detail = f"{reason}: {body}" if reason and body else str(e)
+        return None, detail, time.monotonic() - t0, None
+    except Exception as e:  # 崩溃对记失败照跑下一对(与 batch 命令同纪律,批量不中断)
+        logging.exception("synergy pair '%s' x '%s' crashed", a, b)
+        return None, f"crash: {type(e).__name__}: {e}", time.monotonic() - t0, None
+    directory = archive_run(contract, a, b)
+    return contract, "ok", time.monotonic() - t0, directory
+
+
+def cmd_synergy(args) -> int:
+    """分离度协同预测:单对(--a/--b)或批量(--input CSV)。每对产出契约 JSON 归档进
+    synergy-results/(与网页结果管理页同库互见),批量再出 synergy_batch_summary.csv。
+    单对失败不中断批量;任一对失败退出码 1。CLI 只出表,不绘图。"""
+    if bool(args.a) == bool(args.input):
+        _warn("specify exactly one of --input (batch CSV) or --a (single pair)")
+        return 1
+    if args.a and not args.b:
+        _warn("--b is required in single-pair mode")
+        return 1
+    if args.n_perm is not None and args.n_perm < 10:
+        _warn("--n-perm must be >= 10")
+        return 1
+    if args.top_n < 0:
+        _warn("--top-n must be >= 0 (0 = full sets)")
+        return 1
+    top_n = None if args.top_n == 0 else args.top_n
+
+    if args.a:
+        pairs = [(args.a.strip(), args.b.strip(), (args.disease or "").strip())]
+        bad_rows: list[tuple[int, str]] = []
+        out_dir = None  # 单对不出汇总表,归档即结果
+    else:
+        out_dir = _resolve_out_dir(args.out)
+        if out_dir is None:
+            return 1
+        try:
+            pairs, bad_rows = _read_synergy_csv(args.input, (args.b or "").strip() or None,
+                                                (args.disease or "").strip())
+        except (OSError, ValueError) as e:
+            _warn(f"failed to read batch CSV '{args.input}': {e}")
+            return 1
+        if not pairs and not bad_rows:
+            _warn("batch CSV has no data rows")
+            return 1
+
+    print(f"[synergy] {len(pairs)} pair(s)"
+          + (f", {len(bad_rows)} invalid row(s)" if bad_rows else "")
+          + f", top_n={'full' if top_n is None else top_n}, sort={SORT_RULE}")
+    rows: list[dict] = []
+    ok_n = 0
+    for n, (a, b, disease) in enumerate(pairs, 1):
+        label = f"{a} x {b}" + (f" ({disease})" if disease else "")
+        prefix = f"[synergy] ({n}/{len(pairs)}) {label}"
+        print(prefix)
+        contract, detail, seconds, directory = _synergy_one(
+            a, b, disease, top_n=top_n, n_perm=args.n_perm, prefix=prefix)
+        record = {"drug_a": a, "drug_b": b, "disease": disease, "status": "failed",
+                  "s_ab": "", "geometry_label": "", "p_lower": "", "z_sep": "",
+                  "power_limited": "", "detail": detail, "seconds": round(seconds, 1),
+                  "directory": ""}
+        if contract is not None:
+            ok_n += 1
+            sep = contract.get("separation", {})
+            null = sep.get("null", {})
+            record.update(
+                status="ok",
+                s_ab=f"{sep.get('s_ab'):.4f}" if sep.get("s_ab") is not None else "",
+                geometry_label=contract.get("geometry_label", ""),
+                p_lower=f"{null.get('p_lower'):.4g}" if null.get("p_lower") is not None else "",
+                z_sep=f"{null.get('z'):.3f}" if null.get("z") is not None else "",
+                power_limited=1 if contract.get("inputs", {}).get("power_limited") else 0,
+                directory=directory or "",
+            )
+            print(f"[synergy] ({n}/{len(pairs)}) ok: s_ab={record['s_ab']} "
+                  f"({record['geometry_label']}, p_lower={record['p_lower']})"
+                  + (", power_limited" if record["power_limited"] else ""))
+        else:
+            print(f"[synergy] ({n}/{len(pairs)}) FAILED: {detail}")
+        rows.append(record)
+
+    # 结构非法行也按失败入汇总,保证"每行一条记录"对得上账(与 batch 命令同纪律)
+    for lineno, reason in bad_rows:
+        rows.append({"drug_a": "", "drug_b": "", "disease": "", "status": "failed",
+                     "s_ab": "", "geometry_label": "", "p_lower": "", "z_sep": "",
+                     "power_limited": "", "detail": f"line {lineno}: {reason}",
+                     "seconds": "", "directory": ""})
+
+    if out_dir is not None:
+        summary_csv = os.path.join(out_dir, "synergy_batch_summary.csv")
+        try:
+            pd.DataFrame(rows, columns=_SYNERGY_SUMMARY_COLUMNS).to_csv(
+                summary_csv, index=False, encoding="utf-8-sig")
+        except PermissionError:
+            _warn(f"cannot write '{summary_csv}': file is locked by another program "
+                  "(close it, e.g. Excel, and rerun to refresh the summary)")
+            return 1
+
+    failed_n = len(rows) - ok_n
+    print(f"[synergy] done: ok={ok_n} failed={failed_n}"
+          + (f"; summary: {summary_csv}" if out_dir is not None else ""))
+    return 1 if failed_n else 0
+
+
 def _setup_serve(p) -> None:
     p.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
     p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
@@ -889,6 +1101,7 @@ HANDLER_HELP = {
     "rwr": "Random-walk-with-restart ranking of the whole network from seed genes",
     "analyze": "Full pipeline for one drug-disease pair (all steps + summary.json)",
     "batch": "Run the full pipeline for many drug-disease pairs from a CSV (batch summary + resume)",
+    "synergy": "Separation-based synergy prediction for drug pairs (--a/--b or --input batch CSV)",
 }
 
 COMMANDS = {
@@ -900,6 +1113,7 @@ COMMANDS = {
     "rwr": (_setup_rwr, cmd_rwr),
     "analyze": (_setup_analyze, cmd_analyze),
     "batch": (_setup_batch, cmd_batch),
+    "synergy": (_setup_synergy, cmd_synergy),
 }
 
 

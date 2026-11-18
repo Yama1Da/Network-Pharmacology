@@ -174,3 +174,96 @@ def _write_tmp(path: str, lines: list[str]) -> str:
     with open(path, "w", encoding="utf-8") as f:
         f.write("".join(lines))
     return path
+
+
+# ---- 二期桩地基(1.9 泛癌集 / 1.10 精选工具) ----
+# 只提供"数据构造 + 假 HTTP"两件最小工具,具体 schema 属各模块自己的契约
+# (DrugComb/CCLE 的桩留待对应的 benchmark 落地时补,不在这里替队友拍板)。
+
+class _StubResp:
+    """假响应:同时提供 .json()/.text/.status_code,够 http_client 与 requests 两路用。"""
+
+    def __init__(self, status: int, payload=None, text: str | None = None):
+        self.status_code = status
+        self._payload = payload
+        self.text = text if text is not None else ""
+        self.encoding = "utf-8"
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json body")
+        return self._payload
+
+
+class FakeHTTP:
+    """按 URL 子串路由的假 HTTP:注册 JSON/文本响应,记录调用序列。
+
+    用法:
+        http = FakeHTTP().json("api.fda.gov", payload).text("dailymed", xml)
+        monkeypatch.setattr(mod, "_request", http.handle)
+    """
+
+    def __init__(self):
+        self.routes: list[tuple[str, _StubResp]] = []
+        self.calls: list[tuple[str, str]] = []
+
+    def json(self, needle: str, payload, status: int = 200) -> "FakeHTTP":
+        self.routes.append((needle, _StubResp(status, payload=payload)))
+        return self
+
+    def text(self, needle: str, text: str, status: int = 200) -> "FakeHTTP":
+        self.routes.append((needle, _StubResp(status, text=text)))
+        return self
+
+    def handle(self, method: str, url: str, **kwargs):
+        self.calls.append((method, url))
+        for needle, resp in self.routes:
+            if needle in url:
+                return resp
+        return _StubResp(404)
+
+
+@pytest.fixture()
+def fake_http():
+    """空路由的假 HTTP;用例里链式注册即可。"""
+    return FakeHTTP()
+
+
+def spl_xml(moa_text: str, setid: str = "07b4ee2a-8435-4d38-a6b0-b919e3424153") -> str:
+    """最小可用 SPL XML:含 12.1 机制章节(LOINC 43679-0)与一个无关章节。"""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<document xmlns="urn:hl7-org:v3">
+  <setId root="{setid}"/>
+  <component><structuredBody>
+    <component><section ID="S7">
+      <code code="34067-9" codeSystem="2.16.840.1.113883.6.1"/>
+      <title>1 INDICATIONS AND USAGE</title>
+      <text><paragraph>Not the mechanism.</paragraph></text>
+    </section></component>
+    <component><section ID="S12.1">
+      <code code="43679-0" codeSystem="2.16.840.1.113883.6.1"/>
+      <title>12.1 Mechanism of Action</title>
+      <text><paragraph>{moa_text}</paragraph></text>
+    </section></component>
+  </structuredBody></component>
+</document>"""
+
+
+def cancermine_tsv(rows: list[tuple[str, str, int]]) -> str:
+    """CancerMine collated 最小形状:gene_normalized / role / citation_count。"""
+    lines = ["gene_normalized\tcancer_normalized\trole\tcitation_count"]
+    for gene, role, citations in rows:
+        lines.append(f"{gene}\tgeneric cancer\t{role}\t{citations}")
+    return "\n".join(lines) + "\n"
+
+
+@pytest.fixture()
+def spl_xml_factory():
+    """构造最小 SPL XML(可指定机制章节正文与 setid)。"""
+    return spl_xml
+
+
+@pytest.fixture()
+def cancermine_factory():
+    """构造 CancerMine collated TSV 文本。"""
+    return cancermine_tsv

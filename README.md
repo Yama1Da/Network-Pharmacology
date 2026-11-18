@@ -191,6 +191,8 @@ npap --help              # 入口脚本装进当前环境的 Scripts\（Windows�
   中将 `VINA_DIR` / `OBABEL_DIR` 指向相应目录（也可填可执行文件全路径）。
 - **命令行结果没落在预期目录？** 落点优先级为 `--out` > `CLI_RESULTS_DIR`
   （`WY/API.env` 或同名系统环境变量）> 当前目录的 `results`；`--out` 可单次覆盖。
+- **无法下载CancerMine的cancermine_collated.tsv文件？** 国内Zenodo网址的DNS遭污染，很容易无法访问，所以请
+   自己手动通过中转服务/代理/国内镜像/修改host文件来进行访问和下载cancermine_collated.tsv。
 
 ## 项目结构
 

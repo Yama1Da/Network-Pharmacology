@@ -89,7 +89,7 @@ def test_env_discovery(monkeypatch, tmp_path):
     vina_dir = os.path.join(base, "vina_bin")
     os.makedirs(vina_dir)
     for name in ("vina_1.2.7_win.exe", "vina_split_1.2.7_win.exe",
-                 "obabel.exe", "readme.txt"):
+                 "obabel.exe", "readme.md.md"):
         open(os.path.join(vina_dir, name), "wb").close()
     # find_exe:前缀匹配 + exclude 排除 vina_split + 多匹配取字典序最后一个
     assert env_discovery.find_exe(vina_dir, "vina", exclude="vina_split") == \

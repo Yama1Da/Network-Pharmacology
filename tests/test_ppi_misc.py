@@ -78,3 +78,16 @@ def test_list_ranked_csv_candidates(tmp_path, monkeypatch):
     assert hit[0]["path"].endswith("aspirin_cancer_query_genes.csv")
     assert hit[0]["base_disease"] == "cancer"
     assert "STRING 12.0" in hit[0]["label"]
+
+
+def test_read_ppi_dataset_bare_name_finds_ppi_results():
+    """2026-11-18 聚合后 read_ppi_dataset 兼容查找:顶层没有时读 ppi-results/ 一层
+    (对接页来源名校验要求纯文件名,聚合对其透明)。"""
+    pair = os.path.join(config.DOWNLOADS_DIR, "ppi-results", "pairD_data")
+    os.makedirs(pair, exist_ok=True)
+    pd.DataFrame({"gene": ["TP53"], "is_hub": [True]}).to_csv(
+        os.path.join(pair, "pairD_nodes.csv"), index=False, encoding="utf-8-sig")
+
+    hub, enr = read_ppi_dataset("pairD_data")
+    assert "TP53" in hub
+    assert enr == set()

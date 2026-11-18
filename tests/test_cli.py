@@ -331,3 +331,181 @@ def test_batch_resume_skips_successful(tmp_path, monkeypatch):
     assert calls["n"] == 1
     rc = cli.main(["batch", "--pairs", str(csv), "--out", str(out1), "--resume"])
     assert rc == 0 and calls["n"] == 1  # 第二轮被 resume 跳过
+
+
+# ---------- synergy 子命令 ----------
+
+def _tframe(genes, scores):
+    return pd.DataFrame({"approvedSymbol": genes,
+                         "score_pchembl": scores, "score_dgidb": scores})
+
+
+def _fake_synergy_contract(a_genes, b_genes, d_genes=None, **kw):
+    return {"schema": "synergy.v1.1",
+            "pair": {"drug_a": kw.get("drug_a", ""), "drug_b": kw.get("drug_b", "")},
+            "inputs": {"power_limited": False},
+            "separation": {"s_ab": 0.0808,
+                           "null": {"p_lower": 0.005, "z": 2.6, "mean": 0.0,
+                                    "sd": 0.03, "n_perm": kw.get("n_perm")}},
+            "geometry_label": "separated"}
+
+
+def _stub_synergy_chain(monkeypatch, contract_fn=_fake_synergy_contract,
+                        a_genes=("G1", "G2"), b_genes=("G3", "G4"),
+                        disease_genes=("D1", "D2"), archived="synergy_a_x_b_20261118_000000"):
+    """打桩协同链路(打在使用者命名空间):四库合并靶点 → analyze_pair → archive_run。"""
+    calls = {"archive": [], "analyze": []}
+
+    monkeypatch.setattr(cli, "get_drug_targets_merged",
+                        lambda name: _tframe(list(a_genes), [0.5] * len(a_genes))
+                        if name == "A" else _tframe(list(b_genes), [0.5] * len(b_genes)))
+    monkeypatch.setattr(cli, "get_disease_targets_merged",
+                        lambda name: _tframe(list(disease_genes), [0.5] * len(disease_genes)))
+
+    def fake_analyze(a_genes_, b_genes_, d_genes_=None, **kw):
+        calls["analyze"].append({"a": a_genes_, "b": b_genes_, "d": d_genes_, **kw})
+        return contract_fn(a_genes_, b_genes_, d_genes_, **kw)
+
+    def fake_archive(contract, drug_a, drug_b):
+        calls["archive"].append((drug_a, drug_b))
+        return archived
+
+    monkeypatch.setattr(cli, "analyze_pair", fake_analyze)
+    monkeypatch.setattr(cli, "archive_run", fake_archive)
+    return calls
+
+
+def test_synergy_single_mode_ok(tmp_path, monkeypatch):
+    """npap synergy --a/--b:靶点传给 core、契约归档、退出码 0;单对模式不写汇总表。"""
+    calls = _stub_synergy_chain(monkeypatch)
+    rc = cli.main(["synergy", "--a", "A", "--b", "B", "--disease", "cancer",
+                   "--n-perm", "50", "--top-n", "0"])
+    assert rc == 0
+    call = calls["analyze"][0]
+    assert call["a"] == ["G1", "G2"] and call["b"] == ["G3", "G4"]
+    assert call["d"] == ["D1", "D2"]                 # 疾病不切片,全量入参
+    assert call["n_perm"] == 50 and call["proximity_n_perm"] == 50
+    assert call["top_n"] is None                     # 0 = 全量,记账为 None
+    assert call["sort_rule"] == cli.SORT_RULE
+    assert calls["archive"] == [("A", "B")]
+    assert not (tmp_path / "synergy_batch_summary.csv").exists()
+
+
+def test_synergy_batch_mixed_summary(tmp_path, monkeypatch):
+    """npap synergy --input:两列旧清单 + --b 固定 B;单对失败不中断,非法行对账,有失败退出 1。"""
+
+    def contract_or_fail(a_genes, b_genes, d_genes=None, **kw):
+        if kw.get("drug_b") == "B":
+            raise cli.SynergyPrecheckError("too_few_targets_b", "3 in LCC")
+        return _fake_synergy_contract(a_genes, b_genes, d_genes, **kw)
+
+    calls = _stub_synergy_chain(monkeypatch, contract_fn=contract_or_fail)
+    csv = tmp_path / "batch.csv"
+    pd.DataFrame({"Drug_A": ["A", "A", "", "A"], "disease": ["cancer", "", "x", "flu"]}
+                 ).to_csv(csv, index=False)  # 第 3 行整行空缺 → 非法行,其余 3 行合法但全被拒算
+    rc = cli.main(["synergy", "--input", str(csv), "--b", "B", "--top-n", "0",
+                   "--out", str(tmp_path)])
+    assert rc == 1
+    assert len(calls["analyze"]) == 3                # 合法行照跑不中断
+    summary = pd.read_csv(tmp_path / "synergy_batch_summary.csv", encoding="utf-8-sig")
+    assert len(summary) == 4                         # 3 合法行 + 1 非法行,每行一条记录
+    assert set(summary["status"]) == {"failed"}
+    assert "too_few_targets_b: 3 in LCC" in " ".join(str(v) for v in summary["detail"])
+    assert "line 4" in " ".join(str(v) for v in summary["detail"])
+
+
+def test_synergy_batch_ok_rows_and_slicing(tmp_path, monkeypatch):
+    """批量成功行:s_ab/几何标签/归档目录进汇总表;切片按 top-n 生效(症状:全量 vs 切片)。"""
+    calls = _stub_synergy_chain(monkeypatch)
+    # 带分数档的靶点表覆盖(链桩默认分数恒同,测不出切片次序)
+    monkeypatch.setattr(cli, "get_drug_targets_merged", lambda name: _tframe(
+        ["G1", "G2", "G3"] if name == "A" else ["G4", "G5", "G6"],
+        [0.1, 0.9, 0.5] if name == "A" else [0.2, 0.8, 0.4]))
+    csv = tmp_path / "batch.csv"
+    pd.DataFrame({"drug_a": ["A", "A"], "drug_b": ["B", "B"], "disease": ["cancer", ""]}
+                 ).to_csv(csv, index=False)
+    rc = cli.main(["synergy", "--input", str(csv), "--top-n", "2",
+                   "--out", str(tmp_path)])
+    assert rc == 0
+    assert calls["analyze"][0]["a"] == ["G2", "G3"]  # dual_source_max_norm 切片取前 2
+    assert calls["analyze"][0]["d"] == ["D1", "D2"]  # 有 disease 列的行走疾病锚
+    assert calls["analyze"][1]["d"] == []            # 空 disease 单元格 = 无疾病锚
+    summary = pd.read_csv(tmp_path / "synergy_batch_summary.csv",
+                          encoding="utf-8-sig", dtype=str)
+    ok = summary[summary["status"] == "ok"]
+    assert len(ok) == 2
+    assert (ok["s_ab"] == "0.0808").all()
+    assert (ok["geometry_label"] == "separated").all()
+    assert ok["directory"].notna().all()
+    assert (ok["p_lower"] == "0.005").all()
+
+
+def test_synergy_no_targets_token(tmp_path, monkeypatch):
+    """四库查无靶点:按失败计退出码 1,detail 带稳定令牌(与 API/前端同词表)。"""
+    monkeypatch.setattr(cli, "get_drug_targets_merged", lambda name: pd.DataFrame())
+    monkeypatch.setattr(cli, "get_disease_targets_merged", lambda name: pd.DataFrame())
+    rc = cli.main(["synergy", "--a", "A", "--b", "B"])
+    assert rc == 1
+
+
+def test_synergy_interactome_not_built(tmp_path, monkeypatch):
+    """背景互作组未构建:core 抛 InteractomeNotBuiltError,CLI 记失败不崩溃。"""
+
+    def not_built(*a, **k):
+        raise cli.InteractomeNotBuiltError("interactome not built")
+
+    _stub_synergy_chain(monkeypatch, contract_fn=not_built)
+    rc = cli.main(["synergy", "--a", "A", "--b", "B"])
+    assert rc == 1
+
+
+def test_read_synergy_csv_validation(tmp_path):
+    """批量 CSV 解析:drug_a 列必需(缺列抛错);--b 优先于列;空缺行记非法(行号从 2 计);
+    disease 单元格缺失回退 --disease,两者都缺 = 无疾病锚。"""
+    csv = tmp_path / "b.csv"
+    pd.DataFrame({"drug_a": ["A1", "A2", "", "A4"], "drug_b": ["B", "", "B", "B"],
+                  "disease": ["d1", "", "", ""]}).to_csv(csv, index=False)
+    rows, bad = cli._read_synergy_csv(str(csv), None, "")
+    assert rows == [("A1", "B", "d1"), ("A4", "B", "")]
+    assert bad == [(3, "empty drug_a or drug_b"),   # A2 的 drug_b 空
+                   (4, "empty drug_a or drug_b")]   # 空行
+    rows2, bad2 = cli._read_synergy_csv(str(csv), "FixedB", "Dis")
+    assert rows2 == [("A1", "FixedB", "d1"), ("A2", "FixedB", "Dis"),
+                     ("A4", "FixedB", "Dis")]        # --b/--disease 作整批默认
+    assert bad2 == [(4, "empty drug_a or drug_b")]
+    no_a = tmp_path / "no_a.csv"
+    pd.DataFrame({"drug": ["A1"]}).to_csv(no_a, index=False)
+    with pytest.raises(ValueError, match="drug_a"):
+        cli._read_synergy_csv(str(no_a), None, "")
+
+
+def test_synergy_mode_validation(tmp_path):
+    """用法校验:--input 与 --a 互斥(双给/都不给都报错);单对缺 --b 报错;--n-perm <10 报错。"""
+    assert cli.main(["synergy"]) == 1
+    assert cli.main(["synergy", "--a", "A", "--b", "B",
+                     "--input", str(tmp_path / "x.csv")]) == 1
+    assert cli.main(["synergy", "--a", "A"]) == 1
+    assert cli.main(["synergy", "--a", "A", "--b", "B", "--n-perm", "5"]) == 1
+    assert cli.main(["synergy", "--a", "A", "--b", "B", "--top-n", "-3"]) == 1
+
+
+def test_synergy_pair_crash_does_not_abort_batch(tmp_path, monkeypatch):
+    """批量中某对 analyze_pair 意外崩溃:该对记失败照跑下一对(与 batch 同纪律),退出码 1。"""
+    calls = {"n": 0}
+
+    def flaky(a_genes, b_genes, d_genes=None, **kw):
+        calls["n"] += 1
+        if kw.get("drug_b") == "B":
+            raise RuntimeError("networkx exploded")
+        return _fake_synergy_contract(a_genes, b_genes, d_genes, **kw)
+
+    _stub_synergy_chain(monkeypatch, contract_fn=flaky)
+    csv = tmp_path / "batch.csv"
+    pd.DataFrame({"drug_a": ["A", "A"], "drug_b": ["B", "C"]}).to_csv(csv, index=False)
+    rc = cli.main(["synergy", "--input", str(csv), "--out", str(tmp_path)])
+    assert rc == 1 and calls["n"] == 2                 # 第二对照跑
+    summary = pd.read_csv(tmp_path / "synergy_batch_summary.csv",
+                          encoding="utf-8-sig", dtype=str)
+    rows = summary.set_index("drug_b")
+    assert rows.loc["C", "status"] == "ok"
+    assert "RuntimeError" in rows.loc["B", "detail"]

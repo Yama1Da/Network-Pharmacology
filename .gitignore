@@ -9,10 +9,10 @@
 /WY/Static/data/cache/enrichment/
 /WY/API.env
 /WY/Static/data/cache/drug/DGIdb_aspirin.csv
-/WY/Static/data/cache/
-/WY/Static/data/downloads/
-!WY/Static/data/cache/readme
-!WY/Static/data/downloads/readme
+/WY/Static/data/cache/*
+!/WY/Static/data/cache/readme.md
+/WY/Static/data/downloads/*
+!/WY/Static/data/downloads/readme.md
 /WY/Static/log/
 /.venv/
 .idea/
@@ -32,3 +32,4 @@ htmlcov/
 coverage.xml
 /.acl-recovery-docking/
 /.zcode/
+/WY/resources/

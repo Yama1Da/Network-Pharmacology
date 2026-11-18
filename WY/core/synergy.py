@@ -1,4 +1,4 @@
-"""分离度协同预测数学核心(二期方案 §2.1;契约 synergy.v1,2026-11-17 定稿)。
+"""分离度协同预测数学核心(二期方案 §2.1;契约 synergy.v1.1,2026-11-18 定稿)。
 
 分工红线(文件清单 §1.3):本文件只做数学核心——s_AB 分离度、s_AB 度匹配
 零分布、E3 预检、z_A/z_B/z_AB 对一期邻近度检验的编排复用;E1 分层排序、
@@ -116,7 +116,7 @@ def _analyze_pair_from_context(
     top_n: int | None = None, sort_rule: str | None = None,
     proximity_n_perm: int | None = None, progress=None,
 ) -> dict:
-    """契约 synergy.v1 组装(纯计算,LCC 上下文注入,便于小图自检——一期同模式)。
+    """契约 synergy.v1.1 组装(纯计算,LCC 上下文注入,便于小图自检——一期同模式)。
     d_genes 为空/None 时疾病为 None,z_* 三字段全 None(ML/CLI 批量可无疾病)。"""
     import numpy as np
 
@@ -209,6 +209,48 @@ def _analyze_pair_from_context(
                  "run": {"top_n": top_n, "sort": sort_rule,
                          "proximity_n_perm": proximity_n_perm}},
     }
+
+
+# 证据切片排序规则 id(契约 meta.run.sort 记账):两源分数各自归一到 [0,1] 后取最大,
+# 降序取前 N。冒烟启发版,正式口径归 §1.6 基准扫描定案。
+SORT_RULE = "dual_source_max_norm"
+
+
+def slice_targets_top_n(df, n: int | None) -> list[str]:
+    """靶点表按证据分切片(dual_source_max_norm):score_pchembl/score_dgidb 各自
+    归一到 [0,1] 后取最大,降序取前 n;分数全缺的行垫 0 殿后。n=None 原样全量,
+    返回去重排序后的基因符号列表。API 与 CLI 共用的唯一定义点(定案 #7:切片在
+    调用方完成,核心数学不截断——本函数即"调用方侧"的公共实现)。"""
+    import pandas as pd
+
+    if df is None or df.empty:
+        return []
+    if n is None:
+        return sorted({str(g) for g in df["approvedSymbol"].dropna()})
+    a = pd.to_numeric(df["score_pchembl"], errors="coerce")
+    b = pd.to_numeric(df["score_dgidb"], errors="coerce")
+
+    def _norm(s: "pd.Series") -> "pd.Series":
+        m = s.max()
+        return (s / m).fillna(0.0) if pd.notna(m) and m > 0 else s.fillna(0.0) * 0.0
+
+    best = pd.concat([_norm(a), _norm(b)], axis=1).max(axis=1)
+    order = best.sort_values(ascending=False).head(int(n))
+    return sorted({str(g) for g in df.loc[order.index, "approvedSymbol"].dropna()})
+
+
+def archive_run(contract: dict, drug_a: str, drug_b: str) -> str:
+    """契约 JSON 原样落盘到 synergy-results/<目录名>,返回目录名(Web/CLI 共用)。"""
+    from WY import config
+    from .caching import save_json_file
+    from .text_utils import safe_name
+
+    dir_name = (f"synergy_{safe_name(drug_a)}_x_{safe_name(drug_b)}"
+                f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    out_dir = os.path.join(results_root(), dir_name)
+    os.makedirs(out_dir, exist_ok=True)
+    save_json_file(os.path.join(out_dir, "result.json"), contract, indent=1)
+    return dir_name
 
 
 def results_root() -> str:

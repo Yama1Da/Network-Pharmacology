@@ -18,22 +18,20 @@ core.analyze_pair(jobs 提交-轮询,单对分钟级,§1.3 定案 3)。
 meta.run 与互作组版本,同参数重跑可复现(核心确定性已单测验证)。
 """
 
-import os
 import threading
-import time
 
-import pandas as pd
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
-from WY import config
 from WY.core import jobs
-from WY.core.caching import save_json_file
 from WY.core.synergy import (
+    SORT_RULE,
     analyze_pair,
+    archive_run,
     delete_runs,
     list_results,
     read_run,
+    slice_targets_top_n,
     zip_runs,
 )
 from WY.core.targets import (
@@ -41,13 +39,8 @@ from WY.core.targets import (
     get_drug_targets_merged,
     list_known_targets,
 )
-from WY.core.text_utils import safe_name
 
 router = APIRouter()
-
-# 证据切片排序规则(冒烟启发版):两源分数各自归一到 [0,1] 后取最大,降序取前 N。
-# 正式口径归 §1.6 DrugComb 基准扫描定案;规则 id 进契约 meta.run.sort 记账。
-SORT_RULE = "dual_source_max_norm"
 
 # 最近一次分析任务的登记(页面重进恢复进度展示用,2026-11-18):与 pk-mirror 的
 # 单飞不同,协同允许多对并行(互不落盘冲突),这里只记最新供前端找回轮询
@@ -67,26 +60,7 @@ class AnalyzeBody(BaseModel):
     n_perm: int | None = None    # None=配置默认;一杆驱动 s_AB 零分布与三次 proximity
 
 
-def _top_n_slice(df: pd.DataFrame, n: int | None) -> list[str]:
-    """dual_source_max_norm 切片(score_pchembl/score_dgidb 各自归一取最大,降序前 N);
-    n=None 原样全量;分数全缺的行垫 0 殿后。"""
-    if df is None or df.empty:
-        return []
-    if n is None:
-        return sorted({str(g) for g in df["approvedSymbol"].dropna()})
-
-    def _norm(s: pd.Series) -> pd.Series:
-        m = s.max()
-        return (s / m).fillna(0.0) if pd.notna(m) and m > 0 else s.fillna(0.0) * 0.0
-
-    a = _norm(pd.to_numeric(df["score_pchembl"], errors="coerce"))
-    b = _norm(pd.to_numeric(df["score_dgidb"], errors="coerce"))
-    best = pd.concat([a, b], axis=1).max(axis=1)
-    order = best.sort_values(ascending=False).head(int(n))
-    return sorted({str(g) for g in df.loc[order.index, "approvedSymbol"].dropna()})
-
-
-def _gene_list(df: pd.DataFrame) -> list[str]:
+def _gene_list(df) -> list[str]:
     return sorted({str(g) for g in df["approvedSymbol"].dropna()}) if df is not None and not df.empty else []
 
 
@@ -152,9 +126,9 @@ def synergy_analyze(body: AnalyzeBody) -> dict:
         d_genes = _gene_list(get_disease_targets_merged(disease)) if disease else []
         if disease and not d_genes:
             raise SynergyNoTargetsError(f"synergy:no_targets_disease: {disease}")
-        ga = _top_n_slice(get_drug_targets_merged(drug_a), body.top_n)
+        ga = slice_targets_top_n(get_drug_targets_merged(drug_a), body.top_n)
         progress(fraction=0.06, stage="targets")
-        gb = _top_n_slice(get_drug_targets_merged(drug_b), body.top_n)
+        gb = slice_targets_top_n(get_drug_targets_merged(drug_b), body.top_n)
         if not ga:
             raise SynergyNoTargetsError(f"synergy:no_targets_a: {drug_a}")
         if not gb:
@@ -172,11 +146,7 @@ def synergy_analyze(body: AnalyzeBody) -> dict:
         )
 
         # 归档进 synergy-results/(协同分析结果页专管,downloads 清单已排除该类别)
-        dir_name = (f"synergy_{safe_name(drug_a)}_x_{safe_name(drug_b)}"
-                    f"_{time.strftime('%Y%m%d_%H%M%S')}")
-        out_dir = os.path.join(config.DOWNLOADS_DIR, "synergy-results", dir_name)
-        os.makedirs(out_dir, exist_ok=True)
-        save_json_file(os.path.join(out_dir, "result.json"), contract, indent=1)
+        dir_name = archive_run(contract, drug_a, drug_b)
         progress(fraction=1.0, stage="done")
         return {**contract, "directory_rel": dir_name}
 

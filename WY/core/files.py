@@ -74,7 +74,7 @@ def list_download_dirs() -> pd.DataFrame:
 def migrate_results_layout() -> None:
     """downloads 顶层归类迁移(2026-11-18 聚合,幂等,由 API 启动兜底调用一次):
     PPI 运行目录(*_data)移入 ppi-results/,协同运行目录(synergy_*)移入
-    synergy-results/;GEOresult/MDresult/star/readme 与两个类别目录本身不动;
+    synergy-results/;GEOresult/MDresult/star/readme.md.md 与两个类别目录本身不动;
     未知目录保守不搬(不误移用户手工放置的内容);同名目标已存在时跳过不覆盖。"""
     from WY import config
 
