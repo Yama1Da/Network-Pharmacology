@@ -7,7 +7,10 @@
 而不是全基因组——全基因组会把疾病模块信号稀释成噪声，对照就失去意义。
 
 数据源（均为开放许可，且都不含 COSMIC CGC / MSigDB）：
-  1. Open Targets Platform GraphQL（CC BY 4.0）：cancer（EFO_0000311）的关联靶点；
+  1. Open Targets Platform GraphQL（CC BY 4.0）：cancer 的关联靶点。
+     疾病编号用 MONDO_0004992——OT 平台已迁 MONDO 主键，老 EFO 编号（如
+     EFO_0000311）查询返回 HTTP 200 + disease:null 而非报错（2026-11-18 实证），
+     网络重试层拦不住，会静默拿到空臂；
   2. CancerMine（CC0）：文献挖掘的 driver / oncogene / tumor_suppressor。
 原定 NCG 因官网停服（2026-11-18 实测维护中；最新为 2022 年 NCGHD 7.0、无 8.0）
 改用 CancerMine。
@@ -15,20 +18,16 @@
 **CancerMine 取数策略（2026-11-18 定案：不依赖 Zenodo 可达性）**
 Zenodo 在国内 DNS 被污染，在线下载经常失败；因此主路径是**手动下载 + 本地快照**：
     1) 在能访问 Zenodo 的环境（VPN）下载 cancermine_collated.tsv；
-    2) 跑 `--cancermine-file <tsv> --cancermine-update` —— 脚本过滤/降噪后写
-       WY/resources/cancermine_cancer_genes.csv（仓库内快照，带来源与日期）；
-    3) 之后一律读快照，`--force` 重建也不再联网；只有 `--refresh` 才会重新下载。
+    2) 跑一次带 --cancermine-file（指向下载的 tsv）与 --cancermine-update 的构建
+       —— 脚本过滤/降噪后写 WY/resources/cancermine_cancer_genes.csv（仓库内
+       快照，带来源与日期）；之后一律读快照，--force 重建也不再联网，只有
+       --refresh 才会重新下载。
 顺序：--cancermine-file ＞ 快照（--refresh 时跳过）＞ raw 缓存（--offline）＞ 在线。
-
-用法：
-    python -m WY.tools.build_pancancer_module --cancermine-file cancermine_collated.tsv --cancermine-update
-    python -m WY.tools.build_pancancer_module                 # 读快照，重建产物（不联网）
-    python -m WY.tools.build_pancancer_module --refresh       # VPN 下重新拉取并更新快照
-    python -m WY.tools.build_pancancer_module --offline       # 只用本地数据（断网环境）
+各参数语义见 argparse --help。
 
 产物（版本化，落 config.CACHE_DIR/pancancer/）：
     pancancer_genes_v<YYYYMMDD>.parquet   列：gene / sources
-    meta.json                             来源、计数、EFO、快照版本、拉取时间
+    meta.json                             来源、计数、疾病编号、快照版本、拉取时间
 """
 
 from __future__ import annotations
@@ -48,7 +47,9 @@ from WY import config
 from WY.core.http_client import request_with_retry
 
 OT_GRAPHQL = "https://api.platform.opentargets.org/api/v4/graphql"
-OT_EFO_CANCER = "EFO_0000311"
+# OT 已迁 MONDO 主键（2026-11-18 实证）：老 EFO_0000311 查询返回 200+disease:null，
+# 与四库检索 find_disease_id 优先 MONDO 的取向一致，勿改回 EFO 编号。
+OT_DISEASE_ID = "MONDO_0004992"  # cancer
 ZENODO_CONCEPT_DOI = "10.5281/zenodo.1156241"
 ZENODO_RECORDS_API = "https://zenodo.org/api/records"
 CANCERMINE_FALLBACK_URL = (
@@ -59,8 +60,8 @@ OT_PAGE_SIZE = 500
 ROLES = {"driver", "oncogene", "tumor_suppressor", "tumour_suppressor"}
 
 DISEASE_TARGETS_QUERY = """
-query ($efo: String!, $index: Int!, $size: Int!) {
-  disease(efoId: $efo) {
+query ($diseaseId: String!, $index: Int!, $size: Int!) {
+  disease(efoId: $diseaseId) {
     name
     associatedTargets(page: {index: $index, size: $size}) {
       count
@@ -110,7 +111,7 @@ def _ot_post(query: str, variables: dict) -> dict:
     return payload.get("data") or {}
 
 
-def fetch_ot_targets(efo_id: str = OT_EFO_CANCER) -> tuple[list[str], str]:
+def fetch_ot_targets(disease_id: str = OT_DISEASE_ID) -> tuple[list[str], str]:
     """分页拉取该疾病关联靶点，返回 (approvedSymbol 列表, 疾病名)。"""
     symbols: list[str] = []
     disease_name = ""
@@ -118,7 +119,7 @@ def fetch_ot_targets(efo_id: str = OT_EFO_CANCER) -> tuple[list[str], str]:
     total = None
     while True:
         data = _ot_post(DISEASE_TARGETS_QUERY,
-                        {"efo": efo_id, "index": index, "size": OT_PAGE_SIZE})
+                        {"diseaseId": disease_id, "index": index, "size": OT_PAGE_SIZE})
         disease = data.get("disease") or {}
         disease_name = str(disease.get("name") or disease_name)
         block = disease.get("associatedTargets") or {}
@@ -275,7 +276,10 @@ def _cancermine_rows(*, force: bool, refresh: bool, offline: bool,
 
     if cancermine_file:
         if not os.path.isfile(cancermine_file):
-            raise PancancerError(f"--cancermine-file 不存在：{cancermine_file}")
+            raise PancancerError(
+                f"--cancermine-file 不存在：{cancermine_file}"
+                f"（按当前目录解析为 {os.path.abspath(cancermine_file)}；"
+                f"仓库源数据目录在 {resources_dir()}，请传实际路径或先 cd 到文件所在目录）")
         with open(cancermine_file, encoding="utf-8") as f:
             text = f.read()
         rows = parse_cancermine_rows(text, min_citations=min_citations)
@@ -335,24 +339,33 @@ def _write_json(path: str, payload: dict) -> None:
 
 
 def build(*, force: bool = False, offline: bool = False,
-          efo_id: str = OT_EFO_CANCER, min_citations: int = 2,
+          disease_id: str = OT_DISEASE_ID, min_citations: int = 2,
           cancermine_url: str | None = None, cancermine_file: str | None = None,
           snapshot_path: str | None = None, update_snapshot: bool = False,
           refresh: bool = False, out: str | None = None) -> dict:
     snapshot = snapshot_path or default_snapshot_path()
 
     # ---- Open Targets ----
-    ot_cache = os.path.join(raw_dir(), f"ot_{efo_id}.json")
+    ot_cache = os.path.join(raw_dir(), f"ot_{disease_id}.json")
     os.makedirs(raw_dir(), exist_ok=True)
+    ot_symbols, ot_name = [], ""
+    cache_hit = False
     if os.path.isfile(ot_cache) and not (force or refresh):
         with open(ot_cache, encoding="utf-8") as f:
             cached = json.load(f)
         ot_symbols = list(cached.get("symbols") or [])
         ot_name = str(cached.get("disease_name") or "")
-    elif offline:
-        raise PancancerError(f"离线且无 OT 缓存：{ot_cache}")
-    else:
-        ot_symbols, ot_name = fetch_ot_targets(efo_id)
+        cache_hit = bool(ot_symbols)  # 空缓存视作未命中（历史坏缓存），走重抓
+    if not cache_hit:
+        if offline:
+            raise PancancerError(f"离线且无有效 OT 缓存：{ot_cache}")
+        ot_symbols, ot_name = fetch_ot_targets(disease_id)
+        if not ot_symbols:
+            # 空结果当场抛错、不写缓存：OT 迁 MONDO 后老编号返回 200+null（无
+            # errors），重试层看是成功——2026-11-18 实证空缓存落盘会让对照静默缺臂
+            raise PancancerError(
+                f"Open Targets 疾病 {disease_id} 一条靶点都没拿到（HTTP 层成功但"
+                "疾病查空，多为疾病编号失效/上游接口改动）——不写缓存，核对编号后重试")
         _write_json(ot_cache, {"symbols": ot_symbols, "disease_name": ot_name,
                                "fetched_at": datetime.now(timezone.utc).isoformat()})
 
@@ -373,7 +386,13 @@ def build(*, force: bool = False, offline: bool = False,
     union = sorted(ot_set | cm_set)
     if not union:
         raise PancancerError("并集为空：两个来源都没拿到基因")
-
+    # 验收门 1（2026-11-18 增）：两源各至少命中一条——单臂缺失时并集数量可能
+    # 依然可观（CancerMine 单臂 ~4000），不拦住则对照悄悄降级（OT 空缓存事故实证）
+    empty_arms = [name for name, subset in
+                  (("Open Targets", ot_set), ("CancerMine", cm_set)) if not subset]
+    if empty_arms:
+        raise PancancerError(f"验收失败：{'/'.join(empty_arms)} 一条基因都没拿到，泛癌对照缺臂")
+    # 验收门 2：关键癌基因必须在集内（防两源口径漂移）
     missing = [g for g in ("BRAF", "TP53", "PIK3CA") if g not in set(union)]
     if missing:
         raise PancancerError(f"验收失败：关键基因缺失 {missing}")
@@ -397,7 +416,7 @@ def build(*, force: bool = False, offline: bool = False,
         "module": "pancancer_genes",
         "version": version,
         "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "ot_efo": efo_id,
+        "ot_disease_id": disease_id,
         "ot_disease": ot_name,
         "ot_targets": len(ot_set),
         "cancermine_source": cm_source,
@@ -421,8 +440,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--refresh", action="store_true",
                         help="VPN 下重新下载 CancerMine 并更新快照")
     parser.add_argument("--offline", action="store_true", help="只用本地数据")
-    parser.add_argument("--ot-efo", default=OT_EFO_CANCER,
-                        help=f"Open Targets 疾病编号（默认 {OT_EFO_CANCER} cancer）")
+    parser.add_argument("--ot-disease-id", default=OT_DISEASE_ID,
+                        help=f"Open Targets 疾病编号（MONDO 主键，默认 {OT_DISEASE_ID} cancer；"
+                             "老 EFO 编号已查空勿用）")
     parser.add_argument("--min-citations", type=int, default=2,
                         help="CancerMine 引用数下限（降噪，默认 2）")
     parser.add_argument("--cancermine-file", default=None,
@@ -436,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default=None, help="输出目录（默认 CACHE_DIR/pancancer）")
     args = parser.parse_args(argv)
     try:
-        meta = build(force=args.force, offline=args.offline, efo_id=args.ot_efo,
+        meta = build(force=args.force, offline=args.offline, disease_id=args.ot_disease_id,
                      min_citations=args.min_citations,
                      cancermine_url=args.cancermine_url,
                      cancermine_file=args.cancermine_file,

@@ -5,6 +5,7 @@
 """
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -14,7 +15,7 @@ from WY.tools import build_pancancer_module as bpm
 
 def _patch_sources(monkeypatch, ot_symbols, tsv):
     monkeypatch.setattr(bpm, "fetch_ot_targets",
-                        lambda efo_id=bpm.OT_EFO_CANCER: (list(ot_symbols), "cancer"))
+                        lambda disease_id=bpm.OT_DISEASE_ID: (list(ot_symbols), "cancer"))
     monkeypatch.setattr(bpm, "download_cancermine",
                         lambda url=None: (tsv, "stub://cancermine"))
 
@@ -45,7 +46,7 @@ def test_build_union_writes_parquet_and_meta(tmp_path, monkeypatch, cancermine_f
     assert dict(zip(df["gene"], df["sources"]))["TP53"] == "OT;CANCERMINE"
 
     saved = json.loads((tmp_path / "meta.json").read_text(encoding="utf-8"))
-    assert saved["ot_efo"] == bpm.OT_EFO_CANCER
+    assert saved["ot_disease_id"] == bpm.OT_DISEASE_ID
     assert saved["cancermine_min_citations"] == 2
 
 
@@ -57,7 +58,7 @@ def test_snapshot_is_preferred_and_avoids_network(tmp_path, monkeypatch):
                         {"gene": "PIK3CA", "roles": "oncogene", "citations": 9}],
                        source="unit-test", min_citations=2)
     monkeypatch.setattr(bpm, "fetch_ot_targets",
-                        lambda efo_id=bpm.OT_EFO_CANCER: (["BRAF"], "cancer"))
+                        lambda disease_id=bpm.OT_DISEASE_ID: (["BRAF"], "cancer"))
 
     def _no_download(url=None):
         raise AssertionError("有快照时不应联网")
@@ -76,7 +77,7 @@ def test_cancermine_file_wins_and_writes_snapshot(tmp_path, monkeypatch,
         ("PIK3CA", "oncogene", 9)]), encoding="utf-8")
     snap = tmp_path / "snap.csv"
     monkeypatch.setattr(bpm, "fetch_ot_targets",
-                        lambda efo_id=bpm.OT_EFO_CANCER: (["BRAF"], "cancer"))
+                        lambda disease_id=bpm.OT_DISEASE_ID: (["BRAF"], "cancer"))
 
     meta = bpm.build(force=True, out=str(tmp_path), snapshot_path=str(snap),
                      cancermine_file=str(tsv_path), update_snapshot=True)
@@ -174,3 +175,46 @@ def test_resolve_cancermine_url_reads_zenodo_files(monkeypatch):
 
     monkeypatch.setattr(bpm, "request_with_retry", lambda *a, **k: _Resp())
     assert bpm.resolve_cancermine_url().endswith(bpm.CANCERMINE_FILE)
+
+
+def test_ot_empty_fetch_raises_and_skips_cache(tmp_path, monkeypatch):
+    """OT 抓到空（HTTP 200 但疾病查空，2026-11-18 MONDO 迁移实证）必须当场抛错
+    且不写缓存——空缓存落盘会让后续重建复用空臂（单臂降级无感知）。"""
+    snap = tmp_path / "snap.csv"
+    monkeypatch.setattr(bpm, "fetch_ot_targets",
+                        lambda disease_id=bpm.OT_DISEASE_ID: ([], "cancer"))
+
+    def _no_download(url=None):
+        raise AssertionError("OT 空结果应先抛错，不该走到 CancerMine")
+
+    monkeypatch.setattr(bpm, "download_cancermine", _no_download)
+    with pytest.raises(bpm.PancancerError) as exc:
+        bpm.build(force=True, out=str(tmp_path), snapshot_path=str(snap))
+    assert "一条靶点都没拿到" in str(exc.value)
+    raw = Path(bpm.data_dir()) / "raw"
+    assert not list(raw.glob("ot_*.json"))          # 缓存未落盘
+
+
+def test_ot_empty_cache_is_treated_as_miss(tmp_path, monkeypatch, cancermine_factory):
+    """历史坏缓存（空 symbols）不再被信任：视作未命中走重抓。"""
+    raw = Path(bpm.data_dir()) / "raw"
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / f"ot_{bpm.OT_DISEASE_ID}.json").write_text(
+        json.dumps({"symbols": [], "disease_name": ""}), encoding="utf-8")
+    _patch_sources(monkeypatch, ["BRAF", "TP53", "PIK3CA"],
+                   cancermine_factory([("TP53", "driver", 9)]))
+    meta = bpm.build(out=str(tmp_path), snapshot_path=str(tmp_path / "snap.csv"))
+    assert meta["ot_targets"] == 3                  # 重抓成功，空缓存被绕过
+
+
+def test_acceptance_gate_rejects_missing_arm(tmp_path, monkeypatch, cancermine_factory):
+    """验收门 1：任一源零命中即拒绝（CancerMine 单臂 ~4000 条数量可观，
+    不拦住则泛癌对照悄悄降级）。"""
+    tsv = tmp_path / "filtered.tsv"
+    tsv.write_text(cancermine_factory([("FAKE", "biomarker", 99)]), encoding="utf-8")
+    monkeypatch.setattr(bpm, "fetch_ot_targets",
+                        lambda disease_id=bpm.OT_DISEASE_ID: (["BRAF"], "cancer"))
+    with pytest.raises(bpm.PancancerError) as exc:
+        bpm.build(force=True, out=str(tmp_path),
+                  snapshot_path=str(tmp_path / "s.csv"), cancermine_file=str(tsv))
+    assert "CancerMine" in str(exc.value) and "缺臂" in str(exc.value)
