@@ -307,8 +307,12 @@ PROXIMITY_CACHE_DIR = os.path.join(CACHE_DIR, "proximity")
 # s_AB 零分布度匹配重采样次数(方案 §2.1"对 T_A/T_B 分别重采样得 s_AB 与
 # z_AB 的零分布";z_AB 一侧复用邻近度检验自带的 PROXIMITY_N_PERM,不重复配)
 SYNERGY_N_PERM = 200
-# s_AB 零分布随机种子(结果可复现,与 PROXIMITY_SEED 分开配互不影响)
+# s_AB 零分布随机种子(结果可复现,与 PROXIMITY_SEED 分开配互不影响;不进设置页——
+# 开放调种子 = 换种子重摇 p 值到显著,p-hacking 风险,2026-11-18 定案)
 SYNERGY_SEED = 0
+# 协同页靶点集 top-N 截断默认值(页面选择器初始化用;切片在调用方完成,核心不截断;
+# 0 视作"全量"口径由页面自行映射,本常量恒为正整数)
+SYNERGY_TOP_N = 100
 
 # ======== RWR 靶点优先级排序(依赖背景互作组) ========
 # 重启概率 α:越大游走越远、排序越偏全局,越小越贴近已知靶点;0.7 为常用取值。
@@ -428,6 +432,7 @@ UI_SETTINGS_KEYS = (
     "GSEA_PERMUTATION_NUM",  # GSEA 置换次数:越大 p 值越稳,耗时线性增长
     "PROXIMITY_N_PERM",  # 网络邻近度随机置换次数:同上
     "SYNERGY_N_PERM",  # 分离度 s_AB 零分布重采样次数:同上(2026-11-17 二期新增)
+    "SYNERGY_TOP_N",  # 协同页靶点集 top-N 默认值:证据分切片,信号质量必要条件(2026-11-18)
     "RWR_NULL_PERMS",  # RWR 度匹配校正的置换次数:同上
     "GSEA_SET_MIN_SIZE",  # GSEA 基因集规模下限(与上限配对,保存时校验 min<max)
     "GSEA_SET_MAX_SIZE",  # GSEA 基因集规模上限

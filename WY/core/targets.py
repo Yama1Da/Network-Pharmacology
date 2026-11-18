@@ -243,6 +243,27 @@ def get_disease_targets_merged(disease_name: str) -> pd.DataFrame:
                               cache_path=cache_path, **_DISEASE_MERGE)
 
 
+def list_known_targets(kind: str) -> list[str]:
+    """药物/疾病库已收录查询名(协同页选择器数据源,二期 §1.3 定案):枚举 merged
+    缓存对应侧文件名,经名称映射还原原始查询名,无映射的旧文件退回 safe 名。
+    kind: "drug" | "disease"。只读本地,不联网;字母序去重。"""
+    from .text_utils import resolve_original_name
+    from WY import config
+
+    prefix = (config.MERGED_DRUG_PREFIX if kind == "drug"
+              else config.MERGED_DISEASE_PREFIX)
+    cache_dir = config.MERGED_CACHE_DIR
+    if not os.path.isdir(cache_dir):
+        return []
+    names: set[str] = set()
+    for f in os.listdir(cache_dir):
+        if not f.startswith(prefix) or not f.endswith(".csv"):
+            continue
+        stem = f[len(prefix):-len(".csv")]
+        names.add(resolve_original_name(stem) or stem)
+    return sorted(names)
+
+
 def intersect_target_symbols(drug_df: pd.DataFrame, disease_df: pd.DataFrame,
                              top_n: int) -> list[str]:
     """两侧靶点表按 approvedSymbol 列取交集,字母序排序后截断 top_n(对齐 STRING 查询上限)。

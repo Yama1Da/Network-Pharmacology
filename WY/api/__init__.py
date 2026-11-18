@@ -51,6 +51,7 @@ from . import settings
 from . import retrieve
 from . import docking
 from . import ml
+from . import synergy
 
 app.include_router(collections.router)
 app.include_router(transfer_routes.router)
@@ -64,6 +65,7 @@ app.include_router(settings.router)
 app.include_router(retrieve.router)
 app.include_router(docking.router)
 app.include_router(ml.router)
+app.include_router(synergy.router)
 
 
 

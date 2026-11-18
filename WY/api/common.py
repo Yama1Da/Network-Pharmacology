@@ -104,6 +104,9 @@ def _settings_snapshot() -> dict:
         "gsea_permutation_num": config.GSEA_PERMUTATION_NUM,
         "proximity_n_perm": config.PROXIMITY_N_PERM,
         "rwr_null_perms": config.RWR_NULL_PERMS,
+        # 分离度协同预测(二期):页面选择器的初始默认值
+        "synergy_top_n": config.SYNERGY_TOP_N,
+        "synergy_n_perm": config.SYNERGY_N_PERM,
         "gsea_set_min_size": config.GSEA_SET_MIN_SIZE,
         "gsea_set_max_size": config.GSEA_SET_MAX_SIZE,
         "gsea_fdr_screen": config.GSEA_FDR_SCREEN,

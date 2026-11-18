@@ -1434,3 +1434,76 @@ def test_settings_snapshot_docking_params(client):
     expected = max(config.DOCKING_TIMEOUT,
                    config.DOCKING_TIMEOUT * config.EXHAUSTIVENESS // 8)
     assert body["docking_timeout"] == expected
+
+
+# ======== 二期:分离度协同预测 /api/synergy/analyze ========
+
+
+def _synergy_df(n: int, pchembl: float = 8.0) -> pd.DataFrame:
+    return pd.DataFrame({"approvedSymbol": [f"G{i}" for i in range(n)],
+                         "score_pchembl": [pchembl] * n,
+                         "score_dgidb": [None] * n})
+
+
+def test_synergy_analyze_validation(client):
+    """提交前同步校验:必填名/参数域。"""
+    assert client.post("/api/synergy/analyze",
+                       json={"drug_a": "", "drug_b": "B"}).status_code == 400
+    assert client.post("/api/synergy/analyze",
+                       json={"drug_a": "A", "drug_b": "B", "top_n": 0}).status_code == 400
+    assert client.post("/api/synergy/analyze",
+                       json={"drug_a": "A", "drug_b": "B", "n_perm": 5}).status_code == 400
+
+
+def test_synergy_analyze_job_pipeline(client, monkeypatch):
+    """提交→轮询→done 管线(任务体内命名空间打桩):切片/页级参数透传/结果原样返回。"""
+    from WY.api import synergy as syn
+    captured: dict = {}
+
+    def fake_pair(ga, gb, d_genes, *, drug_a="", drug_b="", **kw):
+        captured["sizes"] = (len(ga), len(gb), len(d_genes))
+        captured.update(kw)
+        return {"schema": "synergy.v1.1", "geometry_label": "overlap"}
+
+    monkeypatch.setattr(syn, "get_drug_targets_merged", lambda name: _synergy_df(6))
+    monkeypatch.setattr(syn, "get_disease_targets_merged", lambda name: _synergy_df(9))
+    monkeypatch.setattr(syn, "analyze_pair", fake_pair)
+    r = client.post("/api/synergy/analyze",
+                    json={"drug_a": "Aspirin", "drug_b": "Ibuprofen",
+                          "disease": "T2D", "top_n": 50, "n_perm": 40})
+    assert r.status_code == 200
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done"
+    assert job["result"]["geometry_label"] == "overlap"
+    assert captured["sizes"] == (6, 6, 9)
+    assert captured["top_n"] == 50 and captured["proximity_n_perm"] == 40
+    assert captured["sort_rule"] == syn.SORT_RULE
+    assert captured["progress"] is not None
+
+
+def test_synergy_analyze_precheck_token(client, monkeypatch):
+    """E3 拒绝透传稳定令牌:SynergyPrecheckError + reason 可被前端匹配。"""
+    from WY.api import synergy as syn
+    from WY.core.synergy import SynergyPrecheckError
+
+    monkeypatch.setattr(syn, "get_drug_targets_merged", lambda name: _synergy_df(6))
+    monkeypatch.setattr(syn, "get_disease_targets_merged", lambda name: _synergy_df(6))
+
+    def boom(*a, **k):
+        raise SynergyPrecheckError("too_few_targets_a", "入网 3 < 5")
+
+    monkeypatch.setattr(syn, "analyze_pair", boom)
+    r = client.post("/api/synergy/analyze", json={"drug_a": "A", "drug_b": "B"})
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "error"
+    assert "SynergyPrecheckError: too_few_targets_a" in job["error"]
+
+
+def test_synergy_no_targets_token(client, monkeypatch):
+    """四库无数据 → SynergyNoTargetsError 稳定令牌。"""
+    from WY.api import synergy as syn
+    monkeypatch.setattr(syn, "get_drug_targets_merged", lambda name: pd.DataFrame())
+    r = client.post("/api/synergy/analyze", json={"drug_a": "NoSuchDrug", "drug_b": "B"})
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "error"
+    assert "synergy:no_targets_a" in job["error"]

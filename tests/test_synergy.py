@@ -173,10 +173,11 @@ def test_contract_conformance_and_determinism():
     b = [f"N{i}" for i in (1, 3, 5, 7, 9)]
     r = _run(G, a, b)
     assert set(r) == CONTRACT_KEYS
-    assert r["schema"] == "synergy.v1"
+    assert r["schema"] == "synergy.v1.1"
     assert set(r["separation"]) == {"s_ab", "d_aa", "d_bb", "d_ab", "null"}
     assert set(r["separation"]["null"]) == {"mean", "sd", "z", "p_lower", "n_perm"}
-    assert set(r["meta"]) == {"computed_at", "engine"}
+    assert set(r["meta"]) == {"computed_at", "engine", "run"}
+    assert r["meta"]["run"] == {"top_n": None, "sort": None, "proximity_n_perm": None}
     assert "cache" not in r["meta"]          # 2026-11-17 定案:无缓存机制
     assert r["ranks"] is None and r["reachability"] is None
     assert r["label_basis"].startswith("s_ab")
@@ -187,6 +188,32 @@ def test_contract_conformance_and_determinism():
 
 
 # ---- L1 统计健全性(不需要生物知识,验收自检"置换 p 值近似均匀"的落地) ----
+
+
+def test_run_params_and_progress_wiring(monkeypatch):
+    """v1.1:meta.run 记录页级参数;proximity_n_perm 透传一期邻近度;progress
+    只发 fraction(无文案,核心无文案纪律)且单调不减。"""
+    seen: dict = {}
+
+    def fake_prox(drug_genes, disease_genes, species="Human", n_perm=None, seed=None):
+        seen["n_perm"] = n_perm
+        return {"ok": True, "error": None, "d_c": 1.0, "z": -1.0, "p_empirical": 0.02}
+
+    monkeypatch.setattr(synergy, "proximity_zscore", fake_prox)
+    G = _named(nx.cycle_graph(12))
+    a = [f"N{i}" for i in (0, 2, 4, 6, 8)]
+    b = [f"N{i}" for i in (1, 3, 5, 7, 9)]
+    fr: list = []
+    r = _analyze_pair_from_context(
+        _ctx_from_graph(G), a, b, ["D0", "D1", "D2", "D3", "D4", "D5"],
+        n_perm=10, seed=0, top_n=50, sort_rule="dual_source_max_norm",
+        proximity_n_perm=37,
+        progress=lambda fraction=None, **kw: fr.append(fraction))
+    assert r["meta"]["run"] == {"top_n": 50, "sort": "dual_source_max_norm",
+                                "proximity_n_perm": 37}
+    assert seen["n_perm"] == 37
+    assert fr and fr[0] >= 0.1 and fr[-1] <= 0.95
+    assert all(x <= y for x, y in zip(fr, fr[1:]))
 
 
 def test_separation_symmetry_and_self_zero():

@@ -38,8 +38,11 @@ from WY.core.network_algorithms import (
 
 logger = logging.getLogger(__name__)
 
-# 契约版本锚点:字段变更必须升版本并在清单文档 §1.3 留纪要(冻结纪律 §4)
-SYNERGY_SCHEMA = "synergy.v1"
+# 契约版本锚点:字段变更必须升版本并在清单文档 §1.3 留纪要(冻结纪律 §4)。
+# v1.1(2026-11-18):meta.run 记录页级运行参数(靶点集截断 N/排序规则 id/proximity
+# 置换轮数)——切片在调用方完成(定案 #7),核心不截断只记账;progress 只发 fraction
+# 不带文案(核心无文案纪律),阶段码由 API 层按区间标注。
+SYNERGY_SCHEMA = "synergy.v1.1"
 
 
 class SynergyPrecheckError(RuntimeError):
@@ -109,6 +112,8 @@ def _analyze_pair_from_context(
     disease_source: str = "", species: str = "Human",
     interactome_meta: dict | None = None,
     n_perm: int = 200, seed: int = 0, bin_size: int = 100,
+    top_n: int | None = None, sort_rule: str | None = None,
+    proximity_n_perm: int | None = None, progress=None,
 ) -> dict:
     """契约 synergy.v1 组装(纯计算,LCC 上下文注入,便于小图自检——一期同模式)。
     d_genes 为空/None 时疾病为 None,z_* 三字段全 None(ML/CLI 批量可无疾病)。"""
@@ -138,6 +143,8 @@ def _analyze_pair_from_context(
         ra = degree_matched_sample(degree_map, a_lcc, bin_size, rng, bins=bins)
         rb = degree_matched_sample(degree_map, b_lcc, bin_size, rng, bins=bins)
         s_null[i] = _separation(Mt, idx, ra, rb)
+        if progress:
+            progress(fraction=0.1 + 0.45 * (i + 1) / n_perm)  # 仅分数,文案归 API 层
     mu, sd = float(s_null.mean()), float(s_null.std())
     if sd > 0:
         z_sep = float((s_obs - mu) / sd)
@@ -150,13 +157,18 @@ def _analyze_pair_from_context(
     # ---- z_A/z_B/z_AB:一期邻近度检验编排复用(陷阱 #7,禁止复制实现) ----
     # proximity_zscore 自带覆盖率保护/内部置换;传 None 让它读 PROXIMITY_* 配置。
     if d_norm:
+        if progress:
+            progress(fraction=0.6)
         prox: dict = {}
         for key, genes in (("z_a", a_norm), ("z_b", b_norm),
                            ("z_ab", list(dict.fromkeys(a_norm + b_norm)))):
-            r = proximity_zscore(genes, d_norm, species=species)
+            r = proximity_zscore(genes, d_norm, species=species,
+                                 n_perm=proximity_n_perm)
             prox[key] = {"ok": r.get("ok"), "error": r.get("error"),
                          "d_c": r.get("d_c"), "z": r.get("z"),
                          "p": r.get("p_empirical")}
+        if progress:
+            progress(fraction=0.95)
     else:
         prox = {"z_a": None, "z_b": None, "z_ab": None}
 
@@ -192,7 +204,9 @@ def _analyze_pair_from_context(
         "ranks": None,       # E1 分层排序(队友):重叠型按 z_ab、互补型按分离强度各排 Top-K
         "reachability": None,  # 1.2 浓度可达性模块挂载位
         "meta": {"computed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                 "engine": "synergy.py"},
+                 "engine": "synergy.py",
+                 "run": {"top_n": top_n, "sort": sort_rule,
+                         "proximity_n_perm": proximity_n_perm}},
     }
 
 
@@ -201,8 +215,12 @@ def analyze_pair(
     drug_a: str = "", drug_b: str = "", disease_name: str = "",
     disease_source: str = "", species: str = "Human",
     n_perm: int | None = None, seed: int | None = None,
+    top_n: int | None = None, sort_rule: str | None = None,
+    proximity_n_perm: int | None = None, progress=None,
 ) -> dict:
     """分离度协同预测主入口(API/CLI 共用;CLI 批量即对本函数按 pairs 循环)。
+    top_n/sort_rule 仅记账进 meta.run——切片在调用方完成(定案 #7),核心不截断。
+    proximity_n_perm=None 时一期邻近度读 PROXIMITY_N_PERM 配置默认。
     背景互作组未构建时抛 InteractomeNotBuiltError,由调用方转用户提示。"""
     from WY import config
     from WY.core import interactome as itx
@@ -222,6 +240,8 @@ def analyze_pair(
         disease_source=disease_source, species=species,
         interactome_meta=interactome_meta, n_perm=n_perm, seed=seed,
         bin_size=int(config.PROXIMITY_DEGREE_BIN_SIZE),
+        top_n=top_n, sort_rule=sort_rule, proximity_n_perm=proximity_n_perm,
+        progress=progress,
     )
     logger.info("synergy %s×%s: s_ab=%.4f(%s, p_lower=%.3f, power_limited=%s)",
                 drug_a or "A", drug_b or "B", result["separation"]["s_ab"],

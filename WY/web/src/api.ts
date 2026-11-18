@@ -362,6 +362,9 @@ export interface SettingsSnapshot {
   gsea_permutation_num: number
   proximity_n_perm: number
   rwr_null_perms: number
+  /* 分离度协同预测(二期):页面选择器的初始默认值 */
+  synergy_top_n: number
+  synergy_n_perm: number
   gsea_set_min_size: number
   gsea_set_max_size: number
   gsea_fdr_screen: number
@@ -374,6 +377,55 @@ export interface SettingsSnapshot {
   ui_font_scale: number
   ui_theme: string
   ui_lang: 'zh' | 'en'
+}
+
+/* ---- 分离度协同预测(二期,契约 synergy.v1.1) ---- */
+
+export interface SynergyRunParams {
+  top_n: number | null
+  sort: string | null
+  proximity_n_perm: number | null
+}
+
+export interface SynergyProx {
+  ok: boolean | null
+  error: string | null
+  d_c: number | null
+  z: number | null
+  p: number | null
+}
+
+export interface SynergyContract {
+  schema: string
+  pair: { drug_a: string; drug_b: string }
+  disease: { name: string; n_targets: number; source: string } | null
+  inputs: {
+    coverage: { a_total: number; a_in_lcc: number; b_total: number; b_in_lcc: number; d_total: number; d_in_lcc: number }
+    n_overlap_ab: number
+    power_limited: boolean
+    interactome: Record<string, unknown>
+  }
+  separation: {
+    s_ab: number
+    d_aa: number
+    d_bb: number
+    d_ab: number
+    null: { mean: number; sd: number; z: number | null; p_lower: number; n_perm: number }
+  }
+  proximity: { z_a: SynergyProx | null; z_b: SynergyProx | null; z_ab: SynergyProx | null }
+  geometry_label: 'overlap' | 'separated' | 'tie'
+  label_basis: string
+  ranks: null
+  reachability: null
+  meta: { computed_at: string; engine: string; run: SynergyRunParams }
+}
+
+export interface SynergyAnalyzeBody {
+  drug_a: string
+  drug_b: string
+  disease?: string
+  top_n?: number | null
+  n_perm?: number | null
 }
 
 /* ---- 数据迁移(设置页:结果导出 / 两段式导入) ---- */
@@ -514,6 +566,13 @@ export const api = {
 
   buildPkMirror: (force = false): Promise<{ job_id: string }> =>
     post('/api/pk-mirror/build', { force }),
+
+  /* ---- 分离度协同预测(二期) ---- */
+  synergyLibrary: (): Promise<{ drugs: string[]; diseases: string[] }> =>
+    fetch('/api/synergy/library').then((r) => json(r)),
+
+  synergyAnalyze: (body: SynergyAnalyzeBody): Promise<{ job_id: string }> =>
+    post('/api/synergy/analyze', body),
 
   /* ---- PPI 分析(阶段 3a) ---- */
   analyzePpi: (body: PpiAnalyzeBody): Promise<{ job_id: string }> =>

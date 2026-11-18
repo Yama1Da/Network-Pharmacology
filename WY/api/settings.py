@@ -67,6 +67,8 @@ _ALLOWED_UI_KEYS = (
     # 统计稳健性/研究语义参数(缓存键均含这些值,改动后旧缓存自动失效重算)
     "RWR_ALPHA", "GSEA_PERMUTATION_NUM", "PROXIMITY_N_PERM", "RWR_NULL_PERMS",
     "GSEA_SET_MIN_SIZE", "GSEA_SET_MAX_SIZE", "GSEA_FDR_SCREEN",
+    # 分离度协同预测(二期):Settings 行作页面初始默认,页内可覆盖
+    "SYNERGY_TOP_N", "SYNERGY_N_PERM",
     # 分子对接
     "EXHAUSTIVENESS", "DOCKING_CPU",
 )
@@ -85,6 +87,8 @@ _UI_RANGES: dict[str, tuple[float, float]] = {
     # 置换数/搜索深度:上限即耗时上限(满档单次分析十余分钟级),不开放更高档位
     "GSEA_PERMUTATION_NUM": (100, 5000), "PROXIMITY_N_PERM": (50, 2000),
     "RWR_NULL_PERMS": (50, 2000),
+    # 协同预测(二期):N 下限 5 档在 E3 已有业务拒绝,这里只防手滑垃圾值
+    "SYNERGY_TOP_N": (5, 1000), "SYNERGY_N_PERM": (10, 2000),
     "GSEA_SET_MIN_SIZE": (5, 100), "GSEA_SET_MAX_SIZE": (100, 1000),
     "EXHAUSTIVENESS": (1, 32), "DOCKING_CPU": (0, 64),
 }
