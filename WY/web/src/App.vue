@@ -18,6 +18,7 @@ import LogsView from './views/LogsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import SourcesView from './views/SourcesView.vue'
 import SynergyView from './views/SynergyView.vue'
+import SynergyResultsView from './views/SynergyResultsView.vue'
 
 const { t, locale } = useI18n()
 
@@ -181,6 +182,7 @@ onBeforeUnmount(() => {
       <MlView v-else-if="route === 'ml'" />
       <MlResultsView v-else-if="route === 'ml-results'" />
       <SynergyView v-else-if="route === 'synergy'" />
+      <SynergyResultsView v-else-if="route === 'synergy-results'" />
       <SettingsView v-else-if="route === 'settings'" />
       <!-- 未知 hash 兜底:书签过期 / 手改地址时不至于白屏 -->
       <div v-else class="notfound">

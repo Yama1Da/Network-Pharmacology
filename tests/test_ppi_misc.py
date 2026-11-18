@@ -60,7 +60,8 @@ def test_list_ranked_csv_candidates(tmp_path, monkeypatch):
     import json
 
     dl = config.DOWNLOADS_DIR
-    d1 = os.path.join(dl, "aspirin_cancer_data")
+    # 2026-11-18 聚合后 PPI 运行目录在 ppi-results/ 一层下,夹具同步新布局
+    d1 = os.path.join(dl, "ppi-results", "aspirin_cancer_data")
     os.makedirs(d1, exist_ok=True)
     with open(os.path.join(d1, "analysis_meta.json"), "w", encoding="utf-8") as f:
         json.dump({"drug": "Aspirin", "disease": "cancer", "string_version": "12.0",

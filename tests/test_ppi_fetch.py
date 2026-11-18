@@ -92,14 +92,16 @@ def test_list_analyzed_diseases_and_drugs(monkeypatch):
     """疾病/药物下拉数据源:meta 精确 + 前缀反解 + rwr 变体剥离 + 大小写不敏感去重。"""
     dl = config.DOWNLOADS_DIR
     import json
-    d1 = os.path.join(dl, "aspirin_cancer_data")           # meta 精确
+    # 2026-11-18 聚合后 PPI 运行目录在 ppi-results/ 一层下,夹具同步新布局
+    root = os.path.join(dl, "ppi-results")
+    d1 = os.path.join(root, "aspirin_cancer_data")           # meta 精确
     os.makedirs(d1, exist_ok=True)
     with open(os.path.join(d1, "analysis_meta.json"), "w", encoding="utf-8") as f:
         json.dump({"drug": "Aspirin", "disease": "cancer rwr50",
                    "string_version": "12.0", "analyzed_at": "2026-10-21"}, f)
-    d2 = os.path.join(dl, "metformin_type_2_diabetes_data")  # 前缀反解
+    d2 = os.path.join(root, "metformin_type_2_diabetes_data")  # 前缀反解
     os.makedirs(d2, exist_ok=True)
-    d3 = os.path.join(dl, "manual_data")                     # 手动模式跳过
+    d3 = os.path.join(root, "manual_data")                     # 手动模式跳过
     os.makedirs(d3, exist_ok=True)
 
     diseases = ppi.list_analyzed_diseases()

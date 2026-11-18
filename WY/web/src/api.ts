@@ -420,6 +420,26 @@ export interface SynergyContract {
   meta: { computed_at: string; engine: string; run: SynergyRunParams }
 }
 
+/** job 结果载荷 = 契约 + 归档目录名(相对 downloads 集合,可打包下载)。 */
+export interface SynergyJobResult extends SynergyContract {
+  directory_rel: string
+}
+
+/** 结果管理页的运行行摘要(后端 core.synergy.list_results)。 */
+export interface SynergyRunRow {
+  run: string
+  mtime: string
+  ok: boolean
+  reason: string | null
+  drug_a: string
+  drug_b: string
+  disease: string
+  geometry_label: string
+  s_ab: number | null
+  power_limited: boolean | null
+  computed_at: string
+}
+
 export interface SynergyAnalyzeBody {
   drug_a: string
   drug_b: string
@@ -571,8 +591,32 @@ export const api = {
   synergyLibrary: (): Promise<{ drugs: string[]; diseases: string[] }> =>
     fetch('/api/synergy/library').then((r) => json(r)),
 
+  synergyJob: (): Promise<{ running: boolean; job_id?: string; status?: string; progress?: JobState['progress'] }> =>
+    fetch('/api/synergy/job').then((r) => json(r)),
+
   synergyAnalyze: (body: SynergyAnalyzeBody): Promise<{ job_id: string }> =>
     post('/api/synergy/analyze', body),
+
+  synergyResults: (): Promise<{ runs: SynergyRunRow[] }> =>
+    fetch('/api/synergy/results').then((r) => json(r)),
+
+  synergyResultsDetail: (run: string): Promise<SynergyContract> =>
+    fetch(`/api/synergy/results/detail?run=${encodeURIComponent(run)}`).then((r) => json(r)),
+
+  synergyResultsDelete: (
+    runs: string[]
+  ): Promise<{ deleted: string[]; skipped: { name: string; reason: string }[] }> =>
+    post('/api/synergy/results/delete', { runs }),
+
+  synergyResultsZip: async (runs: string[]): Promise<Blob> => {
+    const r = await fetch('/api/synergy/results/zip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runs })
+    })
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    return r.blob()
+  },
 
   /* ---- PPI 分析(阶段 3a) ---- */
   analyzePpi: (body: PpiAnalyzeBody): Promise<{ job_id: string }> =>

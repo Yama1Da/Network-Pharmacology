@@ -19,3 +19,29 @@ export function takePrefill(): { drug: string; disease: string } | null {
   prefill.stamp = 0
   return out
 }
+
+/** 跨视图轻量状态:协同分析结果页「复现此运行」→ 协同预测页回填表单与参数。 */
+export interface SynergyReplay {
+  drug_a: string
+  drug_b: string
+  disease: string
+  top_n: number | null
+  n_perm: number | null
+}
+
+export const synergyReplay = reactive<{ payload: SynergyReplay | null; stamp: number }>({
+  payload: null,
+  stamp: 0
+})
+
+export function setSynergyReplay(payload: SynergyReplay): void {
+  synergyReplay.payload = payload
+  synergyReplay.stamp = Date.now()
+}
+
+export function takeSynergyReplay(): SynergyReplay | null {
+  if (!synergyReplay.stamp) return null
+  const out = synergyReplay.payload
+  synergyReplay.stamp = 0
+  return out
+}

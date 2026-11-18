@@ -323,6 +323,14 @@ def base_disease_of(name: str) -> str:
     return re.sub(r"\s*rwr\s*\d+\s*$", "", str(name), flags=re.IGNORECASE).strip()
 
 
+def _ppi_results_dir() -> str:
+    """PPI 运行目录聚合根(2026-11-18 聚合):DOWNLOADS_DIR/ppi-results/。旧的顶层
+    <prefix>_data 由启动迁移器(core.files.migrate_results_layout)一次性移入。"""
+    from WY import config
+
+    return os.path.join(config.DOWNLOADS_DIR, "ppi-results")
+
+
 def list_analyzed_pairs() -> list[dict]:
     """列出本机已跑过的 PPI 分析(即 App 页面分析过的药病对),目录名倒序。
 
@@ -340,9 +348,8 @@ def list_analyzed_pairs() -> list[dict]:
     """
     import json
 
-    from WY import config
     out: list[dict] = []
-    dl = config.DOWNLOADS_DIR
+    dl = _ppi_results_dir()
     if not os.path.isdir(dl):
         return out
     for d in sorted(os.listdir(dl), reverse=True):
@@ -465,12 +472,13 @@ def save_ppi_results(
     import networkx as nx
     from WY import config
 
-    os.makedirs(config.DOWNLOADS_DIR, exist_ok=True)
+    results_root = os.path.join(config.DOWNLOADS_DIR, "ppi-results")
+    os.makedirs(results_root, exist_ok=True)
 
-    for old in glob.glob(os.path.join(config.DOWNLOADS_DIR, f"{prefix}_data*")):
+    for old in glob.glob(os.path.join(results_root, f"{prefix}_data*")):
         if os.path.isdir(old):
             shutil.rmtree(old)
-    subdir = os.path.join(config.DOWNLOADS_DIR, f"{prefix}_data")
+    subdir = os.path.join(results_root, f"{prefix}_data")
     os.makedirs(subdir, exist_ok=True)
 
     # 结果自描述:记录分析时的数据版本与阈值,任何一份旧结果都能说明自己用的
@@ -588,6 +596,12 @@ def read_ppi_dataset(dir_name: str) -> tuple[set[str], set[str]]:
     from WY import config
 
     base = os.path.join(config.DOWNLOADS_DIR, dir_name)
+    if not os.path.isdir(base):
+        # 2026-11-18 聚合后运行目录在 ppi-results/ 一层下;对接页来源名校验要求
+        # 纯文件名,聚合对其透明——裸名在此做兼容查找
+        nested = os.path.join(config.DOWNLOADS_DIR, "ppi-results", dir_name)
+        if os.path.isdir(nested):
+            base = nested
     prefix = dir_name[:-5] if dir_name.endswith("_data") else dir_name
     hub: set[str] = set()
     nodes_path = os.path.join(base, f"{prefix}_nodes.csv")

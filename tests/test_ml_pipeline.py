@@ -115,20 +115,22 @@ def test_list_analyzed_pairs():
     from WY.core.ppi import list_analyzed_pairs
 
     tmp = config.DOWNLOADS_DIR
+    # 2026-11-18 聚合后 PPI 运行目录在 ppi-results/ 一层下,夹具同步新布局
+    root = os.path.join(tmp, "ppi-results")
     # 新结果: meta 带 drug/disease(精确)
-    d1 = os.path.join(tmp, "aspirin_cancer_data")
+    d1 = os.path.join(root, "aspirin_cancer_data")
     os.makedirs(d1)
     with open(os.path.join(d1, "analysis_meta.json"), "w", encoding="utf-8") as f:
         json.dump({"drug": "Aspirin", "disease": "Cancer", "string_version": "12.0",
                    "analyzed_at": "2026-10-21T10:00:00"}, f)
     # 旧结果: meta 无药病对 → 从前缀反解(下划线还原为空格)
-    d2 = os.path.join(tmp, "metformin_type_2_diabetes_data")
+    d2 = os.path.join(root, "metformin_type_2_diabetes_data")
     os.makedirs(d2)
     # 旧结果带 rwr 变体后缀: disease 保留原样、base_disease 剥离
-    d3 = os.path.join(tmp, "aspirin_cancer_rwr50_data")
+    d3 = os.path.join(root, "aspirin_cancer_rwr50_data")
     os.makedirs(d3)
     # manual 目录(手动基因输入,无药病对)与散文件应被跳过
-    os.makedirs(os.path.join(tmp, "manual_data"))
+    os.makedirs(os.path.join(root, "manual_data"))
     open(os.path.join(tmp, "loose.txt"), "w").close()
 
     pairs = list_analyzed_pairs()

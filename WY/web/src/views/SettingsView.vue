@@ -86,6 +86,8 @@ const rwrAlpha = ref(0.7)
 const gseaPerms = ref(1000)
 const proxPerms = ref(200)
 const rwrNullPerms = ref(200)
+const synergyTopN = ref(100)
+const synergyPerms = ref(200)
 const gseaMinSize = ref(15)
 const gseaMaxSize = ref(500)
 const gseaFdr = ref(0.25)
@@ -125,6 +127,8 @@ function applySnapshot(s: Snapshot): void {
   gseaPerms.value = s.gsea_permutation_num
   proxPerms.value = s.proximity_n_perm
   rwrNullPerms.value = s.rwr_null_perms
+  synergyTopN.value = s.synergy_top_n
+  synergyPerms.value = s.synergy_n_perm
   gseaMinSize.value = s.gsea_set_min_size
   gseaMaxSize.value = s.gsea_set_max_size
   gseaFdr.value = s.gsea_fdr_screen
@@ -219,6 +223,8 @@ async function saveAlgo(): Promise<void> {
       GSEA_PERMUTATION_NUM: gseaPerms.value,
       PROXIMITY_N_PERM: proxPerms.value,
       RWR_NULL_PERMS: rwrNullPerms.value,
+      SYNERGY_TOP_N: synergyTopN.value,
+      SYNERGY_N_PERM: synergyPerms.value,
       GSEA_SET_MIN_SIZE: gseaMinSize.value,
       GSEA_SET_MAX_SIZE: gseaMaxSize.value,
       GSEA_FDR_SCREEN: gseaFdr.value,
@@ -434,6 +440,14 @@ function applyImportedUi(snap: SettingsSnapshot): void {
               <label class="opt">
                 <span class="opt-label">{{ t('web.settings.rwr_null_label') }}</span>
                 <Stepper v-model="rwrNullPerms" :min="50" :max="2000" :step="50" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.synergy_top_n_label') }}</span>
+                <Stepper v-model="synergyTopN" :min="5" :max="1000" :step="10" :digits="0" />
+              </label>
+              <label class="opt">
+                <span class="opt-label">{{ t('web.settings.synergy_perms_label') }}</span>
+                <Stepper v-model="synergyPerms" :min="10" :max="2000" :step="50" :digits="0" />
               </label>
               <label class="opt">
                 <span class="opt-label">{{ t('web.settings.gsea_min_label') }}</span>

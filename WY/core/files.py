@@ -1,5 +1,6 @@
 """结果文件与目录管理：列出缓存/下载/日志文件，并支持 zip 打包下载。"""
 
+import logging
 import os
 from datetime import datetime
 
@@ -43,10 +44,61 @@ def list_cache_files(category: str, *, exts: tuple = ()) -> pd.DataFrame:
 
 
 def list_download_dirs() -> pd.DataFrame:
-    """列出下载目录下的各次分析子目录及其最后修改时间；无子目录时返回空表。"""
+    """分析产物目录的运行清单(2026-11-18 聚合后口径):PPI 运行目录聚合在
+    ppi-results/ 一层下,此处走进去按 run 列出(名称带 "ppi-results/" 前缀);
+    synergy-results 由协同分析结果页专管,不出现在本清单;GEOresult 由 ML 管理
+    页专管,顶层项保留;MDresult/star 本页从来不管,排除。"""
     from WY import config
 
-    return _list_to_table(config.DOWNLOADS_DIR, name_col="Directory", dirs=True)
+    downloads = config.DOWNLOADS_DIR
+    excluded_top = {"MDresult", "star", "synergy-results"}
+    category = {"ppi-results"}
+    rows: list[dict] = []
+    if not os.path.isdir(downloads):
+        return pd.DataFrame(columns=["Directory", "Modified time"])
+    for name in sorted(os.listdir(downloads)):
+        path = os.path.join(downloads, name)
+        if not os.path.isdir(path) or name in excluded_top or name.startswith("."):
+            continue
+        if name in category:
+            for child in sorted(os.listdir(path)):
+                cpath = os.path.join(path, child)
+                if os.path.isdir(cpath) and not child.startswith("."):
+                    rows.append({"Directory": f"{name}/{child}",
+                                 "Modified time": _mtime_str(cpath)})
+        else:
+            rows.append({"Directory": name, "Modified time": _mtime_str(path)})
+    return pd.DataFrame(rows, columns=["Directory", "Modified time"])
+
+
+def migrate_results_layout() -> None:
+    """downloads 顶层归类迁移(2026-11-18 聚合,幂等,由 API 启动兜底调用一次):
+    PPI 运行目录(*_data)移入 ppi-results/,协同运行目录(synergy_*)移入
+    synergy-results/;GEOresult/MDresult/star/readme 与两个类别目录本身不动;
+    未知目录保守不搬(不误移用户手工放置的内容);同名目标已存在时跳过不覆盖。"""
+    from WY import config
+
+    downloads = config.DOWNLOADS_DIR
+    if not os.path.isdir(downloads):
+        return
+    keep = {"GEOresult", "MDresult", "star", "ppi-results", "synergy-results"}
+    for name in sorted(os.listdir(downloads)):
+        path = os.path.join(downloads, name)
+        if not os.path.isdir(path) or name in keep or name.startswith("."):
+            continue
+        if name.endswith("_data"):
+            dest = os.path.join(downloads, "ppi-results", name)
+        elif name.startswith("synergy_"):
+            dest = os.path.join(downloads, "synergy-results", name)
+        else:
+            continue
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            if not os.path.exists(dest):
+                os.replace(path, dest)
+                logging.info("results layout migration: %s -> %s", name, dest)
+        except OSError:
+            logging.exception("results layout migration failed for %s", name)
 
 
 def list_log_files() -> pd.DataFrame:

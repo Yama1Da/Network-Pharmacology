@@ -26,58 +26,92 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
     cancelled = true
   })
 
-  async function run(
+  function run(
     submit: Promise<{ job_id: string }>,
     opts: { doneText?: string; failText?: string; stale?: () => boolean } = {}
   ): Promise<void> {
     if (running.value) {
-      return
+      return Promise.resolve()
     }
     cancelled = false
     stale.value = false
     running.value = true
     error.value = ''
     result.value = null
-    try {
-      const { job_id } = await submit
-      jobId.value = job_id
-      for (;;) {
-        if (cancelled) {
-          // 已卸载:静默退出(不触发 onDone),结果由下次进页重新拉取/重跑
-          return
-        }
-        const state: JobState = await api.job(job_id)
-        fraction.value = state.progress.fraction
-        text.value = state.progress.text
-        extra.value = { ...state.progress }
-        // 代际守卫(P0-F/P0-B):发起时 UI 状态(如 GSE/基因)已变 → 结果作废,
-        // 不落值、不触发 onDone;stale 置位供调用方渲染过期提示(状态文案区随
-        // running 结束消失,过期标记需要独立渲染位)
-        if (opts.stale?.()) {
-          stale.value = true
-          text.value = t('web.job.stale')
-          break
-        }
-        if (state.status === 'done') {
-          result.value = state.result
-          text.value = opts.doneText ?? t('web.job.done')
-          onDone?.(state.result ?? {})
-          break
-        }
-        if (state.status === 'error') {
-          error.value = state.error ?? t('web.job.fail')
-          text.value = opts.failText ?? t('web.job.fail')
-          break
-        }
-        await new Promise((r) => setTimeout(r, 600))
+    return submit
+      .then(({ job_id }) => {
+        jobId.value = job_id
+        return poll(job_id, opts)
+      })
+      .catch((e) => {
+        error.value = e instanceof Error ? e.message : String(e)
+        text.value = opts.failText ?? t('web.job.fail')
+      })
+      .finally(() => {
+        running.value = false
+      })
+  }
+
+  /** 恢复对既有 job 的轮询(页面重进时找回在途任务,如协同预测跨页离开再回来):
+   * 与 run 同一循环同一语义,只是跳过提交。 */
+  function resume(
+    existingJobId: string,
+    opts: { doneText?: string; failText?: string; stale?: () => boolean } = {}
+  ): Promise<void> {
+    if (running.value) {
+      return Promise.resolve()
+    }
+    cancelled = false
+    stale.value = false
+    running.value = true
+    error.value = ''
+    result.value = null
+    jobId.value = existingJobId
+    return poll(existingJobId, opts)
+      .catch((e) => {
+        error.value = e instanceof Error ? e.message : String(e)
+        text.value = opts.failText ?? t('web.job.fail')
+      })
+      .finally(() => {
+        running.value = false
+      })
+  }
+
+  async function poll(
+    job_id: string,
+    opts: { doneText?: string; failText?: string; stale?: () => boolean } = {}
+  ): Promise<void> {
+    for (;;) {
+      if (cancelled) {
+        // 已卸载:静默退出(不触发 onDone),任务在服务端继续,归档照写
+        return
       }
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e)
-      text.value = opts.failText ?? t('web.job.fail')
-    } finally {
-      running.value = false
+      const state: JobState = await api.job(job_id)
+      fraction.value = state.progress.fraction
+      text.value = state.progress.text
+      extra.value = { ...state.progress }
+      // 代际守卫(P0-F/P0-B):发起时 UI 状态(如 GSE/基因)已变 → 结果作废,
+      // 不落值、不触发 onDone;stale 置位供调用方渲染过期提示(状态文案区随
+      // running 结束消失,过期标记需要独立渲染位)
+      if (opts.stale?.()) {
+        stale.value = true
+        text.value = t('web.job.stale')
+        break
+      }
+      if (state.status === 'done') {
+        result.value = state.result
+        text.value = opts.doneText ?? t('web.job.done')
+        onDone?.(state.result ?? {})
+        break
+      }
+      if (state.status === 'error') {
+        error.value = state.error ?? t('web.job.fail')
+        text.value = opts.failText ?? t('web.job.fail')
+        break
+      }
+      await new Promise((r) => setTimeout(r, 600))
     }
   }
 
-  return { running, fraction, text, extra, error, result, jobId, stale, run }
+  return { running, fraction, text, extra, error, result, jobId, stale, run, resume }
 }

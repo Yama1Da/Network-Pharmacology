@@ -33,6 +33,14 @@ try:
 except Exception:
     logging.exception("transfer staging cleanup at startup failed")
 
+# 结果目录归类迁移(2026-11-18 聚合):顶层 *_data 移入 ppi-results/、synergy_* 移入
+# synergy-results/,幂等;失败不阻断启动,仅记日志(下次启动再试)
+try:
+    from WY.core.files import migrate_results_layout
+    migrate_results_layout()
+except Exception:
+    logging.exception("results layout migration at startup failed")
+
 app = FastAPI(title="NPAP API", docs_url=None, redoc_url=None)
 
 

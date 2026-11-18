@@ -86,6 +86,10 @@ def docking_sources() -> dict:
     manual_out = []
     for d in ppi_dirs["Directory"].tolist():
         prefix = d[:-5] if d.endswith("_data") else d
+        if prefix.startswith("ppi-results/"):
+            # 聚合层前缀(2026-11-18):清单名带 ppi-results/,药病解析与提交给
+            # source 校验的 name 都用剥掉后的裸名(校验要求纯文件名)
+            prefix = prefix[len("ppi-results/"):]
         # 空壳目录(中断运行遗留、无任何文件)不进选择清单,避免出现 "empty →" 这类无效项
         try:
             if not any(e.is_file() for e in os.scandir(os.path.join(config.DOWNLOADS_DIR, d))):
@@ -100,7 +104,7 @@ def docking_sources() -> dict:
                 manual_out.append(meta)
             continue
         drug, disease = split_result_prefix(prefix)
-        ppi_out.append({"name": d, "display": f"{drug} → {disease}" or d})
+        ppi_out.append({"name": d.rsplit("/", 1)[-1], "display": f"{drug} → {disease}" or d})
 
     enr = list_cache_files("enrichment", exts=(".csv",))
     if not enr.empty:

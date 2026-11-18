@@ -1456,7 +1456,9 @@ def test_synergy_analyze_validation(client):
 
 
 def test_synergy_analyze_job_pipeline(client, monkeypatch):
-    """提交→轮询→done 管线(任务体内命名空间打桩):切片/页级参数透传/结果原样返回。"""
+    """提交→轮询→done 管线(任务体内命名空间打桩):切片/页级参数透传/结果原样返回/归档落盘。"""
+    import json as _json
+
     from WY.api import synergy as syn
     captured: dict = {}
 
@@ -1479,6 +1481,18 @@ def test_synergy_analyze_job_pipeline(client, monkeypatch):
     assert captured["top_n"] == 50 and captured["proximity_n_perm"] == 40
     assert captured["sort_rule"] == syn.SORT_RULE
     assert captured["progress"] is not None
+
+    # 归档:契约 JSON 原样落在 synergy-results/(协同分析结果页专管),带 directory_rel
+    rel = job["result"]["directory_rel"]
+    assert rel.startswith("synergy_Aspirin_x_Ibuprofen_")
+    archived = os.path.join(config.DOWNLOADS_DIR, "synergy-results", rel, "result.json")
+    assert os.path.isfile(archived)
+    with open(archived, encoding="utf-8") as f:
+        assert _json.load(f)["geometry_label"] == "overlap"
+    # 归档目录不出现在 downloads 清单(2026-11-18 聚合:synergy-results 由协同
+    # 分析结果页专管,分析产物目录页只管 PPI 运行目录)
+    items = client.get("/api/collections/downloads").json()["items"]
+    assert not any(it["name"].startswith("synergy") for it in items)
 
 
 def test_synergy_analyze_precheck_token(client, monkeypatch):
@@ -1507,3 +1521,148 @@ def test_synergy_no_targets_token(client, monkeypatch):
     job = _wait_job(client, r.json()["job_id"])
     assert job["status"] == "error"
     assert "synergy:no_targets_a" in job["error"]
+
+
+# ======== 二期:downloads 目录归类聚合(ppi-results / synergy-results) ========
+
+
+def test_results_layout_migration(client):
+    """启动迁移器:顶层 *_data 移入 ppi-results/、synergy_* 移入 synergy-results/;
+    GEOresult/未知目录保守不动;幂等(重跑不再变化)。"""
+    from WY.core.files import migrate_results_layout
+
+    dl = config.DOWNLOADS_DIR
+    os.makedirs(os.path.join(dl, "pairA_data"), exist_ok=True)
+    os.makedirs(os.path.join(dl, "synergy_old"), exist_ok=True)
+    os.makedirs(os.path.join(dl, "GEOresult", "nested"), exist_ok=True)
+    os.makedirs(os.path.join(dl, "mystery"), exist_ok=True)
+
+    migrate_results_layout()
+    assert os.path.isdir(os.path.join(dl, "ppi-results", "pairA_data"))
+    assert not os.path.exists(os.path.join(dl, "pairA_data"))
+    assert os.path.isdir(os.path.join(dl, "synergy-results", "synergy_old"))
+    assert os.path.isdir(os.path.join(dl, "GEOresult", "nested"))      # 专管目录不动
+    assert os.path.isdir(os.path.join(dl, "mystery"))                  # 未知目录保守不搬
+
+    marker = os.path.join(dl, "ppi-results", "pairA_data", "m.txt")
+    open(marker, "w").close()
+    migrate_results_layout()
+    assert os.path.isfile(marker)                                      # 幂等,不覆盖不丢内容
+
+
+def test_downloads_listing_walks_ppi_and_excludes_synergy(client):
+    """分析产物目录清单:走进 ppi-results/ 按 run 列出(带类别前缀);
+    synergy-results 整类排除(协同分析结果页专管);GEOresult 顶层项保留。"""
+    from WY.core.files import list_download_dirs
+
+    dl = config.DOWNLOADS_DIR
+    os.makedirs(os.path.join(dl, "ppi-results", "pairB_data"), exist_ok=True)
+    os.makedirs(os.path.join(dl, "synergy-results", "synergy_run1"), exist_ok=True)
+    os.makedirs(os.path.join(dl, "GEOresult"), exist_ok=True)
+    names = set(list_download_dirs()["Directory"].tolist())
+    assert "ppi-results/pairB_data" in names
+    assert "GEOresult" in names
+    assert not any(n.startswith("synergy-results") for n in names)
+
+
+def test_artifact_route_supports_nested_rel(client):
+    """/api/artifacts 的 rel 支持聚合层嵌套路径(ppi-results/<pair>/file)。"""
+    dl = config.DOWNLOADS_DIR
+    os.makedirs(os.path.join(dl, "ppi-results", "pairC_data"), exist_ok=True)
+    with open(os.path.join(dl, "ppi-results", "pairC_data", "report.csv"), "w") as f:
+        f.write("gene\nTP53\n")
+    r = client.get("/api/artifacts",
+                   params={"rel": "ppi-results/pairC_data/report.csv"})
+    assert r.status_code == 200
+    assert "TP53" in r.text
+
+
+def test_docking_sources_names_stay_bare(client):
+    """聚合后对接页来源清单:name 仍为裸目录名(来源名校验要求纯文件名)。"""
+    dl = config.DOWNLOADS_DIR
+    pair_dir = os.path.join(dl, "ppi-results", "aspirin_cancer_data")
+    os.makedirs(pair_dir, exist_ok=True)
+    with open(os.path.join(pair_dir, "report.html"), "w") as f:
+        f.write("<html></html>")
+    body = client.get("/api/docking/sources").json()
+    names = [d["name"] for d in body["ppi_dirs"]]
+    assert "aspirin_cancer_data" in names
+    assert not any("/" in n for n in names)
+
+
+# ======== 二期:协同分析结果管理 /api/synergy/results* ========
+
+
+def _seed_synergy_run(run: str) -> None:
+    import json as _json
+
+    d = os.path.join(config.DOWNLOADS_DIR, "synergy-results", run)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "result.json"), "w", encoding="utf-8") as f:
+        _json.dump({"schema": "synergy.v1.1",
+                    "pair": {"drug_a": "Metformin", "drug_b": "Aspirin"},
+                    "disease": {"name": "type 2 diabetes", "n_targets": 10,
+                                "source": "t"},
+                    "inputs": {"coverage": {}, "n_overlap_ab": 1,
+                               "power_limited": False, "interactome": {}},
+                    "separation": {"s_ab": -0.1, "d_aa": 2.0, "d_bb": 2.0,
+                                   "d_ab": 1.9, "null": {"mean": 0.0, "sd": 0.1,
+                                                         "z": -1.0, "p_lower": 0.2,
+                                                         "n_perm": 50}},
+                    "proximity": {"z_a": None, "z_b": None, "z_ab": None},
+                    "geometry_label": "overlap", "label_basis": "s_ab < 0",
+                    "ranks": None, "reachability": None,
+                    "meta": {"computed_at": "2026-11-18T00:00:00+00:00",
+                             "engine": "synergy.py",
+                             "run": {"top_n": 30, "sort": "dual_source_max_norm",
+                                     "proximity_n_perm": 50}}}, f)
+
+
+def test_synergy_job_status_endpoint(client, monkeypatch):
+    """在途任务登记与状态查询:running→done 全程可查(页面重进恢复进度用)。"""
+    import time as _time
+
+    from WY.api import synergy as syn
+
+    def slow_pair(*a, **k):
+        _time.sleep(1.2)
+        return {"schema": "synergy.v1.1", "geometry_label": "overlap"}
+
+    monkeypatch.setattr(syn, "get_drug_targets_merged", lambda name: _synergy_df(6))
+    monkeypatch.setattr(syn, "get_disease_targets_merged", lambda name: _synergy_df(6))
+    monkeypatch.setattr(syn, "analyze_pair", slow_pair)
+    job_id = client.post("/api/synergy/analyze",
+                         json={"drug_a": "A", "drug_b": "B"}).json()["job_id"]
+    st = client.get("/api/synergy/job").json()
+    assert st["running"] is True and st["job_id"] == job_id
+    assert "stage" in st["progress"]          # 阶段码透传,前端映射文案
+    job = _wait_job(client, job_id)
+    assert job["status"] == "done"
+    assert client.get("/api/synergy/job").json()["running"] is False
+
+
+def test_synergy_results_lifecycle(client):
+    """结果管理四端点:清单摘要/详情/ZIP/删除,含越权名 400 与不存在 400。"""
+    run = "synergy_metformin_x_aspirin_20261118_120000"
+    _seed_synergy_run(run)
+    rows = client.get("/api/synergy/results").json()["runs"]
+    row = [r for r in rows if r["run"] == run][0]
+    assert row["ok"] and row["drug_a"] == "Metformin"
+    assert row["geometry_label"] == "overlap" and row["s_ab"] == pytest.approx(-0.1)
+
+    detail = client.get("/api/synergy/results/detail", params={"run": run}).json()
+    assert detail["schema"] == "synergy.v1.1"
+    assert client.get("/api/synergy/results/detail",
+                      params={"run": "../escape"}).status_code == 400
+    assert client.get("/api/synergy/results/detail",
+                      params={"run": "synergy_missing"}).status_code == 400
+
+    zr = client.post("/api/synergy/results/zip", json={"runs": [run]})
+    assert zr.status_code == 200 and zr.content[:2] == b"PK"
+    assert client.post("/api/synergy/results/zip",
+                       json={"runs": ["nope"]}).status_code == 400
+
+    d = client.post("/api/synergy/results/delete", json={"runs": [run]}).json()
+    assert d["deleted"] == [run]
+    assert not os.path.isdir(os.path.join(config.DOWNLOADS_DIR,
+                                          "synergy-results", run))

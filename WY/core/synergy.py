@@ -25,6 +25,7 @@ return None);任一侧 <15 → 结果带 power_limited=true。门檻按入 LCC �
 """
 
 import logging
+import os
 from datetime import datetime, timezone
 
 from WY.core.network_algorithms import (
@@ -208,6 +209,109 @@ def _analyze_pair_from_context(
                  "run": {"top_n": top_n, "sort": sort_rule,
                          "proximity_n_perm": proximity_n_perm}},
     }
+
+
+def results_root() -> str:
+    """协同运行归档根(结果管理页/归档写入共用):DOWNLOADS_DIR/synergy-results/。"""
+    from WY import config
+
+    return os.path.join(config.DOWNLOADS_DIR, "synergy-results")
+
+
+def list_results() -> list[dict]:
+    """运行清单(结果管理页,新→旧):每 run 读 result.json 出行级摘要;损坏或缺
+    result.json 的条目不丢弃——带 ok=false 与 reason 出行,让用户能看到坏档并手动清。"""
+    root = results_root()
+    if not os.path.isdir(root):
+        return []
+    rows: list[dict] = []
+    for name in sorted(os.listdir(root), reverse=True):
+        path = os.path.join(root, name)
+        if not os.path.isdir(path) or name.startswith("."):
+            continue
+        mtime = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
+        row = {"run": name, "mtime": mtime, "ok": False, "reason": None,
+               "drug_a": "", "drug_b": "", "disease": "", "geometry_label": "",
+               "s_ab": None, "power_limited": None, "computed_at": ""}
+        rf = os.path.join(path, "result.json")
+        if not os.path.isfile(rf):
+            row["reason"] = "缺 result.json"
+            rows.append(row)
+            continue
+        try:
+            import json
+
+            with open(rf, encoding="utf-8") as f:
+                data = json.load(f)
+            row.update(ok=True,
+                       drug_a=str(data.get("pair", {}).get("drug_a", "")),
+                       drug_b=str(data.get("pair", {}).get("drug_b", "")),
+                       disease=str((data.get("disease") or {}).get("name", "")),
+                       geometry_label=str(data.get("geometry_label", "")),
+                       s_ab=data.get("separation", {}).get("s_ab"),
+                       power_limited=bool(data.get("inputs", {}).get("power_limited")),
+                       computed_at=str(data.get("meta", {}).get("computed_at", "")))
+        except (OSError, ValueError):
+            row["reason"] = "result.json 解析失败"
+            logging.exception("synergy 归档损坏: %s", name)
+        rows.append(row)
+    return rows
+
+
+def resolve_run(name: str) -> str:
+    """校验运行名(纯文件名、synergy_ 前缀、在清单内)并返回目录绝对路径;
+    越权/不存在抛 ValueError,API 层转 400。"""
+    if not name or name != os.path.basename(name) or not name.startswith("synergy_"):
+        raise ValueError(f"非法运行名: {name!r}")
+    path = os.path.join(results_root(), name)
+    if not os.path.isdir(path):
+        raise ValueError(f"运行不存在: {name}")
+    return path
+
+
+def read_run(name: str) -> dict:
+    """读单次运行的契约 JSON(结果详情页/复现回填用)。"""
+    import json
+
+    path = os.path.join(resolve_run(name), "result.json")
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def delete_runs(names: list[str]) -> dict:
+    """删除勾选的运行目录:逐个校验,被拒/IO 失败的进 skipped(不中断整批)。"""
+    import shutil
+
+    deleted: list[str] = []
+    skipped: list[dict] = []
+    for n in names:
+        try:
+            path = resolve_run(n)
+        except ValueError as exc:
+            skipped.append({"name": n, "reason": str(exc)})
+            continue
+        try:
+            shutil.rmtree(path)
+            deleted.append(n)
+        except OSError as exc:
+            skipped.append({"name": n, "reason": str(exc)})
+    return {"deleted": deleted, "skipped": skipped}
+
+
+def zip_runs(names: list[str]) -> bytes:
+    """把勾选的运行目录打包成 ZIP 字节流(批量下载);越权名抛 ValueError 上抛转 400。"""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for n in names:
+            root = resolve_run(n)
+            for base, _dirs, files in os.walk(root):
+                for f in files:
+                    full = os.path.join(base, f)
+                    zf.write(full, os.path.join(n, os.path.relpath(full, root)))
+    return buf.getvalue()
 
 
 def analyze_pair(
