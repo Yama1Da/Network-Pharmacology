@@ -374,7 +374,7 @@ def _build_degree_bins(degree_map: dict, bin_size: int) -> dict:
 
 def normalize_genes(genes: list) -> list[str]:
     """基因列表规范化去重(大写、去空白),不做网络过滤:入网率保护与 coverage
-    统计必须以原始输入数为分母。旧实现先用 get_network_coverage 过滤成在网基因
+    统计必须以原始输入数为分母。旧实现先按背景网络过滤成在网基因
     再传入,导致低入网率保护失效、coverage 分母虚高(只统计 LCC 占比)。
     模块级导出(2026-11-17 二期):synergy 预检同口径复用,禁止各处自抄一份漂移。"""
     seen: set[str] = set()

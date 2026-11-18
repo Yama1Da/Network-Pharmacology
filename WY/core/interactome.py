@@ -649,31 +649,10 @@ def is_stale(species: str = "Human", days: int | None = None) -> bool:
     return age is not None and age > days
 
 
-@functools.lru_cache(maxsize=4)
-def _known_genes(species: str) -> frozenset:
-    return frozenset(load_degree_table(species)["gene"])
-
-
-def get_network_coverage(genes: list[str], species: str = "Human") -> tuple[list[str], list[str]]:
-    """把基因列表分成"在背景网络中"和"不在"两组;基因名自动去空格并统一大写,结果去重且保持原顺序。"""
-    known = _known_genes(species)
-    seen: set[str] = set()
-    inside: list[str] = []
-    outside: list[str] = []
-    for raw in genes:
-        g = str(raw).strip().upper()
-        if not g or g in seen:
-            continue
-        seen.add(g)
-        (inside if g in known else outside).append(g)
-    return inside, outside
-
-
 def clear_runtime_caches() -> None:
     """清空内存中的加载缓存,重建背景网络后调用。"""
     _load_graph_cached.cache_clear()
     _load_degrees_cached.cache_clear()
-    _known_genes.cache_clear()
     # 邻近度/RWR 的 LCC 上下文缓存也依赖背景网络:不清的话同进程重建后
     # 仍会用旧图算零分布。缓存仅 _lcc_context_cached 一层(按物种+置信度+版本
     # 键控),外层 _lcc_context 刻意不缓存——包了的话此处清不到,重建/切版本

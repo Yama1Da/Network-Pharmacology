@@ -29,20 +29,20 @@ interface NavGroup { key: string; label: string; items: NavItem[] }
 
 const NAV_GROUPS: NavGroup[] = [
   {
-    key: 'source', label: 'app.popover_source', items: [
-      { route: 'drug-sources', label: 'app.btn_drug_mgmt' },
-      { route: 'disease-sources', label: 'app.btn_disease_mgmt' },
-      { route: 'ppi', label: 'app.btn_ppi_info' },
-      { route: 'enrichment', label: 'app.btn_enrichment_info' },
-      { route: 'data', label: 'app.btn_db_mgmt' }
+    key: 'source', label: 'web.nav.group_sources', items: [
+      { route: 'drug-sources', label: 'web.nav.drug_sources' },
+      { route: 'disease-sources', label: 'web.nav.disease_sources' },
+      { route: 'ppi', label: 'web.nav.ppi_info' },
+      { route: 'enrichment', label: 'web.nav.enrichment_info' },
+      { route: 'data', label: 'web.nav.interactome_db' }
     ]
   },
   {
-    key: 'validation', label: 'app.popover_docking', items: [
-      { route: 'analysis', label: 'app.btn_data_network' },
-      { route: 'docking', label: 'app.btn_molecular_docking' },
-      { route: 'ml', label: 'app.btn_expression_ml' },
-      { route: 'synergy', label: 'app.btn_synergy' }
+    key: 'validation', label: 'web.nav.group_analysis', items: [
+      { route: 'analysis', label: 'web.nav.network_analysis' },
+      { route: 'docking', label: 'web.nav.docking' },
+      { route: 'ml', label: 'web.nav.geo_ml' },
+      { route: 'synergy', label: 'web.nav.synergy' }
     ]
   }
 ]

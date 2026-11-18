@@ -1,9 +1,10 @@
-"""界面中英文文案对照表。
+"""后端文案对照表(core/api/CLI 生成用户可见字符串时取词)。
 
-界面上所有文字都用 t("键名") 从这里取,如 t("app.title")。
+后端用 t("键名") 取词,如 t("dock.err_invalid_smiles");TS 前端的文案不在这里,
+在 tools/export_i18n_json.py 的 web.* 命名空间(经该脚本导出为 web/src/locales/*.json)。
 词典本体在 translations_en.py / translations_zh.py,本文件只保留对外 API。
 
-本包不依赖 streamlit:当前语言由宿主(App.py 启动时)经 set_lang_provider 注入
+本包不依赖任何 Web 框架:当前语言由宿主经 set_lang_provider 注入
 读取函数,未注入时(离线脚本/线程等无界面环境)恒为默认语言,
 因此 core 等模块可以安全 import 本包。
 """
@@ -14,8 +15,6 @@ from .translations_zh import TEXT_ZH
 
 # 默认语言:英文
 DEFAULT_LANG = "en"
-# 支持的语言
-SUPPORTED_LANGS = {"en": "English", "zh": "中文"}
 
 TEXT: dict[str, dict[str, str]] = {"en": TEXT_EN, "zh": TEXT_ZH}
 

@@ -92,9 +92,9 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     t0 = time.time()
-    consensus_a, deg_a, meta_a = run_one_dataset(
+    consensus_a, _, meta_a = run_one_dataset(
         args.gse_a, args.case_a, args.control_a, args.top_genes, args.bootstrap, args.seed)
-    consensus_b, deg_b, meta_b = run_one_dataset(
+    consensus_b, _, meta_b = run_one_dataset(
         args.gse_b, args.case_b, args.control_b, args.top_genes, args.bootstrap, args.seed)
 
     # Jaccard 重叠

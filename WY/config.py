@@ -150,7 +150,8 @@ HTTP_CACHE_FILE = os.path.join(CACHE_DIR, "http_cache.sqlite")
 # (reachability.py,PK_NORM_VERSION 控制);TTL 过期只在管理页提示"可更新",
 # 用户手动触发,无后台自动任务(2026-11-13 定稿的更新规则)。
 PKDB_API_BASE = "https://pk-db.com/api/v1"
-PKDB_MEDIA_BASE = "https://pk-db.com/media/data"
+# 注:下载 URL 由 _studies/<sid>/ 端点直接给绝对地址(含 media 域),无需另配 base——
+# 探针期的 PKDB_MEDIA_BASE 已删(2026-11-18 勘误:零代码引用,死配置)。
 PKDB_CACHE_SUBDIR = "pkdb_raw"   # 相对子目录名,运行时由 CACHE_DIR 拼接(沙箱随 CACHE_DIR 走)
 PK_MIRROR_TTL_DAYS = 180         # 文献策展节奏慢,过期周期可比四源(60 天)长一档
 PKDB_RETRY_DELAY = 2.0           # 镜像请求失败后的重试间隔(秒),2026-11-17 定稿:2 秒

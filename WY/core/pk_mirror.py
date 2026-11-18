@@ -8,7 +8,8 @@
   1. GET {PKDB_API_BASE}/pkdata/studies/?page=N   研究清单(803 个:sid/substances/pmid)
   2. GET {PKDB_API_BASE}/pkdata/studies/<sid>/    研究摘要
   3. GET {PKDB_API_BASE}/_studies/<sid>/          全量嵌套(files = 数字化源表 URL 清单)
-  4. GET {PKDB_MEDIA_BASE}/<file>                 下载 .tsv(跳过 .png/.pdf/.xlsx 并记账)
+  4. GET files 清单里的绝对 URL                    下载 .tsv(跳过 .png/.pdf/.xlsx 并记账;
+                                                   URL 含 media 域,无需拼接 base——PKDB_MEDIA_BASE 已删)
 探针记录:outputs 结构化端点是黑盒(列表空参 count=0、详情 404、多种过滤参数
   名均失败),源表直下为实测可行路径——不要再去尝试 outputs 列表端点。
   源表即药代参数本体:`Tab*.tsv` 含 measurement_type=cmax/auc_end/clearance 行,

@@ -1,4 +1,4 @@
-"""core.files 的测试:缓存/下载/日志三类列表的过滤规则,四种 zip 打包。
+"""core.files 的测试:缓存/下载/日志三类列表的过滤规则,三种 zip 打包。
 
 阶段三第 1 批新写(原自检脚本未覆盖此模块)。目录路径全部走 conftest 沙箱。
 """
@@ -12,7 +12,6 @@ from WY.core.files import (
     list_log_files,
     make_dir_zip,
     make_dirs_zip,
-    make_fig_zip,
     make_ppi_zip,
 )
 from conftest import _mkfile
@@ -62,16 +61,6 @@ def test_make_ppi_zip(tmp_path):
 
     zf = zipfile.ZipFile(io.BytesIO(data))
     assert set(zf.namelist()) == {"ppi_edges.csv", "summary.json"}
-
-
-def test_make_fig_zip(tmp_path):
-    """一图一钮打包:PNG+SVG 双格式;缺一个就只装另一个。"""
-    png = _mkfile(str(tmp_path / "fig.png"), "png")
-    svg = _mkfile(str(tmp_path / "fig.svg"), "svg")
-    zf = zipfile.ZipFile(io_bytes(make_fig_zip(png, svg)))
-    assert set(zf.namelist()) == {"fig.png", "fig.svg"}
-    zf2 = zipfile.ZipFile(io_bytes(make_fig_zip(png, str(tmp_path / "nope.svg"))))
-    assert zf2.namelist() == ["fig.png"]
 
 
 def io_bytes(data: bytes):
