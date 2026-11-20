@@ -1651,12 +1651,15 @@ def test_synergy_no_targets_token(client, monkeypatch):
 # ======== 二期:downloads 目录归类聚合(ppi-results / synergy-results) ========
 
 
-def test_results_layout_migration(client):
+def test_results_layout_migration(client, monkeypatch, tmp_path):
     """启动迁移器:顶层 *_data 移入 ppi-results/、synergy_* 移入 synergy-results/;
-    GEOresult/未知目录保守不动;幂等(重跑不再变化)。"""
+    GEOresult/未知目录保守不动;幂等(重跑不再变化)。
+    DOWNLOADS_DIR 顶替为 tmp_path:此前直接写真实数据区,夹具(GEOresult/nested 等)
+    测后不清理,向用户数据泄漏过残留目录。"""
     from WY.core.files import migrate_results_layout
 
-    dl = config.DOWNLOADS_DIR
+    dl = str(tmp_path)
+    monkeypatch.setattr(config, "DOWNLOADS_DIR", dl)
     os.makedirs(os.path.join(dl, "pairA_data"), exist_ok=True)
     os.makedirs(os.path.join(dl, "synergy_old"), exist_ok=True)
     os.makedirs(os.path.join(dl, "GEOresult", "nested"), exist_ok=True)
