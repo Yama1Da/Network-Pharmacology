@@ -792,7 +792,8 @@ WEB_ZH = {
     "web.transfer.title": "数据迁移",
     "web.transfer.hint": "把本机实验结果打包为 zip,换电脑时导入。密钥与缓存不进包;"
                          "导入先解包预览,再逐条决定与现有数据重名的条目如何处理。",
-    "web.transfer.scope_analysis": "分析结果(PPI+富集)",
+    "web.transfer.scope_ppi": "PPI 分析结果",
+    "web.transfer.scope_synergy": "协同预测结果",
     "web.transfer.scope_star": "对接 star 收藏",
     "web.transfer.scope_geo": "GEO 筛选结果",
     "web.transfer.scope_settings": "界面设置",
@@ -1606,7 +1607,8 @@ WEB_EN = {
     "web.transfer.hint": "Pack local experiment results into a zip and import them on another"
                          " machine. Keys and caches never enter the bundle; imports are unpacked"
                          " for preview first, then each conflicting item is decided one by one.",
-    "web.transfer.scope_analysis": "Analysis results (PPI + enrichment)",
+    "web.transfer.scope_ppi": "PPI analysis results",
+    "web.transfer.scope_synergy": "Synergy prediction results",
     "web.transfer.scope_star": "Docking stars",
     "web.transfer.scope_geo": "GEO screening results",
     "web.transfer.scope_settings": "UI settings",

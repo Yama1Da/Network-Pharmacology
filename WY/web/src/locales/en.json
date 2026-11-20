@@ -785,9 +785,10 @@
  "web.transfer.new_name_ph": "New name",
  "web.transfer.no_scope": "Select at least one item to export",
  "web.transfer.run_import": "Run import",
- "web.transfer.scope_analysis": "Analysis results (PPI + enrichment)",
  "web.transfer.scope_geo": "GEO screening results",
+ "web.transfer.scope_ppi": "PPI analysis results",
  "web.transfer.scope_settings": "UI settings",
  "web.transfer.scope_star": "Docking stars",
+ "web.transfer.scope_synergy": "Synergy prediction results",
  "web.transfer.title": "Data transfer"
 }

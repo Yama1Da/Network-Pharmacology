@@ -23,12 +23,14 @@ from datetime import datetime
 EXPORT_FILE_RE = re.compile(r"^npap_export_\d{8}_\d{6}\.zip$")
 MANIFEST_NAME = "manifest.json"
 MANIFEST_VERSION = 1
-# 目录集合类范围;ui_settings 是单文件范围,单独处理
-DIR_KINDS = ("analysis", "star", "geo")
+# 目录集合类范围;ui_settings 是单文件范围,单独处理。ppi/synergy 各自锚定
+# downloads 下的专属产物目录(2026-11 拆分:原 analysis 一个范围整目录打包,
+# 导入预览只能整目录决策;拆开后按单条结果列条目,与 star/geo 粒度一致)。
+DIR_KINDS = ("ppi", "synergy", "star", "geo")
 ALL_SCOPES = (*DIR_KINDS, "ui_settings")
-# analysis 范围排除 downloads 根下的三个产物区目录(各自是独立范围);
-# 目录名与 config.py 中 MD_RESULT_DIR/MD_STAR_DIR/GEO_RESULT_DIR 的字面量一致,写死防漂移
-_ANALYSIS_EXCLUDES = ("MDresult", "star", "GEOresult")
+# 旧版包(≤2026-11)的条目 kind:analysis=downloads 根整目录打包。仅在导入侧
+# 认识(manifest 校验/落盘映射),导出范围里已不存在。
+_LEGACY_KINDS = ("analysis",)
 
 _SESSIONS: dict[str, dict] = {}
 
@@ -50,24 +52,29 @@ def _scope_root(kind: str) -> str:
     """范围 kind → 磁盘根目录;导入落盘与导出收集共用同一映射。"""
     from WY import config
 
-    if kind == "analysis":
-        return config.DOWNLOADS_DIR
+    if kind == "ppi":
+        return os.path.join(config.DOWNLOADS_DIR, "ppi-results")
+    if kind == "synergy":
+        return os.path.join(config.DOWNLOADS_DIR, "synergy-results")
     if kind == "star":
         return config.MD_STAR_DIR
     if kind == "geo":
         return config.GEO_RESULT_DIR
+    if kind == "analysis":   # 旧版包:条目直接挂在 downloads 根(如 ppi-results)
+        return config.DOWNLOADS_DIR
     raise TransferError(f"unknown scope kind: {kind!r}")
 
 
 def list_scope_items(kind: str) -> list[str]:
-    """列出某范围内可导出的条目名(仅目录,隐藏项跳过,与 files._list_to_table 同口径)。"""
+    """列出某范围内可导出的条目名(仅目录,隐藏项跳过)。ppi/synergy 根目录下
+    即单条结果,与 star/geo 同粒度;此口径仅服务导出/导入,与集合页
+    files._list_to_table 的列目录展示无共享代码。"""
     root = _scope_root(kind)
     if not os.path.isdir(root):
         return []
-    excludes = _ANALYSIS_EXCLUDES if kind == "analysis" else ()
     return sorted(
         n for n in os.listdir(root)
-        if not n.startswith(".") and n not in excludes
+        if not n.startswith(".")
         and os.path.isdir(os.path.join(root, n))
     )
 
@@ -117,6 +124,9 @@ def _is_env_file(name: str) -> bool:
 def build_export_bundle(scopes, out_path: str, progress=None) -> dict:
     """把选定范围打包为 zip(根放 manifest,可选 ui_settings.json,条目在 items/<kind>/下)。
 
+    compresslevel=1:deflate 快速档——结果内容以文本+已压缩数据为主,较缺省
+    level 6 实测约 2~3 倍提速,压缩比损失很小(0.53→约0.56)。进度按累计字节
+    回调(此前按 scope 粗粒度,一年数据量的包会让进度条停格十几分钟)。
     progress(fraction, text) 供 job 进度回调;返回统计供 job result 与前端提示。"""
     from WY import config
 
@@ -136,29 +146,34 @@ def build_export_bundle(scopes, out_path: str, progress=None) -> dict:
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     items: list[dict] = []
     ui_exported = False
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
-
-        def add_file(path: str, arcname: str) -> None:
-            if _is_env_file(arcname):
-                return  # 双保险:密钥文件绝不进包
-            zf.write(path, arcname)
-
-        for i, kind in enumerate(dir_scopes):
-            names = planned[kind]
-            for name in names:
-                root = os.path.join(_scope_root(kind), name)
-                for r, _, files in os.walk(root):
-                    for fn in files:
-                        fp = os.path.join(r, fn)
-                        rel = os.path.relpath(fp, root).replace(os.sep, "/")
-                        add_file(fp, f"items/{kind}/{name}/{rel}")
-                items.append({"kind": kind, "name": name})
-            if progress is not None:
-                progress(fraction=(i + 1) / (len(dir_scopes) + 1),
-                         text=f"packing {kind}: {len(names)} item(s)")
+    # 先预算全部待写文件:进度分母按字节算;密钥文件在预算期就排除,与写入同口径
+    plan_files: list[tuple[str, str]] = []
+    for kind in dir_scopes:
+        for name in planned[kind]:
+            root = os.path.join(_scope_root(kind), name)
+            for r, _, files in os.walk(root):
+                for fn in files:
+                    fp = os.path.join(r, fn)
+                    rel = os.path.relpath(fp, root).replace(os.sep, "/")
+                    arcname = f"items/{kind}/{name}/{rel}"
+                    if _is_env_file(arcname):
+                        continue  # 双保险:密钥文件绝不进包
+                    plan_files.append((fp, arcname))
+            items.append({"kind": kind, "name": name})
+    total_bytes = sum(os.path.getsize(fp) for fp, _ in plan_files)
+    written_bytes = 0
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED,
+                         compresslevel=1) as zf:
+        for fp, arcname in plan_files:
+            zf.write(fp, arcname)
+            written_bytes += os.path.getsize(fp)
+            if progress is not None and total_bytes:
+                progress(fraction=written_bytes / total_bytes,
+                         text=f"packing {written_bytes / 1048576:.1f}"
+                              f"/{total_bytes / 1048576:.1f} MB")
 
         if "ui_settings" in scopes and os.path.isfile(config.UI_SETTINGS_FILE):
-            add_file(config.UI_SETTINGS_FILE, "ui_settings.json")
+            zf.write(config.UI_SETTINGS_FILE, "ui_settings.json")
             ui_exported = True
 
         manifest = _manifest()
@@ -222,7 +237,7 @@ def _validate_manifest(manifest) -> list[dict]:
         if not isinstance(it, dict):
             raise TransferError("manifest items must be objects")
         kind = it.get("kind")
-        if kind not in DIR_KINDS:
+        if kind not in DIR_KINDS and kind not in _LEGACY_KINDS:
             raise TransferError(f"unknown item kind in manifest: {kind!r}")
         name = _ensure_item_name(it.get("name"))
         if (kind, name) in seen:
@@ -451,7 +466,7 @@ def commit_import(staging_dir: str, decisions: list[dict]) -> dict:
                     raise TransferError(f"unknown action for ui_settings: {action!r}")
                 applied.append(_apply_ui_settings(staging_dir))
                 continue
-            if kind not in DIR_KINDS:
+            if kind not in DIR_KINDS and kind not in _LEGACY_KINDS:
                 raise TransferError(f"unknown kind: {kind!r}")
             _ensure_item_name(name)
             src = os.path.join(staging_dir, "items", kind, name)

@@ -84,11 +84,3 @@ def job_status(job_id: str) -> dict:
     if job is None:
         raise HTTPException(status_code=404, detail="no such job")
     return job
-
-
-@router.get("/api/jobs/{job_id}")
-def job_status(job_id: str) -> dict:
-    job = jobs.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="no such job")
-    return job

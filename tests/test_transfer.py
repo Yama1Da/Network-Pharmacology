@@ -1,6 +1,8 @@
 """core.transfer 的测试:导出打包(范围/密钥排除)、两段式导入(校验/冲突/决策落盘)、
 导入会话与暂存清扫。目录路径全部走 conftest 沙箱(TRANSFER_DIR 已入 _SANDBOX_ATTRS)。
 
+范围拆分(2026-11):原 analysis 一个范围整目录打包,拆为 ppi/synergy 两个范围,
+各自锚定 downloads 下专属产物目录;旧版包(kind=analysis)仅在导入侧兼容,有专测。
 恶意包(路径穿越/缺 manifest/炸弹)用 zipfile 手工构造;正常包优先走
 build_export_bundle 产出,保证"自己导出的包自己能导回"这一核心承诺被测到。
 """
@@ -17,8 +19,14 @@ from WY.core.transfer import TransferError
 from conftest import _mkfile
 
 
-def _mk_analysis(name: str = "aspirin_cancer_data") -> str:
-    return _mkfile(os.path.join(config.DOWNLOADS_DIR, name, "nodes.csv"), "a,b\n")
+def _mk_ppi(name: str = "aspirin_cancer_data") -> str:
+    return _mkfile(os.path.join(config.DOWNLOADS_DIR, "ppi-results", name,
+                                "nodes.csv"), "a,b\n")
+
+
+def _mk_synergy(name: str = "wortmannin_glaucoma_data") -> str:
+    return _mkfile(os.path.join(config.DOWNLOADS_DIR, "synergy-results", name,
+                                "summary.json"), "{}")
 
 
 def _mk_star(name: str = "manual_EGFR_20261025_130808") -> str:
@@ -62,7 +70,8 @@ def _mkzip(path: str, entries: dict[str, bytes | str], manifest: dict) -> str:
 def test_export_bundle_roundtrip_content():
     """导出:四类范围各造一份数据,包内条目/manifest/counts 全对;MDresult 不进包。"""
     _mkfile(os.path.join(config.MD_RESULT_DIR, "run_20260101_000000", "out.pdbqt"))
-    _mk_analysis()
+    _mk_ppi()
+    _mk_synergy()
     _mk_star()
     _mk_geo()
     _mk_ui_settings({"UI_THEME": "dark"})
@@ -72,7 +81,8 @@ def test_export_bundle_roundtrip_content():
 
     zf = zipfile.ZipFile(out)
     names = set(zf.namelist())
-    assert "items/analysis/aspirin_cancer_data/nodes.csv" in names
+    assert "items/ppi/aspirin_cancer_data/nodes.csv" in names
+    assert "items/synergy/wortmannin_glaucoma_data/summary.json" in names
     assert "items/star/manual_EGFR_20261025_130808/best.pdbqt" in names
     assert "items/geo/GSE123_20261023_225313/summary.json" in names
     assert "items/geo/GSE123_20261023_225313/deg_results.csv" in names
@@ -84,42 +94,76 @@ def test_export_bundle_roundtrip_content():
     assert manifest["manifest_version"] == transfer.MANIFEST_VERSION
     assert manifest["ui_settings"] is True
     assert {(it["kind"], it["name"]) for it in manifest["items"]} == {
-        ("analysis", "aspirin_cancer_data"),
+        ("ppi", "aspirin_cancer_data"),
+        ("synergy", "wortmannin_glaucoma_data"),
         ("star", "manual_EGFR_20261025_130808"),
         ("geo", "GSE123_20261023_225313"),
     }
-    assert result["counts"] == {"analysis": 1, "star": 1, "geo": 1}
+    assert result["counts"] == {"ppi": 1, "synergy": 1, "star": 1, "geo": 1}
     assert result["ui_settings"] is True
 
 
-def test_export_analysis_excludes_product_dirs_and_env_files():
-    """analysis 范围:排除 MDresult/star/GEOresult 目录、隐藏项与 API.env/.env 文件。"""
-    _mkfile(os.path.join(config.DOWNLOADS_DIR, "MDresult", "r", "x.pdbqt"))
-    _mkfile(os.path.join(config.DOWNLOADS_DIR, "star", "s", "x.pdbqt"))
-    _mkfile(os.path.join(config.DOWNLOADS_DIR, "GEOresult", "g", "summary.json"))
-    _mkfile(os.path.join(config.DOWNLOADS_DIR, ".hidden_data", "x.csv"))
-    _mkfile(os.path.join(config.DOWNLOADS_DIR, "aspirin_cancer_data", "API.env"), "k=1")
-    _mkfile(os.path.join(config.DOWNLOADS_DIR, "aspirin_cancer_data", "nodes.csv"))
+def test_export_ppi_excludes_hidden_items_and_env_files():
+    """ppi 范围:根下隐藏目录不列条目;条目内 API.env/.env 文件绝不进包。"""
+    _mkfile(os.path.join(config.DOWNLOADS_DIR, "ppi-results", ".hidden_run", "x.csv"))
+    _mkfile(os.path.join(config.DOWNLOADS_DIR, "ppi-results", "aspirin_cancer_data",
+                         "API.env"), "k=1")
+    _mkfile(os.path.join(config.DOWNLOADS_DIR, "ppi-results", "aspirin_cancer_data",
+                         "nodes.csv"))
     out = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
-    transfer.build_export_bundle(("analysis",), out)
+    transfer.build_export_bundle(("ppi",), out)
     names = set(zipfile.ZipFile(out).namelist())
-    assert names == {"items/analysis/aspirin_cancer_data/nodes.csv",
+    assert names == {"items/ppi/aspirin_cancer_data/nodes.csv",
                      transfer.MANIFEST_NAME}
 
 
+def test_export_progress_byte_based_and_fast_compress(monkeypatch):
+    """进度按累计字节连续回调(单调递增至 1.0,MB 文案);compresslevel=1 快速档生效。
+
+    zip 中央目录不存储压缩级别,读回侧无 _compresslevel 可断言,故在写入侧
+    用子类捕获 ZipFile 构造参数。"""
+    _mk_ppi()
+    _mkfile(os.path.join(config.DOWNLOADS_DIR, "ppi-results", "aspirin_cancer_data",
+                         "big.csv"), "x" * 4096)
+    out = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
+
+    kwargs_seen: dict = {}
+
+    class _SpyZipFile(zipfile.ZipFile):
+        def __init__(self, *args, **kwargs):
+            kwargs_seen.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(zipfile, "ZipFile", _SpyZipFile)
+    calls: list[tuple[float | None, str]] = []
+    transfer.build_export_bundle(
+        ("ppi",), out,
+        progress=lambda fraction, text: calls.append((fraction, text)))
+    assert kwargs_seen.get("compresslevel") == 1
+    fractions = [f for f, _ in calls]
+    assert len(fractions) >= 2
+    assert fractions == sorted(fractions)  # 单调不减
+    assert fractions[-1] == 1.0
+    assert all("MB" in t for _, t in calls)
+
+
 def test_export_scope_validation_and_empty():
-    """导出:未知范围/空范围直接拒;范围内没有任何结果时抛错(api 层转 400)。"""
+    """导出:未知范围/旧版范围/空范围/空库直接拒(api 层转 400)。"""
     with pytest.raises(TransferError):
         transfer.build_export_bundle(("md",), os.path.join(config.TRANSFER_DIR, "x.zip"))
     with pytest.raises(TransferError):
+        # 旧版 analysis 已不是合法导出范围(仅导入侧兼容旧包)
+        transfer.build_export_bundle(("analysis",),
+                                     os.path.join(config.TRANSFER_DIR, "x.zip"))
+    with pytest.raises(TransferError):
         transfer.build_export_bundle((), os.path.join(config.TRANSFER_DIR, "x.zip"))
     with pytest.raises(TransferError):
-        transfer.build_export_bundle(("analysis",), os.path.join(config.TRANSFER_DIR, "x.zip"))
+        transfer.build_export_bundle(("ppi",), os.path.join(config.TRANSFER_DIR, "x.zip"))
 
 
 def test_export_without_ui_settings_file():
     """ui_settings 文件不存在时:包里没有该文件,manifest 如实标 false。"""
-    _mk_analysis()
+    _mk_ppi()
     out = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
     result = transfer.build_export_bundle(transfer.ALL_SCOPES, out)
     names = set(zipfile.ZipFile(out).namelist())
@@ -133,34 +177,35 @@ def test_import_roundtrip_report_and_commit(tmp_path):
     """导出→导入全流程:预览报告条目/冲突/设置项正确;skip 不落盘、rename 落新名。"""
     import shutil
 
-    _mk_analysis()
+    _mk_ppi()
     _mk_geo()
     _mk_ui_settings({"UI_THEME": "dark"})
     zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
     transfer.build_export_bundle(transfer.ALL_SCOPES, zip_path)
     # 模拟新机器:删掉本机原件,导入包是唯一副本
-    shutil.rmtree(os.path.join(config.DOWNLOADS_DIR, "aspirin_cancer_data"))
+    shutil.rmtree(os.path.join(config.DOWNLOADS_DIR, "ppi-results",
+                               "aspirin_cancer_data"))
     shutil.rmtree(os.path.join(config.GEO_RESULT_DIR, "GSE123_20261023_225313"))
     os.remove(config.UI_SETTINGS_FILE)
 
     staging = os.path.join(config.TRANSFER_DIR, "import_test")
     report = transfer.analyze_bundle(zip_path, staging)
     assert [(it["kind"], it["name"], it["conflict"]) for it in report["items"]] == [
-        ("analysis", "aspirin_cancer_data", False),
+        ("ppi", "aspirin_cancer_data", False),
         ("geo", "GSE123_20261023_225313", False),
     ]
     assert report["ui_settings"]["present"] is True
     assert report["ui_settings"]["keys"] == 1  # EVIL_KEY 被白名单过滤
-    assert os.path.isfile(os.path.join(staging, "items", "geo",
-                                       "GSE123_20261023_225313", "summary.json"))
+    assert os.path.isfile(os.path.join(staging, "items", "ppi",
+                                       "aspirin_cancer_data", "nodes.csv"))
 
     # skip:目标不受影响;rename:落新名
     report1 = transfer.commit_import(staging, [
-        {"kind": "analysis", "name": "aspirin_cancer_data", "action": "skip"},
+        {"kind": "ppi", "name": "aspirin_cancer_data", "action": "skip"},
         {"kind": "geo", "name": "GSE123_20261023_225313", "action": "rename",
          "new_name": "GSE123_20261029_101010"},
     ])
-    assert report1["skipped"] == [{"kind": "analysis", "name": "aspirin_cancer_data"}]
+    assert report1["skipped"] == [{"kind": "ppi", "name": "aspirin_cancer_data"}]
     assert report1["failed"] == []
     assert os.path.isdir(os.path.join(config.GEO_RESULT_DIR,
                                       "GSE123_20261029_101010"))
@@ -170,24 +215,44 @@ def test_import_roundtrip_report_and_commit(tmp_path):
 
 def test_import_commit_conflict_overwrite_and_rename_collision():
     """冲突决策:overwrite 替换旧目录;rename 撞现有名进 failed,旧数据不受影响。"""
-    _mk_analysis()
+    _mk_ppi()
     zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
-    transfer.build_export_bundle(("analysis",), zip_path)
+    transfer.build_export_bundle(("ppi",), zip_path)
     staging = os.path.join(config.TRANSFER_DIR, "import_test")
     report = transfer.analyze_bundle(zip_path, staging)
     assert report["items"][0]["conflict"] is True
 
     # rename 撞现有名 → failed,磁盘不动
     bad = transfer.commit_import(staging, [
-        {"kind": "analysis", "name": "aspirin_cancer_data", "action": "rename",
+        {"kind": "ppi", "name": "aspirin_cancer_data", "action": "rename",
          "new_name": "aspirin_cancer_data"}])
     assert bad["failed"] and "exists" in bad["failed"][0]["reason"]
 
     ok = transfer.commit_import(staging, [
-        {"kind": "analysis", "name": "aspirin_cancer_data", "action": "overwrite"}])
+        {"kind": "ppi", "name": "aspirin_cancer_data", "action": "overwrite"}])
     assert ok["failed"] == []
-    nodes = os.path.join(config.DOWNLOADS_DIR, "aspirin_cancer_data", "nodes.csv")
+    nodes = os.path.join(config.DOWNLOADS_DIR, "ppi-results",
+                         "aspirin_cancer_data", "nodes.csv")
     assert os.path.isfile(nodes)
+
+
+def test_import_legacy_analysis_bundle_roundtrip(tmp_path):
+    """旧版包(kind=analysis,downloads 根整目录条目)仍可导入:落盘映射回 downloads/<name>。"""
+    manifest = _valid_manifest([{"kind": "analysis", "name": "ppi-results"}])
+    zip_path = _mkzip(
+        str(tmp_path / "legacy.zip"),
+        {"items/analysis/ppi-results/metformin_Type_2_diabetes_data/nodes.csv": "a,b\n"},
+        manifest)
+    staging = str(tmp_path / "staging")
+    report = transfer.analyze_bundle(zip_path, staging)
+    assert report["items"][0]["kind"] == "analysis"
+    assert report["items"][0]["conflict"] is False
+
+    result = transfer.commit_import(staging, [
+        {"kind": "analysis", "name": "ppi-results", "action": "overwrite"}])
+    assert result["failed"] == []
+    assert os.path.isfile(os.path.join(config.DOWNLOADS_DIR, "ppi-results",
+                                       "metformin_Type_2_diabetes_data", "nodes.csv"))
 
 
 def test_import_commit_ui_settings_applies_whitelist_and_runtime(monkeypatch):
@@ -240,9 +305,9 @@ def test_import_commit_invalid_geo_rejected():
 
 def test_import_schema_warnings():
     """manifest 的算法/数据版本与当前不同:返回 warnings 提示,不阻断导入。"""
-    _mk_analysis()
+    _mk_ppi()
     zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
-    transfer.build_export_bundle(("analysis",), zip_path)
+    transfer.build_export_bundle(("ppi",), zip_path)
     staging = os.path.join(config.TRANSFER_DIR, "import_test")
     report = transfer.analyze_bundle(zip_path, staging)
     assert report["warnings"] == []  # 本机导出的包 schema 一致
@@ -271,8 +336,8 @@ def test_import_rejects_path_traversal_and_absolute_entries(tmp_path):
 
     反斜杠条目单列:Python zipfile 在读入时就把 \\ 归一成 /(Windows),归一结果
     里的 .. 仍会被组件检查拦下,Linux 上则由 _safe_target 的反斜杠检查直接拒收。"""
-    manifest = _valid_manifest([{"kind": "analysis", "name": "evil_data"}])
-    for bad_entry in ("../evil.txt", "items/analysis/evil_data/../../../evil.txt",
+    manifest = _valid_manifest([{"kind": "ppi", "name": "evil_data"}])
+    for bad_entry in ("../evil.txt", "items/ppi/evil_data/../../../evil.txt",
                       "/etc/passwd", "C:/evil.txt"):
         zip_path = _mkzip(str(tmp_path / "bad.zip"), {bad_entry: "x"}, manifest)
         with pytest.raises(TransferError):
@@ -282,7 +347,7 @@ def test_import_rejects_path_traversal_and_absolute_entries(tmp_path):
 def test_import_rejects_missing_or_bad_manifest(tmp_path):
     """缺 manifest、manifest 非 JSON、缺版本号、版本超前、未知 kind、伪造条目名:全拒。"""
     with zipfile.ZipFile(str(tmp_path / "nomanifest.zip"), "w") as zf:
-        zf.writestr("items/analysis/foo/x.csv", "x")
+        zf.writestr("items/ppi/foo/x.csv", "x")
     with pytest.raises(TransferError):
         transfer.analyze_bundle(str(tmp_path / "nomanifest.zip"), str(tmp_path / "s1"))
 
@@ -297,9 +362,9 @@ def test_import_rejects_missing_or_bad_manifest(tmp_path):
         {"items": []},  # 缺 manifest_version
         {"manifest_version": transfer.MANIFEST_VERSION + 1, "items": []},  # 版本超前
         {"manifest_version": 1, "items": [{"kind": "md", "name": "x"}]},  # 未知 kind
-        {"manifest_version": 1, "items": [{"kind": "analysis", "name": "../x"}]},  # 伪造名
-        {"manifest_version": 1, "items": [{"kind": "analysis", "name": "a"},
-                                          {"kind": "analysis", "name": "a"}]},  # 重复
+        {"manifest_version": 1, "items": [{"kind": "ppi", "name": "../x"}]},  # 伪造名
+        {"manifest_version": 1, "items": [{"kind": "ppi", "name": "a"},
+                                          {"kind": "ppi", "name": "a"}]},  # 重复
     ]
     for i, m in enumerate(cases):
         zip_path = _mkzip(str(tmp_path / f"case{i}.zip"), {}, m)
@@ -309,10 +374,10 @@ def test_import_rejects_missing_or_bad_manifest(tmp_path):
 
 def test_import_rejects_unexpected_entries(tmp_path):
     """包内条目必须对得上 manifest:清单外的条目(夹带私货)整包拒收。"""
-    manifest = _valid_manifest([{"kind": "analysis", "name": "known_data"}])
+    manifest = _valid_manifest([{"kind": "ppi", "name": "known_data"}])
     zip_path = _mkzip(str(tmp_path / "smuggled.zip"),
-                      {"items/analysis/known_data/a.csv": "x",
-                       "items/analysis/ghost_data/a.csv": "x"}, manifest)
+                      {"items/ppi/known_data/a.csv": "x",
+                       "items/ppi/ghost_data/a.csv": "x"}, manifest)
     with pytest.raises(TransferError):
         transfer.analyze_bundle(zip_path, str(tmp_path / "staging"))
     # manifest 未声明 ui_settings 却夹带该文件:拒收
@@ -326,8 +391,8 @@ def test_import_rejects_zip_bomb(tmp_path, monkeypatch):
     """zip 炸弹防护:声明未压缩总量超上限拒收;单条目谎报大小(实际解压更大)也拒收。"""
     monkeypatch.setattr(config, "TRANSFER_MAX_EXTRACT_BYTES", 4)
     zip_path = _mkzip(str(tmp_path / "big.zip"),
-                      {"items/analysis/a_data/x.csv": "12345678"},
-                      _valid_manifest([{"kind": "analysis", "name": "a_data"}]))
+                      {"items/ppi/a_data/x.csv": "12345678"},
+                      _valid_manifest([{"kind": "ppi", "name": "a_data"}]))
     with pytest.raises(TransferError):
         transfer.analyze_bundle(zip_path, str(tmp_path / "s1"))
 
@@ -335,10 +400,10 @@ def test_import_rejects_zip_bomb(tmp_path, monkeypatch):
     # 同一会话内构造并篡改:append 重开再改 infolist 不会触发中央目录重写(_didModify 为假)
     lie = os.path.join(str(tmp_path), "lie.zip")
     with zipfile.ZipFile(lie, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("items/analysis/a_data/x.csv", "12345678",
+        zf.writestr("items/ppi/a_data/x.csv", "12345678",
                     compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr(transfer.MANIFEST_NAME,
-                    json.dumps(_valid_manifest([{"kind": "analysis", "name": "a_data"}]),
+                    json.dumps(_valid_manifest([{"kind": "ppi", "name": "a_data"}]),
                                ensure_ascii=False))
         zf.infolist()[0].file_size = 1  # 中央目录声明 1 字节,实际 8 字节
     with pytest.raises(TransferError):
@@ -348,9 +413,9 @@ def test_import_rejects_zip_bomb(tmp_path, monkeypatch):
 def test_import_normalizes_mid_extract_failures(tmp_path, monkeypatch):
     """解压中途的异常(BadZipFile/OSError,对应截断包、CRC 不符、Windows 路径超长等)
     统一归一为 TransferError,不让裸异常漏出去(api 层会变 500)。"""
-    _mk_analysis()
+    _mk_ppi()
     zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
-    transfer.build_export_bundle(("analysis",), zip_path)
+    transfer.build_export_bundle(("ppi",), zip_path)
 
     monkeypatch.setattr(transfer, "_copy_capped",
                         lambda src, dst, cap: (_ for _ in ()).throw(
@@ -378,18 +443,19 @@ def test_import_empty_item_roundtrip():
     """空目录条目(zip 内没有任何文件)也能原样导回,不再报 not found in bundle。"""
     import shutil
 
-    os.makedirs(os.path.join(config.DOWNLOADS_DIR, "empty_data"))
+    os.makedirs(os.path.join(config.DOWNLOADS_DIR, "ppi-results", "empty_data"))
     zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
-    transfer.build_export_bundle(("analysis",), zip_path)
-    shutil.rmtree(os.path.join(config.DOWNLOADS_DIR, "empty_data"))  # 模拟新机器
+    transfer.build_export_bundle(("ppi",), zip_path)
+    shutil.rmtree(os.path.join(config.DOWNLOADS_DIR, "ppi-results", "empty_data"))
 
     staging = os.path.join(config.TRANSFER_DIR, "import_empty")
     report = transfer.analyze_bundle(zip_path, staging)
     assert report["items"][0]["files"] == 0
     result = transfer.commit_import(staging, [
-        {"kind": "analysis", "name": "empty_data", "action": "overwrite"}])
+        {"kind": "ppi", "name": "empty_data", "action": "overwrite"}])
     assert result["failed"] == []
-    assert os.path.isdir(os.path.join(config.DOWNLOADS_DIR, "empty_data"))
+    assert os.path.isdir(os.path.join(config.DOWNLOADS_DIR, "ppi-results",
+                                      "empty_data"))
 
 
 def test_import_not_a_zip(tmp_path):
@@ -402,12 +468,12 @@ def test_import_not_a_zip(tmp_path):
 
 def test_import_ignores_os_junk_entries(tmp_path):
     """打包工具/操作系统杂项(__MACOSX、.DS_Store、._*):静默跳过不拒收。"""
-    manifest = _valid_manifest([{"kind": "analysis", "name": "a_data"}])
+    manifest = _valid_manifest([{"kind": "ppi", "name": "a_data"}])
     zip_path = _mkzip(str(tmp_path / "junk.zip"),
-                      {"items/analysis/a_data/x.csv": "x",
+                      {"items/ppi/a_data/x.csv": "x",
                        "__MACOSX/items/._x.csv": "junk",
                        ".DS_Store": "junk",
-                       "items/analysis/a_data/._meta": "junk"}, manifest)
+                       "items/ppi/a_data/._meta": "junk"}, manifest)
     report = transfer.analyze_bundle(zip_path, str(tmp_path / "staging"))
     assert report["items"][0]["files"] == 1
 
@@ -416,9 +482,9 @@ def test_import_ignores_os_junk_entries(tmp_path):
 
 def test_import_session_lifecycle():
     """会话:创建返回报告、get 续命、drop 连暂存目录一起删。"""
-    _mk_analysis()
+    _mk_ppi()
     zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
-    transfer.build_export_bundle(("analysis",), zip_path)
+    transfer.build_export_bundle(("ppi",), zip_path)
 
     sid, report = transfer.create_import_session(zip_path)
     assert len(sid) == 12

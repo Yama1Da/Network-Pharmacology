@@ -450,11 +450,11 @@ export interface SynergyAnalyzeBody {
 
 /* ---- 数据迁移(设置页:结果导出 / 两段式导入) ---- */
 
-export type TransferScope = 'analysis' | 'star' | 'geo' | 'ui_settings'
+export type TransferScope = 'ppi' | 'synergy' | 'star' | 'geo' | 'ui_settings'
 
-/** 导入预览的单条目(kind 为目录类范围时含文件数/体积/冲突标记)。 */
+/** 导入预览的单条目(kind 为目录类范围时含文件数/体积/冲突标记;'analysis' 为旧版包遗留 kind)。 */
 export interface TransferItemReport {
-  kind: Exclude<TransferScope, 'ui_settings'>
+  kind: Exclude<TransferScope, 'ui_settings'> | 'analysis'
   name: string
   files: number
   bytes: number

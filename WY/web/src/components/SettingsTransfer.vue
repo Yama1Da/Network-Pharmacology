@@ -23,18 +23,20 @@ const { t } = useI18n()
 
 
 
-type ScopeKey = 'analysis' | 'star' | 'geo' | 'ui_settings'
+type ScopeKey = 'ppi' | 'synergy' | 'star' | 'geo' | 'ui_settings'
 const SCOPE_DEFS: { key: ScopeKey; label: string }[] = [
-  { key: 'analysis', label: 'web.transfer.scope_analysis' },
+  { key: 'ppi', label: 'web.transfer.scope_ppi' },
+  { key: 'synergy', label: 'web.transfer.scope_synergy' },
   { key: 'star', label: 'web.transfer.scope_star' },
   { key: 'geo', label: 'web.transfer.scope_geo' },
   { key: 'ui_settings', label: 'web.transfer.scope_settings' }
 ]
+// 旧版包遗留 kind(analysis)不在表内,导入预览类型列按 ?? 兜底显示原词
 const KIND_LABEL: Record<string, string> = Object.fromEntries(
   SCOPE_DEFS.map((s) => [s.key, s.label])
 )
 const exportScopes = ref<Record<ScopeKey, boolean>>({
-  analysis: true, star: true, geo: true, ui_settings: true
+  ppi: true, synergy: true, star: true, geo: true, ui_settings: true
 })
 
 const exportJob = useJob((result) => {
