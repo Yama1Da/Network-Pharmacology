@@ -16,6 +16,10 @@ from typing import Callable
 _LOCK = threading.Lock()
 _JOBS: dict[str, dict] = {}
 _TTL = 3600  # 已完成任务保留 1 小时,过期回收
+# 已完成任务的"结果回填窗口":api 层各 /job 状态端点只在此窗口内继续吐 job_id,
+# 前端重进页面据此回填结果(同当场跑完的体验);过期后不再回填,结果走各落盘渠道。
+# 窗口短于 _TTL:回填是锦上添花,注册表本体仍按 1h 供在途轮询与 GC。
+RESULT_REPLAY_WINDOW_S = 300
 
 
 def submit(fn: Callable[[Callable], object], description: str = "") -> str:

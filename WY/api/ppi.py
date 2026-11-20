@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 import os
 import threading
+import time
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -172,7 +173,9 @@ def ppi_analyze(body: AnalyzeBody) -> dict:
 
 @router.get("/api/ppi/job")
 def ppi_job_status() -> dict:
-    """最近一次 PPI 分析的在途状态(页面重进恢复进度展示;跨页离开任务照跑)。"""
+    """最近一次 PPI 分析的在途状态(跨页离开任务照跑,页面重进恢复):
+    running 照常吐 job_id;已完成但在回填窗口内(jobs.RESULT_REPLAY_WINDOW_S)也吐,
+    前端 resume 即回填报告;超窗不吐,空表单,报告走分析产物目录。"""
     with _analyze_job_lock:
         job_id, ctx = _analyze_job_id, dict(_analyze_job_ctx)
     if job_id is None:
@@ -180,6 +183,9 @@ def ppi_job_status() -> dict:
     job = jobs.get(job_id)
     if job is None:
         return {"running": False, "job_id": job_id, "status": "unknown"}
+    if job["status"] != "running" \
+            and time.time() - job["created"] > jobs.RESULT_REPLAY_WINDOW_S:
+        return {"running": False}
     return {"running": job["status"] == "running", "job_id": job_id,
             "status": job["status"], "progress": job["progress"], **ctx}
 

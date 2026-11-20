@@ -383,7 +383,10 @@ def ml_run(body: MlRunBody) -> dict:
 
 @router.get("/api/ml/job")
 def ml_job_status() -> dict:
-    """最近一次 ML run 的在途状态(页面重进恢复进度展示;跨页离开任务照跑)。"""
+    """最近一次 ML run 的在途状态(跨页离开任务照跑,页面重进恢复):
+    running 照常吐 job_id 供续接;已完成但在回填窗口内(jobs.RESULT_REPLAY_WINDOW_S)
+    也吐——前端 resume 第一拍命中 done 即回填结果,同当场跑完的体验;
+    超窗不再吐 job_id,空表单,结果走结果管理页。"""
     with _run_job_lock:
         job_id, ctx = _run_job_id, dict(_run_job_ctx)
     if job_id is None:
@@ -391,6 +394,9 @@ def ml_job_status() -> dict:
     job = jobs.get(job_id)
     if job is None:
         return {"running": False, "job_id": job_id, "status": "unknown"}
+    if job["status"] != "running" \
+            and time.time() - job["created"] > jobs.RESULT_REPLAY_WINDOW_S:
+        return {"running": False}
     return {"running": job["status"] == "running", "job_id": job_id,
             "status": job["status"], "progress": job["progress"], **ctx}
 

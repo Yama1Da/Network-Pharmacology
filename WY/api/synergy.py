@@ -19,6 +19,7 @@ meta.run 与互作组版本,同参数重跑可复现(核心确定性已单测验
 """
 
 import threading
+import time
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
@@ -159,7 +160,10 @@ def synergy_analyze(body: AnalyzeBody) -> dict:
 
 @router.get("/api/synergy/job")
 def synergy_job_status() -> dict:
-    """最近一次协同分析任务的状态(页面重进时恢复进度展示;跨页离开任务照跑)。"""
+    """最近一次协同分析任务的状态(跨页离开任务照跑,页面重进恢复):
+    running 照常吐 job_id 供续接;已完成但在回填窗口内(jobs.RESULT_REPLAY_WINDOW_S)
+    也吐——前端 resume 第一拍命中 done 即回填结果面板,同当场跑完的体验;
+    超窗不吐,空表单,结果走协同分析结果页。"""
     with _analyze_job_lock:
         job_id = _analyze_job_id
     if job_id is None:
@@ -167,5 +171,8 @@ def synergy_job_status() -> dict:
     job = jobs.get(job_id)
     if job is None:
         return {"running": False, "job_id": job_id, "status": "unknown"}
+    if job["status"] != "running" \
+            and time.time() - job["created"] > jobs.RESULT_REPLAY_WINDOW_S:
+        return {"running": False}
     return {"running": job["status"] == "running", "job_id": job_id,
             "status": job["status"], "progress": job["progress"]}

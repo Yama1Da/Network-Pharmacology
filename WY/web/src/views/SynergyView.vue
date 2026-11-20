@@ -69,10 +69,11 @@ onMounted(async () => {
   } catch {
     /* 设置不可达时保持当前值 */
   }
-  // 在途任务恢复(跨页离开任务照跑,重进页面找回进度与结果——同 PK 镜像语义)
+  // 在途任务恢复(跨页离开任务照跑,重进页面找回进度与结果——同 PK 镜像语义):
+  // 后端只在 running 或"完成未超回填窗口"时吐 job_id,done 命中即回填结果面板
   try {
     const st = await api.synergyJob()
-    if (st.running && st.job_id) {
+    if (st.job_id && (st.running || st.status === 'done')) {
       void job.resume(st.job_id)
     }
   } catch {

@@ -256,8 +256,40 @@ def test_ml_ppi_job_status_endpoints(client, monkeypatch):
 
     release.set()
     _wait_job(client, jid)
-    assert client.get("/api/ml/job").json()["running"] is False
-    assert client.get("/api/ppi/job").json()["running"] is False
+    # 完成未超回填窗口:仍吐 job_id(status=done),前端 resume 即回填结果
+    body = client.get("/api/ml/job").json()
+    assert body["running"] is False and body["job_id"] == jid and body["status"] == "done"
+    body = client.get("/api/ppi/job").json()
+    assert body["running"] is False and body["job_id"] == jid and body["status"] == "done"
+
+    # 超过回填窗口(窗口置 0 模拟):不再吐 job_id——空表单,结果走落盘渠道
+    monkeypatch.setattr("WY.core.jobs.RESULT_REPLAY_WINDOW_S", 0)
+    assert client.get("/api/ml/job").json() == {"running": False}
+    assert client.get("/api/ppi/job").json() == {"running": False}
+
+
+def test_synergy_job_status_replay_window(client, monkeypatch):
+    """/api/synergy/job 同款回填窗口:done 未超窗吐 job_id,超窗只报 running=False。"""
+    import threading
+
+    from WY.core import jobs
+    import WY.api.synergy as synergy_api
+
+    monkeypatch.setattr(synergy_api, "_analyze_job_id", None)
+    assert client.get("/api/synergy/job").json() == {"running": False}
+
+    release = threading.Event()
+    jid = jobs.submit(lambda progress: release.wait(timeout=10) or {}, "test synergy")
+    monkeypatch.setattr(synergy_api, "_analyze_job_id", jid)
+    assert client.get("/api/synergy/job").json()["running"] is True
+
+    release.set()
+    _wait_job(client, jid)
+    body = client.get("/api/synergy/job").json()
+    assert body["running"] is False and body["job_id"] == jid and body["status"] == "done"
+
+    monkeypatch.setattr("WY.core.jobs.RESULT_REPLAY_WINDOW_S", 0)
+    assert client.get("/api/synergy/job").json() == {"running": False}
 
 
 def test_jobs_unknown_id_404(client):

@@ -225,12 +225,13 @@ onMounted(() => {
 })
 
 /* 在途分析恢复(跨页离开任务照跑,重进找回进度与结果——同协同预测语义):
- * names 模式先采纳在途任务的分析对象,结果回填后 paramsStale 不会误报参数过期;
- * genes 模式基因列表不可采纳,只续轮询。 */
+ * names 模式先采纳任务的分析对象,结果回填后 paramsStale 不会误报参数过期;
+ * 后端在"完成未超回填窗口"时也吐 job_id(done)——resume 即回填报告,同当场
+ * 跑完体验;genes 模式基因列表不可采纳,只续轮询。 */
 async function resumeAnalyzeJob(): Promise<void> {
   try {
     const st = await api.ppiJob()
-    if (!st.running || !st.job_id) return
+    if (!st.job_id || (st.status !== 'running' && st.status !== 'done')) return
     if (st.mode === 'names' && st.drug) {
       mode.value = 'names'
       drug.value = st.drug
