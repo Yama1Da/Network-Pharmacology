@@ -167,6 +167,99 @@ def test_interactome_build_inflight_dedupe(client, monkeypatch):
     _wait_job(client, jid3)
 
 
+def test_interactome_status_exposes_inflight_build(client, monkeypatch):
+    """状态端点透出在途构建(2026-11 A 组):building/job_id/progress 三字段随
+    running 合并进 status,结束后消失——重进页面自动接进度条的数据来源。"""
+    import threading
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_build(progress_cb=None):
+        started.set()
+        release.wait(timeout=10)
+        return {"n_nodes": 2, "n_edges": 1}
+
+    monkeypatch.setattr("WY.api.interactome.build_interactome", slow_build)
+    monkeypatch.setattr("WY.api.interactome.clean_old_version_caches", lambda name: 0)
+
+    r = client.post("/api/interactome/build")
+    assert started.wait(timeout=5)
+    body = client.get("/api/interactome").json()
+    assert body["building"] is True
+    assert body["job_id"] == r.json()["job_id"]
+    assert "progress" in body
+
+    release.set()
+    _wait_job(client, r.json()["job_id"])
+    body2 = client.get("/api/interactome").json()
+    assert not body2.get("building")
+
+
+def test_pk_mirror_status_exposes_inflight_build(client, monkeypatch):
+    """同上语义的 PK 镜像版:在途时 /api/pk-mirror 带 building 三件套,结束即无。"""
+    import threading
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_build(force=False, progress=None):
+        started.set()
+        release.wait(timeout=10)
+        return {"built": 1, "skipped_existing": 0, "failures": [], "missing": []}
+
+    monkeypatch.setattr("WY.api.pk_mirror.build_mirror", slow_build)
+
+    r = client.post("/api/pk-mirror/build", json={"force": False})
+    assert started.wait(timeout=5)
+    body = client.get("/api/pk-mirror").json()
+    assert body["building"] is True
+    assert body["job_id"] == r.json()["job_id"]
+    assert "progress" in body
+
+    release.set()
+    _wait_job(client, r.json()["job_id"])
+    body2 = client.get("/api/pk-mirror").json()
+    assert not body2.get("building")
+
+
+def test_ml_ppi_job_status_endpoints(client, monkeypatch):
+    """/api/ml/job 与 /api/ppi/job:无在途时 running=False;登记后透出 ctx
+    (gse/mode 与 mode/drug/disease)供前端采纳表单上下文;结束后 running 翻转。"""
+    import threading
+
+    from WY.core import jobs
+    import WY.api.ml as ml_api
+    import WY.api.ppi as ppi_api
+
+    # 空登记:两个端点都是 running False(模块全局经 monkeypatch 隔离,测后还原)
+    monkeypatch.setattr(ml_api, "_run_job_id", None)
+    monkeypatch.setattr(ml_api, "_run_job_ctx", {})
+    monkeypatch.setattr(ppi_api, "_analyze_job_id", None)
+    monkeypatch.setattr(ppi_api, "_analyze_job_ctx", {})
+    assert client.get("/api/ml/job").json() == {"running": False}
+    assert client.get("/api/ppi/job").json() == {"running": False}
+
+    release = threading.Event()
+    jid = jobs.submit(lambda progress: release.wait(timeout=10) or {}, "test in-flight")
+    monkeypatch.setattr(ml_api, "_run_job_id", jid)
+    monkeypatch.setattr(ml_api, "_run_job_ctx", {"gse": "GSE_TEST", "mode": "gse"})
+    monkeypatch.setattr(ppi_api, "_analyze_job_id", jid)
+    monkeypatch.setattr(ppi_api, "_analyze_job_ctx",
+                        {"mode": "names", "drug": "aspirin", "disease": "colorectal cancer"})
+
+    body = client.get("/api/ml/job").json()
+    assert body["running"] is True and body["gse"] == "GSE_TEST" and body["mode"] == "gse"
+    body = client.get("/api/ppi/job").json()
+    assert body["running"] is True
+    assert body["drug"] == "aspirin" and body["disease"] == "colorectal cancer"
+
+    release.set()
+    _wait_job(client, jid)
+    assert client.get("/api/ml/job").json()["running"] is False
+    assert client.get("/api/ppi/job").json()["running"] is False
+
+
 def test_jobs_unknown_id_404(client):
     assert client.get("/api/jobs/no-such-job").status_code == 404
 

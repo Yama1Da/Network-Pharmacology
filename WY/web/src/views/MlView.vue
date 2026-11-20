@@ -586,7 +586,29 @@ onMounted(() => {
   void loadDiseases()
   void loadRanked()
   void loadHistory()
+  void resumeRunJob()
 })
+
+/* 在途 run 恢复(跨页离开任务照跑,重进找回进度与结果——同协同预测语义):
+ * 挂载时表单是全新默认态,先采纳在途任务的 GSE 作为数据上下文(gse 模式),
+ * 否则结果回填会撞代际守卫;再按捕获快照续轮询。local 模式的本地文件路径
+ * 不可采纳,只续轮询——结果照常落 ④ 区。 */
+async function resumeRunJob(): Promise<void> {
+  try {
+    const st = await api.mlJob()
+    if (!st.running || !st.job_id) return
+    if (st.mode === 'gse' && st.gse) gse.value = st.gse
+    const g0 = gse.value.trim().toUpperCase()
+    const d0 = disease.value.trim().toLowerCase()
+    const tab0 = tab.value
+    await runJob.resume(st.job_id, {
+      doneText: t('web.ml.run_done_text'),
+      stale: () => gse.value.trim().toUpperCase() !== g0
+        || disease.value.trim().toLowerCase() !== d0
+        || tab.value !== tab0
+    })
+  } catch { /* 状态不可达:照常空表单 */ }
+}
 </script>
 
 <template>

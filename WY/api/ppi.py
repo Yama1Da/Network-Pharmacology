@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 import os
+import threading
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -17,6 +18,13 @@ router = APIRouter()
 # 产物直出:分析的全部图表/表格由 run_ppi_analysis 经 save_ppi_results 落盘到
 # downloads/<prefix>_data/,本层只做序列化与文件伺服,不重绘任何图。
 # 交互区重跑(模块/GSEA)是无状态的:从落盘的 nodes/edges CSV 重建图,与网页展示一致。
+
+# 最近一次 analyze 的在途登记(同 api/synergy.py 模式):跨页离开任务照跑,
+# 重进页面经 /api/ppi/job 找回进度;ctx 记录分析对象(names 模式的药/病),
+# 供前端把全新默认态的表单采纳回任务上下文。rerun-modules/gsea 短任务不登记。
+_analyze_job_lock = threading.Lock()
+_analyze_job_id: str | None = None
+_analyze_job_ctx: dict = {}
 
 
 class _JobProgress:
@@ -153,7 +161,27 @@ def ppi_analyze(body: AnalyzeBody) -> dict:
             progress=_JobProgress(progress))
         return _serialize_ppi(result)
 
-    return {"job_id": jobs.submit(task, f"ppi analyze {body.drug}/{body.disease}")}
+    global _analyze_job_id, _analyze_job_ctx
+    job_id = jobs.submit(task, f"ppi analyze {body.drug}/{body.disease}")
+    with _analyze_job_lock:
+        _analyze_job_id = job_id
+        _analyze_job_ctx = {"mode": body.mode, "drug": body.drug.strip(),
+                            "disease": body.disease.strip()}
+    return {"job_id": job_id}
+
+
+@router.get("/api/ppi/job")
+def ppi_job_status() -> dict:
+    """最近一次 PPI 分析的在途状态(页面重进恢复进度展示;跨页离开任务照跑)。"""
+    with _analyze_job_lock:
+        job_id, ctx = _analyze_job_id, dict(_analyze_job_ctx)
+    if job_id is None:
+        return {"running": False}
+    job = jobs.get(job_id)
+    if job is None:
+        return {"running": False, "job_id": job_id, "status": "unknown"}
+    return {"running": job["status"] == "running", "job_id": job_id,
+            "status": job["status"], "progress": job["progress"], **ctx}
 
 
 @router.get("/api/artifacts")

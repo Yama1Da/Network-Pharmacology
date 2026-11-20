@@ -221,7 +221,24 @@ onMounted(() => {
     drug.value = pf.drug
     disease.value = pf.disease
   }
+  void resumeAnalyzeJob()
 })
+
+/* 在途分析恢复(跨页离开任务照跑,重进找回进度与结果——同协同预测语义):
+ * names 模式先采纳在途任务的分析对象,结果回填后 paramsStale 不会误报参数过期;
+ * genes 模式基因列表不可采纳,只续轮询。 */
+async function resumeAnalyzeJob(): Promise<void> {
+  try {
+    const st = await api.ppiJob()
+    if (!st.running || !st.job_id) return
+    if (st.mode === 'names' && st.drug) {
+      mode.value = 'names'
+      drug.value = st.drug
+      disease.value = st.disease ?? ''
+    }
+    await job.resume(st.job_id, { doneText: t('web.analysis.report_done') })
+  } catch { /* 状态不可达:照常空表单 */ }
+}
 </script>
 
 <template>

@@ -25,15 +25,24 @@ _build_job_id: str | None = None
 @router.get("/api/interactome")
 def interactome_status() -> dict:
     if not is_built("Human"):
-        return {"built": False, "version": config.STRING_VERSION}
-    meta = require_meta("Human")
-    age = interactome_age_days("Human")
-    return {"built": True,
-            "nodes": meta["n_nodes"], "edges": meta["n_edges"],
-            "version": meta["string_version"], "confidence": meta["confidence"],
-            "built_at": str(meta.get("built_at", ""))[:10],
-            "age": age if age is not None else None,
-            "stale": is_stale("Human")}
+        status: dict = {"built": False, "version": config.STRING_VERSION}
+    else:
+        meta = require_meta("Human")
+        age = interactome_age_days("Human")
+        status = {"built": True,
+                  "nodes": meta["n_nodes"], "edges": meta["n_edges"],
+                  "version": meta["string_version"], "confidence": meta["confidence"],
+                  "built_at": str(meta.get("built_at", ""))[:10],
+                  "age": age if age is not None else None,
+                  "stale": is_stale("Human")}
+    # 在途构建透出:重进页面自动接上进度条(与 pk-mirror 同语义)
+    with _build_job_lock:
+        job_id = _build_job_id
+    if job_id is not None:
+        job = jobs.get(job_id)
+        if job is not None and job["status"] == "running":
+            status.update(building=True, job_id=job_id, progress=job["progress"])
+    return status
 
 
 @router.post("/api/interactome/build")

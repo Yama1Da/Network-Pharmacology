@@ -54,6 +54,14 @@ export interface JobState {
 
 export type Row = Record<string, unknown>
 
+/** 在途任务状态(/api/{ml,ppi,synergy}/job 的公共形态):重进页面恢复进度用。 */
+export interface InFlightJob {
+  running: boolean
+  job_id?: string
+  status?: string
+  progress?: JobState['progress']
+}
+
 /** 网络邻近度检验的落网覆盖(LCC 内命中数 / 集合总数)。 */
 export interface ProximityCoverage {
   drug_in_lcc?: number
@@ -170,6 +178,9 @@ export interface InteractomeStatus {
   built_at?: string
   age?: number | null
   stale?: boolean
+  building?: boolean
+  job_id?: string
+  progress?: JobState['progress']
 }
 
 /* ---- PK-DB 镜像(浓度可达性数据底座,二期):字段与 core.pk_mirror.mirror_status 一一对应 ---- */
@@ -183,6 +194,9 @@ export interface PkMirrorStatus {
   age?: number | null
   stale?: boolean
   ttl_days?: number
+  building?: boolean
+  job_id?: string
+  progress?: JobState['progress']
 }
 
 /* ---- GEO 表达谱 + ML(阶段 3c)共享类型:字段与 core 一一对应 ---- */
@@ -591,8 +605,11 @@ export const api = {
   synergyLibrary: (): Promise<{ drugs: string[]; diseases: string[] }> =>
     fetch('/api/synergy/library').then((r) => json(r)),
 
-  synergyJob: (): Promise<{ running: boolean; job_id?: string; status?: string; progress?: JobState['progress'] }> =>
+  synergyJob: (): Promise<InFlightJob> =>
     fetch('/api/synergy/job').then((r) => json(r)),
+
+  ppiJob: (): Promise<InFlightJob & { mode?: string; drug?: string; disease?: string }> =>
+    fetch('/api/ppi/job').then((r) => json(r)),
 
   synergyAnalyze: (body: SynergyAnalyzeBody): Promise<{ job_id: string }> =>
     post('/api/synergy/analyze', body),
@@ -803,6 +820,9 @@ export const api = {
   mlRanked: (body: { disease: string; drug: string }): Promise<{
     files: { label: string; base_disease: string; drug: string }[]
   }> => post('/api/ml/ranked', body),
+
+  mlJob: (): Promise<InFlightJob & { gse?: string; mode?: string }> =>
+    fetch('/api/ml/job').then((r) => json(r)),
 
   mlRun: (body: Record<string, unknown>): Promise<{ job_id: string }> =>
     post('/api/ml/run', body),

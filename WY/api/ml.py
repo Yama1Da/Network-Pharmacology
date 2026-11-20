@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 import logging
 import os
+import threading
 import time
 from fastapi import HTTPException
 from fastapi.responses import Response
@@ -19,6 +20,20 @@ router = APIRouter()
 
 # 全链编排唯一定义在 core.ml_pipeline.run_screen_chain(CLI/页面/API 共用);
 # 本层只做 HTTP 形态:检索/预检(同步)、总览与运行(job)、结果管理与下载。
+
+# 最近一次 run 的在途登记(同 api/synergy.py 模式):跨页离开任务照跑,
+# 重进页面经 /api/ml/job 找回进度;ctx 记录发起时的 GSE/输入方式,供前端
+# 把全新默认态的表单采纳回任务上下文,结果回填不撞代际守卫。
+_run_job_lock = threading.Lock()
+_run_job_id: str | None = None
+_run_job_ctx: dict = {}
+
+
+def _register_run_job(job_id: str, body: "MlRunBody") -> None:
+    global _run_job_id, _run_job_ctx
+    with _run_job_lock:
+        _run_job_id = job_id
+        _run_job_ctx = {"gse": body.gse.strip().upper(), "mode": body.mode}
 
 
 @router.get("/api/ml/diseases")
@@ -361,7 +376,23 @@ def ml_run(body: MlRunBody) -> dict:
             "deg": _df_rows(res["deg"], 200),
         }
 
-    return {"job_id": jobs.submit(task, f"ml run {body.gse or 'local'}")}
+    job_id = jobs.submit(task, f"ml run {body.gse or 'local'}")
+    _register_run_job(job_id, body)
+    return {"job_id": job_id}
+
+
+@router.get("/api/ml/job")
+def ml_job_status() -> dict:
+    """最近一次 ML run 的在途状态(页面重进恢复进度展示;跨页离开任务照跑)。"""
+    with _run_job_lock:
+        job_id, ctx = _run_job_id, dict(_run_job_ctx)
+    if job_id is None:
+        return {"running": False}
+    job = jobs.get(job_id)
+    if job is None:
+        return {"running": False, "job_id": job_id, "status": "unknown"}
+    return {"running": job["status"] == "running", "job_id": job_id,
+            "status": job["status"], "progress": job["progress"], **ctx}
 
 
 @router.get("/api/ml/history")

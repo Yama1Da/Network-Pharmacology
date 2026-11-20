@@ -25,7 +25,15 @@ class BuildBody(BaseModel):
 
 @router.get("/api/pk-mirror")
 def pk_mirror_status() -> dict:
-    return mirror_status()
+    """磁盘镜像状态 + 在途构建(重进页面自动接上进度条,不再靠再点一次按钮)。"""
+    status = mirror_status()
+    with _build_job_lock:
+        job_id = _build_job_id
+    if job_id is not None:
+        job = jobs.get(job_id)
+        if job is not None and job["status"] == "running":
+            status.update(building=True, job_id=job_id, progress=job["progress"])
+    return status
 
 
 @router.post("/api/pk-mirror/build")

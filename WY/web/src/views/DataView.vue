@@ -36,12 +36,19 @@ async function load(): Promise<void> {
   try {
     itx.value = await api.interactome()
     loaded.value = true
+    // 在途构建透出(2026-11 A 组):重进页面自动接上进度条,不再靠再点一次按钮
+    if (itx.value.building && itx.value.job_id && !job.running.value) {
+      void job.resume(itx.value.job_id, { doneText: t('web.data.build_done') })
+    }
   } catch {
     flashItx(t('web.data.status_fail'))
   }
   try {
     pk.value = await api.pkMirror()
     pkLoaded.value = true
+    if (pk.value.building && pk.value.job_id && !pkJob.running.value) {
+      void pkJob.resume(pk.value.job_id, { doneText: t('web.data.build_done') })
+    }
   } catch {
     flashPk(t('web.data.pk_status_fail'))
   }
