@@ -46,12 +46,12 @@ def list_cache_files(category: str, *, exts: tuple = ()) -> pd.DataFrame:
 def list_download_dirs() -> pd.DataFrame:
     """分析产物目录的运行清单(2026-11-18 聚合后口径):PPI 运行目录聚合在
     ppi-results/ 一层下,此处走进去按 run 列出(名称带 "ppi-results/" 前缀);
-    synergy-results 由协同分析结果页专管,不出现在本清单;GEOresult 由 ML 管理
-    页专管,顶层项保留;MDresult/star 本页从来不管,排除。"""
+    synergy-results/GEOresult 由协同分析/ML 结果页专管,不出现在本清单;
+    MDresult/star 本页从来不管,排除。"""
     from WY import config
 
     downloads = config.DOWNLOADS_DIR
-    excluded_top = {"MDresult", "star", "synergy-results"}
+    excluded_top = {"MDresult", "star", "synergy-results", "GEOresult"}
     category = {"ppi-results"}
     rows: list[dict] = []
     if not os.path.isdir(downloads):

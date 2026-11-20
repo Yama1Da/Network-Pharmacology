@@ -96,10 +96,13 @@ def _items_for(kind: str) -> tuple[str, list[dict], object]:
         excluded = {os.path.basename(config.MD_RESULT_DIR),
                     os.path.basename(config.MD_STAR_DIR)}
         df = df[~df["Directory"].isin(excluded)]
-        return "dirs", [{"name": d, "modified": m}
-                        for d, m in zip(df["Directory"].tolist(),
-                                        df["Modified time"].tolist())], \
-            lambda n: os.path.join(config.DOWNLOADS_DIR, n)
+        # name 保持 downloads 相对路径(zip/删除的校验键,分析/协同页也在传);
+        # display 剥掉 ppi-results/ 聚合层前缀,清单只呈现 run 目录名。
+        items = [{"name": d, "modified": m,
+                  "display": d[len("ppi-results/"):] if d.startswith("ppi-results/") else d}
+                 for d, m in zip(df["Directory"].tolist(),
+                                 df["Modified time"].tolist())]
+        return "dirs", items, lambda n: os.path.join(config.DOWNLOADS_DIR, n)
 
     raise HTTPException(status_code=404, detail=f"unknown collection '{kind}'")
 
@@ -115,14 +118,25 @@ class NamesBody(BaseModel):
 
 
 def _validated_paths(kind: str, names: list[str]) -> list[tuple[str, str]]:
-    """把选中名解析为 (name, 路径),并确认都在集合清单内(防越权删除/打包)。"""
+    """把选中名解析为 (清单名, 路径),确认都在集合清单内(防越权删除/打包)。
+    清单全名与裸名(去 "ppi-results/" 聚合层前缀)都收:管理页传全名,分析页
+    拿的是 directory_rel 剥出来的裸名;路径一律按清单条目解析,裸名跨根歧义
+    时拒绝。known 只来自 os.listdir,不含分隔符穿越序列,足够防越权。"""
     mode, items, resolver = _items_for(kind)
-    known = {it["name"] for it in items}
+    full = {it["name"] for it in items}
+    by_bare: dict[str, str | None] = {}
+    for it in items:
+        b = os.path.basename(it["name"])
+        if b not in by_bare:
+            by_bare[b] = it["name"]
+        elif by_bare[b] != it["name"]:
+            by_bare[b] = None          # 同名条目出现在两处,裸名不可消歧
     out = []
     for n in names:
-        if n != os.path.basename(n) or n not in known:
+        name = n if n in full else by_bare.get(n)
+        if not name:
             raise HTTPException(status_code=400, detail=f"invalid name: {n!r}")
-        out.append((n, resolver(n)))
+        out.append((name, resolver(name)))
     return out
 
 

@@ -197,10 +197,11 @@ onBeforeUnmount(() => {
             <input type="checkbox" :checked="selected.has(it.name)" @change="toggleSel(it.name)" />
           </label>
           <span class="fname" :title="it.name">
-            {{ it.display ?? it.name }}<i v-if="it.display" class="raw">{{ it.name }}</i>
+            {{ it.display ?? it.name }}<i v-if="it.display && kind !== 'downloads'" class="raw">{{ it.name }}</i>
           </span>
           <span class="fmeta">{{ it.size != null ? `${fmtSize(it.size)} · ` : '' }}{{ it.modified }}</span>
-          <button class="mini" :title="t('web.common.download')" @click="download([it.name], it.name)">⬇</button>
+          <button class="mini" :title="t('web.common.download')"
+                  @click="download([it.name], `${it.display ?? it.name}.zip`)">⬇</button>
         </div>
       </li>
     </ul>

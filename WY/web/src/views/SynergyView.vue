@@ -127,10 +127,10 @@ const stageText = computed(() => {
   return job.text.value
 })
 
-/* 归档下载:走 downloads 集合的打包端点,拿到的就是该次运行目录的 ZIP */
+/* 归档下载:走协同结果专管端点(synergy-results 已从 downloads 清单排除,裸名直传) */
 async function downloadResult(): Promise<void> {
   if (!archiveDir.value) return
-  const blob = await api.zip('downloads', [archiveDir.value])
+  const blob = await api.synergyResultsZip([archiveDir.value])
   downloadBlob(blob, `${archiveDir.value}.zip`)
 }
 </script>
