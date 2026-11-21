@@ -9,6 +9,7 @@ TEXT_ZH: dict[str, str] = {
     "enrich_file.side_disease": "疾病侧",
     "enrich_file.module_n": "模块 {n}",
     # 管理页共用:全部更新进度条
+    "mgmt.prog.start": "开始更新来源文件（共 {total} 个）…",
     "mgmt.prog.sources": "正在更新来源文件（{done}/{total}）… 刚完成：{latest}",
     "mgmt.prog.merged": "正在重建整合文件（{done}/{total}）…",
     "mgmt.prog.done": "全部文件已处理",

@@ -10,6 +10,7 @@ TEXT_EN: dict[str, str] = {
     "enrich_file.side_disease": "disease side",
     "enrich_file.module_n": "module {n}",
     # 管理页共用:全部更新进度条
+    "mgmt.prog.start": "Starting source file update ({total} files)…",
     "mgmt.prog.sources": "Updating source files ({done}/{total})… last done: {latest}",
     "mgmt.prog.merged": "Rebuilding merged files ({done}/{total})…",
     "mgmt.prog.done": "All files processed",

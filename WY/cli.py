@@ -1052,6 +1052,11 @@ def cmd_serve(args) -> int:
     import uvicorn
     from WY.api import app
 
+    # web 服务跟随界面语言:模块头的"纪律 1"英文钉死只该约束 CLI 输出;serve 的
+    # job 进度等 core 文案面向浏览器展示,按 UI_LANG 取词(ui_settings.json 已在
+    # config 导入时应用;前端切语言保存后,新任务的进度文案即时换语言)
+    i18n.set_lang_provider(lambda: config.UI_LANG)
+
     url = f"http://{args.host}:{args.port}"
     # 端口预检:占用时给友好指引而不是 winerror 10048 裸异常
     # (双击 bat 场景最常见的错误 = 上一个实例还在运行,或别的程序占了端口)。

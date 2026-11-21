@@ -38,6 +38,11 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
     running.value = true
     error.value = ''
     result.value = null
+    // 新任务提交即清上一轮的进度条/文案:首次轮询(≤0.6s)前不显示旧任务的
+    // 尾态(fraction=1.0/旧文案),避免"点新任务瞬间还挂着旧进度"的串台残影;
+    // resume() 不清——那是同一任务的续接,进度本就该延续
+    fraction.value = null
+    text.value = ''
     return submit
       .then(({ job_id }) => {
         jobId.value = job_id

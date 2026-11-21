@@ -218,9 +218,13 @@ onBeforeUnmount(() => {
 
     <div v-if="job.running.value" class="progress">
       <div class="progress-track">
-        <div class="progress-fill" :style="{ width: `${((job.fraction.value ?? 0) * 100).toFixed(0)}%` }"></div>
+        <!-- 进度未开始(null=新任务首轮询前;0=起步 tick)走既有 indeterminate 流动条,
+             首个文件完成(fraction>0)自动切回真实百分比;内联 width 会覆盖类的 40%,
+             置空交由类控制 -->
+        <div class="progress-fill" :class="{ indeterminate: !job.fraction.value }"
+             :style="!job.fraction.value ? {} : { width: `${(job.fraction.value * 100).toFixed(0)}%` }"></div>
       </div>
-      <p class="progress-text">{{ job.text.value || t('web.sources.updating') }}</p>
+      <p class="progress-text">{{ job.text.value }}</p>
     </div>
     <p v-if="job.error.value" class="notice">{{ job.error.value }}</p>
 

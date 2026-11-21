@@ -288,6 +288,9 @@ def update_all_cache_files(spec: dict, cache_hours: int | None = None, *,
 
     rows: list[dict] = []
     if jobs:
+        # 阶段 0 即报数:_tick 按文件完成数发,首个文件完成前的静默期里界面不再只有
+        # 静态兜底文案,提交一拍内就有真实进度信息(2026-11 B+C 定案)
+        _tick(0.0, "mgmt.prog.start", total=len(jobs))
         # 入口按域名定向清一次 HTTP 响应缓存(只清本批涉及来源的域名,其余数据源
         # 缓存不受影响):每文件中途清理会干扰其他线程的在途请求,且批量开始后
         # 本批抓取是唯一的缓存写入方,清一次即可保证全部抓到新数据
