@@ -1,8 +1,9 @@
 """WY.cli 的测试:参数解析与落盘纪律(不打网络,core 层一律打桩)。
 
 阶段三第 4 批新写(仿原方案示例 D,import 按现行 WY. 绝对导入约定)。
-打桩打在"使用者的命名空间"里(cli 按名字导入的 core 函数,
-替换 cli 命名空间里的那个名字)。
+打桩打在"使用者的命名空间"里:PPI 抓边/建图/指标/MCC 与富集的计算已收敛到
+core.analysis(build_ppi_stack/run_enrichment_step),桩替换 analysis 命名空间里的
+那个名字;cli 自己的编排函数(get_targets_concurrent/run_pair 等)仍打在 cli 命名空间。
 """
 import argparse
 import json
@@ -12,6 +13,7 @@ import pandas as pd
 import pytest
 
 from WY import cli
+from WY.core import analysis as ana
 
 
 # ---------- 通用小工具 ----------
@@ -125,8 +127,9 @@ def test_targets_with_disease(tmp_path, monkeypatch):
 
 
 def _stub_ppi_chain(monkeypatch, edges):
-    """PPI 链打桩:抓边打桩,图构建/指标/MCC 用真实小图跑(纯本地核心)。"""
-    monkeypatch.setattr(cli, "fetch_string_ppi", lambda genes, **k: edges)
+    """PPI 链打桩:抓边打桩,图构建/指标/MCC 用真实小图跑(纯本地核心)。
+    计算收敛后 build_ppi_stack 在 analysis 命名空间取这些名字,桩打在 ana 上。"""
+    monkeypatch.setattr(ana, "fetch_string_ppi", lambda genes, **k: edges)
     import networkx as nx
 
     def fake_build(_edges_df, genes):
@@ -134,13 +137,13 @@ def _stub_ppi_chain(monkeypatch, edges):
         g.add_edges_from([("A", "B"), ("B", "C")])
         return g
 
-    monkeypatch.setattr(cli, "build_ppi_graph", fake_build)
-    monkeypatch.setattr(cli, "compute_ppi_metrics",
+    monkeypatch.setattr(ana, "build_ppi_graph", fake_build)
+    monkeypatch.setattr(ana, "compute_ppi_metrics",
                         lambda g: pd.DataFrame({"gene": ["A", "B", "C"],
                                                 "degree": [1, 2, 1],
                                                 "betweenness": [0.0, 0.6, 0.0],
                                                 "closeness": [0.4, 0.5, 0.4]}))
-    monkeypatch.setattr(cli, "compute_mcc_scores",
+    monkeypatch.setattr(ana, "compute_mcc_scores",
                         lambda g: {"A": 1.0, "B": 2.0, "C": 1.0})
 
 
@@ -155,7 +158,7 @@ def test_ppi_command_happy_path(tmp_path, monkeypatch):
 
 def test_ppi_no_string_edges_is_failure(tmp_path, monkeypatch):
     """STRING 没返回任何互作(基因不被识别/无达标边):明确失败退出。"""
-    monkeypatch.setattr(cli, "fetch_string_ppi", lambda genes, **k: None)
+    monkeypatch.setattr(ana, "fetch_string_ppi", lambda genes, **k: None)
     rc = cli.main(["ppi", "--genes", "ZZZ1,ZZZ2", "--out", str(tmp_path)])
     assert rc == 1
 
@@ -169,7 +172,7 @@ def test_ppi_no_genes_parsed_is_failure(tmp_path):
 def test_enrich_command_semantics(tmp_path, monkeypatch):
     """npap enrich 三态:有显著项 → 0 + 落盘;真无显著项(可信)→ 0;服务不可信 → 1。"""
     terms = pd.DataFrame([{"source": "KEGG", "term_name": "x", "p_value": 0.01}])
-    monkeypatch.setattr(cli, "run_enrichment",
+    monkeypatch.setattr(ana, "run_enrichment",
                         lambda genes, **k: (terms, "gProfiler"))
     rc = cli.main(["enrich", "--genes", "TP53", "--out", str(tmp_path)])
     assert rc == 0 and (tmp_path / "enrichment.csv").exists()
@@ -179,7 +182,7 @@ def test_enrich_command_semantics(tmp_path, monkeypatch):
         status.update(ok=True, reason="no_significant")
         return pd.DataFrame(), "g:Profiler"
 
-    monkeypatch.setattr(cli, "run_enrichment", no_sig)
+    monkeypatch.setattr(ana, "run_enrichment", no_sig)
     rc2 = cli.main(["enrich", "--genes", "TP53", "--out", str(tmp_path / "b")])
     assert rc2 == 0  # 真无显著项属正常
 
@@ -188,7 +191,7 @@ def test_enrich_command_semantics(tmp_path, monkeypatch):
         status.update(ok=False, reason="both_sources_down")
         return pd.DataFrame(), None
 
-    monkeypatch.setattr(cli, "run_enrichment", down)
+    monkeypatch.setattr(ana, "run_enrichment", down)
     rc3 = cli.main(["enrich", "--genes", "TP53", "--out", str(tmp_path / "c")])
     assert rc3 == 1  # 服务不可用必须非零退出暴露给脚本
 

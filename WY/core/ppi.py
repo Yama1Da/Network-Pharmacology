@@ -296,8 +296,9 @@ def build_main_figures(graph, metrics_df, edges_df, hub_method: str, mcc_map: di
         except Exception:
             logging.exception("MCC computation failed — core target figure skipped")
     hub_df = metrics_df[metrics_df["is_hub"]]  # 默认值:MCC 失败时 hub 表不带 mcc 列
-    if mcc_map:
-        metrics_df["mcc"] = metrics_df["gene"].map(mcc_map)
+    if mcc_map and "mcc" not in metrics_df.columns:
+        # 兜底补列(正常流程 build_ppi_stack 已补):fillna 0.0 与栈内补列规则一致
+        metrics_df["mcc"] = metrics_df["gene"].map(mcc_map).fillna(0.0)
         hub_df = metrics_df[metrics_df["is_hub"]]  # 重取让 Hub 表带上 mcc 列
     core_fig = None
     core_genes: list[str] = []

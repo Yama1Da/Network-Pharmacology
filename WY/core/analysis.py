@@ -8,8 +8,12 @@
 展示/下发结果。进度经 AnalysisProgress 协议回调，编排层不依赖任何 UI 框架；
 matplotlib 的 pyplot 全局状态非线程安全，所有绘图统一留在调用线程执行。
 
-与 cli.py 的关系：CLI 的 cmd_analyze 等命令目前各自编排 core 调用，后续可逐步
-收敛到本模块（网页端 Build Report 与 CLI 共享同一份分析语义）。
+与 cli.py 的关系：网页端 Build Report 与 CLI 共享同一份分析语义,共享点集中在
+本模块——pair_prefix（缓存命名）、expand_targets_with_rwr（RWR 扩展）、
+build_ppi_stack（抓边→建图→指标→MCC→hub→核心靶点）、run_enrichment_step（富集）;
+CLI 各步骤只做产物落盘与状态字典,网页侧只做并发调度与绘图。GSEA/模块分析/图形
+渲染是网页专属产物形态,不进 CLI;邻近度/RWR 双方直接调 core.network_algorithms
+的同名函数,天然共享。改任何计算规则只改本模块,两侧自动一致。
 """
 
 import hashlib
@@ -41,6 +45,7 @@ from .ppi import (
     compute_ppi_metrics,
     fetch_string_ppi,
     mark_hub_genes,
+    pick_top_mcc_genes,
     save_gsea_results,
     save_module_computation,
     save_ppi_results,
@@ -155,6 +160,75 @@ def expand_targets_with_rwr(genes: list[str], rwr_expand: int,
     return genes, f"{prefix}_rwr{int(rwr_expand)}", info
 
 
+def build_ppi_stack(genes: list[str], *, score: float, label: str | None,
+                    hub_top_n: int, hub_method: str) -> dict:
+    """PPI 数据栈（纯计算，不落盘不画图；CLI _ppi_step 与网页 run_ppi_analysis 共用）：
+    STRING_QUERY_LIMIT 截断 → STRING 抓边 → 建图 → 拓扑指标 → MCC → hub 标记 → 核心靶点。
+
+    截断规则与 fetch_string_ppi 内部一致，此处先行截断并如实返回 truncated 标记与
+    截断后的 genes（网页手动模式原先静默依赖 fetch 内部截断，收敛后两端标记一致）。
+    MCC 无条件尝试（核心靶点无论 hub_method 取哪种都按 MCC 挑选；失败降级为空映射继续）；
+    MCC 成功且 metrics_df 尚无 mcc 列时补一列（fillna 0.0，保证指标表 CSV 完整——
+    网页侧原先在 build_main_figures 里补列且零值落成 NaN，收敛后统一为 0.0）。
+
+    返回 dict：genes（截断后）/ truncated / edges_df（fetch 失败归一化为空表，可能为空）/
+    graph / metrics_df / mcc_map / hub_rule / hub_method_eff / core_genes。
+    hub_method_eff：请求 "mcc" 但 mark_hub_genes 实际退回 degree 时为 "degree"（与网页
+    原判定一致），否则等于 hub_method。边表为空时 graph/metrics 仍会构建（全孤立节点图），
+    由调用方按需分支（CLI 判失败，网页沿用全孤立节点流程）。
+    """
+    from WY import config
+
+    truncated = len(genes) > config.STRING_QUERY_LIMIT
+    if truncated:
+        genes = genes[:config.STRING_QUERY_LIMIT]
+    edges_df = fetch_string_ppi(
+        genes, species=config.SPECIES_MAP["Human"]["ncbi_taxon"],
+        score=score, network_type="full", label=label)
+    if edges_df is None:
+        # fetch_string_ppi 失败可返回 None:归一化为空表,调用方统一按 .empty 分支
+        edges_df = pd.DataFrame()
+    graph = build_ppi_graph(edges_df, genes)
+    metrics_df = compute_ppi_metrics(graph)
+    try:
+        mcc_map: dict[str, float] = compute_mcc_scores(graph)
+    except Exception:
+        logging.exception("MCC computation failed; core targets skipped")
+        mcc_map = {}
+    if mcc_map and "mcc" not in metrics_df.columns:
+        # hub_method 为 degree 时 mark_hub_genes 不带 mcc 列,提前补上保证指标表完整
+        metrics_df["mcc"] = metrics_df["gene"].map(mcc_map).fillna(0.0)
+    metrics_df = mark_hub_genes(
+        metrics_df, top_n=hub_top_n, method=hub_method,
+        mcc_map=mcc_map, small_net_factor=config.HUB_SMALL_NET_FACTOR)
+    hub_rule = str(metrics_df["hub_rule"].iloc[0]) if len(metrics_df) else ""
+    # MCC 排名被 mark_hub_genes 回退为 degree 时,metrics_df 不会出现 mcc 列
+    hub_method_eff = ("degree"
+                      if hub_rule.startswith("top") and hub_method == "mcc"
+                      and "mcc" not in metrics_df.columns else hub_method)
+    core_genes = pick_top_mcc_genes(metrics_df, mcc_map, config.MCC_TOP_N)
+    return {"genes": genes, "truncated": truncated, "edges_df": edges_df,
+            "graph": graph, "metrics_df": metrics_df, "mcc_map": mcc_map,
+            "hub_rule": hub_rule, "hub_method_eff": hub_method_eff,
+            "core_genes": core_genes}
+
+
+def run_enrichment_step(genes: list[str], *, organism: str | None = None,
+                        pvalue: float | None = None, sources: tuple | None = None,
+                        label: str | None = None) -> tuple:
+    """功能富集计算（纯计算，不落盘；CLI _enrichment_step 与网页 run_enrichment_task 共用）：
+    g:Profiler 主 + Enrichr 自动降级。organism/pvalue 缺省取 config 默认值，
+    sources 缺省 None（走 run_enrichment 内部默认）。返回 (结果表, 数据源, 状态原因)。"""
+    from WY import config
+
+    enr_status: dict = {}
+    df, source = run_enrichment(
+        genes, organism=organism or config.SPECIES_MAP["Human"]["gprofiler"],
+        pvalue=pvalue if pvalue is not None else config.ENRICHMENT_PVALUE,
+        sources=sources, label=label, status=enr_status)
+    return df, source, enr_status.get("reason", "")
+
+
 def gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str):
     """对药物/疾病一侧构建排秩表并运行 GSEA prerank（Build Report 自动流程与手动重跑共用）；
     返回 (结果表, 排秩统计, 状态原因)。"""
@@ -173,14 +247,9 @@ def gsea_prerank_side(side: str, drug_name: str, disease_name: str, prefix: str)
 
 
 def run_enrichment_task(genes: list[str], organism: str, prefix: str):
-    """功能富集(g:Profiler 主 + Enrichr 备,输入为交集靶点),返回 (结果表, 数据源, 状态原因)。"""
-    from WY import config
-
-    enr_status: dict = {}
-    df, source = run_enrichment(genes, organism=organism,
-                                      pvalue=config.ENRICHMENT_PVALUE, label=prefix,
-                                      status=enr_status)
-    return df, source, enr_status.get("reason", "")
+    """功能富集任务(网页 Build Report 的线程池并发入口),返回 (结果表, 数据源, 状态原因)。
+    计算统一走 run_enrichment_step(与 CLI _enrichment_step 共用同一份)。"""
+    return run_enrichment_step(genes, organism=organism, label=prefix)
 
 
 def run_gsea_task(drug_name: str, disease_name: str, prefix: str):
@@ -334,7 +403,6 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
     （会抵消 RWR 扩展拉入的外周靶点）；RWR 扩展只作用于建网/拓扑/hub/模块/富集,邻近度与 GSEA 仍基于原始靶点集。"""
     from WY import config
 
-    species_id = config.SPECIES_MAP["Human"]["ncbi_taxon"]
     organism = config.SPECIES_MAP["Human"]["gprofiler"]
     def _prog(step: str | None = None, state: str | None = None,
               fraction: float | None = None) -> None:
@@ -381,35 +449,23 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
 
     # Step 1: 从 STRING 获取蛋白相互作用（按置信度分数过滤,孤立节点在下游展示时隐藏）
     _prog("string", "running", 0.08)
-    edges_df = fetch_string_ppi(genes, species=species_id, score=score,
-                                      network_type=network_type,
-                                      # 手动模式固定传 "manual":命中 fetch_string_ppi 的
-                                      # label=="manual" 特判(文件名附加基因指纹),
-                                      # 与 CLI run_ppi --genes 共享同一份边表缓存
-                                      label="manual" if mode != "names" else prefix)
+    # Step 1-4: STRING 抓边 → 建图 → 拓扑指标 → MCC → hub 标记 → 核心靶点,
+    # 统一走 build_ppi_stack(与 CLI _ppi_step 共用同一份计算)。
+    # 手动模式固定传 "manual":命中 fetch_string_ppi 的 label=="manual" 特判
+    # (文件名附加基因指纹),与 CLI run_ppi --genes 共享同一份边表缓存。
+    stack = build_ppi_stack(
+        genes, score=score, label="manual" if mode != "names" else prefix,
+        hub_top_n=hub_top_n, hub_method=hub_method)
+    genes = stack["genes"]  # STRING_QUERY_LIMIT 截断后(names 模式不会截,手动模式可能截)
+    edges_df = stack["edges_df"]
+    graph = stack["graph"]
+    metrics_df = stack["metrics_df"]
+    mcc_map = stack["mcc_map"]
+    hub_rule = stack["hub_rule"]
+    hub_method_eff = stack["hub_method_eff"]
     _prog("string", "done", 0.30)
-
-    # Step 2-4: 建图 + 拓扑指标 + Hub 筛选(排名制 top-N + 小网络保护)。
-    # hub_method="mcc" 时 MCC 须在标记前算好,后面核心靶点图复用同一份结果。
     _prog("graph", "running", 0.30)
-    graph = build_ppi_graph(edges_df, genes)
-    metrics_df = compute_ppi_metrics(graph)
-    mcc_map: dict[str, float] = {}
-    if hub_method == "mcc":
-        try:
-            mcc_map = compute_mcc_scores(graph)
-        except Exception:
-            logging.exception("MCC computation failed — hub ranking falls back to degree")
-    metrics_df = mark_hub_genes(metrics_df,
-                                      top_n=hub_top_n, method=hub_method,
-                                      mcc_map=mcc_map,
-                                      small_net_factor=config.HUB_SMALL_NET_FACTOR)
     hub_df = metrics_df[metrics_df["is_hub"]]
-    hub_rule = str(metrics_df["hub_rule"].iloc[0]) if len(metrics_df) else ""
-    # MCC 排名被 mark_hub_genes 回退为 degree 时,metrics_df 不会出现 mcc 列
-    hub_method_eff = ("degree"
-                      if hub_rule.startswith("top") and hub_method == "mcc"
-                      and "mcc" not in metrics_df.columns else hub_method)
     _prog("graph", "done", 0.36)
 
     # ---- Step 4.5-5.5(数据部分):富集/GSEA/邻近度+RWR/模块检测四个互相独立的任务并发执行 ----

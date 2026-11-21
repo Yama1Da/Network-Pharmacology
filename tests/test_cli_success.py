@@ -10,6 +10,7 @@ import pandas as pd
 
 from WY import config
 from WY import cli
+from WY.core import analysis as ana
 
 
 def _prox_result(ok=True, **over):
@@ -77,8 +78,8 @@ def test_run_pair_full_skeleton(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "get_targets_concurrent",
                         lambda d, _dis, progress_cb=None: (drug_df, disease_df, []))
     edges = pd.DataFrame([{"protein_A": "TP53", "protein_B": "EGFR", "score": 900}])
-    monkeypatch.setattr(cli, "fetch_string_ppi", lambda genes, **k: edges)
-    monkeypatch.setattr(cli, "run_enrichment",
+    monkeypatch.setattr(ana, "fetch_string_ppi", lambda genes, **k: edges)
+    monkeypatch.setattr(ana, "run_enrichment",
                         lambda genes, **k: (pd.DataFrame(
                             [{"source": "KEGG", "term_name": "x", "p_value": 0.01}]),
                             "gProfiler"))
@@ -109,8 +110,8 @@ def test_run_pair_empty_intersection_skips_rest(tmp_path, monkeypatch):
     def must_not_call(*a, **k):
         raise AssertionError("downstream step ran despite empty intersection")
 
-    monkeypatch.setattr(cli, "fetch_string_ppi", must_not_call)
-    monkeypatch.setattr(cli, "run_enrichment", must_not_call)
+    monkeypatch.setattr(ana, "fetch_string_ppi", must_not_call)
+    monkeypatch.setattr(ana, "run_enrichment", must_not_call)
     summary = cli.run_pair("a", "b", str(tmp_path / "pair"))
     assert summary["ok"] is False
     assert all(summary["steps"][n]["status"] == "skipped"

@@ -23,18 +23,16 @@ import pandas as pd
 
 from WY.core import interactome
 from WY.core.caching import load_json_file, save_json_file
-from WY.core.enrichment import (TRUSTED_REASONS, enrichment_retry_hint_minutes,
-                             run_enrichment)
+from WY.core.enrichment import TRUSTED_REASONS, enrichment_retry_hint_minutes
 from WY.core.logging_setup import setup_logging
 from WY.core.network_algorithms import run_proximity_cached, run_rwr_cached
-from WY.core.ppi import (build_ppi_graph, compute_mcc_scores, compute_ppi_metrics,
-                      fetch_string_ppi, mark_hub_genes, pick_top_mcc_genes)
 from WY.core.interactome import InteractomeNotBuiltError
 from WY.core.synergy import (SORT_RULE, SynergyPrecheckError, analyze_pair,
                           archive_run, slice_targets_top_n)
 from WY.core.targets import (get_disease_targets_merged, get_drug_targets_merged,
                           get_targets_concurrent, intersect_target_symbols)
-from WY.core.analysis import expand_targets_with_rwr, pair_prefix
+from WY.core.analysis import (build_ppi_stack, expand_targets_with_rwr, pair_prefix,
+                           run_enrichment_step)
 from WY.core.text_utils import safe_name
 from WY import config
 
@@ -176,42 +174,30 @@ def _targets_step(drug: str, disease: str | None, out_dir: str,
 
 def _ppi_step(genes: list[str], out_dir: str, label: str | None) -> dict:
     """STRING PPI 网络 → 拓扑指标 → MCC 核心靶点,边表/指标表/核心靶点表落盘。
+    计算统一走 core.analysis.build_ppi_stack(与网页 run_ppi_analysis 同一份),
+    本函数只做 CSV 落盘与 CLI 状态字典。
     返回 dict(ok, detail, edges, metrics, core):ok=核心靶点可用;边表/指标表非空也会写出,
     供失败时排查(基因不被识别、无达标互作等)。"""
-    truncated = len(genes) > config.STRING_QUERY_LIMIT
-    if truncated:
-        genes = genes[:config.STRING_QUERY_LIMIT]
-    edges_df = fetch_string_ppi(
-        genes, species=config.SPECIES_MAP["Human"]["ncbi_taxon"],
-        score=config.PPI_CONFIDENCE, network_type="full", label=label)
+    stack = build_ppi_stack(genes, score=config.PPI_CONFIDENCE, label=label,
+                            hub_top_n=config.HUB_TOP_N, hub_method=config.HUB_METHOD)
+    truncated = stack["truncated"]
+    edges_df = stack["edges_df"]
     if edges_df is None or edges_df.empty:
         return {"ok": False, "truncated": truncated, "written": [], "detail":
                 "STRING returned no interactions (genes unrecognized, or nothing "
                 "above the confidence threshold)", "edges": None, "metrics": None,
                 "core": []}
+    metrics_df = stack["metrics_df"]
+    core_genes = stack["core_genes"]
     written: list[str] = []
     p = _save_csv(edges_df, os.path.join(out_dir, "ppi_edges.csv"))
     if p:
         written.append(p)
 
-    graph = build_ppi_graph(edges_df, genes)
-    metrics_df = compute_ppi_metrics(graph)
-    try:
-        mcc_map = compute_mcc_scores(graph)
-    except Exception:
-        logging.exception("MCC computation failed; core targets skipped")
-        mcc_map = {}
-    if mcc_map and "mcc" not in metrics_df.columns:
-        # hub_method 为 degree 时 mark_hub_genes 不带 mcc 列,提前补上保证指标表完整
-        metrics_df["mcc"] = metrics_df["gene"].map(mcc_map).fillna(0.0)
-    metrics_df = mark_hub_genes(
-        metrics_df, top_n=config.HUB_TOP_N, method=config.HUB_METHOD,
-        mcc_map=mcc_map, small_net_factor=config.HUB_SMALL_NET_FACTOR)
     p = _save_csv(metrics_df, os.path.join(out_dir, "ppi_metrics.csv"))
     if p:
         written.append(p)
 
-    core_genes = pick_top_mcc_genes(metrics_df, mcc_map, config.MCC_TOP_N)
     if core_genes:
         # 核心靶点按 MCC 排名顺序输出完整指标行
         rank = {g: i for i, g in enumerate(core_genes)}
@@ -239,13 +225,11 @@ def _enrichment_step(genes: list[str], out_dir: str, label: str | None,
                      organism: str | None = None, pvalue: float | None = None,
                      sources: tuple | None = None) -> dict:
     """GO/KEGG 富集(g:Profiler 主 + Enrichr 自动降级),结果表落盘。
+    计算统一走 core.analysis.run_enrichment_step(与网页 run_enrichment_task 同一份)。
     状态语义必须区分:no_significant=两源都成功但真无显著项(正常,不算失败);
     both_sources_down / gprofiler_down_no_fallback=服务不可用,结果不可信需冷却后重跑。"""
-    status: dict = {}
-    df, provider = run_enrichment(
-        genes, organism=organism or config.SPECIES_MAP["Human"]["gprofiler"],
-        pvalue=pvalue if pvalue is not None else config.ENRICHMENT_PVALUE,
-        sources=sources, label=label, status=status)
+    df, provider, reason = run_enrichment_step(
+        genes, organism=organism, pvalue=pvalue, sources=sources, label=label)
     if df is not None and not df.empty:
         path = _save_csv(df, os.path.join(out_dir, "enrichment.csv"))
         if path:
@@ -254,7 +238,6 @@ def _enrichment_step(genes: list[str], out_dir: str, label: str | None,
         return {"ok": False, "status": "failed", "reason": "write_locked", "path": None,
                 "detail": f"{len(df)} significant terms computed via {provider}, but "
                           "enrichment.csv could NOT be written (file locked)"}
-    reason = status.get("reason", "")
     if reason in TRUSTED_REASONS:
         return {"ok": True, "status": "ok", "reason": reason,
                 "detail": "no significant terms (both sources succeeded)"}
