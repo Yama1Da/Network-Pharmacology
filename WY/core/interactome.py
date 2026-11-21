@@ -613,17 +613,6 @@ def load_interactome(species: str = "Human") -> "nx.Graph":
     return _load_graph_cached(meta["files"]["edges"])
 
 
-@functools.lru_cache(maxsize=4)
-def _load_degrees_cached(degrees_filename: str) -> pd.DataFrame:
-    return pd.read_csv(os.path.join(_cache_dir(), degrees_filename))
-
-
-def load_degree_table(species: str = "Human") -> pd.DataFrame:
-    """加载各基因的连接数(度)表,供随机对照使用;自动复用缓存。"""
-    meta = require_meta(species)
-    return _load_degrees_cached(meta["files"]["degrees"])
-
-
 def interactome_age_days(species: str = "Human") -> int | None:
     """背景网络构建至今的天数;未构建返回 None。"""
     from WY import config
@@ -652,7 +641,6 @@ def is_stale(species: str = "Human", days: int | None = None) -> bool:
 def clear_runtime_caches() -> None:
     """清空内存中的加载缓存,重建背景网络后调用。"""
     _load_graph_cached.cache_clear()
-    _load_degrees_cached.cache_clear()
     # 邻近度/RWR 的 LCC 上下文缓存也依赖背景网络:不清的话同进程重建后
     # 仍会用旧图算零分布。缓存仅 _lcc_context_cached 一层(按物种+置信度+版本
     # 键控),外层 _lcc_context 刻意不缓存——包了的话此处清不到,重建/切版本

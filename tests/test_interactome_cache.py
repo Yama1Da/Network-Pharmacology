@@ -58,8 +58,8 @@ def test_require_meta_raises_when_missing(tmp_path, monkeypatch):
     assert meta["species"] == "Human" and meta["confidence"] == 700
 
 
-def test_load_interactome_and_degrees(tmp_path, monkeypatch):
-    """加载:图按边表构建(只读冻结)、度表列齐全;路径走 _load_graph_cached。"""
+def test_load_interactome_frozen(tmp_path, monkeypatch):
+    """加载:图按边表构建且只读冻结;路径走 _load_graph_cached。"""
     monkeypatch.setattr(config, "INTERACTOME_CONFIDENCE", 700)
     monkeypatch.setattr(config, "STRING_VERSION", "v12.0")
     _write_meta()
@@ -67,8 +67,6 @@ def test_load_interactome_and_degrees(tmp_path, monkeypatch):
     assert g.number_of_nodes() == 3 and g.number_of_edges() == 2
     import networkx as nx
     assert nx.is_frozen(g), "背景网络必须只读,防后续计算误改"
-    deg = itx.load_degree_table()
-    assert list(deg.columns) == ["gene", "degree"] and len(deg) == 3
 
 
 def test_interactome_age_and_stale(tmp_path, monkeypatch):

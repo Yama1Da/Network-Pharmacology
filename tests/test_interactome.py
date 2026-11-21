@@ -196,7 +196,7 @@ def test_interactome_segment_resume(monkeypatch, tmp_path):
 
 @pytest.mark.real_interactome
 def test_interactome_load_or_skip():
-    """互作组未构建时跳过;已构建时正常加载并校验度表。
+    """互作组未构建时跳过;已构建时正常加载。
 
     默认跳过(conftest 沙箱把缓存目录指到空临时目录);设
     NPAP_TEST_REAL_INTERACTOME=1 且本机已构建互作组时才真正运行。"""
@@ -204,8 +204,6 @@ def test_interactome_load_or_skip():
         pytest.skip("Human 背景互作组未构建")
     graph = itx.load_interactome("Human")
     assert graph.number_of_nodes() >= 10000, f"human interactome too small: {graph.number_of_nodes()}"
-    deg = itx.load_degree_table("Human")
-    assert set(deg.columns) == {"gene", "degree"} and len(deg) == graph.number_of_nodes()
 
 
 @pytest.mark.real_interactome

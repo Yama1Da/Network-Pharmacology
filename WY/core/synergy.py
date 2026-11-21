@@ -341,19 +341,11 @@ def delete_runs(names: list[str]) -> dict:
 
 
 def zip_runs(names: list[str]) -> bytes:
-    """把勾选的运行目录打包成 ZIP 字节流(批量下载);越权名抛 ValueError 上抛转 400。"""
-    import io
-    import zipfile
+    """把勾选的运行目录打包成 ZIP 字节流(批量下载);越权名抛 ValueError 上抛转 400。
+    打包统一走 files.make_dirs_zip(与 ML 结果打包同一通道),zip 内以运行名为一层文件夹。"""
+    from .files import make_dirs_zip
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for n in names:
-            root = resolve_run(n)
-            for base, _dirs, files in os.walk(root):
-                for f in files:
-                    full = os.path.join(base, f)
-                    zf.write(full, os.path.join(n, os.path.relpath(full, root)))
-    return buf.getvalue()
+    return make_dirs_zip({n: resolve_run(n) for n in names})
 
 
 def analyze_pair(
