@@ -10,7 +10,8 @@ export function normalizeLang(v: unknown): Lang {
   return v === 'en' ? 'en' : 'zh'
 }
 
-export function storedLang(): Lang {
+/** 启动时的语言恢复(模块内部使用:createI18n 初始 locale)。 */
+function storedLang(): Lang {
   try {
     const raw = window.localStorage.getItem(LS_KEY)
     return raw == null ? 'zh' : normalizeLang(raw)
@@ -19,7 +20,8 @@ export function storedLang(): Lang {
   }
 }
 
-export function persistLang(lang: Lang): void {
+/** 语言偏好本地镜像写入(模块内部使用:setLang)。 */
+function persistLang(lang: Lang): void {
   try {
     window.localStorage.setItem(LS_KEY, lang)
   } catch {

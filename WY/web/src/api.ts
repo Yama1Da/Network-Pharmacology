@@ -7,7 +7,7 @@ export interface LogFile {
   is_current: boolean
 }
 
-export interface LogContent {
+interface LogContent {
   name: string
   content: string
   truncated: boolean
@@ -31,13 +31,13 @@ export interface CollectionItem {
   gsea?: boolean
 }
 
-export interface CollectionListing {
+interface CollectionListing {
   kind: CollectionKind
   mode: 'files' | 'dirs'
   items: CollectionItem[]
 }
 
-export interface DeleteResult {
+interface DeleteResult {
   deleted: number
   failed: string[]
 }
@@ -55,7 +55,7 @@ export interface JobState {
 export type Row = Record<string, unknown>
 
 /** 在途任务状态(/api/{ml,ppi,synergy}/job 的公共形态):重进页面恢复进度用。 */
-export interface InFlightJob {
+interface InFlightJob {
   running: boolean
   job_id?: string
   status?: string
@@ -63,7 +63,7 @@ export interface InFlightJob {
 }
 
 /** 网络邻近度检验的落网覆盖(LCC 内命中数 / 集合总数)。 */
-export interface ProximityCoverage {
+interface ProximityCoverage {
   drug_in_lcc?: number
   drug_total?: number
   disease_in_lcc?: number
@@ -100,7 +100,7 @@ export interface RwrRow {
 }
 
 /** RWR 度匹配校正的富集检验;零分布退化(degenerate)时 z / p 为 null。 */
-export interface RwrEnrichment {
+interface RwrEnrichment {
   n_annotated: number
   obs_mean: number
   null_mean?: number | null
@@ -111,7 +111,7 @@ export interface RwrEnrichment {
 }
 
 /** 单侧 RWR 结果(疾病种子 / 药物种子;not_built 哨兵只含部分字段)。 */
-export interface RwrSideResult {
+interface RwrSideResult {
   ok: boolean
   error: string | null
   alpha?: number
@@ -202,7 +202,7 @@ export interface PkMirrorStatus {
 /* ---- GEO 表达谱 + ML(阶段 3c)共享类型:字段与 core 一一对应 ---- */
 
 /** 数据集可用性判定(core.expression.assess_expression_dataset)。 */
-export interface MlAssess {
+interface MlAssess {
   matrix_empty: boolean
   symbol_level: boolean | null
   shape?: [number, number] | null
@@ -236,12 +236,12 @@ export interface MlProbeBatchItem {
 
 /** 分组选择器字段(总览 job 的 group_picker 载荷):取值含整行命中数 n
  * (与 assign_groups 同口径),overlaps 为子串包含型重叠对(应标红禁选)。 */
-export interface MlGroupValue {
+interface MlGroupValue {
   value: string
   n: number
 }
 
-export interface MlGroupField {
+interface MlGroupField {
   name: string
   label: string
   values: MlGroupValue[]
@@ -250,19 +250,19 @@ export interface MlGroupField {
   suggest_control?: string | null
 }
 
-export interface MlGroupPicker {
+interface MlGroupPicker {
   fields: MlGroupField[]
 }
 
 /** counts 模式分组选择器(发动机不同的原因见 core.expression.counts_picker_fields):
  * 正则匹配对象是 counts 列名 → 建议物是「取值对应列组的最长公共前缀」而非取值本身。 */
-export interface MlCountsGroup {
+interface MlCountsGroup {
   value: string
   columns: string[]
   suggest: string
 }
 
-export interface MlCountsField {
+interface MlCountsField {
   name: string
   label: string
   groups: MlCountsGroup[]
@@ -270,7 +270,7 @@ export interface MlCountsField {
   suggest_control?: string | null
 }
 
-export interface MlCountsPicker {
+interface MlCountsPicker {
   fields: MlCountsField[]
 }
 
@@ -317,7 +317,7 @@ export interface MlRunResult {
 }
 
 /** run 陈旧原因(core.ml_pipeline.stale_reasons)。 */
-export interface MlStaleReason {
+interface MlStaleReason {
   type: string
   old?: string | null
   new?: string | null
@@ -395,7 +395,7 @@ export interface SettingsSnapshot {
 
 /* ---- 分离度协同预测(二期,契约 synergy.v1.1) ---- */
 
-export interface SynergyRunParams {
+interface SynergyRunParams {
   top_n: number | null
   sort: string | null
   proximity_n_perm: number | null
@@ -454,7 +454,7 @@ export interface SynergyRunRow {
   computed_at: string
 }
 
-export interface SynergyAnalyzeBody {
+interface SynergyAnalyzeBody {
   drug_a: string
   drug_b: string
   disease?: string
@@ -464,7 +464,7 @@ export interface SynergyAnalyzeBody {
 
 /* ---- 数据迁移(设置页:结果导出 / 两段式导入) ---- */
 
-export type TransferScope = 'ppi' | 'synergy' | 'star' | 'geo' | 'ui_settings'
+type TransferScope = 'ppi' | 'synergy' | 'star' | 'geo' | 'ui_settings'
 
 /** 导入预览的单条目(kind 为目录类范围时含文件数/体积/冲突标记;'analysis' 为旧版包遗留 kind)。 */
 export interface TransferItemReport {
@@ -486,13 +486,13 @@ export interface TransferImportReport {
 }
 
 /** commit 的落盘报告;失败项留在会话里可调整决策重试。 */
-export interface TransferCommitReport {
+interface TransferCommitReport {
   applied: { kind: string; name: string; keys?: string[] }[]
   skipped: { kind: string; name: string }[]
   failed: { kind: string; name: string; reason: string }[]
 }
 
-export interface TransferDecisionBody {
+interface TransferDecisionBody {
   kind: string
   name: string
   action: 'overwrite' | 'skip' | 'rename'
