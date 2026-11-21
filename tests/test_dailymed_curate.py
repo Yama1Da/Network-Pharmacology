@@ -54,7 +54,7 @@ def test_prefill_builds_review_queue(tmp_path, fake_http, spl_xml_factory, monke
 
     setid = "07b4ee2a-8435-4d38-a6b0-b919e3424153"
 
-    def fake_ot_post(query, variables, *, cache_dir, offline=False):
+    def fake_ot_post(query, _variables, *, cache_dir, offline=False):
         if "search" in query:
             return {"search": {"hits": [
                 {"id": "CHEMBL1431", "name": "metformin", "entity": "drug"}]}}
@@ -123,7 +123,7 @@ def test_review_confirm_and_pending(tmp_path, monkeypatch):
         {"drug": "metformin", "ot_moa_prefill": ""},
     ])
     answers = iter(["y", "t"])
-    monkeypatch.setattr(builtins, "input", lambda prompt="": next(answers))
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": next(answers))
     args = SimpleNamespace(csv=str(csv_path), curator="tester")
     assert dc.review(args) == 0
     rows = {row["drug"]: row for row in _read_csv(str(csv_path))}
@@ -139,7 +139,7 @@ def test_review_quit_keeps_progress(tmp_path, monkeypatch):
     _write_csv(str(csv_path), [{"drug": "a", "ot_moa_prefill": "X"},
                                {"drug": "b", "ot_moa_prefill": "Y"}])
     answers = iter(["y", "q"])
-    monkeypatch.setattr(builtins, "input", lambda prompt="": next(answers))
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": next(answers))
     assert dc.review(SimpleNamespace(csv=str(csv_path), curator="t")) == 0
     rows = _read_csv(str(csv_path))
     assert rows[0]["decision"] == "y" and rows[1]["decision"] == ""

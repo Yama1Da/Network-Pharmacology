@@ -36,7 +36,7 @@ def test_resolve_cid_not_found_vs_unavailable(monkeypatch):
     monkeypatch.setattr(config, "PUBCHEM_BUSY_BACKOFF", 0)
 
     monkeypatch.setattr(pubchempy, "get_compounds",
-                        lambda q, ns: (_ for _ in ()).throw(
+                        lambda _q, _ns: (_ for _ in ()).throw(
                             pubchempy.NotFoundError(404, "not found", [])))
     assert dock.resolve_cid("不存在的药") is None
 
@@ -45,7 +45,7 @@ def test_resolve_cid_not_found_vs_unavailable(monkeypatch):
             super().__init__(503, "Server Busy", [])
 
     monkeypatch.setattr(pubchempy, "get_compounds",
-                        lambda q, ns: (_ for _ in ()).throw(BusyErr()))
+                        lambda _q, _ns: (_ for _ in ()).throw(BusyErr()))
     with pytest.raises(dock.PubChemUnavailable, match="503"):
         dock.resolve_cid("metformin")
 
@@ -54,7 +54,7 @@ def test_resolve_cid_success(monkeypatch):
     """正常解析:返回首个化合物的 CID。"""
     import pubchempy
     monkeypatch.setattr(pubchempy, "get_compounds",
-                        lambda q, ns: [type("C", (), {"cid": 4091})()])
+                        lambda _q, _ns: [type("C", (), {"cid": 4091})()])
     assert dock.resolve_cid("metformin") == 4091
 
 

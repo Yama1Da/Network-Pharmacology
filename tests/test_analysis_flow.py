@@ -29,17 +29,17 @@ def stubbed_core(monkeypatch):
     edges = pd.DataFrame([{"protein_A": "TP53", "protein_B": "EGFR", "score": 900}])
     monkeypatch.setattr(ana, "fetch_string_ppi", lambda genes, **k: edges)
     monkeypatch.setattr(ana, "run_enrichment_task",
-                        lambda genes, organism, prefix: (
+                        lambda genes, _organism, prefix: (
                             pd.DataFrame([{"source": "KEGG", "term_name": "x"}]),
                             "gProfiler", "success"))
     monkeypatch.setattr(ana, "run_modules_task",
-                        lambda graph, organism, prefix: {"modules": []})
+                        lambda graph, _organism, prefix: {"modules": []})
     monkeypatch.setattr(ana, "render_enrichment_plots", lambda df: (None, None))
     monkeypatch.setattr(ana, "render_drug_target_pathway_plot", lambda *a, **k: None)
     hub_df = pd.DataFrame({"gene": ["TP53", "EGFR"], "is_hub": [True, False],
                            "hub_rule": ["top10", "top10"]})
     monkeypatch.setattr(ana, "build_main_figures",
-                        lambda graph, metrics_df, edges_df, hub_method, mcc_map:
+                        lambda graph, _metrics_df, _edges_df, _hub_method, mcc_map:
                         ("<html/>", None, {}, hub_df, None, ["TP53"], None, None))
     saved_marker = {"called": 0}
 

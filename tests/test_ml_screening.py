@@ -105,7 +105,7 @@ def test_bootstrap_denominator(monkeypatch):
     X, y, genes, _ = _make_synthetic(n_ctrl=6, n_case=6, n_genes=30, seed=1)
     calls = {"n": 0}
 
-    def fake_select(Xr, yr, seed, boruta_iter=5):
+    def fake_select(Xr, _yr, seed, boruta_iter=5):
         calls["n"] += 1
         if calls["n"] <= 2:
             raise RuntimeError("模拟选择器失败")
@@ -210,7 +210,7 @@ def test_cv_fold_audit(monkeypatch):
 
     calls = {"n": 0}
 
-    def fail_from_second(Xr, yr, seed, boruta_iter=None):
+    def fail_from_second(Xr, _yr, seed, boruta_iter=None):
         calls["n"] += 1
         if calls["n"] >= 2:
             raise RuntimeError("模拟选择器失败")
@@ -236,7 +236,7 @@ def test_select_fn_hook():
     X, y, genes, planted = _make_synthetic(n_ctrl=6, n_case=6, n_genes=40, seed=42)
 
     def _pick(idx):
-        return lambda Xtr, ytr, s, k: [genes[i] for i in idx][:k]
+        return lambda _Xtr, _ytr, _s, k: [genes[i] for i in idx][:k]
 
     auc_planted = ml.crossval_roc(X, y, seed=0, repeats=1,
                                   select_fn=_pick(range(10)))[0]

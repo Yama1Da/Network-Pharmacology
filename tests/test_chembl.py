@@ -44,7 +44,7 @@ def test_find_chembl_id_exact_then_fuzzy(monkeypatch):
     assert chembl._find_chembl_id("metformin") == "CHEMBL1431"
     assert len(calls) == 2  # 先精确后模糊
 
-    monkeypatch.setattr(chembl, "_chembl_get", lambda p, q, l: {"molecules": []})
+    monkeypatch.setattr(chembl, "_chembl_get", lambda p, q, _label: {"molecules": []})
     assert chembl._find_chembl_id("不存在的药") is None
 
 

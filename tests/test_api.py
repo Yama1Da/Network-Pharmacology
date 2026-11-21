@@ -514,7 +514,7 @@ def test_settings_ui_blacklist_normalizes_and_restores(client):
 
 def test_settings_api_env_stubbed(client, monkeypatch):
     """save_api_env 会写真实 WY/API.env(BASE_DIR 不在沙箱),冒烟打桩验证 HTTP 形态。"""
-    monkeypatch.setattr("WY.api.settings.save_api_env", lambda changes: ["NCBI_API_KEY"])
+    monkeypatch.setattr("WY.api.settings.save_api_env", lambda _changes: ["NCBI_API_KEY"])
     r = client.post("/api/settings/api-env",
                     json={"changes": {"NCBI_API_KEY": "x"}})
     assert r.status_code == 200 and r.json() == {"applied": ["NCBI_API_KEY"]}
@@ -844,7 +844,7 @@ def test_docking_ligand_stale_discard(client, sid, monkeypatch):
                 json={"mode": "manual", "manual_genes": "TP53"})
     assert docking_session.get(sid).get("source_mode") == "manual"
 
-    def slow_smiles(smiles, path):
+    def slow_smiles(_smiles, path):
         time.sleep(2)
         return path
 
@@ -1035,7 +1035,7 @@ def test_docking_upload_state_cleared_on_gene_switch(client, sid, monkeypatch):
     _upload_session(client, sid)
     monkeypatch.setattr(docking, "prepare_receptor_pdbqt", lambda p: "fake.pdbqt")
     monkeypatch.setattr(api_docking, "_pdb_candidates_cached",
-                        lambda gene, allow_af: pd.DataFrame())
+                        lambda gene, _allow_af: pd.DataFrame())
 
     r = client.post(f"/api/docking/{sid}/receptor/upload",
                     params={"gene": "TP53", "name": "m.pdb"},
@@ -1087,7 +1087,7 @@ def test_docking_candidates_gene_set_before_fetch(client, sid, monkeypatch):
     dock = _upload_session(client, sid)
     dock["rec_pdbqt"] = "old_gene_receptor.pdbqt"  # 旧基因残留受体
 
-    def boom(gene, allow_af):
+    def boom(gene, _allow_af):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(api_docking, "_pdb_candidates_cached", boom)
@@ -1208,7 +1208,7 @@ def test_ml_overview_counts_picker(client, monkeypatch):
                         ["D5_20_1", "D5_20_2", "D5_20_3",
                          "D5_CTL_1", "D5_CTL_2", "D5_CTL_3", "gene_Dbxref"]})
     monkeypatch.setattr("WY.core.geo.fetch_gse_count_matrix",
-                        lambda gse, prefer=None: {"counts": cnt})
+                        lambda gse, _prefer=None: {"counts": cnt})
     r = client.post("/api/ml/overview", json={"gse": "gsex"})
     job = _wait_job(client, r.json()["job_id"])
     assert job["status"] == "done"
@@ -1680,7 +1680,7 @@ def test_results_layout_migration(client, monkeypatch, tmp_path):
 
 def test_downloads_listing_walks_ppi_and_excludes_synergy(client):
     """分析产物目录清单:走进 ppi-results/ 按 run 列出(带类别前缀);
-    synergy-results 整类排除(协同分析结果页专管);GEOresult 顶层项保留。"""
+    synergy-results/GEOresult 整类排除(协同分析/ML 结果页专管,2026-11-18 聚合口径)。"""
     from WY.core.files import list_download_dirs
 
     dl = config.DOWNLOADS_DIR
@@ -1689,7 +1689,7 @@ def test_downloads_listing_walks_ppi_and_excludes_synergy(client):
     os.makedirs(os.path.join(dl, "GEOresult"), exist_ok=True)
     names = set(list_download_dirs()["Directory"].tolist())
     assert "ppi-results/pairB_data" in names
-    assert "GEOresult" in names
+    assert "GEOresult" not in names
     assert not any(n.startswith("synergy-results") for n in names)
 
 

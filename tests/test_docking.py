@@ -64,7 +64,7 @@ def test_uniprot_negative_cache(monkeypatch):
     """数据库里查无此基因时记入缓存,第二次查询不再重复发请求。"""
     calls = {"n": 0}
 
-    def fake_ebi(gene, taxon):
+    def fake_ebi(_gene, _taxon):
         calls["n"] += 1
         return ""  # 确定性"查无"
 
@@ -76,7 +76,7 @@ def test_uniprot_negative_cache(monkeypatch):
 
 def test_uniprot_network_failure_not_cached(monkeypatch):
     """网络全部失败时应当报错且不写缓存,避免把临时故障当成"查无此基因"。"""
-    def boom(gene, taxon):
+    def boom(_gene, _taxon):
         raise ConnectionError("simulated network outage")
 
     monkeypatch.setattr(dock, "_lookup_uniprot_ebi", boom)
@@ -108,8 +108,8 @@ def test_candidates_af_fallback_row(monkeypatch):
     """实验结构查不到且允许 AlphaFold 时,追加预测结构作候选;关闭时不追加。"""
     # 单基因入口是批量版的薄包装,检索统一走 _rcsb_search_entry_ids(带 HTTP 缓存会话),
     # 打桩层级在检索函数而不是 requests.post
-    monkeypatch.setattr(dock, "fetch_uniprot_accession", lambda gene, taxon=9606: "P99999")
-    monkeypatch.setattr(dock, "_rcsb_search_entry_ids", lambda gene, max_hits: [])
+    monkeypatch.setattr(dock, "fetch_uniprot_accession", lambda _gene, taxon=9606: "P99999")
+    monkeypatch.setattr(dock, "_rcsb_search_entry_ids", lambda _gene, _max_hits: [])
     df = dock.fetch_receptor_pdb_candidates("FAKEGENE", allow_alphafold=True)
     assert len(df) == 1 and df.iloc[0]["pdb_id"] == "AFDB:P99999", df
     assert df.iloc[0]["source"] == "alphafold"
@@ -119,7 +119,7 @@ def test_candidates_af_fallback_row(monkeypatch):
 
 def test_candidates_search_failure_friendly_error(monkeypatch):
     """检索服务不可达时,单基因入口抛出普通用户可读的中文错误(而不是静默按无结构处理)。"""
-    def _boom(gene, max_hits):
+    def _boom(_gene, _max_hits):
         raise requests.exceptions.ConnectionError("simulated outage")
 
     monkeypatch.setattr(dock, "_rcsb_search_entry_ids", _boom)
@@ -148,7 +148,7 @@ def test_receptor_composition_flag(monkeypatch):
     assert f(None, 2, 0) == "has_nucleic"    # 蛋白数未知但确含核酸:保守警示
     # 组装链:批量结果表的 flag 列由元数据计数生成
     monkeypatch.setattr(dock, "_rcsb_search_entry_ids",
-                        lambda gene, max_hits: ["2MMQ", "2WXW"])
+                        lambda _gene, _max_hits: ["2MMQ", "2WXW"])
     monkeypatch.setattr(dock, "_rcsb_graphql_entries", lambda ids: {
         "2MMQ": {"resolution": None, "method": "SOLUTION NMR", "title": "AGT FAPY duplex",
                  "n_protein": 0, "n_dna": 2, "n_rna": 0},

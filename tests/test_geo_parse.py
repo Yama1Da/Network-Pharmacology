@@ -99,7 +99,7 @@ def test_download_success_returns_true(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "GEO_DOWNLOAD_RETRIES", 1)
     monkeypatch.setattr(config, "GEO_DOWNLOAD_RETRY_DELAY", 0)
 
-    def fake_pass(url, dest, cfg):
+    def fake_pass(url, dest, _cfg):
         _write_gz(dest, "fresh data")
 
     monkeypatch.setattr(geo, "_download_one_pass", fake_pass)
@@ -113,7 +113,7 @@ def test_download_exhausts_raises_with_options(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "GEO_DOWNLOAD_RETRIES", 1)
     monkeypatch.setattr(config, "GEO_DOWNLOAD_RETRY_DELAY", 0)
     monkeypatch.setattr(geo, "_download_one_pass",
-                        lambda url, dest, cfg: (_ for _ in ()).throw(
+                        lambda url, dest, _cfg: (_ for _ in ()).throw(
                             ConnectionError("down")))
     dest = str(tmp_path / "x.txt.gz")
     with pytest.raises(RuntimeError, match="可选出路"):
@@ -125,7 +125,7 @@ def test_download_degrades_to_old_cache_returns_false(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "GEO_DOWNLOAD_RETRIES", 1)
     monkeypatch.setattr(config, "GEO_DOWNLOAD_RETRY_DELAY", 0)
     monkeypatch.setattr(geo, "_download_one_pass",
-                        lambda url, dest, cfg: (_ for _ in ()).throw(
+                        lambda url, dest, _cfg: (_ for _ in ()).throw(
                             ConnectionError("down")))
     dest = _write_gz(str(tmp_path / "cached.txt.gz"), "old but good")
     assert geo.download_geo_file("https://x/y.gz", dest) is False

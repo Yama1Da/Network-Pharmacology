@@ -418,13 +418,13 @@ def test_import_normalizes_mid_extract_failures(tmp_path, monkeypatch):
     transfer.build_export_bundle(("ppi",), zip_path)
 
     monkeypatch.setattr(transfer, "_copy_capped",
-                        lambda src, dst, cap: (_ for _ in ()).throw(
+                        lambda src, dst, _cap: (_ for _ in ()).throw(
                             zipfile.BadZipFile("Bad CRC-32 for file 'x.csv'")))
     with pytest.raises(TransferError):
         transfer.analyze_bundle(zip_path, str(tmp_path / "s1"))
 
     monkeypatch.setattr(transfer, "_copy_capped",
-                        lambda src, dst, cap: (_ for _ in ()).throw(
+                        lambda src, dst, _cap: (_ for _ in ()).throw(
                             OSError("[WinError 206] 文件名或扩展名太长")))
     with pytest.raises(TransferError):
         transfer.analyze_bundle(zip_path, str(tmp_path / "s2"))

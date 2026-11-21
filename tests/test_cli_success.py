@@ -37,7 +37,7 @@ def test_proximity_command_success(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "get_drug_targets_merged", lambda drug: drug_df)
     monkeypatch.setattr(cli, "get_disease_targets_merged", lambda disease: disease_df)
     monkeypatch.setattr(cli, "run_proximity_cached",
-                        lambda drug_syms, disease_syms, label=None: _prox_result())
+                        lambda _drug_syms, _disease_syms, label=None: _prox_result())
     rc = cli.main(["proximity", "--drug", "metformin", "--disease", "T2D",
                    "--out", str(tmp_path)])
     assert rc == 0
@@ -49,7 +49,7 @@ def test_rwr_command_success(tmp_path, monkeypatch):
     """npap rwr 全绿:种子排序表落盘(gene,score,is_seed),退出码 0。"""
     monkeypatch.setattr(cli.interactome, "is_built", lambda *a, **k: True)
     monkeypatch.setattr(cli, "run_rwr_cached",
-                        lambda seeds, label=None, annotate=None: _rwr_result())
+                        lambda _seeds, label=None, annotate=None: _rwr_result())
     rc = cli.main(["rwr", "--seeds", "TP53,EGFR", "--out", str(tmp_path)])
     assert rc == 0
     out = pd.read_csv(tmp_path / "rwr.csv")
@@ -75,7 +75,7 @@ def test_run_pair_full_skeleton(tmp_path, monkeypatch):
     drug_df = pd.DataFrame({"approvedSymbol": ["TP53", "EGFR"]})
     disease_df = pd.DataFrame({"approvedSymbol": ["TP53", "BRCA1"]})
     monkeypatch.setattr(cli, "get_targets_concurrent",
-                        lambda d, dis, progress_cb=None: (drug_df, disease_df, []))
+                        lambda d, _dis, progress_cb=None: (drug_df, disease_df, []))
     edges = pd.DataFrame([{"protein_A": "TP53", "protein_B": "EGFR", "score": 900}])
     monkeypatch.setattr(cli, "fetch_string_ppi", lambda genes, **k: edges)
     monkeypatch.setattr(cli, "run_enrichment",
@@ -84,9 +84,9 @@ def test_run_pair_full_skeleton(tmp_path, monkeypatch):
                             "gProfiler"))
     monkeypatch.setattr(cli.interactome, "is_built", lambda *a, **k: True)
     monkeypatch.setattr(cli, "run_proximity_cached",
-                        lambda drug_syms, disease_syms, label=None: _prox_result())
+                        lambda _drug_syms, _disease_syms, label=None: _prox_result())
     monkeypatch.setattr(cli, "run_rwr_cached",
-                        lambda seeds, label=None, annotate=None: _rwr_result())
+                        lambda _seeds, label=None, annotate=None: _rwr_result())
     monkeypatch.setattr(config, "RWR_EXPAND_TOP_N", 0)
     out_dir = str(tmp_path / "pair")
     summary = cli.run_pair("metformin", "T2D", out_dir)
@@ -102,7 +102,7 @@ def test_run_pair_empty_intersection_skips_rest(tmp_path, monkeypatch):
     """交集为空:ppi/enrichment/proximity/rwr 标记 skipped,summary.ok 为 False,
     不发任何后续请求。"""
     monkeypatch.setattr(cli, "get_targets_concurrent",
-                        lambda d, dis, progress_cb=None: (
+                        lambda d, _dis, progress_cb=None: (
                             pd.DataFrame(), pd.DataFrame(), []))
     monkeypatch.setattr(config, "RWR_EXPAND_TOP_N", 0)
 

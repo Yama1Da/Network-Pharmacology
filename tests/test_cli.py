@@ -109,13 +109,13 @@ def test_targets_with_disease(tmp_path, monkeypatch):
     drug_df = pd.DataFrame({"approvedSymbol": ["TP53"]})
     disease_df = pd.DataFrame({"approvedSymbol": ["EGFR"]})
     monkeypatch.setattr(cli, "get_targets_concurrent",
-                        lambda d, dis, progress_cb=None: (drug_df, disease_df, []))
+                        lambda d, _dis, progress_cb=None: (drug_df, disease_df, []))
     rc = cli.main(["targets", "--drug", "d1", "--disease", "d2", "--out", str(tmp_path)])
     assert rc == 0
     assert (tmp_path / "drug_targets.csv").exists()
     assert (tmp_path / "disease_targets.csv").exists()
     monkeypatch.setattr(cli, "get_targets_concurrent",
-                        lambda d, dis, progress_cb=None: (drug_df, disease_df, ["dgidb"]))
+                        lambda d, _dis, progress_cb=None: (drug_df, disease_df, ["dgidb"]))
     rc2 = cli.main(["targets", "--drug", "d1", "--disease", "d2", "--out",
                     str(tmp_path / "again")])
     assert rc2 == 1
@@ -129,7 +129,7 @@ def _stub_ppi_chain(monkeypatch, edges):
     monkeypatch.setattr(cli, "fetch_string_ppi", lambda genes, **k: edges)
     import networkx as nx
 
-    def fake_build(edges_df, genes):
+    def fake_build(_edges_df, genes):
         g = nx.Graph()
         g.add_edges_from([("A", "B"), ("B", "C")])
         return g
@@ -366,7 +366,7 @@ def _stub_synergy_chain(monkeypatch, contract_fn=_fake_synergy_contract,
         calls["analyze"].append({"a": a_genes_, "b": b_genes_, "d": d_genes_, **kw})
         return contract_fn(a_genes_, b_genes_, d_genes_, **kw)
 
-    def fake_archive(contract, drug_a, drug_b):
+    def fake_archive(_contract, drug_a, drug_b):
         calls["archive"].append((drug_a, drug_b))
         return archived
 

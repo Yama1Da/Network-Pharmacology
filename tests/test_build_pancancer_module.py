@@ -15,7 +15,7 @@ from WY.tools import build_pancancer_module as bpm
 
 def _patch_sources(monkeypatch, ot_symbols, tsv):
     monkeypatch.setattr(bpm, "fetch_ot_targets",
-                        lambda disease_id=bpm.OT_DISEASE_ID: (list(ot_symbols), "cancer"))
+                        lambda _disease_id=bpm.OT_DISEASE_ID: (list(ot_symbols), "cancer"))
     monkeypatch.setattr(bpm, "download_cancermine",
                         lambda url=None: (tsv, "stub://cancermine"))
 
@@ -58,7 +58,7 @@ def test_snapshot_is_preferred_and_avoids_network(tmp_path, monkeypatch):
                         {"gene": "PIK3CA", "roles": "oncogene", "citations": 9}],
                        source="unit-test", min_citations=2)
     monkeypatch.setattr(bpm, "fetch_ot_targets",
-                        lambda disease_id=bpm.OT_DISEASE_ID: (["BRAF"], "cancer"))
+                        lambda _disease_id=bpm.OT_DISEASE_ID: (["BRAF"], "cancer"))
 
     def _no_download(url=None):
         raise AssertionError("有快照时不应联网")
@@ -77,7 +77,7 @@ def test_cancermine_file_wins_and_writes_snapshot(tmp_path, monkeypatch,
         ("PIK3CA", "oncogene", 9)]), encoding="utf-8")
     snap = tmp_path / "snap.csv"
     monkeypatch.setattr(bpm, "fetch_ot_targets",
-                        lambda disease_id=bpm.OT_DISEASE_ID: (["BRAF"], "cancer"))
+                        lambda _disease_id=bpm.OT_DISEASE_ID: (["BRAF"], "cancer"))
 
     meta = bpm.build(force=True, out=str(tmp_path), snapshot_path=str(snap),
                      cancermine_file=str(tsv_path), update_snapshot=True)
@@ -182,7 +182,7 @@ def test_ot_empty_fetch_raises_and_skips_cache(tmp_path, monkeypatch):
     且不写缓存——空缓存落盘会让后续重建复用空臂（单臂降级无感知）。"""
     snap = tmp_path / "snap.csv"
     monkeypatch.setattr(bpm, "fetch_ot_targets",
-                        lambda disease_id=bpm.OT_DISEASE_ID: ([], "cancer"))
+                        lambda _disease_id=bpm.OT_DISEASE_ID: ([], "cancer"))
 
     def _no_download(url=None):
         raise AssertionError("OT 空结果应先抛错，不该走到 CancerMine")
@@ -213,7 +213,7 @@ def test_acceptance_gate_rejects_missing_arm(tmp_path, monkeypatch, cancermine_f
     tsv = tmp_path / "filtered.tsv"
     tsv.write_text(cancermine_factory([("FAKE", "biomarker", 99)]), encoding="utf-8")
     monkeypatch.setattr(bpm, "fetch_ot_targets",
-                        lambda disease_id=bpm.OT_DISEASE_ID: (["BRAF"], "cancer"))
+                        lambda _disease_id=bpm.OT_DISEASE_ID: (["BRAF"], "cancer"))
     with pytest.raises(bpm.PancancerError) as exc:
         bpm.build(force=True, out=str(tmp_path),
                   snapshot_path=str(tmp_path / "s.csv"), cancermine_file=str(tsv))

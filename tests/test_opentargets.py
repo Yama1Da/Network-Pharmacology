@@ -17,7 +17,7 @@ def _disease_payload(rows):
                                  "associatedTargets": {"rows": rows}}}}
 
 
-def _row(symbol, score, novelty=0.5, dt=None, organism_class=None):
+def _row(symbol, score, novelty=0.5, dt=None):
     return {"score": score, "novelty": novelty,
             "datatypeScores": dt or [{"id": "genetic_association", "score": 0.7},
                                      {"id": "literature", "score": 0.9}],
@@ -55,7 +55,7 @@ def test_find_disease_id_fallback_and_filters(monkeypatch):
 
 def test_get_targets_full_flow(monkeypatch):
     """全链:搜索编号 → 关联靶点解析(分数取整/类别取一/证据分列)→ 降序截断 → 缓存+哨兵。"""
-    def fake_post(query, variables, **k):
+    def fake_post(query, _variables, **k):
         if "search" in query:
             return _search_payload([{"id": "MONDO_0005148", "entity": "disease",
                                      "name": "T2D"}])
@@ -92,7 +92,7 @@ def test_unknown_disease_is_empty(monkeypatch):
 
 def test_disease_query_errors_is_failed(monkeypatch):
     """关联查询带 GraphQL errors → (空表, failed)。"""
-    def fake_post(query, variables, **k):
+    def fake_post(query, _variables, **k):
         if "search" in query:
             return _search_payload([{"id": "MONDO_0005148", "entity": "disease",
                                      "name": "T2D"}])
@@ -109,7 +109,7 @@ def test_memo_hit_and_invalidate(monkeypatch):
     monkeypatch.setattr(ot, "_success_memo", {})  # 隔离 memo,测试结束自动还原
     calls = {"n": 0}
 
-    def fake_post(query, variables, **k):
+    def fake_post(query, _variables, **k):
         calls["n"] += 1
         if "search" in query:
             return _search_payload([{"id": "MONDO_0005148", "entity": "disease",
