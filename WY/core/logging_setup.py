@@ -16,9 +16,23 @@ class _DailyRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
         return [f for f in files if os.path.basename(f) != current]
 
 
+# DEBUG 模式的常驻噪音源,永久钳到 WARNING:matplotlib 开 DEBUG 会逐个枚举系统字体
+# (一开几百行),PIL 吐图像解码细节,joblib 吐并行批处理细节,均与排查本项目问题无关。
+# 子级 logger(如 matplotlib.font_manager)默认 NOTSET,钳父级即一并覆盖。
+# 网络层有意放行(不在此列):urllib3/requests_cache 的连接与缓存日志本身就在 DEBUG 级,
+# 不会污染 INFO 视图,而是 DEBUG 按钮的核心价值——还原下载/远程抓取的现场。
+_NOISY_LOGGERS = ("matplotlib", "PIL", "joblib")
+
+
+def _clamp_noisy_loggers() -> None:
+    """把第三方噪音 logger 钳到 WARNING;只设子 logger 级别,不挂处理器,随日志级别开关保持不变。"""
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def setup_logging() -> None:
     """初始化日志:同时输出到屏幕和按天滚动的日志文件,保留两年;重复调用不会重复设置。
-    过期日志自动删除;只记录重要信息,屏蔽画图库的琐碎调试信息;日志目录创建失败时只在屏幕输出,不影响程序运行。
+    过期日志自动删除;只记录重要信息,屏蔽画图库的琐碎调试信息(_NOISY_LOGGERS);日志目录创建失败时只在屏幕输出,不影响程序运行。
     """
     from WY import config
 
@@ -30,6 +44,7 @@ def setup_logging() -> None:
     if not isinstance(level, int):
         level = logging.INFO
     logger.setLevel(level)
+    _clamp_noisy_loggers()
     formatter = logging.Formatter(config.LOG_FORMAT, config.LOG_DATE_FORMAT)
 
     # 把 warnings.warn 的输出并入日志框架:否则第三方库警告(sklearn/scipy 等)

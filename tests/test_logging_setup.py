@@ -85,3 +85,27 @@ def test_set_logging_level_runtime_change():
         root.setLevel(saved_level)
         for h, lv in zip(root.handlers, saved_handler_levels):
             h.setLevel(lv)
+
+
+def test_noisy_third_party_loggers_clamped():
+    """噪音钳制:初始化后 matplotlib/PIL/joblib 钳到 WARNING(画图库 DEBUG 字体枚举
+    等噪音不再进入日志);运行中切到 DEBUG 也不放开——DEBUG 模式只放出网络层
+    (urllib3/requests_cache 有意放行,不在 _NOISY_LOGGERS 内)。"""
+    saved = _snapshot_root_logger()
+    noisy = [logging.getLogger(name) for name in logging_setup._NOISY_LOGGERS]
+    saved_noisy = [(lg, lg.level) for lg in noisy]
+    try:
+        root = logging.getLogger()
+        for h in saved[0]:
+            root.removeHandler(h)
+        assert not root.hasHandlers()
+        logging_setup.setup_logging()
+        assert all(lg.level == logging.WARNING for lg in noisy)
+        # 动态调级只动根 logger 与其处理器,钳制原样保留
+        logging_setup.set_logging_level("DEBUG")
+        assert root.level == logging.DEBUG
+        assert all(lg.level == logging.WARNING for lg in noisy)
+    finally:
+        _restore_root_logger(saved)
+        for lg, lv in saved_noisy:
+            lg.setLevel(lv)
