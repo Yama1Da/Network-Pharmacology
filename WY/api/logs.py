@@ -70,7 +70,7 @@ class LevelBody(BaseModel):
 
 @router.post("/api/logs/level")
 def logs_level_set(body: LevelBody) -> dict:
-    """切换日志级别:与 Streamlit Logs 页同一条链路——改运行时 → 落盘 ui_settings.json
+    """切换日志级别:改运行时 → 落盘 ui_settings.json
     → 根 logger 即时生效,重启后仍保留。"""
     level = body.level.strip().upper()
     if level not in _ALLOWED_LEVELS:

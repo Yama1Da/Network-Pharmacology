@@ -4,7 +4,7 @@
 业务语义(来源刷新编排、日志级别持久化、集合清单)的唯一定义在 core,
 本文件做的是 HTTP 形态(路径/校验/打包/长任务提交)。
 路由按页面拆分在各子模块(WY/api/<页>.py),本 __init__ 只做装配与 SPA 托管。
-由 `npap serve` 启动,与 Streamlit 页面共享同一套 core 与缓存。
+由 `npap serve` 启动。前端为 Vue SPA,与 CLI/tools 共享同一套 core 与缓存。
 """
 import logging
 import os

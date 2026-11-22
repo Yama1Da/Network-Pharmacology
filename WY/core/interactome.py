@@ -231,7 +231,7 @@ def _download_gz_ranged(url: str, dest: str, progress_cb,
                 futures = {pool.submit(_download_segment, url, bounds[i][0],
                                        bounds[i][1], parts[i], done, lock): i
                            for i in pending}
-                # 进度回调只在本线程发(回调可能操作 Streamlit 组件,不能跨线程调用):
+                # 进度回调只在本线程发(回调可能操作调用方状态,不能跨线程调用):
                 # 工作线程只更新计数字节,这里每半秒聚合一次
                 while not all(f.done() for f in futures):
                     time.sleep(0.5)

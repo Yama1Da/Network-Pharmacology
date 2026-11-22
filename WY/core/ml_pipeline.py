@@ -37,7 +37,7 @@ SHORTLIST_POSITIONING_NOTE = (
 def default_results_root() -> str:
     """结果根目录:CLI_RESULTS_DIR > <项目 WY>/results。
 
-    用 BASE_DIR 而非 cwd 兜底:Streamlit 服务的 cwd 不保证是 WY,锚到项目目录
+    用 BASE_DIR 而非 cwd 兜底:服务进程的 cwd 不保证是 WY,锚到项目目录
     后,CLI(文档约定在 WY 下运行)与页面产物才落在同一处,历史列表才能同源。
     """
     from WY import config

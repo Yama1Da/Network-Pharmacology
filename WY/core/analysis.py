@@ -4,7 +4,7 @@
     analysis → targets / ppi / network_algorithms / enrichment
              → config（路径与参数常量；按 core 惯例函数内延迟导入）
 
-界面层（Streamlit 页面 / 未来 API 端点）只做三件事：收集参数 → 调 run_ppi_analysis →
+界面层（Vue SPA 经 WY/api/、CLI 子命令、tools 脚本）只做三件事：收集参数 → 调 run_ppi_analysis →
 展示/下发结果。进度经 AnalysisProgress 协议回调，编排层不依赖任何 UI 框架；
 matplotlib 的 pyplot 全局状态非线程安全，所有绘图统一留在调用线程执行。
 
@@ -62,7 +62,7 @@ from .targets import (
 
 class AnalysisProgress(Protocol):
     """进度回调协议：编排层经它汇报阶段状态与总进度，不依赖任何 UI 框架。
-    Streamlit 页面的 _ReportProgress 与未来 API 的 job 进度记录都实现这两个方法。"""
+    现由 api/ppi.py 的适配器实现(jobs 进度回调)。"""
 
     def set(self, key: str, state: str) -> None:
         """更新某阶段状态（key 为 targets/string/graph/... 阶段名，state 为 pending/running/done）。"""
@@ -493,7 +493,7 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
             graph, metrics_df, edges_df, hub_method, mcc_map)
         _prog(fraction=0.48)
 
-        # 轮询任务完成情况并刷新进度回调(如 Streamlit 页面则只能在脚本主线程更新组件)
+        # 轮询任务完成情况并刷新进度回调(回调在调用线程内触发,实现需自行保证线程安全)
         pending = set(fut_key)
         per_task = 0.28 / len(pending)  # 任务全完成时进度从 0.48 推进到 0.76
         while pending:

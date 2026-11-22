@@ -3,7 +3,7 @@
 单机单用户定位,不引入 Celery/Redis:任务在 daemon 工作线程执行,进度经回调写入
 注册表,HTTP 层只暴露 submit/get 两个动作。任务完成后结果保留 _TTL 秒供轮询取走,
 过期自动回收。FastAPI 的同步端点跑在线程池里,与任务线程共享 core 的线程安全约定
-(各数据源自带锁保护),与 Streamlit 页面的并发语义一致。
+(各数据源自带锁保护),与 FastAPI 线程池端点遵循同一套约定。
 """
 
 import logging

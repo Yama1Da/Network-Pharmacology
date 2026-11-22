@@ -298,7 +298,7 @@ _SOURCE_DEADLINE_SECONDS = {
 def get_targets_concurrent(
     drug_name: str, disease_name: str, progress_cb=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    """并发获取药物与疾病两侧靶点(四路数据源同时请求),供分析页一次拿全;语义与分别串行调用 get_drug_targets_merged + get_disease_targets_merged 一致:两侧 merged 缓存都命中时直接返回,否则只对缺失的一侧并发联网。progress_cb: 可选进度回调,每 0.5 秒或某路完成时被调用一次(始终在主线程,可安全更新 Streamlit 组件),签名 progress_cb(done: list[str], total: int),done 为已完成的数据源 key(chembl/dgidb/opentargets/disgenet)。
+    """并发获取药物与疾病两侧靶点(四路数据源同时请求),供分析页一次拿全;语义与分别串行调用 get_drug_targets_merged + get_disease_targets_merged 一致:两侧 merged 缓存都命中时直接返回,否则只对缺失的一侧并发联网。progress_cb: 可选进度回调,每 0.5 秒或某路完成时被调用一次(在调用本函数的线程内触发、不跨线程;API 侧该线程为任务工作线程,回调实现需自行保证线程安全),签名 progress_cb(done: list[str], total: int),done 为已完成的数据源 key(chembl/dgidb/opentargets/disgenet)。
     返回 (药物靶点表, 疾病靶点表, 失败数据源 key 列表);失败的数据源按空表参与展示,且该侧不写 merged 缓存——避免把残缺结果永久缓存;失败源下次分析自动重试,成功的源已缓存、秒回。
     并发写安全性:四路数据源的来源 CSV 文件名互不相同,各自单线程写自己的文件;merged 整合表只在主线程写一次;DisGeNET 限流记录文件内部有锁保护;共享 HTTP 缓存 sqlite 由 requests-cache 的线程本地连接保证安全。"""
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
