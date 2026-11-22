@@ -74,6 +74,7 @@ def _meta_path() -> str:
 def _get_json(url: str, label: str) -> tuple[dict | None, int | None]:
     """拉 JSON。返回 (payload, status):网络重试耗尽 → (None, None);
     404(上游悬空引用,短路不重试) → (None, 404);成功 → (payload, 200)。"""
+    logger.debug("PK-DB GET %s(%s)", url, label)
     resp = request_with_retry(
         url, method="get", max_retries=config.LIGHT_API_MAX_RETRIES,
         timeout=config.API_TIMEOUT, label=label, throttle_key="pkdb",
@@ -112,6 +113,8 @@ def _stream_with_resume(url: str, label: str, max_parts: int = 30) -> str | None
         headers = {"Accept-Encoding": "identity"}
         if got:
             headers["Range"] = f"bytes={got}-"
+        logger.debug("%s: 续传第 %d 轮(Range=%s, 块 %d 字节)",
+                     label, round_no, headers.get("Range", "-"), chunk)
         try:
             with requests.get(url, headers=headers, timeout=config.API_TIMEOUT,
                               stream=True) as resp:
@@ -176,6 +179,7 @@ def _fetch_index(progress=None) -> list[dict]:
         page = payload.get("data", {})
         studies.extend(page.get("data", []))
         pages += 1
+        logger.debug("PK-DB 研究清单第 %d 页 %s(累计 %d 个)", pages, url, len(studies))
         if progress:
             progress(text=f"研究清单:已取 {len(studies)} 个(第 {pages} 页)")
         url = payload.get("next_page_url")
@@ -217,6 +221,7 @@ def _fetch_substance_map(progress=None) -> list[dict]:
             raise RuntimeError("PK-DB 物质映射拉取失败")
         page = payload.get("data", {})
         nodes.extend(page.get("data", []))
+        logger.debug("PK-DB 物质映射页 %s(累计 %d 个)", url, len(nodes))
         if progress:
             progress(text=f"物质映射:已取 {len(nodes)} 个")
         url = payload.get("next_page_url")
@@ -246,6 +251,8 @@ def _fetch_study_payload(sid: str) -> dict:
                 continue
             raise RuntimeError(f"{sid}: 源表下载失败(网络) {name}")
         tsv_entries.append({"file": name, "url": url, "rows": _parse_tsv(text)})
+    logger.debug("PK-DB 研究 %s: %d 个源表入账, %d 个文件跳过",
+                 sid, len(tsv_entries), len(skipped))
     return {
         "sid": sid,
         "name": summary.get("name", sid),
@@ -370,6 +377,8 @@ def build_mirror(force: bool = False, progress=None,
                          text=f"续传跳过 {d}/{total}: {sid}")
             continue
         todo.append(sid)
+    logger.debug("PK-DB 镜像开工: 索引 %d, 待建 %d, 续传跳过 %d",
+                 total, len(todo), stats["skipped_existing"])
     _run_batch(todo, frac=None, text_prefix="镜像研究")
 
     # 失败补试:网络抖动/上游瞬时故障多数一轮内恢复;连续两轮补试仍败才最终
@@ -425,6 +434,9 @@ def build_mirror(force: bool = False, progress=None,
         "duration_sec": round(time.time() - started, 1),
     }
     _atomic_write_json(_meta_path(), meta)
+    logger.debug("PK-DB 镜像完成: 新建 %d, 续传跳过 %d, 失败 %d, 缺失 %d, 耗时 %.1fs",
+                 stats["built"], stats["skipped_existing"], failed, len(missing),
+                 meta["duration_sec"])
     if progress:
         done_text = f"完成:新建 {stats['built']},续传跳过 {stats['skipped_existing']}"
         if failed:
