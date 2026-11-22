@@ -80,6 +80,32 @@ def _versioned_path(stem: str) -> str:
     return os.path.join(_norm_dir(), f"{stem}_v{int(version)}.parquet")
 
 
+# 方案定稿值与 config 的统一口径:config 未合入(提案 B)按方案定稿值兜底并
+# 告警一次;config 已合入但与方案定稿值不一致 → 拒绝(防口径漂移;
+# §3.2 敏感性对照走显式参数,不改 config,故分箱阈值不做此强校验)
+_WARNED_ONCE = set()
+
+
+def _warn_once(key: str, msg: str) -> None:
+    if key not in _WARNED_ONCE:
+        _WARNED_ONCE.add(key)
+        logger.warning(msg)
+
+
+def _plan_or_config(attr: str, plan_value, key: str) -> float:
+    from WY import config
+
+    if hasattr(config, attr):
+        v = float(getattr(config, attr))
+        if v != float(plan_value):
+            raise RuntimeError(
+                f"config.{attr}={v} 与方案定稿值 {plan_value} 不一致,拒绝({key})")
+        return v
+    _warn_once(f"cfg:{attr}", f"config.{attr} 未合入(提案 B),按方案定稿值 "
+                             f"{plan_value} 运行({key})")
+    return float(plan_value)
+
+
 def exposure_confident(tier_a: str, tier_b: str) -> bool:
     """E6 高置信标记(§12.1-E6 定稿):两药均 ≥ 部分可达。契约冻结件,纯函数;
     非法枚举值显式报错(静默 False 会把打错的档伪装成"不高置信")。"""
@@ -619,11 +645,7 @@ def build_fub_norm(force: bool = False) -> str:
     substances = _substance_rows(_load_substance_nodes())[["sid"]]
     fub_by_sid = {r["substance_sid"]: r for r in agg.to_dict("records")
                   if r["substance_sid"] is not None}
-    default_fub = float(getattr(config, "FUB_DEFAULT", 1.0))
-    if default_fub != 1.0:
-        raise RuntimeError("FUB_DEFAULT 与方案 §3.1 定稿的保守上界 1.0 不一致,拒绝构建")
-    if not hasattr(config, "FUB_DEFAULT"):
-        logger.warning("config.FUB_DEFAULT 未合入(提案 B),按方案 §3.1 定稿值 1.0 运行")
+    default_fub = _plan_or_config("FUB_DEFAULT", 1.0, "fub 保守上界")
     rows = []
     for sid in substances["sid"]:
         obs = fub_by_sid.get(sid)
@@ -665,11 +687,203 @@ def build_normalized_cache(force: bool = False, progress=None,
     return paths
 
 
-def compute_reachability(drug_name: str, drug_targets) -> dict:
-    """单药可达性(第 3 层计算,只读归一化 Parquet):B1 活性聚合(中位数 +
-    细胞优先,回退留标记)→ R = Cmax_free ÷ 活性(摩尔)→ 三档分箱 +
-    unknown 显式标注 → 逐靶点明细与药级档。
-    返回契约 reachability.v1 单药块(供 synergy E6 挂载)与逐靶点明细表。
-    第 7-8 步填充(三开口定案前 Ki/Kd 优先规则不动工)。"""
-    raise NotImplementedError(
-        "B1 聚合 + R 值 + 分箱在第 7 步实现,加权排序与对比表在第 8 步实现")
+# ---- R 值计算(第 7 步,第 3 层:只读归一化 Parquet 与既有靶点缓存,零联网) ----
+
+# B1 活性类别映射(§12.2-B1 定稿"细胞实验优先"的落地):ChEMBL assay_type
+# F(functional)→细胞、B(binding)→生化 为代理映射——开口3 待生物侧确认
+# (§5.5-5 TODO,不静默断言);A(ADME)/T(毒性)/P(理化)/U(未分类)非靶点
+# 活性,不进主 R 值。Ki/Kd 优先于 IC50/EC50(§12.2-B1)当前无法实现:
+# ChEMBL 缓存无 standard_type 字段(开口1,已报负责人二选一)
+_ACTIVITY_CLASS = {"F": "cell", "B": "biochemical"}
+
+
+def r_value(cmax_total_M, fub, activity_M) -> float | None:
+    """R = (Cmax × fub) ÷ 活性(均为摩尔,§3.2 定稿)。任一缺失或非正 → None
+    (显式缺失不硬算——活性≤0 会造 inf/负 R,fub>0 已由 fub_norm 硬断言
+    保证,此处双保险)。"""
+    if cmax_total_M is None or fub is None or activity_M is None:
+        return None
+    if activity_M <= 0 or fub <= 0 or cmax_total_M <= 0:
+        return None
+    return (cmax_total_M * fub) / activity_M
+
+
+def _tier(r: float, *, reachable_min=None, partial_min=None) -> str:
+    """三档分箱(§12.2-B2 定稿:主定义不加安全系数 k;R=1⇔50% 占据,
+    R=3⇔75%,R=9⇔90%)。显式传参供 §3.2 边界敏感性对照(R≥3/≥10 两档
+    另跑报告排序位移),不传则读 config,未合入按定稿值兜底+告警。"""
+    rmin = (float(reachable_min) if reachable_min is not None
+            else _plan_or_config("R_REACHABLE_MIN", 1.0, "R 分档阈值"))
+    pmin = (float(partial_min) if partial_min is not None
+            else _plan_or_config("R_PARTIAL_MIN", 0.1, "R 分档阈值"))
+    if r >= rmin:
+        return "reachable"
+    if r >= pmin:
+        return "partial"
+    return "unreachable"
+
+
+def _b1_activity(targets) -> "pd.DataFrame":
+    """B1 活性聚合(§12.2-B1 定稿):同基因多 assay——细胞(F)优先取中位数,
+    无细胞值才回退生化(B)并打回退标记;另一类中位数保留为敏感性对照列。
+    活性(摩尔) = 10 ** (-pChEMBL)(§3.2;方向写反则 R 全体倒置且不报错,
+    清单 §1.2-2,靠 §5.6 手算对照兜住)。Ki/Kd 优先规则暂缺(开口1)。
+    纯函数,不读盘不联网;gene 列取一期缓存列名 approvedSymbol。"""
+    import pandas as pd
+
+    cols = ["gene", "activity_M", "activity_class", "n_assays",
+            "activity_alt_M", "fallback_flag"]
+    if targets is None or getattr(targets, "empty", True) \
+            or "pchembl_value" not in targets.columns \
+            or "approvedSymbol" not in targets.columns:
+        return pd.DataFrame(columns=cols)
+    df = targets.copy()
+    df["_p"] = pd.to_numeric(df["pchembl_value"], errors="coerce")
+    at = df["assay_type"] if "assay_type" in df.columns else ""
+    df["_cls"] = (at.map(_ACTIVITY_CLASS) if hasattr(at, "map") else None)
+    df = df[df["_p"].notna() & df["_cls"].notna() & df["approvedSymbol"].notna()]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    rows = []
+    for gene, g in df.groupby("approvedSymbol"):
+        cell_p = g.loc[g["_cls"] == "cell", "_p"]
+        bio_p = g.loc[g["_cls"] == "biochemical", "_p"]
+        # 中位数取在 pChEMBL(log 空间)再换算摩尔——记录的原生尺度,效价聚合
+        # 标准做法;若取在摩尔线性值,偶数条记录的中位数会落成"没有任何一条
+        # 记录的值"(如 [1e-6,1e-7] → 5.5e-7)。此口径为静默风险点,负责人
+        # 强制审查项(2026-11-22 定,偏差须改此处并递增 PK_NORM_VERSION)
+        if len(cell_p):  # 细胞优先用于主 R 值(B1 定稿),生化留作敏感性对照
+            main, cls, fb, n = (10.0 ** -float(cell_p.median()), "cell",
+                                False, int(len(cell_p)))
+            alt = 10.0 ** -float(bio_p.median()) if len(bio_p) else None
+        else:  # 细胞值缺失才回退生化(回退留标记列,§1.2-3)
+            main, cls, fb, n = (10.0 ** -float(bio_p.median()), "biochemical",
+                                True, int(len(bio_p)))
+            alt = None
+        rows.append({"gene": str(gene), "activity_M": main, "activity_class": cls,
+                     "n_assays": n, "activity_alt_M": alt, "fallback_flag": fb})
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _read_norm(stem: str) -> "pd.DataFrame":
+    """读归一化版本化表(parquet 优先,CSV 兜底,与 _save_table_atomic 对偶)。
+    缺失时报错提示先跑 build_normalized_cache——计算层零联网,缺数据是响亮
+    错误,不是静默空结果。"""
+    import pandas as pd
+
+    path = _versioned_path(stem)
+    if not os.path.exists(path):
+        raise RuntimeError(f"归一化缓存缺失: {path}(先跑 build_normalized_cache)")
+    if path.endswith(".parquet"):
+        return pd.read_parquet(path)
+    return pd.read_csv(path, encoding="utf-8")
+
+
+def compute_reachability(drug_targets, drug_name: str = "", *,
+                         reachable_min=None, partial_min=None) -> dict:
+    """单药可达性(第 3 层计算,§3.2;契约 reachability.v1 单药块):
+    B1 活性聚合 → R = (Cmax 中位数 × fub) ÷ 活性 → 三档分箱 → 逐靶点明细
+    + 药级档(任一靶点达档即取最高权档,合同 2026-11-22 冻结)。
+    drug_targets:一期 ChEMBL 靶点缓存 DataFrame(调用方保证已取——本函数
+    不联网,缓存未就绪是调用方职责);reachable_min/partial_min 显式传参
+    供 §3.2 边界敏感性对照。Cmax 取该物质全部干预中位数(§3.1 多观测取
+    中位数;跨干预聚合口径属静默风险点,负责人强制审查项)。"""
+    import pandas as pd
+
+    unknown_reason = None
+    sid = None
+    cmax_total = fub = None
+    fub_imputed = None
+    cmax_meta = {"cmax_molar_M": None, "cmax_interventions": "", "n_cmax_obs": 0,
+                 "fub_value": None, "fub_imputed": None}
+    key = str(drug_name or "").strip().lower()
+    if key:
+        sid = _substance_lookup(_load_substance_nodes()).get(key, (None, None))[0]
+    if sid is not None:
+        crows = _read_norm("cmax_norm")
+        crows = crows[crows["substance_sid"] == sid]
+        frow = _read_norm("fub_norm")
+        frow = frow[frow["substance_sid"] == sid]
+        if not frow.empty:
+            fub = float(frow["fub_value"].iloc[0])
+            fub_imputed = bool(frow["imputed_flag"].iloc[0])
+        if not crows.empty and fub is not None:
+            # 多干预中位数(§3.1);Cmax_free 在 r_value 内乘 fub
+            cmax_total = float(crows["cmax_molar_M"].median())
+            cmax_meta = {
+                "cmax_molar_M": cmax_total,
+                "cmax_interventions": ";".join(sorted(set(crows["intervention"]))),
+                "n_cmax_obs": int(crows["n_obs"].sum()),
+                "fub_value": fub, "fub_imputed": fub_imputed,
+            }
+        else:
+            unknown_reason = "no_exposure"
+    else:
+        unknown_reason = "no_exposure"
+
+    b1 = _b1_activity(drug_targets)
+    act_by_gene = {r["gene"]: r for r in b1.to_dict("records")}
+    genes = sorted({str(g) for g in (drug_targets["approvedSymbol"].dropna()
+                                     if drug_targets is not None
+                                     and "approvedSymbol" in getattr(drug_targets, "columns", [])
+                                     else [])})
+    weights = {"reachable": 1.0, "partial": 0.6, "unknown": 0.5, "unreachable": 0.2}
+    from WY import config
+
+    if hasattr(config, "REACH_TIER_WEIGHTS"):
+        weights = dict(getattr(config, "REACH_TIER_WEIGHTS"))
+    else:
+        _warn_once("cfg:REACH_TIER_WEIGHTS",
+                   "config.REACH_TIER_WEIGHTS 未合入(提案 B),按方案 §12.2-B3 "
+                   "定稿值 1.0/0.6/0.5/0.2 运行")
+    rows = []
+    for gene in genes:
+        a = act_by_gene.get(gene)
+        r = r_value(cmax_total, fub, a["activity_M"] if a else None)
+        if r is not None:
+            tier = _tier(r, reachable_min=reachable_min, partial_min=partial_min)
+        else:
+            tier = "unknown"  # 活性未知独立档,永不并入不可达(§1.2-5)
+        rows.append({
+            "gene": gene,
+            "r_value": r,
+            "tier": tier,
+            "activity_M": a["activity_M"] if a else None,
+            "activity_class": a["activity_class"] if a else None,
+            "n_assays": a["n_assays"] if a else 0,
+            "activity_alt_M": a["activity_alt_M"] if a else None,
+            "fallback_flag": a["fallback_flag"] if a else None,
+            "unknown_reason": None if r is not None else "no_activity",
+        })
+    detail = pd.DataFrame(rows, columns=[
+        "gene", "r_value", "tier", "activity_M", "activity_class", "n_assays",
+        "activity_alt_M", "fallback_flag", "unknown_reason"])
+    # 回退标记用可空布尔(None/True/False 混存 object 会触发 pandas 降级警告,
+    # 且下游 fillna 语义含糊)——nullable BooleanDtype 一次定清
+    detail["fallback_flag"] = detail["fallback_flag"].astype("boolean")
+    # 查看序:R 降序 + 基因名字典序 tie-break(可复现红线 §1.2-8;
+    # 注意这是明细查看序,E1/E6 联合排序契约在第 8 步另实现)
+    detail = detail.sort_values(["r_value", "gene"], ascending=[False, True],
+                                na_position="last").reset_index(drop=True)
+    computed = detail[detail["r_value"].notna()]
+    if not computed.empty:
+        drug_tier = max(computed["tier"], key=lambda t: weights.get(t, 0.0))
+        top_r = computed.loc[computed["tier"] == drug_tier, "r_value"].max()
+        return {
+            "schema": REACHABILITY_SCHEMA,
+            "drug": drug_name, "substance_sid": sid,
+            "tier": drug_tier, "r_primary": float(top_r),
+            "unknown_reason": None,
+            "exposure": cmax_meta,
+            "n_targets": int(len(detail)), "n_computed": int(len(computed)),
+            "targets": detail,
+        }
+    return {
+        "schema": REACHABILITY_SCHEMA,
+        "drug": drug_name, "substance_sid": sid,
+        "tier": "unknown", "r_primary": None,
+        "unknown_reason": unknown_reason or "no_activity",
+        "exposure": cmax_meta,
+        "n_targets": int(len(detail)), "n_computed": 0,
+        "targets": detail,
+    }
