@@ -887,3 +887,120 @@ def compute_reachability(drug_targets, drug_name: str = "", *,
         "n_targets": int(len(detail)), "n_computed": 0,
         "targets": detail,
     }
+
+
+# ---- w(R) 加权排序与 E1/E6 联合排序(第 8 步,工程外圈,排序键方向=强制审查点) ----
+
+_PLAN_WEIGHTS = {"reachable": 1.0, "partial": 0.6, "unknown": 0.5, "unreachable": 0.2}
+
+
+def reach_weights() -> dict:
+    """w(R) 分档常数权重(§12.2-B3 定稿初值,可调参数总量≤6 之四;1.7 基准
+    网格微调后须负责人复核签字才改——本函数不提供手调入口)。"""
+    from WY import config
+
+    if hasattr(config, "REACH_TIER_WEIGHTS"):
+        w = dict(getattr(config, "REACH_TIER_WEIGHTS"))
+    else:
+        _warn_once("cfg:REACH_TIER_WEIGHTS",
+                   "config.REACH_TIER_WEIGHTS 未合入(提案 B),按方案 §12.2-B3 "
+                   "定稿值 1.0/0.6/0.5/0.2 运行")
+        w = dict(_PLAN_WEIGHTS)
+    missing = [k for k in REACH_TIERS if k not in w]
+    if missing:
+        raise RuntimeError(f"REACH_TIER_WEIGHTS 缺分档键: {missing}"
+                           f"(契约 {REACHABILITY_SCHEMA})")
+    return w
+
+
+def reach_weight(tier: str, weights: dict | None = None) -> float:
+    """单档权重;非法枚举与残缺权重表都显式报错(静默回 0 会把打错的档
+    伪装成最低优先)。"""
+    if tier not in REACH_TIERS:
+        raise ValueError(f"非法分档枚举 {tier!r}(契约 {REACHABILITY_SCHEMA})")
+    w = weights if weights is not None else reach_weights()
+    missing = [k for k in REACH_TIERS if k not in w]
+    if missing:
+        raise RuntimeError(f"权重表缺分档键: {missing}(契约 {REACHABILITY_SCHEMA})")
+    return float(w[tier])
+
+
+def exposure_penalty(w_a: float, w_b: float) -> float:
+    """E6 可达性惩罚:两药权重取 min(瓶颈逻辑,合同 2026-11-22 随提案 A 冻结;
+    与 exposure_confident 单调一致——两药均≥部分可达才不被惩罚封顶)。"""
+    return float(min(w_a, w_b))
+
+
+def apply_e1_sort(df, *, s_ab: str = "s_ab", z_ab: str = "z_ab",
+                  pair_cols: tuple = ("drug_a", "drug_b"),
+                  top_k: int | None = None):
+    """E1 分层排序(§12.1-E1 定稿):重叠型(s_AB<0)按联合邻近度 z_AB 降序、
+    互补型(s_AB>0)按分离强度 s_AB 降序,各自取 Top-K,类型为标注列,不做加权
+    合成(分层依据引 Cheng 2019)。
+
+    键方向为全项目强制审查点(清单 §1.3:取反即静默错)——两处降序逐字照
+    定稿实现,后续修改必须同步 §1.3 纪要。s_AB==0(tie)归互补侧处理,为
+    定稿未覆盖的微决策,已在此钉注释待负责人复核。
+    tie-break:药对名(药 A,药 B)字典序,可复现红线(§1.2-8)。"""
+    import pandas as pd
+
+    out = df.copy()
+    out["geometry_label"] = "separated"
+    out.loc[out[s_ab] < 0, "geometry_label"] = "overlap"
+    ov = out[out[s_ab] < 0].sort_values(
+        [z_ab, *pair_cols], ascending=[False] + [True] * len(pair_cols))
+    sep = out[out[s_ab] >= 0].sort_values(
+        [s_ab, *pair_cols], ascending=[False] + [True] * len(pair_cols))
+    if top_k is not None:
+        ov, sep = ov.head(int(top_k)), sep.head(int(top_k))
+    return pd.concat([ov, sep]).reset_index(drop=True)
+
+
+def apply_e6_sort(df, *, score_col: str, tier_a_col: str, tier_b_col: str,
+                  pair_cols: tuple = ("drug_a", "drug_b"),
+                  weights: dict | None = None):
+    """E6 A×B 联合排序(§12.1-E6 定稿):打 exposure_confident 标记
+    (两药均≥部分可达)与 reach_penalty(=min(w_a,w_b),合同冻结口径),
+    整表按 协同置信×可达性惩罚 降序,tie-break 药名字典序。
+    score_col=协同置信数值列(口径归集成层定义,本函数只消费);分层报告
+    (重叠/互补)由调用方先按 apply_e1_sort 分块。非法分档枚举直接报错。"""
+    w = weights or reach_weights()
+    out = df.copy()
+    out["reach_weight_a"] = [reach_weight(t, w) for t in out[tier_a_col]]
+    out["reach_weight_b"] = [reach_weight(t, w) for t in out[tier_b_col]]
+    out["exposure_confident"] = [exposure_confident(a, b) for a, b in
+                                 zip(out[tier_a_col], out[tier_b_col])]
+    out["reach_penalty"] = [exposure_penalty(a, b) for a, b in
+                            zip(out["reach_weight_a"], out["reach_weight_b"])]
+    out["_e6_score"] = out[score_col] * out["reach_penalty"]
+    out = out.sort_values(["_e6_score", *pair_cols],
+                          ascending=[False] + [True] * len(pair_cols))
+    return out.drop(columns="_e6_score").reset_index(drop=True)
+
+
+def exposure_compare(baseline, reach_result) -> "pd.DataFrame":
+    """"暴露约束前 vs 后"靶点优先级对比表(§3.2 招牌图数据侧):
+    baseline = 一期排序(邻近度/RWR 产出的有序基因列表);加权口径 = 按 w(R)
+    降序分桶,桶内保持一期相对次序(baseline_rank 升序),最终 tie-break
+    基因名字典序(可复现红线)。分数版(网络分×w 重排)待集成层对齐邻近度
+    分数列后实现——当前只承诺秩口径,不臆造分数。delta>0 = 加权后前移。"""
+    import pandas as pd
+
+    w = reach_weights()
+    detail = (reach_result or {}).get("targets")
+    tmap = {r["gene"]: (r["tier"], r["r_value"])
+            for r in (detail.to_dict("records") if detail is not None else [])}
+    recs = []
+    for i, gene in enumerate(baseline, start=1):
+        tier, rv = tmap.get(str(gene), ("unknown", None))
+        recs.append({"gene": str(gene), "baseline_rank": int(i), "tier": tier,
+                     "r_value": rv, "w": float(w[tier])})
+    df = pd.DataFrame(recs, columns=["gene", "baseline_rank", "tier",
+                                     "r_value", "w"])
+    ordered = df.sort_values(["w", "baseline_rank", "gene"],
+                             ascending=[False, True, True]).reset_index(drop=True)
+    ordered["new_rank"] = ordered.index + 1
+    out = ordered.sort_values("baseline_rank").reset_index(drop=True)
+    out["delta"] = out["baseline_rank"] - out["new_rank"]
+    return out[["gene", "baseline_rank", "new_rank", "delta", "tier",
+                "w", "r_value"]]
