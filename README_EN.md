@@ -41,6 +41,23 @@ the CLI supports batch tabulation, but does not produce figures.
   Random Forest + Boruta / XGBoost — with consensus scoring + CV-ROC evaluation, and
   intersects the result with the platform-ranked targets to output a wet-lab priority
   shortlist.
+- **Network-separation synergy prediction (Phase 2)**: takes two drugs plus a
+  disease; the Menche 2015 network separation score s_AB classifies the two
+  drug target modules as "overlapping (co-located) / separated (complementary)",
+  with degree-matched permutation significance, and stratified Top-K rankings
+  for each type. Pair results carry per-drug exposure-reachability tiers and a
+  high-confidence flag.
+- **Target concentration reachability (Phase 2)**: mirrors the open
+  pharmacokinetics database PK-DB and computes R = free Cmax ÷ target activity
+  in three tiers (reachable / partially reachable / unreachable); "exposure
+  unknown" is always labeled explicitly and never merged into unreachable.
+  Tier weights w(R) adjust target priority rankings, with a
+  "before vs after exposure constraint" comparison.
+- **Disease module multi-algorithm consistency (Phase 2)**: RWR / DIAMOnD /
+  neighbor expansion run in parallel, with Borda average-rank consensus and a
+  "captured by ≥k methods" consistency flag; permutation-test significance is
+  attached to every method and the consensus, backed by a leave-one-out
+  back-test benchmark.
 - **Engineering**: request-level caching, local DisGeNET rate limiting (within the
   academic quota), enrichment dual-source circuit breaking, bilingual Chinese/English UI,
   daily rolling logs, and a target data management page.
