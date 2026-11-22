@@ -11,6 +11,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from WY import config
 from WY.core import jobs
+from WY.i18n import t
 from WY.core.text_utils import safe_name
 from .common import _rel_downloads, _resolve_under, _zip_response
 from functools import lru_cache
@@ -58,9 +59,9 @@ def _require_registered_name(name: str, base_dir: str) -> None:
     页面/CLI 既有调用方以可信输入使用,收紧入口比放宽校验面更小。"""
     if not name or name != os.path.basename(name):
         raise HTTPException(status_code=400,
-                            detail="name 必须为缓存目录下的纯文件名(不含路径分隔符)")
+                            detail=t("dock.err.name_not_basename"))
     if _resolve_under(base_dir, name) is None:
-        raise HTTPException(status_code=400, detail="name 逃逸出缓存目录")
+        raise HTTPException(status_code=400, detail=t("dock.err.name_escapes"))
 
 
 @router.post("/api/docking/session")
@@ -207,7 +208,7 @@ def docking_source(sid: str, body: DockSourceBody) -> dict:
             genes = _read_manual_meta(safe)["genes"]
             if not genes:
                 raise HTTPException(status_code=400,
-                                    detail=f"{safe}: analysis_meta.json 无基因清单(旧版桶)")
+                                    detail=t("dock.err.meta_no_genes", safe=safe))
             dock["label"] = safe[:-5] if safe.endswith("_data") else safe
         dock["drug"] = ""
         dock["disease"] = ""
@@ -253,7 +254,7 @@ def docking_check_structures(sid: str, body: DockStructBody) -> dict:
         from WY.core.docking import fetch_receptor_candidates_batch
 
         def task(progress) -> dict:
-            progress(fraction=0.15, text="RCSB 批量检索中…")
+            progress(fraction=0.15, text=t("dock.prog.rcsb_batch"))
             results = fetch_receptor_candidates_batch(list(candidate), max_hits=20,
                                                       allow_alphafold=body.allow_af)
             gene_structures = {g: len(df) for g, df in results.items() if not df.empty}
@@ -299,7 +300,7 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
     if body.source == "pubchem":
         query = body.query.strip()
         if not query:
-            return {"ok": False, "error": "未提供药物名或 CID"}
+            return {"ok": False, "error": t("dock.err.lig_no_source")}
         # 手动基因会话无药名语境:按名称盲查必然是"把来源标识当药名"的误用
         #(曾把 "manual" 直接送进 PubChem 报"查无化合物");CID 直查(纯数字)放行。
         # 判据 = 会话由手动入口建立(显式 source_mode,P1-D:不从 ppi_dir/enr_file
@@ -308,29 +309,29 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
                              and bool(dock.get("genes")))
         if is_manual_session and not query.isdigit():
             return {"ok": False,
-                    "error": "手动基因模式无关联药物:请输入 CID(纯数字)直接下载,或改用 SMILES"}
+                    "error": t("dock.err.lig_manual_cid")}
         try:
             cid = resolve_cid(query)
         except PubChemUnavailable as exc:
-            return {"ok": False, "error": f"PubChem 暂不可用({exc}),可稍后重试"}
+            return {"ok": False, "error": t("dock.err.pubchem_unavailable", exc=exc)}
         if cid is None:
-            return {"ok": False, "error": f"PubChem 查无化合物:{query}"}
+            return {"ok": False, "error": t("dock.err.pubchem_not_found", query=query)}
         try:
             sdf_path = fetch_ligand_sdf_3d(cid)
         except Exception as exc:
-            return {"ok": False, "error": f"配体获取失败:{exc}"}
+            return {"ok": False, "error": t("dock.err.lig_fetch_failed", exc=exc)}
         if not sdf_path:
-            return {"ok": False, "error": f"CID {cid} 无 3D 结构,请换一个条目或用 SMILES"}
+            return {"ok": False, "error": t("dock.err.cid_no_3d", cid=cid)}
         if _src_ctx_changed():
-            return {"ok": False, "stale": True, "error": "来源已切换，配体结果已丢弃"}
+            return {"ok": False, "stale": True, "error": t("dock.stale.source_ligand")}
         dock["cid"] = cid
         try:
             dock["lig_pdbqt"] = prepare_ligand_pdbqt(sdf_path)
         except Exception as exc:
-            return {"ok": False, "error": f"配体准备失败:{exc}"}
+            return {"ok": False, "error": t("dock.err.lig_prep_failed", exc=exc)}
     elif body.source == "smiles":
         if not body.smiles.strip():
-            return {"ok": False, "error": "未提供 SMILES"}
+            return {"ok": False, "error": t("dock.err.no_smiles")}
         try:
             os.makedirs(config.DOCKING_RAW_CACHE_DIR, exist_ok=True)
             sdf_path = smiles_to_sdf_3d(
@@ -338,11 +339,11 @@ def docking_ligand(sid: str, body: DockLigandBody) -> dict:
                 os.path.join(config.DOCKING_RAW_CACHE_DIR,
                              f"ligand_smiles_{datetime.now():%Y%m%d_%H%M%S}.sdf"))
             if _src_ctx_changed():
-                return {"ok": False, "stale": True, "error": "来源已切换，配体结果已丢弃"}
+                return {"ok": False, "stale": True, "error": t("dock.stale.source_ligand")}
             dock["cid"] = None
             dock["lig_pdbqt"] = prepare_ligand_pdbqt(sdf_path)
         except Exception as exc:
-            return {"ok": False, "error": f"配体生成失败:{exc}"}
+            return {"ok": False, "error": t("dock.err.lig_generate_failed", exc=exc)}
     else:
         raise HTTPException(status_code=400, detail="source must be pubchem|smiles")
     dock["lig_auto_done"] = True
@@ -388,7 +389,7 @@ def docking_receptor_candidates(sid: str, body: DockReceptorQueryBody) -> dict:
         if cand is None:
             cand = _pdb_candidates_cached(body.gene, bool(body.allow_af and config.ALPHAFOLD_ENABLED))
     except Exception as exc:
-        return {"error": f"RCSB 检索失败:{exc}", "rows": []}
+        return {"error": t("dock.err.rcsb_search_failed", exc=exc), "rows": []}
     return {"rows": _candidate_rows(cand) if cand is not None else [],
             "af_enabled": bool(config.ALPHAFOLD_ENABLED)}
 
@@ -411,12 +412,12 @@ def docking_receptor_prepare(sid: str, body: DockReceptorPrepareBody) -> dict:
         from WY.core.docking import (download_pdb, fetch_alphafold_receptor,
                                      prepare_receptor_pdbqt)
 
-        progress(fraction=0.2, text="下载受体结构…")
+        progress(fraction=0.2, text=t("dock.prog.receptor_download"))
         # 会话兜底(P0-B):提交与写回之间基因被换(另一标签页/竞态)则放弃写入,
         # 结果带 stale 标记,不污染新基因的会话(前端代际守卫为主,此为第二道)
         if dock.get("gene") != body.gene:
             return {"stale": True, "ok": False,
-                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+                    "error": t("dock.stale.gene_receptor", gene=dock.get('gene'))}
         if body.pdb_id.startswith("AFDB:"):
             pdb_path, af_acc = fetch_alphafold_receptor(
                 body.gene, taxon=int(config.SPECIES_MAP["Human"]["ncbi_taxon"]))
@@ -424,17 +425,17 @@ def docking_receptor_prepare(sid: str, body: DockReceptorPrepareBody) -> dict:
         else:
             pdb_path = download_pdb(body.pdb_id)
             new_pdb_id, new_source = body.pdb_id, "experiment"
-        progress(fraction=0.7, text="受体转 pdbqt…")
+        progress(fraction=0.7, text=t("dock.prog.receptor_pdbqt"))
         if dock.get("gene") != body.gene:  # 下载期间被换基因:写前再核一道
             return {"stale": True, "ok": False,
-                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+                    "error": t("dock.stale.gene_receptor", gene=dock.get('gene'))}
         rec_pdbqt = prepare_receptor_pdbqt(pdb_path)
         # 检查③(2026-11-10 残余窗口封堵):obabel 转换最长 OBABEL_TIMEOUT=120s,
         # 这段窗口内基因同样可能被换——转换完成、写回会话前最后核一道,并把全部
         # 会话写入移到该检查之后,杜绝「新基因会话挂旧基因受体」的混合状态
         if dock.get("gene") != body.gene:
             return {"stale": True, "ok": False,
-                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+                    "error": t("dock.stale.gene_receptor", gene=dock.get('gene'))}
         dock["pdb_id"] = new_pdb_id
         dock["receptor_source"] = new_source
         dock["pdb_path"] = pdb_path
@@ -467,12 +468,14 @@ async def docking_receptor_upload(sid: str, request: Request,
 
     if gene not in (dock.get("genes") or []):
         raise HTTPException(status_code=400,
-                            detail=f"gene {gene or '(空)'} not in confirmed genes")
+                            detail=t("dock.err.gene_not_confirmed",
+                                     gene=gene or t("dock.misc.empty_tag")))
     ext = os.path.splitext(os.path.basename(name.strip()))[1].lower()
     if ext not in UPLOAD_PDB_EXTS + UPLOAD_CIF_EXTS:
         raise HTTPException(status_code=400,
-                            detail=f"仅支持 {' / '.join(UPLOAD_PDB_EXTS + UPLOAD_CIF_EXTS)}"
-                                   f" 结构文件,收到:{ext or '(无扩展名)'}")
+                            detail=t("dock.err.ext_unsupported",
+                                     exts=' / '.join(UPLOAD_PDB_EXTS + UPLOAD_CIF_EXTS),
+                                     received=ext or t("dock.misc.no_ext")))
     # 展示名只取净化词干(扩展名点号不能进 safe_name,否则会被替换掉)
     display_name = (safe_name(os.path.splitext(os.path.basename(name.strip()))[0])[:60]
                     + ext)
@@ -487,14 +490,15 @@ async def docking_receptor_upload(sid: str, request: Request,
                 if received > config.DOCKING_MAX_UPLOAD_BYTES:
                     raise HTTPException(
                         status_code=413,
-                        detail=f"文件超过上传上限({config.DOCKING_MAX_UPLOAD_BYTES // (1024 * 1024)} MiB)")
+                        detail=t("dock.err.upload_too_large",
+                                 mb=config.DOCKING_MAX_UPLOAD_BYTES // (1024 * 1024)))
                 f.write(chunk)
     except BaseException:
         _remove_quietly(staged)
         raise
     if received == 0:
         _remove_quietly(staged)
-        raise HTTPException(status_code=400, detail="空文件")
+        raise HTTPException(status_code=400, detail=t("dock.err.empty_file"))
 
     # 体检放线程池:64 MiB 级文本全量扫描,同步做会阻塞事件循环拖慢其他请求
     try:
@@ -509,16 +513,16 @@ async def docking_receptor_upload(sid: str, request: Request,
     def task(progress) -> dict:
         from WY.core.docking import prepare_receptor_pdbqt
 
-        progress(fraction=0.3, text="受体转 pdbqt…")
+        progress(fraction=0.3, text=t("dock.prog.receptor_pdbqt"))
         # 会话兜底(P0-B):提交与写回之间基因被换(另一标签页/竞态)则放弃写入,
         # 与 receptor/prepare 同款判据;转换是唯一长操作,前后各核一道
         if dock.get("gene") != gene:
             return {"stale": True, "ok": False,
-                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+                    "error": t("dock.stale.gene_receptor", gene=dock.get('gene'))}
         rec_pdbqt = prepare_receptor_pdbqt(pdb_path)
         if dock.get("gene") != gene:  # 转换期间被换基因:写前再核一道
             return {"stale": True, "ok": False,
-                    "error": f"基因已切换为 {dock.get('gene')!r}，受体结果已丢弃"}
+                    "error": t("dock.stale.gene_receptor", gene=dock.get('gene'))}
         dock["pdb_id"] = f"upload:{display_name}"
         dock["receptor_source"] = "upload"
         dock["pdb_path"] = pdb_path
@@ -624,12 +628,12 @@ def docking_run(sid: str, body: DockRunBody) -> dict:
     def task(progress) -> dict:
         from WY.core.docking import docking_timeout, parse_vina_scores, run_vina, split_vina
 
-        progress(fraction=None, text=f"vina 运行中(exhaustiveness={config.EXHAUSTIVENESS},"
-                                     f" 最长 {docking_timeout()}s)…")
+        progress(fraction=None, text=t("dock.prog.vina_running",
+                                       e=config.EXHAUSTIVENESS, timeout=docking_timeout()))
         out_pdbqt = os.path.join(config.DOCKING_RAW_CACHE_DIR,
                                  f"vina_out_{datetime.now():%Y%m%d_%H%M%S}.pdbqt")
         proc = run_vina(dock["rec_pdbqt"], dock["lig_pdbqt"], dock["box"], out_path=out_pdbqt)
-        progress(fraction=0.9, text="解析构象与打分…")
+        progress(fraction=0.9, text=t("dock.prog.parse_poses"))
         poses = split_vina(out_pdbqt, out_dir=os.path.dirname(out_pdbqt))
         scores = parse_vina_scores(out_pdbqt)
         # 新一轮对接:清掉上一轮残留(与原页面一致)

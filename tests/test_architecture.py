@@ -210,3 +210,31 @@ def test_guard_self_test(tmp_path):
     assert not any(full == u or full.startswith(u + ".")
                    for _, full in pairs_ok for u in UPPER), pairs_ok
     assert _sys_path_hits(abs_ok) == []
+
+
+def test_no_hardcoded_cjk_progress_text():
+    """进度/错误文案纪律(A 方案,2026-11):api/core 里用户可见的人言一律走
+    core 词典 t()——text= 形参、HTTPException detail= 与任务 error 值都不允许
+    直接挂中文字面量(含 f-string)。词典本体在 WY/i18n(不在扫描范围);CLI 零
+    t() 调用不受影响。新增文案:translations_{zh,en}.py 加键 + tests/test_api.py
+    的 _PROG_CASES 登记渲染样例。"""
+    import re
+
+    pattern = re.compile(
+        r"(?:text|detail)\s*=\s*f?[\"'][^\"']*[一-龥]"
+        r"|\"error\"\s*:\s*f?[\"'][^\"']*[一-龥]")
+    offenders = []
+    for sub in ("api", "core"):
+        d = os.path.join(WY_DIR, sub)
+        for dirpath, dirnames, filenames in os.walk(d):
+            dirnames[:] = [x for x in dirnames if x != "__pycache__"]
+            for fn in filenames:
+                if not fn.endswith(".py"):
+                    continue
+                path = os.path.join(dirpath, fn)
+                with open(path, encoding="utf-8") as f:
+                    for lineno, line in enumerate(f, 1):
+                        if pattern.search(line):
+                            rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+                            offenders.append(f"{rel}:{lineno}")
+    assert not offenders, "进度文案硬编码中文(应走 core 词典 t()):\n" + "\n".join(offenders)

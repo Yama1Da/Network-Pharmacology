@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from WY import config
 from WY.core import jobs
+from WY.i18n import t
 from WY.core.ml_pipeline import STAGES, run_screen_chain
 from WY.core.ppi import list_ranked_csv_candidates
 from .common import (_df_rows, _rel_downloads, _zip_response)
@@ -71,15 +72,12 @@ def _ml_progress(cb):
         if stage in stages:
             idx = stages.index(stage)
             cb(fraction=idx / len(stages),
-               text=f"阶段 {idx + 1}/{len(stages)}:{STAGE_ZH.get(stage, stage)}",
+               text=t("ml.prog.stage", idx=idx + 1, total=len(stages),
+                      name=t(f"ml.stage.{stage}")),
                step=stage, state="running")
         else:
             cb(text=str(message)[:120])
     return _p
-
-
-STAGE_ZH = {"fetch": "获取数据集", "group": "样本分组", "preprocess": "预处理",
-            "deg": "差异表达", "ml": "ML 共识", "shortlist": "shortlist", "save": "落盘"}
 
 
 class MlProbeBody(BaseModel):
@@ -224,9 +222,9 @@ def ml_overview(body: MlOverviewBody) -> dict:
         raise HTTPException(status_code=400, detail="gse is required")
 
     def task(progress) -> dict:
-        progress(fraction=0.1, text="下载/读取数据集…")
+        progress(fraction=0.1, text=t("ml.prog.dataset"))
         ds = fetch_geo_dataset(gse)
-        progress(fraction=0.75, text="分组字段总览…")
+        progress(fraction=0.75, text=t("ml.prog.group_overview"))
         overview = group_fields_overview(ds)
         a = assess_expression_dataset(ds)
         picker = group_picker_fields(ds)
@@ -494,7 +492,7 @@ def ml_force_refresh(body: MlForceBody) -> dict:
         raise HTTPException(status_code=400, detail="gse is required")
 
     def task(progress) -> dict:
-        progress(fraction=None, text=f"强制重下 {gse}…")
+        progress(fraction=None, text=t("ml.prog.force_redownload", gse=gse))
         fetch_geo_dataset(gse, force_refresh=True)
         return {"ok": True}
 

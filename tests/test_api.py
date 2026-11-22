@@ -741,7 +741,7 @@ def test_docking_manual_guard_survives_source_switch(client, sid, monkeypatch):
     body = client.post(f"/api/docking/{sid}/ligand",
                        json={"source": "pubchem", "query": "aspirin"}).json()
     assert calls == ["aspirin"], f"ppi 来源的药名查询应放行解析: calls={calls}"
-    assert "查无化合物" in body["error"], body["error"]  # 桩返回 None 的固定文案
+    assert "found no compound" in body["error"], body["error"]  # 桩返回 None 的固定文案
 
 
 def test_docking_receptor_prepare_stale_discard(client, sid, monkeypatch):
@@ -977,10 +977,10 @@ def test_docking_receptor_upload_guards(client, sid, monkeypatch):
     assert r.status_code == 400 and "not in confirmed genes" in r.json()["detail"]
 
     r = client.post(url, params={"gene": "TP53", "name": "a.zip"}, content=b"PK")
-    assert r.status_code == 400 and "仅支持" in r.json()["detail"]
+    assert r.status_code == 400 and "structure files supported" in r.json()["detail"]
 
     r = client.post(url, params={"gene": "TP53", "name": "noext"}, content=b"x")
-    assert r.status_code == 400 and "仅支持" in r.json()["detail"]
+    assert r.status_code == 400 and "structure files supported" in r.json()["detail"]
 
     r = client.post(url, params={"gene": "TP53", "name": "empty.pdb"}, content=b"")
     assert r.status_code == 400
@@ -1092,7 +1092,7 @@ def test_docking_candidates_gene_set_before_fetch(client, sid, monkeypatch):
 
     monkeypatch.setattr(api_docking, "_pdb_candidates_cached", boom)
     r = client.post(f"/api/docking/{sid}/receptor/candidates", json={"gene": "EGFR"})
-    assert r.status_code == 200 and "RCSB 检索失败" in r.json()["error"]
+    assert r.status_code == 200 and "RCSB search failed" in r.json()["error"]
     d = docking_session.get(sid)
     assert d["gene"] == "EGFR", "检索失败时基因也必须切过去"
     assert "rec_pdbqt" not in d, "换基因必须失效旧受体"
@@ -1794,3 +1794,84 @@ def test_synergy_results_lifecycle(client):
     assert d["deleted"] == [run]
     assert not os.path.isdir(os.path.join(config.DOWNLOADS_DIR,
                                           "synergy-results", run))
+
+
+# ======== A 方案:进度文案词典化(双语渲染兜底) ========
+# 这些键是后端 job 进度的人言出口(serve 跟随 UI_LANG):缺键会静默回退英文、
+# 占位符错配会让进度回调 KeyError 直接把任务打失败,故逐一双语渲染兜底。
+# 新增进度键请同步在 CASES 里登记样例参数;键本体在 WY/i18n/translations_{zh,en}.py。
+
+import WY.i18n as _i18n_mod
+from WY.i18n import TEXT_EN as _TEXT_EN, TEXT_ZH as _TEXT_ZH, t as _t
+
+_PROG_CASES = {
+    "dock.prog.rcsb_batch": {},
+    "dock.prog.receptor_download": {},
+    "dock.prog.receptor_pdbqt": {},
+    "dock.prog.vina_running": {"e": 16, "timeout": 480},
+    "dock.prog.parse_poses": {},
+    "itx.prog.download_links": {},
+    "itx.prog.download_info": {},
+    "itx.prog.mirror_skip": {},
+    "itx.prog.fallback": {},
+    "itx.prog.processing": {},
+    "itx.prog.writing": {},
+    "itx.prog.cached_suffix": {},
+    "ml.prog.stage": {"idx": 1, "total": 7, "name": "获取数据集"},
+    "ml.stage.fetch": {},
+    "ml.stage.group": {},
+    "ml.stage.preprocess": {},
+    "ml.stage.deg": {},
+    "ml.stage.ml": {},
+    "ml.stage.shortlist": {},
+    "ml.stage.save": {},
+    "ml.prog.dataset": {},
+    "ml.prog.group_overview": {},
+    "ml.prog.force_redownload": {"gse": "GSE123"},
+    "retrieve.prog.progress": {"done": 2, "total": 4},
+    "pk.prog.index": {"n": 10, "pages": 3},
+    "pk.prog.mapping": {"n": 5},
+    "pk.prog.mapping_short": {},
+    "pk.prog.skip_existing": {"done": 1, "total": 803, "sid": "PKDB000001"},
+    "pk.prog.retry_round": {"round_no": 1, "n": 3},
+    "pk.prog.batch_main": {},
+    "pk.prog.retry_batch": {"round_no": 1},
+    "pk.prog.done_summary": {"built": 2, "skipped": 100},
+    "pk.prog.done_failures": {"n": 1},
+    "pk.prog.done_missing": {"n": 1},
+    # 对接页错误/stale 文案(api/docking.py 的 HTTP detail 与任务 error 值)
+    "dock.err.name_not_basename": {},
+    "dock.err.name_escapes": {},
+    "dock.err.meta_no_genes": {"safe": "foo_data"},
+    "dock.err.lig_no_source": {},
+    "dock.err.lig_manual_cid": {},
+    "dock.err.pubchem_unavailable": {"exc": "timeout"},
+    "dock.err.pubchem_not_found": {"query": "aspirin"},
+    "dock.err.lig_fetch_failed": {"exc": "timeout"},
+    "dock.err.cid_no_3d": {"cid": "2244"},
+    "dock.stale.source_ligand": {},
+    "dock.err.lig_prep_failed": {"exc": "boom"},
+    "dock.err.no_smiles": {},
+    "dock.err.lig_generate_failed": {"exc": "boom"},
+    "dock.err.rcsb_search_failed": {"exc": "timeout"},
+    "dock.stale.gene_receptor": {"gene": "TP53"},
+    "dock.err.gene_not_confirmed": {"gene": "TP53"},
+    "dock.err.ext_unsupported": {"exts": ".pdb / .cif", "received": ".txt"},
+    "dock.err.upload_too_large": {"mb": 20},
+    "dock.err.empty_file": {},
+    "dock.misc.empty_tag": {},
+    "dock.misc.no_ext": {},
+}
+
+
+def test_progress_keys_bilingual_parity_and_render(monkeypatch):
+    """双语同键集 + 逐键渲染:缺键/占位符错配在测试期暴露,不到浏览器。"""
+    assert set(_TEXT_ZH) & set(_PROG_CASES) == set(_PROG_CASES), "进度键必须双语登记进词典"
+    assert set(_TEXT_ZH) == set(_TEXT_EN), "core 词典 zh/en 键集必须一致"
+    for lang in ("zh", "en"):
+        monkeypatch.setattr(_i18n_mod, "_lang_provider", lambda lang=lang: lang)
+        for key, kwargs in _PROG_CASES.items():
+            rendered = _t(key, **kwargs)
+            assert rendered != key, f"{lang} 缺键:{key}"
+            assert "{" not in rendered and "}" not in rendered, \
+                f"{lang} 占位符残留:{key} → {rendered}"

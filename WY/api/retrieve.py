@@ -6,6 +6,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from WY.core import jobs
 from WY.core.files import make_bytes_zip
+from WY.i18n import t
 from WY.core.text_utils import safe_name
 from .common import _attachment
 
@@ -89,7 +90,7 @@ def targets_retrieve(body: RetrieveBody) -> dict:
 
         def cb(done: list, total: int) -> None:
             progress(fraction=(len(done) / total) if total else None,
-                     text=f"四库检索中 · 已完成 {len(done)}/{total}", done=done)
+                     text=t("retrieve.prog.progress", done=len(done), total=total), done=done)
 
         drug_df, disease_df, failed = get_targets_concurrent(
             body.drug.strip(), body.disease.strip(), progress_cb=cb)

@@ -12,6 +12,7 @@ This project incorporates the following third-party open-source components.
 | PubChemPy          | 1.0.5    | MIT                                                     | https://github.com/mcs07/PubChemPy               |
 | anndata            | 0.13.4   | BSD-3-Clause                                            | https://github.com/scverse/anndata               |
 | fastapi            | 0.162.0  | MIT                                                     | https://github.com/fastapi/fastapi               |
+| gemmi              | 0.7.5    | Mozilla Public License 2.0 (MPL 2.0)                    | https://github.com/project-gemmi/gemmi           |
 | gprofiler-official | 1.0.0    | BSD License                                             | https://biit.cs.ut.ee/gprofiler/                 |
 | gseapy             | 1.3.1    | BSD-3-Clause                                            | https://github.com/zqfang/gseapy                 |
 | matplotlib         | 3.11.2   | Python Software Foundation License                      | https://matplotlib.org                           |

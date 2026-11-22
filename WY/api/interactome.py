@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from fastapi import HTTPException
 from WY import config
 from WY.core import jobs
+from WY.i18n import t
 from WY.core.interactome import (build_interactome, clean_old_version_caches,
                                  interactome_age_days, is_built, is_stale,
                                  require_meta)
@@ -51,20 +52,21 @@ def interactome_build() -> dict:
 
     def task(progress) -> dict:
         # interactome 的回调签名是 (stage, fraction, detail),适配成 job 进度的 (fraction, text);
-        # 直接透传会因参数个数不符每次抛 TypeError,前端全程看不到构建进度
-        stage_text = {
-            "download_links": "下载 STRING links",
-            "download_info": "下载 STRING info",
-            "mirror_skip": "跳过不可用镜像",
-            "fallback": "并发下载未完成,改用单流(约需 10 分钟以上)",
-            "processing": "解析交互组",
-            "writing": "写入缓存",
+        # 直接透传会因参数个数不符每次抛 TypeError,前端全程看不到构建进度。
+        # 文案走 core 词典(A 方案):阶段键 → 词典键,未知阶段回退显示阶段键本身(与旧 stage_text.get 同语义)
+        stage_text_key = {
+            "download_links": "itx.prog.download_links",
+            "download_info": "itx.prog.download_info",
+            "mirror_skip": "itx.prog.mirror_skip",
+            "fallback": "itx.prog.fallback",
+            "processing": "itx.prog.processing",
+            "writing": "itx.prog.writing",
         }
 
         def cb(stage, fraction=None, detail=""):
-            text = stage_text.get(stage, stage)
+            text = t(stage_text_key.get(stage, stage))
             if detail == "cached":
-                text = f"{text}(已有缓存)"
+                text = f"{text}{t('itx.prog.cached_suffix')}"
             elif detail:
                 text = f"{text} · {detail}"
             progress(fraction=fraction, text=text)

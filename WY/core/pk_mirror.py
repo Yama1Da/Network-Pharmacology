@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 
 from WY import config
 from WY.core.http_client import request_with_retry, throttle
+from WY.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +182,7 @@ def _fetch_index(progress=None) -> list[dict]:
         pages += 1
         logger.debug("PK-DB 研究清单第 %d 页 %s(累计 %d 个)", pages, url, len(studies))
         if progress:
-            progress(text=f"研究清单:已取 {len(studies)} 个(第 {pages} 页)")
+            progress(text=t("pk.prog.index", n=len(studies), pages=pages))
         url = payload.get("next_page_url")
     return studies
 
@@ -223,7 +224,7 @@ def _fetch_substance_map(progress=None) -> list[dict]:
         nodes.extend(page.get("data", []))
         logger.debug("PK-DB 物质映射页 %s(累计 %d 个)", url, len(nodes))
         if progress:
-            progress(text=f"物质映射:已取 {len(nodes)} 个")
+            progress(text=t("pk.prog.mapping", n=len(nodes)))
         url = payload.get("next_page_url")
     return nodes
 
@@ -374,12 +375,12 @@ def build_mirror(force: bool = False, progress=None,
                 d = stats["done"]
             if progress:
                 progress(fraction=min(d / max(total, 1) * 0.95, 0.95),
-                         text=f"续传跳过 {d}/{total}: {sid}")
+                         text=t("pk.prog.skip_existing", done=d, total=total, sid=sid))
             continue
         todo.append(sid)
     logger.debug("PK-DB 镜像开工: 索引 %d, 待建 %d, 续传跳过 %d",
                  total, len(todo), stats["skipped_existing"])
-    _run_batch(todo, frac=None, text_prefix="镜像研究")
+    _run_batch(todo, frac=None, text_prefix=t("pk.prog.batch_main"))
 
     # 失败补试:网络抖动/上游瞬时故障多数一轮内恢复;连续两轮补试仍败才最终
     # 记失败。缺失(missing)不进补试——404 是永久状态,重试无意义。失败研究
@@ -394,8 +395,9 @@ def build_mirror(force: bool = False, progress=None,
         retry_passes_used += 1
         if progress:
             progress(fraction=0.96,
-                     text=f"失败补试第 {pass_no} 轮({len(pending)} 个研究)")
-        _run_batch(pending, frac=0.96, text_prefix=f"补试第 {pass_no} 轮")
+                     text=t("pk.prog.retry_round", round_no=pass_no, n=len(pending)))
+        _run_batch(pending, frac=0.96,
+                   text_prefix=t("pk.prog.retry_batch", round_no=pass_no))
     with lock:
         failures = list(stats["failures"])
         missing = list(stats["missing"])
@@ -403,7 +405,7 @@ def build_mirror(force: bool = False, progress=None,
     substance_map_ok = True
     try:
         if progress:
-            progress(fraction=0.97, text="物质映射")
+            progress(fraction=0.97, text=t("pk.prog.mapping_short"))
         substance_map = _fetch_substance_map(progress=progress)
         substance_nodes = len(substance_map)
         _atomic_write_json(os.path.join(_raw_dir(), "substance_map.json"),
@@ -438,12 +440,13 @@ def build_mirror(force: bool = False, progress=None,
                  stats["built"], stats["skipped_existing"], failed, len(missing),
                  meta["duration_sec"])
     if progress:
-        done_text = f"完成:新建 {stats['built']},续传跳过 {stats['skipped_existing']}"
+        done_text = t("pk.prog.done_summary", built=stats["built"],
+                      skipped=stats["skipped_existing"])
         if failed:
             # 收尾警告(2026-11-17):补试双轮仍失败的计数要明确提示用户(404 缺失不计)
-            done_text += f",仍有 {failed} 个研究失败(404 缺失不计,可点重试)"
+            done_text += t("pk.prog.done_failures", n=failed)
         if missing:
-            done_text += f";{len(missing)} 个研究上游文件集缺失(404)"
+            done_text += t("pk.prog.done_missing", n=len(missing))
         progress(fraction=1.0, text=done_text)
     return meta
 
