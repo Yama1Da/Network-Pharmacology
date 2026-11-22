@@ -14,6 +14,7 @@ CLI 与页面各自只做参数收集与结果呈现,防止两处各改各的造
 """
 
 import json
+import logging
 import os
 import time
 
@@ -228,6 +229,9 @@ def run_screen_chain(*, gse: str | None = None,
     def _report(stage: str | None, message: str) -> None:
         if progress:
             progress(stage, message)
+        # 镜像到 DEBUG 级:过程信息原本只进 UI(progress 回调),app.log 零痕迹,而产物
+        # 在全部成功后才落盘——中途失败时日志无从复盘。INFO 模式不受影响。
+        logging.debug("ML[%s] %s", stage or "-", message)
 
     t0 = time.time()
 
@@ -516,7 +520,6 @@ def run_screen_chain(*, gse: str | None = None,
             _report(None, f"自动清理: 同数据集保留最近 "
                           f"{config.ML_RESULTS_KEEP_PER_GSE} 份,已删除 {len(removed)} 个旧结果目录")
     except Exception:
-        import logging
         logging.exception("keep-per-gse 结果清理失败(不影响本次结果)")
 
     return {"consensus": res["consensus"], "shortlist": sl, "funnel": funnel,
