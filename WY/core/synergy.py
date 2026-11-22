@@ -131,6 +131,10 @@ def _analyze_pair_from_context(
     power_limited = _precheck_e3(a_lcc, b_lcc)
     if len(nodes) and (set(a_lcc) | set(b_lcc)) - set(nodes):
         raise AssertionError("入 LCC 靶点越界(上下文与映射不一致)")  # 防御,理论不可达
+    logger.debug("synergy %s×%s: 上下文 %d 节点, 入网 A %d/%d, B %d/%d, 疾病 %d/%d, 交集 %d",
+                 drug_a or "A", drug_b or "B", len(nodes),
+                 len(a_lcc), len(a_norm), len(b_lcc), len(b_norm),
+                 len(d_lcc), len(d_norm), len(set(a_norm) & set(b_norm)))
 
     # ---- s_AB 观测值 + 度匹配零分布(方案 §2.1:对 T_A/T_B 重采样) ----
     d_aa, _ = _mean_pair_within(Mt, idx, a_lcc)
@@ -154,6 +158,10 @@ def _analyze_pair_from_context(
         z_sep = None
         logger.info("synergy s_AB 零分布退化(sd=0),z_sep=None")
     p_lower = (1 + int((s_null <= s_obs).sum())) / (n_perm + 1)  # 重叠方向单尾,一期经验 p 同式
+    logger.debug("synergy %s×%s: d_aa=%.4f d_bb=%.4f d_ab=%.4f s_obs=%.4f | "
+                 "零分布 mu=%.4f sd=%.4f z=%s p_lower=%.4f",
+                 drug_a or "A", drug_b or "B", d_aa, d_bb, d_ab, s_obs,
+                 mu, sd, z_sep, p_lower)
 
     # ---- z_A/z_B/z_AB:一期邻近度检验编排复用(陷阱 #7,禁止复制实现) ----
     # proximity_zscore 自带覆盖率保护/内部置换;传 None 让它读 PROXIMITY_* 配置。
@@ -168,6 +176,8 @@ def _analyze_pair_from_context(
             prox[key] = {"ok": r.get("ok"), "error": r.get("error"),
                          "d_c": r.get("d_c"), "z": r.get("z"),
                          "p": r.get("p_empirical")}
+            logger.debug("synergy 邻近度 %s: ok=%s d_c=%s z=%s err=%s",
+                         key, r.get("ok"), r.get("d_c"), r.get("z"), r.get("error"))
         if progress:
             progress(fraction=0.95)
     else:
