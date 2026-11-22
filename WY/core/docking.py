@@ -118,6 +118,8 @@ def resolve_cid(query: str) -> int | None:
     for attempt in range(attempts):
         try:
             comps = pubchempy.get_compounds(query, "name")
+            logging.debug("PubChem CID 解析 %r: %d 个候选 -> %s",
+                          query, len(comps), comps[0].cid if comps else "无")
             return comps[0].cid if comps else None
         except pubchempy.NotFoundError:          # 404:真·查无此药
             return None
@@ -297,8 +299,10 @@ def _rcsb_search_entry_ids(gene_symbol: str, max_hits: int) -> list[str]:
     if resp is None or resp.status_code == 204 or not resp.content.strip():
         logging.info("RCSB search: no experimental structures for %s", gene_symbol)
         return []
-    return [hit.get("identifier", "") for hit in resp.json().get("result_set", [])
-            if hit.get("identifier")][:max_hits]
+    hits = [hit.get("identifier", "") for hit in resp.json().get("result_set", [])
+            if hit.get("identifier")]
+    logging.debug("RCSB search %s: %d hits, 取前 %d", gene_symbol, len(hits), len(hits[:max_hits]))
+    return hits[:max_hits]
 
 
 def _rcsb_graphql_entries(entry_ids: list[str]) -> dict[str, dict]:
@@ -397,6 +401,7 @@ def fetch_receptor_candidates_batch(genes: list[str], max_hits: int = 20,
                             thread_name_prefix="rcsb-search") as pool:
         for i, (g, ids) in enumerate(pool.map(_search, uniq)):
             gene_ids[g] = ids
+            logging.debug("RCSB 候选 %s: %d 个 entry", g, len(ids))
             if progress_cb:
                 progress_cb((i + 1) / len(uniq) * 0.7)
 
@@ -511,6 +516,9 @@ def infer_box_from_cofactor(pdb_path: str, padding: float = 8.0) -> dict:
         max(ys) - min(ys) + 2 * padding,
         max(zs) - min(zs) + 2 * padding,
     )
+    logging.debug("对接盒推断 %s: 按%s(%d 点), center=%s, size=%s",
+                  os.path.basename(pdb_path),
+                  "共晶配体/辅因子" if het else "全蛋白范围", len(source), center, size)
     return {
         "center": tuple(round(v, 4) for v in center),
         "size": tuple(round(v, 4) for v in size),
@@ -565,6 +573,7 @@ def run_vina(
     ]
     logging.info("Running vina: %s", " ".join(cmd))
     timeout = docking_timeout()
+    logging.debug("vina 超时预算 %ds(exhaustiveness=%d)", timeout, int(config.EXHAUSTIVENESS))
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True,
