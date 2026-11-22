@@ -1,7 +1,9 @@
-"""后端中文文案表:仅收后端 t() 在用的错误提示/进度文案。
-TS 前端文案(含顶栏导航 web.nav.*)全部在 tools/export_i18n_json.py 的
-web.* 命名空间;2026-11-18 死键清理删除 Streamlit 时代遗留的 620 个无引用键
-(原 640 键),同日前端导航改用 web.nav.* 后移除 app.btn_*/app.popover_* 复用键。"""
+"""后端中文文案表:仅收后端 t() 在用的错误提示/进度文案(2026-11 A 方案起
+含全部任务进度/错误人言,serve 跟随 UI_LANG 取词)。
+TS 前端文案(含顶栏导航 web.nav.*)在../translations_web_zh.py(web.* 命名
+空间,经 tools/export_i18n_json.py 导出为 web/src/locales/*.json);
+2026-11-18 死键清理删除 Streamlit 时代遗留的 620 个无引用键(原 640 键),
+同日前端导航改用 web.nav.* 后移除 app.btn_*/app.popover_* 复用键。"""
 
 TEXT_ZH: dict[str, str] = {
     # 富集文件友好名称中的 GSEA 侧别标签

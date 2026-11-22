@@ -1,7 +1,10 @@
-"""后端英文文案表(默认语言):与 translations_zh 同键集。TS 前端文案(含顶栏
-导航 web.nav.*)全部在 tools/export_i18n_json.py 的 web.* 命名空间;
-2026-11-18 死键清理删除 Streamlit 时代遗留的 620 个无引用键(原 640 键),
-同日前端导航改用 web.nav.* 后移除 app.btn_*/app.popover_* 复用键。"""
+"""Backend English texts (default language): same key set as translations_zh.
+TS front-end texts (incl. top-nav web.nav.*) live in
+../translations_web_en.py (web.* namespace, exported by
+tools/export_i18n_json.py to web/src/locales/*.json);
+2026-11-18 dead-key cleanup removed 620 unreferenced Streamlit-era keys
+(was 640), and front-end navigation moved to web.nav.* the same day,
+dropping the app.btn_*/app.popover_* reuse keys."""
 
 TEXT_EN: dict[str, str] = {
     # Venn 图内文字刻意保持英文，硬编码在 App.py 图表处，相关键已移除。

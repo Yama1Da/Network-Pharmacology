@@ -1,8 +1,11 @@
 """后端文案对照表(core/api/CLI 生成用户可见字符串时取词)。
 
 后端用 t("键名") 取词,如 t("dock.err_invalid_smiles");TS 前端的文案不在这里,
-在 tools/export_i18n_json.py 的 web.* 命名空间(经该脚本导出为 web/src/locales/*.json)。
-词典本体在 translations_en.py / translations_zh.py,本文件只保留对外 API。
+在 zh/translations_web_zh.py 与 en/translations_web_en.py 的 web.* 命名空间
+(经 tools/export_i18n_json.py 导出为 web/src/locales/*.json)。
+词典本体按语言分目录:en/translations_en.py 与 zh/translations_zh.py
+(core 人言)、en/translations_web_en.py 与 zh/translations_web_zh.py(前端模板
+人言),本文件只保留对外 API(t / set_lang_provider / TEXT 注册表)。
 
 本包不依赖任何 Web 框架:当前语言由宿主经 set_lang_provider 注入
 读取函数,未注入时(离线脚本/线程等无界面环境)恒为默认语言,
@@ -10,8 +13,8 @@
 """
 from collections.abc import Callable
 
-from .translations_en import TEXT_EN
-from .translations_zh import TEXT_ZH
+from .en.translations_en import TEXT_EN
+from .zh.translations_zh import TEXT_ZH
 
 # 默认语言:英文
 DEFAULT_LANG = "en"
