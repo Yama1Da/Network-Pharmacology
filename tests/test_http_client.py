@@ -14,10 +14,12 @@ from WY.core.http_client import throttle
 
 
 class _FakeResp:
-    """最小假响应:只需要 status_code 与 raise_for_status。"""
+    """最小假响应:status_code、raise_for_status 与 url(request_with_retry 的
+    DEBUG 网络流水会读 resp.url,真实 Response 必有该属性)。"""
 
-    def __init__(self, status: int):
+    def __init__(self, status: int, url: str = "http://fake/resp"):
         self.status_code = status
+        self.url = url
 
     def raise_for_status(self):
         if self.status_code >= 400:

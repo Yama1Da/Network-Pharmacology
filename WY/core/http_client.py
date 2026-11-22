@@ -38,6 +38,7 @@ def get_session() -> requests.Session:
                 except Exception:
                     logging.exception("requests_cache unavailable, falling back to plain session")
                     _session = requests.Session()
+                logging.debug("HTTP 会话就绪: %s", type(_session).__name__)
     return _session
 
 
@@ -52,11 +53,13 @@ def clear_http_cache(hosts: tuple[str, ...] | None = None) -> None:
     try:
         cache = get_session().cache
         if not hosts:
+            logging.debug("HTTP 缓存全量清空")
             cache.clear()
             return
         targets = {h.lower() for h in hosts}
         keys = [r.cache_key for r in cache.filter()
                 if urllib.parse.urlsplit(r.request.url).netloc.lower() in targets]
+        logging.debug("HTTP 缓存定向清除 %s: 命中 %d 键", sorted(targets), len(keys))
         if keys:
             cache.delete(*keys)
     except Exception:
@@ -126,6 +129,11 @@ def request_with_retry(
             else:
                 resp = http.post(url, json=json, data=data, params=params,
                                  timeout=timeout, headers=headers, **extra)
+            # DEBUG 级网络流水(全数据源统一入口,一处埋点全局生效):每次尝试一行,
+            # 含最终 URL(带查询参数/跟随重定向后)与状态码;INFO 模式不出现。
+            logging.debug("%s: %s %s -> %d(第 %d/%d 次)",
+                          label, method.upper(), resp.url, resp.status_code,
+                          attempt + 1, max_retries)
             if resp.status_code in no_retry_status:
                 return resp
             resp.raise_for_status()  # 返回异常状态码(如服务器报错)时视为请求失败
@@ -151,8 +159,10 @@ def probe_range_total(url: str, *, headers: dict | None = None, timeout,
         with requests.get(url, headers=dict(headers or {}, Range="bytes=0-0"),
                           stream=True, timeout=timeout) as resp:
             if resp.status_code != 206:
+                logging.debug("Range 探测 %s: 不支持(status=%d)", url, resp.status_code)
                 return 0
             total = resp.headers.get("Content-Range", "").rsplit("/", 1)[-1]
+            logging.debug("Range 探测 %s: %s 字节", url, total)
             return int(total) if total.isdigit() else 0
     except Exception:
         if log_failures:
