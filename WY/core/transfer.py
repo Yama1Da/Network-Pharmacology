@@ -11,6 +11,7 @@ zip 炸弹防护/与现有数据的冲突检测),前端逐条让用户决策(覆
 """
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -18,6 +19,8 @@ import time
 import uuid
 import zipfile
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # 导出包名与包内 manifest 的固定形态;导入端按它识别"本程序导出的包"
 EXPORT_FILE_RE = re.compile(r"^npap_export_\d{8}_\d{6}\.zip$")
@@ -157,6 +160,7 @@ def build_export_bundle(scopes, out_path: str, progress=None) -> dict:
                     rel = os.path.relpath(fp, root).replace(os.sep, "/")
                     arcname = f"items/{kind}/{name}/{rel}"
                     if _is_env_file(arcname):
+                        logger.debug("导出排除密钥文件: %s", arcname)
                         continue  # 双保险:密钥文件绝不进包
                     plan_files.append((fp, arcname))
             items.append({"kind": kind, "name": name})
@@ -182,6 +186,9 @@ def build_export_bundle(scopes, out_path: str, progress=None) -> dict:
         zf.writestr(MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False, indent=2))
 
     counts = {kind: sum(1 for it in items if it["kind"] == kind) for kind in DIR_KINDS}
+    logger.debug("导出包完成: %s(%d 字节), %d 文件, 条目 %s, ui_settings=%s",
+                 os.path.basename(out_path), os.path.getsize(out_path),
+                 len(plan_files), counts, ui_exported)
     return {"filename": os.path.basename(out_path), "size": os.path.getsize(out_path),
             "counts": counts, "ui_settings": ui_exported}
 
@@ -333,6 +340,7 @@ def analyze_bundle(zip_path: str, staging_dir: str) -> dict:
         for info in infos:
             target, parts = _safe_target(staging_dir, info.filename)
             if _junk_entry(parts):
+                logger.debug("导入跳过杂项条目: %s", info.filename)
                 continue
             if info.filename == MANIFEST_NAME:
                 pass
@@ -371,6 +379,8 @@ def analyze_bundle(zip_path: str, staging_dir: str) -> dict:
             # 归一为 TransferError,api 层转 400,而不是裸异常变 500
             raise TransferError(f"bundle is corrupted or unreadable: {exc}") from exc
 
+    logger.debug("导入包解压完成: %d 文件落盘, %d 项, 解压总量 %d 字节",
+                 len(plan), len(manifest["items"]), total)
     return _build_report(manifest, stat, staging_dir)
 
 
@@ -390,6 +400,7 @@ def _build_report(manifest: dict, stat: dict, staging_dir: str) -> dict:
             if reason:
                 entry["invalid"] = True
                 entry["invalid_reason"] = reason
+                logger.debug("geo 条目无效 %s: %s", name, reason)
         items.append(entry)
 
     ui = {"present": manifest.get("ui_settings") is True}
@@ -399,13 +410,16 @@ def _build_report(manifest: dict, stat: dict, staging_dir: str) -> dict:
         raw = load_json_file(path)
         ui["keys"] = len(_filter_ui_settings(raw)) if isinstance(raw, dict) else 0
         ui["conflict"] = os.path.isfile(config.UI_SETTINGS_FILE)
+    warnings = _schema_warnings(manifest.get("schema", {}))
+    for w in warnings:
+        logger.debug("导入包版本差异: %s", w)
     return {
         "manifest": {"app_version": manifest.get("app_version", ""),
                      "created_at": manifest.get("created_at", ""),
                      "schema": manifest.get("schema", {})},
         "items": items,
         "ui_settings": ui,
-        "warnings": _schema_warnings(manifest.get("schema", {})),
+        "warnings": warnings,
     }
 
 
@@ -448,6 +462,9 @@ def _filter_ui_settings(raw: dict) -> dict:
                 out[k] = v
             elif isinstance(v, (int, float)) and not isinstance(v, bool):
                 out[k] = v
+    dropped = sorted(set(raw) - set(out))
+    if dropped:
+        logger.debug("ui_settings 白名单过滤丢弃: %s", dropped)
     return out
 
 
@@ -460,6 +477,7 @@ def commit_import(staging_dir: str, decisions: list[dict]) -> dict:
         try:
             if action == "skip":
                 skipped.append({"kind": str(kind), "name": str(name)})
+                logger.debug("导入跳过 %s/%s(用户决策)", kind, name)
                 continue
             if kind == "ui_settings":
                 if action != "overwrite":
@@ -487,6 +505,7 @@ def commit_import(staging_dir: str, decisions: list[dict]) -> dict:
                 raise TransferError(f"unknown action: {action!r}")
         except (TransferError, OSError) as exc:
             failed.append({"kind": str(kind), "name": str(name), "reason": str(exc)})
+            logger.debug("导入失败 %s/%s: %s", kind, name, exc)
     return {"applied": applied, "skipped": skipped, "failed": failed}
 
 
@@ -510,6 +529,8 @@ def _move_into_place(staging_dir: str, kind: str, name: str, dest_name: str) -> 
         raise
     if quarantine is not None:
         shutil.rmtree(quarantine, ignore_errors=True)
+    logger.debug("落位 %s/%s -> %s%s", kind, name, dest_name,
+                 "(覆盖,旧数据已隔离删除)" if quarantine is not None else "")
     return {"kind": kind, "name": dest_name}
 
 
