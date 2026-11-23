@@ -160,6 +160,42 @@ PKDB_DOWNLOAD_WORKERS = 4        # 镜像并发 worker 数(2026-11-17 定稿):�
 # 4 个已到节流吞吐上限(5 请求/秒),再多白费且推高缓存文件写竞争
 # (HTTP 缓存是 JSON 文件锁,caching.py _path_locks,非 sqlite——2026-11-17 审查勘误)
 
+# ======== 靶点浓度可达性(归一化层/R 值/w(R),二期方案 §3.1-§3.2) ========
+# 提案 B 常量组(消费方 core/reachability.py,2026-11-22 负责人定稿合入)。
+# 校验语义(改值前必读):R_REACHABLE_MIN/R_PARTIAL_MIN/FUB_DEFAULT 走
+# reachability._plan_or_config 强校验——与下方注释的方案定稿值不一致直接拒绝
+# (防口径漂移,§0.6);REACH_TIER_WEIGHTS 只校验四档键齐全,数值即标定产出。
+
+# 归一化缓存版本号:substance_map/cmax_norm/fub_norm 三件套 Parquet 文件名带它
+# (*_v{N}.parquet,一期 TARGET_FILTER_VERSION 同款逻辑);缺失时 reachability
+# 拒绝构建归一化缓存(不静默默认)。改清洗/聚合/分箱/权重逻辑必递增 → 旧缓存
+# 自动失效重算(方案 §3.1 第 2 层,清单 §0.6 版本递增纪律)。首版=1。
+PK_NORM_VERSION = 1
+
+# R 三档分箱阈值(§12.2-B2 定稿:主定义不加安全系数 k——fub 与细胞优先活性
+# 已内含主要校正,叠 k 属两个假设相乘、答辩难自证)。占据理论语义:R=1 ⇔ 50%
+# 占据(Hill–Langmuir),R=0.1 ⇔ 约 9%;边界敏感性对照(R≥3/≥9)走显式传参
+# 另跑报告排序位移,不改本值(§3.2)。
+R_REACHABLE_MIN = 1.0  # R ≥ 此值 → 可达(reachable)
+R_PARTIAL_MIN = 0.1    # 此值 ≤ R < 上档 → 部分可达(partial),再低不可达
+
+# fub 缺失保守上界(§3.1 第 2 层):缺失按 1.0 处理并打"可能高估"标记列,
+# 绝不允许当 0(除零 inf 静默污染,清单 §1.2-4)。concentration_unbound 直取
+# 替代路线待定(2026-11-22 已报),定夺前本值冻结。
+FUB_DEFAULT = 1.0
+
+# w(R) 分档常数权重(§12.2-B3 定稿初值,方案 §3.2"可调参数总量 ≤6"之四)。
+# 唯一设计为"可标定"的常量:正式值只能出自 1.7 基准网格标定 + 负责人复核签字
+# 才能改(清单 §1.2-⑤),改值必递增 PK_NORM_VERSION;禁止手调(§5.2 标定纪律、
+# §5.4-7 禁止自行业务阈值拍板)。unknown 高于 unreachable 是刻意的:
+# 暴露量未知 ≠ 不可达(陷阱 §0.4,静默合并进不可达是硬性禁止事项 §5.4-5)。
+REACH_TIER_WEIGHTS = {
+    "reachable": 1.0,
+    "partial": 0.6,
+    "unknown": 0.5,
+    "unreachable": 0.2,
+}
+
 # CLI 结果目录:取 API.env 里的 CLI_RESULTS_DIR(配一次永久生效,与 VINA_DIR 同类的本机路径,不入库);
 # 未配置时为空串,cli.py 兜底落到 ./results。供 cli.py 的 --out 三级解析作第二优先级。
 CLI_RESULTS_DIR = os.getenv("CLI_RESULTS_DIR", "").strip()
