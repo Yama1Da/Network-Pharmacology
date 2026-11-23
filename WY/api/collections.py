@@ -13,6 +13,7 @@ from WY.core.files import (list_cache_files, list_download_dirs,
 from WY.core.management import enrichment_display_name
 from WY.core.sources import disease_spec, drug_spec
 from WY.core.sources import file_path as spec_file_path
+from WY.core.sources import merged_status
 from .common import (_ZIP_NAMES, _zip_response)
 
 
@@ -45,12 +46,18 @@ def _items_for(kind: str) -> tuple[str, list[dict], object]:
         def resolver(name: str) -> str:
             return spec_file_path(name, spec)
 
-        items = [{"name": n, "modified": _list_mtime(resolver(n)),
-                  "size": os.path.getsize(resolver(n)) if os.path.exists(resolver(n)) else 0,
-                  "is_merged": n.startswith(spec["merged_prefix"]),
-                  "source": next((p.rstrip("_") for p in spec["source_prefixes"]
-                                  if n.startswith(p)), "merged")}
-                 for n in names]
+        items = []
+        for n in names:
+            path = resolver(n)
+            status = merged_status(n, spec)
+            items.append({
+                "name": n, "modified": _list_mtime(path),
+                "size": os.path.getsize(path) if os.path.exists(path) else 0,
+                "is_merged": status is not None,
+                "merged_status": status,
+                "source": next((p.rstrip("_") for p in spec["source_prefixes"]
+                                if n.startswith(p)), "merged"),
+            })
         return "files", items, resolver
 
     if kind == "ppi":

@@ -24,6 +24,7 @@ export interface CollectionItem {
   size: number
   /* 管理页(drug/disease_sources)附加 */
   is_merged?: boolean
+  merged_status?: 'current' | 'legacy' | null
   source?: string
   /* 富集页附加 */
   display?: string

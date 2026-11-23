@@ -42,11 +42,8 @@ const { selected, toggle: toggleSel, allSelected, toggleAll, retain } = useSelec
 const srcOn = ref<Record<string, boolean>>({})
 const showMerged = ref(true)
 
-/* 来源筛选的展示名:后端把旧过滤版本的整合缓存(merged_*_v<旧>_)回落为
-   source="merged",这里给它一个明确的"旧版"标签,避免与右侧整合表开关混淆;
-   其余来源名(ChEMBL/DGIdb/OpenTargets/DisGeNET)是专有名词,原样展示。 */
-const SRC_LABEL: Record<string, string> = { merged: 'web.sources.legacy_merged_label' }
-const srcLabel = (s: string): string => (SRC_LABEL[s] ? t(SRC_LABEL[s]) : s)
+const isLegacyMerged = (it: CollectionItem): boolean =>
+  it.merged_status === 'legacy'
 
 const sourceNames = computed(() => {
   const names = new Set<string>()
@@ -184,7 +181,7 @@ onBeforeUnmount(() => {
     <div class="filters">
       <span class="ctl-label">{{ t('web.sources.source_label') }}</span>
       <label v-for="s in sourceNames" :key="s" class="chk">
-        <input v-model="srcOn[s]" type="checkbox" /> {{ srcLabel(s) }}
+        <input v-model="srcOn[s]" type="checkbox" /> {{ s }}
       </label>
       <label class="chk"><input v-model="showMerged" type="checkbox" /> {{ t('web.sources.merged_label') }}</label>
     </div>
@@ -242,10 +239,17 @@ onBeforeUnmount(() => {
             <input type="checkbox" :checked="selected.has(it.name)" @change="toggleSel(it.name)" />
           </label>
           <span class="fname" :title="it.name">
-            <i v-if="it.is_merged" class="merged-tag">{{ t('web.sources.merged_tag') }}</i>{{ it.name }}
+            <i v-if="it.is_merged" class="merged-tag" :class="{ legacy: isLegacyMerged(it) }"
+               :title="isLegacyMerged(it) ? t('web.sources.legacy_merged_hint') : undefined">
+              {{ isLegacyMerged(it) ? t('web.sources.legacy_merged_tag') : t('web.sources.merged_tag') }}
+            </i>{{ it.name }}
+            <small v-if="isLegacyMerged(it)" class="legacy-note">
+              {{ t('web.sources.legacy_merged_hint') }}
+            </small>
           </span>
           <span class="fmeta">{{ fmtSize(it.size) }} · {{ it.modified }}</span>
-          <button class="mini" :title="t('web.sources.refresh_one')" :disabled="job.running.value"
+          <button v-if="!isLegacyMerged(it)" class="mini"
+                  :title="t('web.sources.refresh_one')" :disabled="job.running.value"
                   @click="updateOne(it.name)">↻</button>
         </div>
       </li>
@@ -275,5 +279,16 @@ onBeforeUnmount(() => {
   padding: 1px 5px;
   margin-right: 8px;
   vertical-align: 1.5px;
+}
+.merged-tag.legacy {
+  color: var(--c-danger);
+  border-color: var(--c-danger);
+}
+.legacy-note {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--c-danger);
 }
 </style>

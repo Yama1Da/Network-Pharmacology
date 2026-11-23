@@ -35,3 +35,11 @@ def test_file_path_routing():
         os.path.join("/m", "merged_drug_v1_metformin.csv")
     assert sources.file_path("ChEMBL_metformin.csv", spec) == \
         os.path.join("/c", "ChEMBL_metformin.csv")
+
+
+def test_merged_status_classification():
+    """当前前缀=current;其他 merged_* 文件=legacy;普通来源文件=None。"""
+    spec = {"merged_prefix": "merged_drug_v6_"}
+    assert sources.merged_status("merged_drug_v6_metformin.csv", spec) == "current"
+    assert sources.merged_status("merged_drug_v5_metformin.csv", spec) == "legacy"
+    assert sources.merged_status("ChEMBL_metformin.csv", spec) is None

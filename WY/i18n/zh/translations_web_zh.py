@@ -242,6 +242,8 @@ TEXT_WEB_ZH = {
     "web.sources.merged_label": "整合表 (merged)",
     "web.sources.legacy_merged_label": "旧版整合表 (旧版 merged)",
     "web.sources.merged_tag": "整合",
+    "web.sources.legacy_merged_tag": "旧版",
+    "web.sources.legacy_merged_hint": "过滤版本已过期，不参与新分析",
     "web.sources.update_all": "全部更新",
     "web.sources.update_selected": "更新选中",
     "web.sources.update_done_ok": "更新完成:{n} 个文件全部成功",

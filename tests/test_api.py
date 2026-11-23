@@ -57,6 +57,33 @@ def test_collections_all_kinds(client, kind):
     assert isinstance(body["items"], list)
 
 
+def test_source_collection_marks_legacy_merged(client, monkeypatch):
+    """来源页必须区分当前/旧版 merged;旧版仍归 merged 开关管理,不混入来源筛选项。"""
+    drug_dir = os.path.join(config.CACHE_DIR, "drug")
+    merged_dir = os.path.join(config.CACHE_DIR, "merged")
+    monkeypatch.setattr(config, "DRUG_CACHE_DIR", drug_dir)
+    monkeypatch.setattr(config, "MERGED_CACHE_DIR", merged_dir)
+    os.makedirs(drug_dir, exist_ok=True)
+    os.makedirs(merged_dir, exist_ok=True)
+    source_name = "ChEMBL_probe.csv"
+    current_name = f"{config.MERGED_DRUG_PREFIX}probe.csv"
+    legacy_name = f"merged_drug_v{config.TARGET_FILTER_VERSION - 1}_probe.csv"
+    for directory, name in ((drug_dir, source_name),
+                            (merged_dir, current_name),
+                            (merged_dir, legacy_name)):
+        with open(os.path.join(directory, name), "w", encoding="utf-8") as f:
+            f.write("approvedSymbol\nTP53\n")
+
+    items = client.get("/api/collections/drug_sources").json()["items"]
+    by_name = {it["name"]: it for it in items}
+    assert by_name[source_name]["is_merged"] is False
+    assert by_name[source_name]["merged_status"] is None
+    assert by_name[current_name]["is_merged"] is True
+    assert by_name[current_name]["merged_status"] == "current"
+    assert by_name[legacy_name]["is_merged"] is True
+    assert by_name[legacy_name]["merged_status"] == "legacy"
+
+
 def test_collections_unknown_kind_404(client):
     assert client.get("/api/collections/nope").status_code == 404
 

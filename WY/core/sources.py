@@ -74,6 +74,17 @@ def file_path(filename: str, spec: dict) -> str:
     return os.path.join(spec["cache_dir"], filename)
 
 
+def merged_status(filename: str, spec: dict) -> str | None:
+    """整合缓存版本状态:非 merged → None;当前过滤版本 → current;旧版 → legacy。
+
+    前端据此把当前/旧版都纳入 merged 开关，并在行内显示不同标记。旧版仍可
+    打包/删除，但不能单文件刷新——单文件刷新只对当前版本前缀有定义。
+    """
+    if not filename.startswith("merged_"):
+        return None
+    return "current" if filename.startswith(spec["merged_prefix"]) else "legacy"
+
+
 def cache_file_hosts(filename: str, spec: dict) -> tuple[str, ...]:
     """强制刷新某缓存文件前,需定向清空的 HTTP 响应缓存域名。
     来源文件只涉及该来源自己的域名;整合文件或未识别前缀取该类别全部来源域名

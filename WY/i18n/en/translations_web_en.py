@@ -241,6 +241,8 @@ TEXT_WEB_EN = {
     "web.sources.merged_label": "Merged table (merged)",
     "web.sources.legacy_merged_label": "Legacy merged (old filter version)",
     "web.sources.merged_tag": "Merged",
+    "web.sources.legacy_merged_tag": "Legacy",
+    "web.sources.legacy_merged_hint": "Older filter version; excluded from new analyses",
     "web.sources.update_all": "Update all",
     "web.sources.update_selected": "Update selected",
     "web.sources.update_done_ok": "Update complete: all {n} files succeeded",
