@@ -382,3 +382,60 @@ class TestSorting:
         assert rch._is_tracer("C14-labeled", "TR1", "", "mg")     # 物质名标记
         assert rch._is_tracer("x", "TR1", "scintillation counting", "mg")
         assert not rch._is_tracer("caffeine", "MET1000", "", "mg")  # 治疗剂量不误杀
+
+
+class TestMergedCacheActivity:
+    """merged 缓存明细列消费(TARGET_FILTER_VERSION≥6,2026-11-23 放行):
+    展开等价于原始记录表 + 错位缓存拒绝(不静默截断)。"""
+
+    def test_expanded_equivalent_to_raw(self):
+        raw = pd.DataFrame([
+            {"approvedSymbol": "TP53", "assay_type": "F", "pchembl_value": 7.0},
+            {"approvedSymbol": "TP53", "assay_type": "F", "pchembl_value": 6.0},
+            {"approvedSymbol": "TP53", "assay_type": "B", "pchembl_value": 5.0},
+            {"approvedSymbol": "LMNA", "assay_type": "F", "pchembl_value": 8.46},
+        ])
+        merged = pd.DataFrame([
+            {"approvedSymbol": "TP53", "chmbl_assay_types": "B;F;F",
+             "chmbl_pchembl_values": "5.0;6.0;7.0"},
+            {"approvedSymbol": "LMNA", "chmbl_assay_types": "F",
+             "chmbl_pchembl_values": "8.46"},
+            {"approvedSymbol": "KRAS", "chmbl_assay_types": float("nan"),
+             "chmbl_pchembl_values": float("nan")},  # 纯 DGIdb 佐证基因无明细
+        ])
+        from_raw = rch._b1_activity(raw).set_index("gene")
+        from_merged = rch._b1_activity(merged).set_index("gene")
+        assert list(from_merged.index) == ["LMNA", "TP53"]  # KRAS 无活性不入
+        assert from_merged.loc["TP53", "activity_M"] == pytest.approx(
+            from_raw.loc["TP53", "activity_M"])
+        assert from_merged.loc["TP53", "n_assays"] == 2      # 细胞两条取中位数
+        assert bool(from_merged.loc["TP53", "fallback_flag"]) is False
+        assert from_merged.loc["TP53", "activity_alt_M"] == 10 ** -5.0
+        assert from_merged.loc["LMNA", "activity_M"] == pytest.approx(10 ** -8.46)
+
+    def test_misaligned_cache_rejected(self):
+        bad = pd.DataFrame([{"approvedSymbol": "TP53",
+                             "chmbl_assay_types": "F;B",
+                             "chmbl_pchembl_values": "7.0"}])
+        with pytest.raises(RuntimeError, match="错位"):
+            rch._b1_activity(bad)
+
+    def test_expanded_flows_through_compute(self, sandbox_norm):
+        """merged 明细 → compute_reachability 全链:走沙箱真实归一化三件套。
+        二甲双胍 Cmax≈7.74 µM;细胞中位数 pChEMBL 6.5 → 活性 10^-6.5,
+        R≈24.5 → 可达;无 ChEMBL 明细的 KRAS 保持 unknown。"""
+        _build_all()
+        merged = pd.DataFrame([
+            {"approvedSymbol": "TP53", "chmbl_assay_types": "F;F",
+             "chmbl_pchembl_values": "6.0;7.0"},
+            {"approvedSymbol": "KRAS", "chmbl_assay_types": None,
+             "chmbl_pchembl_values": None},
+        ])
+        res = rch.compute_reachability(merged, "metformin")
+        assert res["n_targets"] == 2
+        assert res["n_computed"] == 1
+        assert res["tier"] == "reachable"
+        detail = res["targets"].set_index("gene")
+        assert detail.loc["TP53", "activity_M"] == pytest.approx(10 ** -6.5)
+        assert detail.loc["TP53", "tier"] == "reachable"
+        assert detail.loc["KRAS", "tier"] == "unknown"

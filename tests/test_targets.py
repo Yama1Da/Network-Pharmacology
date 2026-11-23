@@ -6,6 +6,7 @@ import math
 import os
 
 import pandas as pd
+import pytest
 
 from WY import config
 from WY.core.text_utils import safe_name
@@ -116,8 +117,10 @@ def test_prepare_disease_sources_truncates(monkeypatch):
 
 def test_merge_source_pair_union_and_flags(tmp_path):
     """按基因取并集:标记来源、source_count、各源分数最大值;缓存落盘。"""
-    a = pd.DataFrame([{"approvedSymbol": "TP53", "pchembl_value": 7.0},
-                      {"approvedSymbol": "EGFR", "pchembl_value": 5.0}])
+    a = pd.DataFrame([
+        {"approvedSymbol": "TP53", "assay_type": "F", "pchembl_value": 7.0},
+        {"approvedSymbol": "EGFR", "assay_type": "F", "pchembl_value": 5.0},
+    ])
     b = pd.DataFrame([{"approvedSymbol": "TP53", "interaction_score": 0.9},
                       {"approvedSymbol": "KRAS", "interaction_score": 0.4}])
     cache = str(tmp_path / "merged_x.csv")
@@ -135,6 +138,110 @@ def test_merge_source_pair_union_and_flags(tmp_path):
     assert tg._merge_source_pair("x", pd.DataFrame(), pd.DataFrame(),
                                  cache_path=str(tmp_path / "z.csv"),
                                  **tg._DRUG_MERGE).empty
+
+
+def test_drug_merge_v6_activity_details_roundtrip(tmp_path):
+    """v6 药物 merged 保留逐条 ChEMBL 明细:位置对齐、确定性排序、CSV 往返后
+    仍与原始记录等价,供可达性 B1 直接消费。"""
+    a = pd.DataFrame([
+        {"approvedSymbol": "tp53", "assay_type": "F", "pchembl_value": 7.0},
+        {"approvedSymbol": "TP53", "assay_type": "B", "pchembl_value": 5.0},
+        {"approvedSymbol": "TP53", "assay_type": "F", "pchembl_value": "6.0"},
+        {"approvedSymbol": "TP53", "assay_type": "F", "pchembl_value": None},
+        {"approvedSymbol": "EGFR", "assay_type": None, "pchembl_value": 9.0},
+    ])
+    b = pd.DataFrame([{"approvedSymbol": "TP53", "interaction_score": 0.9}])
+    cache = str(tmp_path / "merged_drug_v6_probe.csv")
+    merged = tg._merge_source_pair(
+        "probe", a, b, cache_path=cache, **tg._DRUG_MERGE)
+    tp = merged.set_index("approvedSymbol").loc["TP53"]
+    assert tp["chmbl_assay_types"] == "B;F;F"
+    assert tp["chmbl_pchembl_values"] == "5.0;6.0;7.0"
+
+    # 输入顺序变化不得改变序列化结果(同缓存同输入可复现)
+    shuffled = tg._merge_source_pair(
+        "probe", a.sample(frac=1, random_state=7), b,
+        cache_path=str(tmp_path / "shuffled.csv"), save=False, **tg._DRUG_MERGE)
+    assert shuffled.set_index("approvedSymbol").loc["TP53", "chmbl_pchembl_values"] \
+        == tp["chmbl_pchembl_values"]
+
+    loaded = pd.read_csv(cache)
+    from WY.core import reachability as rch
+
+    b1 = rch._b1_activity(loaded).set_index("gene")
+    assert b1.loc["TP53", "n_assays"] == 2
+    assert b1.loc["TP53", "activity_M"] == pytest.approx(10 ** -6.5)
+    assert b1.loc["TP53", "activity_alt_M"] == pytest.approx(10 ** -5.0)
+
+
+def test_drug_merge_v6_rejects_missing_activity_columns(tmp_path):
+    """v6 不兼容旧格式:A 源非空但缺 assay_type/pchembl_value 时拒绝写缓存。"""
+    a = pd.DataFrame([{"approvedSymbol": "TP53", "pchembl_value": 7.0}])
+    b = pd.DataFrame()
+    with pytest.raises(RuntimeError, match="assay_type"):
+        tg._merge_source_pair(
+            "probe", a, b, cache_path=str(tmp_path / "bad.csv"),
+            **tg._DRUG_MERGE)
+    assert not (tmp_path / "bad.csv").exists()
+
+
+def test_disease_merge_does_not_carry_drug_activity_columns(tmp_path):
+    """明细列仅属药物侧;疾病 merged 列契约保持不变。"""
+    ot = pd.DataFrame([{
+        "approvedSymbol": "TP53", "association_score": 0.8,
+        "biotype": "protein_coding",
+    }])
+    dg = pd.DataFrame([{"approvedSymbol": "TP53", "disgenet_score": 0.4}])
+    merged = tg._merge_source_pair(
+        "probe disease", ot, dg,
+        cache_path=str(tmp_path / "merged_disease.csv"), **tg._DISEASE_MERGE)
+    assert not any(c.startswith("chmbl_") for c in merged.columns)
+
+
+def test_get_drug_targets_merged_writes_current_v6_and_hits_cache(monkeypatch):
+    """完整入口:命中当前版本文件名、写出明细列;第二次调用只读 v6 缓存。"""
+    monkeypatch.setattr(config, "CHEMBL_PCHEMBL_THRESHOLD", 6.0)
+    monkeypatch.setattr(config, "CHEMBL_TARGET_BLACKLIST", ())
+    monkeypatch.setattr(config, "CHEMBL_CORROBORATION_REQUIRED", True)
+    monkeypatch.setattr(config, "DGIDB_MIN_SCORE", 0.3)
+    calls = {"chembl": 0, "dgidb": 0}
+
+    def fake_chembl(name):
+        calls["chembl"] += 1
+        return pd.DataFrame([
+            {"approvedSymbol": "TP53", "assay_type": "B", "pchembl_value": 5.0},
+            {"approvedSymbol": "TP53", "assay_type": "F", "pchembl_value": 6.0},
+            {"approvedSymbol": "TP53", "assay_type": "F", "pchembl_value": 7.0},
+        ]), "stub"
+
+    def fake_dgidb(name):
+        calls["dgidb"] += 1
+        return pd.DataFrame([{
+            "approvedSymbol": "TP53", "interaction_score": 0.9,
+            "interaction_pmids": "123",
+        }])
+
+    monkeypatch.setattr(tg, "fetch_drug_targets_chembl", fake_chembl)
+    monkeypatch.setattr(tg, "fetch_drug_targets_dgidb", fake_dgidb)
+    first = tg.get_drug_targets_merged("v6-probe")
+    cache = os.path.join(
+        config.MERGED_CACHE_DIR,
+        f"{config.MERGED_DRUG_PREFIX}{safe_name('v6-probe')}.csv")
+    assert config.TARGET_FILTER_VERSION >= 6
+    assert os.path.basename(cache).startswith(
+        f"merged_drug_v{config.TARGET_FILTER_VERSION}_")
+    assert os.path.exists(cache)
+    assert first.iloc[0]["chmbl_assay_types"] == "B;F;F"
+    assert first.iloc[0]["chmbl_pchembl_values"] == "5.0;6.0;7.0"
+    assert calls == {"chembl": 1, "dgidb": 1}
+
+    monkeypatch.setattr(tg, "fetch_drug_targets_chembl", lambda name: (
+        (_ for _ in ()).throw(AssertionError("v6 cache miss"))))
+    monkeypatch.setattr(tg, "fetch_drug_targets_dgidb", lambda name: (
+        (_ for _ in ()).throw(AssertionError("v6 cache miss"))))
+    second = tg.get_drug_targets_merged("v6-probe")
+    assert list(second.columns) == list(first.columns)
+    assert second.iloc[0]["chmbl_pchembl_values"] == "5.0;6.0;7.0"
 
 
 def test_intersect_target_symbols():

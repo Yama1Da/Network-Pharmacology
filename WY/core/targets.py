@@ -135,6 +135,10 @@ _DRUG_MERGE = dict(
     score_a=("score_pchembl", "pchembl_value"),
     score_b=("score_dgidb", "interaction_score"),
     sources_desc=("ChEMBL", "DGIdb"),
+    # 明细放行(2026-11-23,TARGET_FILTER_VERSION 5→6):逐条带出过滤后 ChEMBL
+    # 记录的 (assay_type, pchembl_value),供可达性 B1 聚合(同基因多 assay
+    # 细胞优先中位数)消费;疾病侧不携带,输出列与既往一致
+    carry_a=("assay_type", "pchembl_value"),
 )
 _DISEASE_MERGE = dict(
     kind="disease", src_a="source_ot", src_b="source_disgenet",
@@ -157,10 +161,15 @@ def _merge_source_pair(
     score_b: tuple[str, str],
     sources_desc: tuple[str, str],
     save: bool = True,
+    carry_a: tuple[str, ...] | None = None,
 ) -> pd.DataFrame:
     """两个数据源的靶点按基因符号取并集去重，并保留各源分数最大值。kind 为 "drug"/"disease"，用于日志;
     src_a/src_b 为来源标记列名；score_a/score_b 为 (输出列名, 源分数列名)；两源都没有数据时返回空表。
-    save=False 时不写缓存(某路数据源失败时,避免把残缺结果永久缓存)。"""
+    save=False 时不写缓存(某路数据源失败时,避免把残缺结果永久缓存)。
+    carry_a(药物侧专用,2026-11-23):把 A 源逐条记录的明细列按基因分号串联带出
+    (输出列 chmbl_<列名>s),只收各列皆非空的记录,按记录值元组排序保证序列化
+    确定性;单行/基因的 merged 结构不变。A 源非空但缺明细列时直接拒绝——v6
+    破坏性变更不兼容旧格式,避免再次生成"结构合法但 B1 断粮"的缓存。"""
     genes_a = set(df_a["approvedSymbol"].dropna().str.upper()) if not df_a.empty else set()
     genes_b = set(df_b["approvedSymbol"].dropna().str.upper()) if not df_b.empty else set()
     all_genes = sorted(genes_a | genes_b)
@@ -173,18 +182,46 @@ def _merge_source_pair(
     map_a = _max_score_map(df_a, raw_a)
     map_b = _max_score_map(df_b, raw_b)
 
+    # 明细放行:按基因聚合 (carry 列值元组) 列表
+    carry_records: dict[str, list[tuple]] = {}
+    if carry_a:
+        missing = [c for c in carry_a if c not in df_a.columns]
+        if missing and not df_a.empty:
+            raise RuntimeError(
+                f"{kind} merge 缺少明细列 {missing}({name});"
+                "按当前 TARGET_FILTER_VERSION 重建来源缓存后再合并"
+            )
+        if not missing:
+            sub = df_a.dropna(subset=["approvedSymbol"]).copy()
+            sub["approvedSymbol"] = sub["approvedSymbol"].str.upper()
+            if "pchembl_value" in carry_a:
+                sub["pchembl_value"] = pd.to_numeric(
+                    sub["pchembl_value"], errors="coerce")
+            sub = sub.dropna(subset=list(carry_a))
+            for g, gg in sub.groupby("approvedSymbol", sort=True):
+                pairs = sorted(
+                    tuple(x)
+                    for x in gg[list(carry_a)].itertuples(index=False, name=None)
+                )
+                carry_records[g] = pairs
+
     records: list[dict] = []
     for g in all_genes:
         in_a = g in genes_a
         in_b = g in genes_b
-        records.append({
+        rec = {
             "approvedSymbol": g,
             src_a: int(in_a),
             src_b: int(in_b),
             "source_count": int(in_a) + int(in_b),
             col_a: map_a.get(g),
             col_b: map_b.get(g),
-        })
+        }
+        for i, c in enumerate(carry_a or ()):
+            pairs = carry_records.get(g, [])
+            # 位置对齐:第 i 个明细列取每条记录的第 i 个值,分号串联
+            rec[f"chmbl_{c}s"] = ";".join(str(p[i]) for p in pairs)
+        records.append(rec)
 
     merged = pd.DataFrame(records)
     if save:

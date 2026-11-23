@@ -723,20 +723,56 @@ def _tier(r: float, *, reachable_min=None, partial_min=None) -> str:
     return "unreachable"
 
 
+def _expand_merged_activity(merged) -> "pd.DataFrame":
+    """merged 缓存格式 → B1 记录长表(TARGET_FILTER_VERSION ≥ 6 起药物 merged
+    带 chmbl_assay_types/chmbl_pchembl_values 明细列,分号串联、位置对齐)。
+    两列长度不一致属缓存损坏——报错拒绝,不静默截断;原始格式(直接含
+    pchembl_value 列)不经此函数,行为不变。"""
+    import pandas as pd
+
+    rows = []
+    for rec in merged.to_dict("records"):
+        t_raw, v_raw = rec.get("chmbl_assay_types"), rec.get("chmbl_pchembl_values")
+        if pd.isna(t_raw) or pd.isna(v_raw):
+            continue  # 无 ChEMBL 定量明细的基因(纯 DGIdb 佐证等)→ 无活性
+        types = [s.strip() for s in str(t_raw).split(";")]
+        vals = [s.strip() for s in str(v_raw).split(";")]
+        if len(types) != len(vals):
+            raise RuntimeError(
+                f"merged 缓存活性明细列错位({rec.get('approvedSymbol')}: "
+                f"{len(types)} 型 / {len(vals)} 值)——缓存损坏,请按现行 "
+                f"TARGET_FILTER_VERSION 重建 merged 缓存")
+        for t, v in zip(types, vals):
+            rows.append({"approvedSymbol": rec.get("approvedSymbol"),
+                         "assay_type": t, "pchembl_value": v})
+    if not rows:
+        return pd.DataFrame(columns=["approvedSymbol", "assay_type", "pchembl_value"])
+    out = pd.DataFrame(rows)
+    out["pchembl_value"] = pd.to_numeric(out["pchembl_value"], errors="coerce")
+    return out
+
+
 def _b1_activity(targets) -> "pd.DataFrame":
     """B1 活性聚合(§12.2-B1 定稿):同基因多 assay——细胞(F)优先取中位数,
     无细胞值才回退生化(B)并打回退标记;另一类中位数保留为敏感性对照列。
     活性(摩尔) = 10 ** (-pChEMBL)(§3.2;方向写反则 R 全体倒置且不报错,
     清单 §1.2-2,靠 §5.6 手算对照兜住)。Ki/Kd 优先规则暂缺(开口1)。
-    纯函数,不读盘不联网;gene 列取一期缓存列名 approvedSymbol。"""
+    纯函数,不读盘不联网;gene 列取一期缓存列名 approvedSymbol。
+    输入双格式(2026-11-23):原始 ChEMBL 记录表,或 TARGET_FILTER_VERSION≥6
+    的 merged 缓存(明细列经 _expand_merged_activity 展开后再聚合)。"""
     import pandas as pd
 
     cols = ["gene", "activity_M", "activity_class", "n_assays",
             "activity_alt_M", "fallback_flag"]
     if targets is None or getattr(targets, "empty", True) \
-            or "pchembl_value" not in targets.columns \
             or "approvedSymbol" not in targets.columns:
         return pd.DataFrame(columns=cols)
+    if "pchembl_value" not in targets.columns:
+        if "chmbl_pchembl_values" not in targets.columns:
+            return pd.DataFrame(columns=cols)
+        targets = _expand_merged_activity(targets)  # merged 明细列 → 记录长表
+        if targets.empty:
+            return pd.DataFrame(columns=cols)
     df = targets.copy()
     df["_p"] = pd.to_numeric(df["pchembl_value"], errors="coerce")
     at = df["assay_type"] if "assay_type" in df.columns else ""

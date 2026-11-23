@@ -77,7 +77,11 @@ RCSB_SEARCH_CACHE_TTL_HOURS = 96
 # 药物/疾病靶点在整合(merge)时做降噪过滤,阈值集中在此配置,过滤逻辑在 core/targets.py。
 # 过滤规则或阈值变更后需把 TARGET_FILTER_VERSION 加 1:merged 整合缓存的文件名
 # 带该版本号,加 1 后旧缓存自动失效,下次分析按新阈值重建(原始缓存不受影响)。
-TARGET_FILTER_VERSION = 5
+TARGET_FILTER_VERSION = 6
+# 6(2026-11-23,破坏性变更 5→6,不迁移老缓存):药物 merged 放行活性明细列
+# chmbl_assay_types/chmbl_pchembl_values(逐条 ChEMBL 记录,分号串联、位置对齐),
+# 供可达性 B1 聚合消费——此前 merged 只留 score_pchembl 最大值,pchembl_value/
+# assay_type 原始列在合并时丢失,B1 断粮致可达性恒 unknown(2026-11-23 核验抓到)。
 # ChEMBL 黑名单:非特异性结合/药物代谢蛋白,不计入药物靶点
 # (白蛋白 ALB 与主要药物代谢 CYP 酶;CYP46A1 是脑特异胆固醇酶、可能是药效靶点,不列入)
 CHEMBL_TARGET_BLACKLIST = (
