@@ -1,4 +1,4 @@
-"""分离度协同预测数学核心(二期方案 §2.1;契约 synergy.v1.1,2026-11-18 定稿)。
+"""分离度协同预测数学核心(二期方案 §2.1;契约 synergy.v1.2,2026-11-25 升版)。
 
 分工红线(文件清单 §1.3):本文件只做数学核心——s_AB 分离度、s_AB 度匹配
 零分布、E3 预检、z_A/z_B/z_AB 对一期邻近度检验的编排复用;E1 分层排序、
@@ -43,7 +43,16 @@ logger = logging.getLogger(__name__)
 # v1.1(2026-11-18):meta.run 记录页级运行参数(靶点集截断 N/排序规则 id/proximity
 # 置换轮数)——切片在调用方完成(定案 #7),核心不截断只记账;progress 只发 fraction
 # 不带文案(核心无文案纪律),阶段码由 API 层按区间标注。
-SYNERGY_SCHEMA = "synergy.v1.1"
+# v1.2(2026-11-25,零消费者时刻升版——UI 尚未消费两槽位):E6 挂载落地,
+# reachability 槽位从 null 升为结构化块:两药单药块摘要(reachability.v1 契约,
+# 逐靶点明细外移运行目录 reachability_<药>.csv,方案 B)+ high_confidence
+# (两药均 ≥ 部分可达,§12.1-E6)+ sort_key = |z_sep| × min(w_a,w_b)(E6 定稿
+# 乘积形式;z_sep=None 零分布退化 → sort_key=null + sort_key_note="z_null",
+# 排序末位+标注,不当 0——2026-11-25 负责人拍板)。ranks 槽位保留观察:队友
+# E1 产出可填,二期结束仍无消费方即删(2026-11-25 定)。reachability=null
+# 的两种语义:调用方未传靶点 df(未挂载)或归一化缓存未就绪(mount 时有
+# warning 日志可辨)——两种都不伪造数据。
+SYNERGY_SCHEMA = "synergy.v1.2"
 
 
 class SynergyPrecheckError(RuntimeError):
@@ -116,7 +125,7 @@ def _analyze_pair_from_context(
     top_n: int | None = None, sort_rule: str | None = None,
     proximity_n_perm: int | None = None, progress=None,
 ) -> dict:
-    """契约 synergy.v1.1 组装(纯计算,LCC 上下文注入,便于小图自检——一期同模式)。
+    """契约 synergy.v1.2 组装(纯计算,LCC 上下文注入,便于小图自检——一期同模式)。
     d_genes 为空/None 时疾病为 None,z_* 三字段全 None(ML/CLI 批量可无疾病)。"""
     import numpy as np
 
@@ -213,7 +222,9 @@ def _analyze_pair_from_context(
         "geometry_label": label,
         "label_basis": basis,
         "ranks": None,       # E1 分层排序(队友):重叠型按 z_ab、互补型按分离强度各排 Top-K
-        "reachability": None,  # 1.2 浓度可达性模块挂载位
+        #                    v1.2 保留观察,二期结束无消费方即删(2026-11-25 定)
+        "reachability": None,  # v1.2 E6 挂载位:集成层经 mount_reachability 填充;
+        #                      null=未挂载或归一化缓存未就绪(见版本史注释)
         "meta": {"computed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                  "engine": "synergy.py",
                  "run": {"top_n": top_n, "sort": sort_rule,
@@ -249,8 +260,85 @@ def slice_targets_top_n(df, n: int | None) -> list[str]:
     return sorted({str(g) for g in df.loc[order.index, "approvedSymbol"].dropna()})
 
 
+def mount_reachability(contract: dict, targets_a=None, targets_b=None) -> dict:
+    """E6 挂载(v1.2,2026-11-25):把两药浓度可达性单药块填进契约 reachability
+    槽位。集成层组合函数(API 任务体与 CLI _synergy_one 共用),数学核心零改动;
+    targets_a/b 为 merged v6 靶点 DataFrame(带 chmbl 明细列;None=该侧不挂,
+    两侧都 None 时槽位保持 null 不动)。
+    单药块 = reachability.v1 契约摘要;逐靶点 targets 明细(DataFrame)暂存块内,
+    由 archive_run 外移成 reachability_<药>.csv 后从 result.json 剥离(方案 B)
+    ——因此本函数返回的契约在 archive_run 之前**不可 JSON 序列化**,不经
+    archive_run 的调用方(如基准直连 analyze_pair)须自行 pop targets。
+    sort_key = |z_sep| × min(w_a, w_b)(§12.1-E6 定稿乘积形式);z_sep=None
+    (零分布退化)→ sort_key=None + sort_key_note="z_null"(排序末位+标注,
+    不当 0)。归一化缓存未就绪(RuntimeError)→ 槽位显式 null + 警告日志,
+    不伪造数据(陷阱纪律:静默降级是答辩雷)。"""
+    from .reachability import (compute_reachability, exposure_confident,
+                               exposure_penalty, reach_weight)
+    from .text_utils import safe_name
+
+    if targets_a is None and targets_b is None:
+        return contract
+    # 药名/分离 z 防御式取值:挂载发生在核心产出之后,真实契约必含这些键;
+    # .get 链只为让缺键的桩契约(测试 mock)也能走通"compute 失败→降级"路径
+    name_a = str((contract.get("pair") or {}).get("drug_a") or "")
+    name_b = str((contract.get("pair") or {}).get("drug_b") or "")
+    try:
+        res_a = compute_reachability(targets_a, name_a)
+        res_b = compute_reachability(targets_b, name_b)
+    except RuntimeError as e:
+        logger.warning("reachability 挂载降级为 null(归一化缓存未就绪): %s", e)
+        return contract
+
+    def _summary(res: dict, drug: str) -> dict:
+        block = {k: v for k, v in res.items() if k != "targets"}
+        block["targets"] = res.get("targets")  # 暂存,archive_run 剥离外移
+        block["detail_file"] = f"reachability_{safe_name(drug)}.csv"
+        return block
+
+    tier_a, tier_b = res_a.get("tier"), res_b.get("tier")
+    z = ((contract.get("separation") or {}).get("null") or {}).get("z")
+    if z is None:
+        sort_key, note = None, "z_null"
+    else:
+        penalty = exposure_penalty(reach_weight(tier_a), reach_weight(tier_b))
+        sort_key, note = abs(float(z)) * penalty, None
+    contract["reachability"] = {
+        "drug_a": _summary(res_a, name_a),
+        "drug_b": _summary(res_b, name_b),
+        "high_confidence": exposure_confident(tier_a, tier_b),
+        "sort_key": sort_key,
+        "sort_key_note": note,
+    }
+    return contract
+
+
+def _split_reachability_details(contract: dict, out_dir: str) -> None:
+    """reachability 单药块内暂存的逐靶点明细(DataFrame)→ 运行目录 CSV(方案 B):
+    result.json 只留摘要;空明细不写文件且 detail_file 置 null(不留悬空引用)。"""
+    from .caching import save_csv_cache
+
+    r = contract.get("reachability")
+    if not isinstance(r, dict):
+        return
+    for side in ("drug_a", "drug_b"):
+        block = r.get(side)
+        if not isinstance(block, dict):
+            continue
+        detail = block.pop("targets", None)
+        if detail is None:
+            continue
+        path = os.path.join(out_dir,
+                            block.get("detail_file") or f"reachability_{side}.csv")
+        if not save_csv_cache(detail, path, skip_empty=True):
+            block["detail_file"] = None
+
+
 def archive_run(contract: dict, drug_a: str, drug_b: str) -> str:
-    """契约 JSON 原样落盘到 synergy-results/<目录名>,返回目录名(Web/CLI 共用)。"""
+    """契约 JSON 落盘到 synergy-results/<目录名>,返回目录名(Web/CLI 共用)。
+    v1.2:落盘前先把 reachability 块暂存的逐靶点明细外移成 CSV(见
+    _split_reachability_details)——剥离后的契约才是纯 JSON;任务体返回与
+    jobs 轮询回放都发生在 archive 之后,前端拿到的永远是可序列化摘要。"""
     from WY import config
     from .caching import save_json_file
     from .text_utils import safe_name
@@ -259,6 +347,7 @@ def archive_run(contract: dict, drug_a: str, drug_b: str) -> str:
                 f"_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     out_dir = os.path.join(results_root(), dir_name)
     os.makedirs(out_dir, exist_ok=True)
+    _split_reachability_details(contract, out_dir)
     save_json_file(os.path.join(out_dir, "result.json"), contract, indent=1)
     return dir_name
 

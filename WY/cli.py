@@ -28,7 +28,7 @@ from WY.core.logging_setup import setup_logging
 from WY.core.network_algorithms import run_proximity_cached, run_rwr_cached
 from WY.core.interactome import InteractomeNotBuiltError
 from WY.core.synergy import (SORT_RULE, SynergyPrecheckError, analyze_pair,
-                          archive_run, slice_targets_top_n)
+                          archive_run, mount_reachability, slice_targets_top_n)
 from WY.core.targets import (get_disease_targets_merged, get_drug_targets_merged,
                           get_targets_concurrent, intersect_target_symbols)
 from WY.core.analysis import (build_ppi_stack, expand_targets_with_rwr, pair_prefix,
@@ -917,10 +917,12 @@ def _synergy_one(a: str, b: str, disease: str, *, top_n: int | None,
             if d_df is not None and not d_df.empty else []
         if not d_genes:
             return None, f"synergy:no_targets_disease: {disease}", time.monotonic() - t0, None
-    a_genes = slice_targets_top_n(get_drug_targets_merged(a), top_n)
+    ma = get_drug_targets_merged(a)  # v1.2:留完整明细 df 供 E6 挂载
+    a_genes = slice_targets_top_n(ma, top_n)
     if not a_genes:
         return None, f"synergy:no_targets_a: {a}", time.monotonic() - t0, None
-    b_genes = slice_targets_top_n(get_drug_targets_merged(b), top_n)
+    mb = get_drug_targets_merged(b)
+    b_genes = slice_targets_top_n(mb, top_n)
     if not b_genes:
         return None, f"synergy:no_targets_b: {b}", time.monotonic() - t0, None
     try:
@@ -930,6 +932,7 @@ def _synergy_one(a: str, b: str, disease: str, *, top_n: int | None,
             n_perm=n_perm, proximity_n_perm=n_perm,
             top_n=top_n, sort_rule=SORT_RULE, progress=progress,
         )
+        contract = mount_reachability(contract, ma, mb)  # v1.2 E6 挂载(明细 df 复用)
     except (SynergyPrecheckError, InteractomeNotBuiltError) as e:
         # 稳定令牌进汇总表(与 API/前端同词表);带 reason/detail 结构的按结构拼,避免重复
         reason, body = getattr(e, "reason", None), getattr(e, "detail", None)

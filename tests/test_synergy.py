@@ -173,12 +173,14 @@ def test_contract_conformance_and_determinism():
     b = [f"N{i}" for i in (1, 3, 5, 7, 9)]
     r = _run(G, a, b)
     assert set(r) == CONTRACT_KEYS
-    assert r["schema"] == "synergy.v1.1"
+    assert r["schema"] == "synergy.v1.2"
     assert set(r["separation"]) == {"s_ab", "d_aa", "d_bb", "d_ab", "null"}
     assert set(r["separation"]["null"]) == {"mean", "sd", "z", "p_lower", "n_perm"}
     assert set(r["meta"]) == {"computed_at", "engine", "run"}
     assert r["meta"]["run"] == {"top_n": None, "sort": None, "proximity_n_perm": None}
     assert "cache" not in r["meta"]          # 2026-11-17 定案:无缓存机制
+    # v1.2:核心装配点两槽位恒 null——ranks 归队友 E1(保留观察),reachability
+    # 归集成层 mount_reachability(未挂载/缓存未就绪都显式 null,不伪造)
     assert r["ranks"] is None and r["reachability"] is None
     assert r["label_basis"].startswith("s_ab")
     r2 = _run(G, a, b)
@@ -274,3 +276,134 @@ def test_relabel_and_isolated_invariance():
     iso = _run(with_isolated, a, b)
     assert iso["separation"]["s_ab"] == pytest.approx(base["separation"]["s_ab"])
     assert iso["inputs"]["coverage"]["a_in_lcc"] == 5
+
+
+# ---- v1.2 E6 挂载(mount_reachability / archive_run 明细外移,2026-11-25) ----
+
+
+def _fake_reach_result(tier="reachable"):
+    """compute_reachability 的最小桩:单药块契约 + 2 行逐靶点明细。"""
+    import pandas as pd
+    return {
+        "schema": "reachability.v1",
+        "drug": "DrugA", "substance_sid": "drug_a",
+        "tier": tier, "r_primary": 3.5 if tier == "reachable" else None,
+        "unknown_reason": None,
+        "exposure": {"cmax_molar_M": 1e-5, "cmax_interventions": "X",
+                     "n_cmax_obs": 2, "fub_value": 1.0, "fub_imputed": True},
+        "n_targets": 2, "n_computed": 1,
+        "targets": pd.DataFrame([
+            {"gene": "G1", "r_value": 3.5, "tier": "reachable",
+             "activity_M": 1e-9, "activity_class": "cell", "n_assays": 1,
+             "activity_alt_M": None, "fallback_flag": False, "unknown_reason": None},
+            {"gene": "G2", "r_value": None, "tier": "unknown",
+             "activity_M": None, "activity_class": None, "n_assays": 0,
+             "activity_alt_M": None, "fallback_flag": None,
+             "unknown_reason": "no_activity"},
+        ]),
+    }
+
+
+def _minimal_contract(z=2.0):
+    return {"schema": synergy.SYNERGY_SCHEMA,
+            "pair": {"drug_a": "DrugA", "drug_b": "DrugB"},
+            "separation": {"null": {"z": z}},
+            "reachability": None}   # 核心装配恒含此键(未挂载即 null)
+
+
+def test_mount_reachability_block_and_sort_key(monkeypatch):
+    """v1.2 E6 挂载:单药块摘要 + sort_key=|z|×min(w_a,w_b) + high_confidence;
+    targets 明细暂存块内待 archive 外移;detail_file 按 safe_name 预生成。"""
+    import pandas as pd
+    from WY.core import reachability as rch
+
+    calls = []
+
+    def fake_compute(targets, drug_name="", **kw):
+        calls.append(drug_name)
+        return _fake_reach_result()
+
+    monkeypatch.setattr(rch, "compute_reachability", fake_compute)
+    contract = synergy.mount_reachability(_minimal_contract(z=2.0), object(), object())
+    r = contract["reachability"]
+    assert r["high_confidence"] is True            # 两药均 reachable → 高置信
+    assert r["sort_key"] == pytest.approx(2.0)     # |2.0| × min(1.0, 1.0)
+    assert r["sort_key_note"] is None
+    ra = r["drug_a"]
+    assert ra["drug"] == "DrugA" and ra["tier"] == "reachable"
+    assert isinstance(ra["targets"], pd.DataFrame)  # 暂存,archive 剥离
+    assert ra["detail_file"] == "reachability_DrugA.csv"
+    assert calls == ["DrugA", "DrugB"]              # 复用传入 df,不再拉缓存
+
+
+def test_mount_sort_key_none_when_z_null(monkeypatch):
+    """零分布退化(z=None)→ sort_key=None + note="z_null",不当 0(负责人拍板)。"""
+    from WY.core import reachability as rch
+    monkeypatch.setattr(rch, "compute_reachability",
+                        lambda t, drug_name="", **kw: _fake_reach_result())
+    contract = synergy.mount_reachability(_minimal_contract(z=None), object(), object())
+    assert contract["reachability"]["sort_key"] is None
+    assert contract["reachability"]["sort_key_note"] == "z_null"
+
+
+def test_mount_penalty_takes_min_and_confidence_gates(monkeypatch):
+    """E6 口径:惩罚=min(w_a,w_b);高置信=两药均 ≥ partial(unknown 不够格)。"""
+    from WY.core import reachability as rch
+
+    def fake_compute(targets, drug_name="", **kw):
+        return _fake_reach_result(tier="partial" if drug_name == "DrugA" else "unknown")
+
+    monkeypatch.setattr(rch, "compute_reachability", fake_compute)
+    r = synergy.mount_reachability(
+        _minimal_contract(z=4.0), object(), object())["reachability"]
+    assert r["sort_key"] == pytest.approx(4.0 * 0.5)   # min(0.6, 0.5) = 0.5
+    assert r["high_confidence"] is False
+
+
+def test_mount_degrades_to_null_without_norm_cache(monkeypatch):
+    """归一化缓存未就绪(RuntimeError)→ 槽位显式 null + 警告,不伪造数据。"""
+    from WY.core import reachability as rch
+
+    def boom(targets, drug_name="", **kw):
+        raise RuntimeError("归一化缓存缺失(沙箱无 substance_map.json)")
+
+    monkeypatch.setattr(rch, "compute_reachability", boom)
+    contract = synergy.mount_reachability(
+        _minimal_contract(z=1.0), object(), object())
+    assert contract["reachability"] is None
+
+
+def test_mount_without_targets_keeps_null():
+    """两侧都不传 df → 未挂载,槽位保持 null(v1.1 语义延续)。"""
+    contract = synergy.mount_reachability(_minimal_contract(z=1.0))
+    assert contract["reachability"] is None
+
+
+def test_archive_run_splits_detail_csvs(monkeypatch, tmp_path):
+    """方案 B:archive 把暂存明细外移成运行目录 CSV;result.json 只留摘要且剥离后
+    契约纯 JSON(轮询回放安全);空明细不写文件且 detail_file=null(无悬空引用)。"""
+    import json
+    import pandas as pd
+
+    monkeypatch.setattr(synergy, "results_root", lambda: str(tmp_path))
+    contract = _minimal_contract(z=2.0)
+    full = _fake_reach_result()
+    summary_a = {k: v for k, v in full.items() if k != "targets"}
+    contract["reachability"] = {
+        "drug_a": {**summary_a, "targets": full["targets"],
+                   "detail_file": "reachability_DrugA.csv"},
+        "drug_b": {"schema": "reachability.v1", "drug": "DrugB", "tier": "unknown",
+                   "targets": pd.DataFrame(),
+                   "detail_file": "reachability_DrugB.csv"},
+        "high_confidence": False, "sort_key": 2.0, "sort_key_note": None,
+    }
+    dir_name = synergy.archive_run(contract, "DrugA", "DrugB")
+    out = tmp_path / dir_name
+    data = json.loads((out / "result.json").read_text(encoding="utf-8"))
+    assert "targets" not in data["reachability"]["drug_a"]
+    assert data["reachability"]["drug_a"]["detail_file"] == "reachability_DrugA.csv"
+    assert data["reachability"]["drug_b"]["detail_file"] is None   # 空明细→null
+    df = pd.read_csv(out / "reachability_DrugA.csv")
+    assert list(df["gene"]) == ["G1", "G2"]
+    assert not (out / "reachability_DrugB.csv").exists()
+    json.dumps(contract)   # 剥离后契约可全量序列化(API 轮询回放路径)

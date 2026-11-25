@@ -1617,7 +1617,7 @@ def test_synergy_analyze_job_pipeline(client, monkeypatch):
     def fake_pair(ga, gb, d_genes, *, drug_a="", drug_b="", **kw):
         captured["sizes"] = (len(ga), len(gb), len(d_genes))
         captured.update(kw)
-        return {"schema": "synergy.v1.1", "geometry_label": "overlap"}
+        return {"schema": "synergy.v1.2", "geometry_label": "overlap"}
 
     monkeypatch.setattr(syn, "get_drug_targets_merged", lambda name: _synergy_df(6))
     monkeypatch.setattr(syn, "get_disease_targets_merged", lambda name: _synergy_df(9))
@@ -1754,7 +1754,7 @@ def _seed_synergy_run(run: str) -> None:
     d = os.path.join(config.DOWNLOADS_DIR, "synergy-results", run)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "result.json"), "w", encoding="utf-8") as f:
-        _json.dump({"schema": "synergy.v1.1",
+        _json.dump({"schema": "synergy.v1.2",
                     "pair": {"drug_a": "Metformin", "drug_b": "Aspirin"},
                     "disease": {"name": "type 2 diabetes", "n_targets": 10,
                                 "source": "t"},
@@ -1781,7 +1781,7 @@ def test_synergy_job_status_endpoint(client, monkeypatch):
 
     def slow_pair(*a, **k):
         _time.sleep(1.2)
-        return {"schema": "synergy.v1.1", "geometry_label": "overlap"}
+        return {"schema": "synergy.v1.2", "geometry_label": "overlap"}
 
     monkeypatch.setattr(syn, "get_drug_targets_merged", lambda name: _synergy_df(6))
     monkeypatch.setattr(syn, "get_disease_targets_merged", lambda name: _synergy_df(6))
@@ -1806,7 +1806,7 @@ def test_synergy_results_lifecycle(client):
     assert row["geometry_label"] == "overlap" and row["s_ab"] == pytest.approx(-0.1)
 
     detail = client.get("/api/synergy/results/detail", params={"run": run}).json()
-    assert detail["schema"] == "synergy.v1.1"
+    assert detail["schema"] == "synergy.v1.2"
     assert client.get("/api/synergy/results/detail",
                       params={"run": "../escape"}).status_code == 400
     assert client.get("/api/synergy/results/detail",

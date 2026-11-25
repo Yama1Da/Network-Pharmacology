@@ -31,6 +31,7 @@ from WY.core.synergy import (
     archive_run,
     delete_runs,
     list_results,
+    mount_reachability,
     read_run,
     slice_targets_top_n,
     zip_runs,
@@ -127,9 +128,11 @@ def synergy_analyze(body: AnalyzeBody) -> dict:
         d_genes = _gene_list(get_disease_targets_merged(disease)) if disease else []
         if disease and not d_genes:
             raise SynergyNoTargetsError(f"synergy:no_targets_disease: {disease}")
-        ga = slice_targets_top_n(get_drug_targets_merged(drug_a), body.top_n)
+        ma = get_drug_targets_merged(drug_a)  # v1.2:留完整明细 df 供 E6 挂载
+        ga = slice_targets_top_n(ma, body.top_n)  # 切片只喂核心(定案 #7)
         progress(fraction=0.06, stage="targets")
-        gb = slice_targets_top_n(get_drug_targets_merged(drug_b), body.top_n)
+        mb = get_drug_targets_merged(drug_b)
+        gb = slice_targets_top_n(mb, body.top_n)
         if not ga:
             raise SynergyNoTargetsError(f"synergy:no_targets_a: {drug_a}")
         if not gb:
@@ -145,8 +148,10 @@ def synergy_analyze(body: AnalyzeBody) -> dict:
             n_perm=body.n_perm, proximity_n_perm=body.n_perm,
             top_n=body.top_n, sort_rule=SORT_RULE, progress=core_progress,
         )
+        contract = mount_reachability(contract, ma, mb)  # v1.2 E6 挂载(明细 df 复用)
 
-        # 归档进 synergy-results/(协同分析结果页专管,downloads 清单已排除该类别)
+        # 归档进 synergy-results/(协同分析结果页专管,downloads 清单已排除该类别);
+        # archive 内先外移 reachability 明细 CSV,之后契约才是纯 JSON(轮询回放安全)
         dir_name = archive_run(contract, drug_a, drug_b)
         progress(fraction=1.0, stage="done")
         return {**contract, "directory_rel": dir_name}
