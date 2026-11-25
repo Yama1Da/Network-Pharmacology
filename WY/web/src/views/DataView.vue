@@ -115,6 +115,11 @@ onMounted(() => {
         {{ t('web.data.pk_built', { studies: pk.studies, tsv: pk.tsv_files, at: pk.built_at,
                                      age: pk.age ?? '-' }) }}
       </span>
+      <span v-if="pkLoaded && pk?.normalization" class="count"
+            :title="t('web.data.pk_norm_tip')">
+        {{ t('web.data.pk_norm', { v: pk.normalization.pk_norm_version,
+                                   c: pk.normalization.conflict_keys ?? 0 }) }}
+      </span>
       <span v-else-if="pkLoaded" class="count" style="color:var(--c-danger)">
         {{ t('web.data.pk_missing') }}
       </span>

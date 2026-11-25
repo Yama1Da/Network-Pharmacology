@@ -198,6 +198,12 @@ export interface PkMirrorStatus {
   building?: boolean
   job_id?: string
   progress?: JobState['progress']
+  /** 归一化缓存摘要(reachability 层供给;null/缺省 = 未构建) */
+  normalization?: {
+    pk_norm_version: number
+    conflicts_total?: number
+    conflict_keys?: number
+  } | null
 }
 
 /* ---- GEO 表达谱 + ML(阶段 3c)共享类型:字段与 core 一一对应 ---- */

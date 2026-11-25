@@ -249,6 +249,45 @@ def test_pk_mirror_status_exposes_inflight_build(client, monkeypatch):
     body2 = client.get("/api/pk-mirror").json()
     assert not body2.get("building")
 
+def test_pk_mirror_build_cascades_normalization(client, monkeypatch):
+    """级联(2026-11-25 负责人定稿):镜像构建任务完成后顺手跑归一化三件套
+    (force=True,数据随镜像刷新);失败不推翻镜像结果,显式 normalize_error;
+    状态载荷带 normalization 摘要块。触发链即 build_normalized_cache 的
+    生产调用点(死代码保护注释所指)。"""
+    calls = {}
+
+    def fake_build(force=False, progress=None):
+        return {"built": 2, "skipped_existing": 0, "failures": [], "missing": [],
+                "studies": 2}
+
+    def fake_norm(force=False, progress=None, max_studies=None):
+        calls["force"] = force
+        return {"substance_map": "a", "cmax_norm": "b", "fub_norm": "c"}
+
+    monkeypatch.setattr("WY.api.pk_mirror.build_mirror", fake_build)
+    monkeypatch.setattr("WY.core.reachability.build_normalized_cache", fake_norm)
+
+    r = client.post("/api/pk-mirror/build", json={"force": False})
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done"
+    assert calls["force"] is True
+    assert job["result"]["normalized"] is True
+    assert "normalize_error" not in job["result"]
+    assert "normalization" in client.get("/api/pk-mirror").json()
+
+    # 失败路径:归一化抛错 → 任务仍 done(镜像已落盘),载荷显式记错误令牌
+    def boom(force=False, progress=None, max_studies=None):
+        raise RuntimeError("norm cache broken")
+
+    monkeypatch.setattr("WY.core.reachability.build_normalized_cache", boom)
+    r2 = client.post("/api/pk-mirror/build", json={"force": False})
+    job2 = _wait_job(client, r2.json()["job_id"])
+    assert job2["status"] == "done"
+    assert job2["result"]["normalized"] is False
+    assert job2["result"]["normalize_error"] == "normalize_failed"
+
+
+
 
 def test_ml_ppi_job_status_endpoints(client, monkeypatch):
     """/api/ml/job 与 /api/ppi/job:无在途时 running=False;登记后透出 ctx

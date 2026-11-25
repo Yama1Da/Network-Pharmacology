@@ -376,6 +376,7 @@ def _write_conflict_ledger(nodes: list[dict]) -> str:
     }
     path = os.path.join(_norm_dir(), "_conflict_ledger.json")
     save_json_file(path, payload, indent=1)
+    logger.debug("查名冲突台账落盘: %d 个争议名 → %s", len(ledger), path)
     return path
 
 
@@ -737,12 +738,45 @@ def build_fub_norm(force: bool = False) -> str:
     return path
 
 
+def normalization_status() -> dict | None:
+    """归一化缓存状态(DataView PK 卡显示用;api/pk_mirror 状态路由消费):
+    三件套齐 + 冲突台账摘要;未构建/常量未合入返回 None。只读本地文件,零联网。"""
+    import json
+
+    from WY import config
+
+    version = getattr(config, "PK_NORM_VERSION", None)
+    if version is None:
+        return None
+    nd = _norm_dir()
+    stems = ("substance_map", "cmax_norm", "fub_norm")
+    if not all(os.path.exists(os.path.join(nd, f"{s}_v{int(version)}.parquet"))
+               for s in stems):
+        return None
+    out: dict = {"pk_norm_version": int(version)}
+    led_path = os.path.join(nd, "_conflict_ledger.json")
+    if os.path.exists(led_path):
+        try:
+            with open(led_path, encoding="utf-8") as f:
+                led = json.load(f)
+            out["conflicts_total"] = int(led.get("conflicts_total", 0))
+            out["conflict_keys"] = len(led.get("keys", {}))
+        except (OSError, ValueError):
+            logger.exception("冲突台账读取失败(卡片隐藏该行,不影响状态)")
+    return out
+
+
 def build_normalized_cache(force: bool = False, progress=None,
                            max_studies: int | None = None) -> dict:
     """归一化主入口(第 2 层,方案 §3.1):读 pkdb_raw/ → 产出三个版本化
     Parquet(substance_map / cmax_norm / fub_norm),返回各产物实际路径。
     force=False 且同名版本文件已存在时逐件跳过(幂等续跑);max_studies 为
-    镜像侧参数,归一化恒全量读(截断会在归一化层丢数据,不实现)。"""
+    镜像侧参数,归一化恒全量读(截断会在归一化层丢数据,不实现)。
+
+    **生产调用点(2026-11-25 级联定稿)**:api/pk_mirror.py 的镜像构建/更新
+    任务在镜像落盘后级联调用本函数(force=True,数据随镜像刷新)——此前
+    一度只有测试与工具脚本调用过。AI 死代码审查勿以"零生产调用"为由删除;
+    触发链:DataView PK 卡"构建/更新" → jobs 任务 → 本函数。"""
     paths = {
         "substance_map": build_substance_map(force=force),
         "cmax_norm": build_cmax_norm(force=force),

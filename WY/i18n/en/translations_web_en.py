@@ -128,6 +128,8 @@ TEXT_WEB_EN = {
     # PK-DB mirror (exposure data for reachability, phase 2)
     "web.data.pk_label": "PK-DB mirror (exposure data for reachability)",
     "web.data.pk_built": "{studies} studies · {tsv} tables · built {at} ({age} days ago)",
+    "web.data.pk_norm": "normalization cache v{v} · {c} name conflicts (ledger archived)",
+    "web.data.pk_norm_tip": "reachability normalization triple is produced alongside mirror build/update; name conflicts resolved by identity priority, details in _conflict_ledger.json in the cache directory",
     "web.data.pk_missing": "Not mirrored — reachability depends on it; build it first",
     "web.data.pk_stale": "The PK-DB mirror is {age} days old and may be stale — an update is recommended.",
     "web.data.pk_building": "Mirroring… (803 studies, ~45–70 min with 4 concurrent workers; closing the page won't stop the build — reopen to refresh status)",

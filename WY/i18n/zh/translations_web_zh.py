@@ -129,6 +129,8 @@ TEXT_WEB_ZH = {
     # PK-DB 镜像(浓度可达性数据底座,二期)
     "web.data.pk_label": "PK-DB 镜像(浓度可达性数据底座)",
     "web.data.pk_built": "{studies} 研究 · {tsv} 源表 · 构建于 {at}(已 {age} 天)",
+    "web.data.pk_norm": "归一化缓存 v{v} · 查名冲突 {c} 名(台账已归档)",
+    "web.data.pk_norm_tip": "可达性归一化三件套随镜像构建/更新级联产出;查名冲突按身份优先规则裁决,明细见缓存目录 _conflict_ledger.json",
     "web.data.pk_missing": "未镜像 —— 浓度可达性需要它,请先构建",
     "web.data.pk_stale": "PK-DB 镜像已 {age} 天,数据可能陈旧 —— 建议更新。",
     "web.data.pk_building": "镜像中…(803 个研究,4 并发约 45–70 分钟;关闭页面构建不受影响,重进页面刷新状态)",

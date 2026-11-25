@@ -273,6 +273,8 @@
  "web.data.pk_label": "PK-DB 镜像(浓度可达性数据底座)",
  "web.data.pk_missing": "未镜像 —— 浓度可达性需要它,请先构建",
  "web.data.pk_missing_studies": "另有 {n} 个研究上游文件集缺失(404 悬空引用)—— 非镜像故障,已单独立账",
+ "web.data.pk_norm": "归一化缓存 v{v} · 查名冲突 {c} 名(台账已归档)",
+ "web.data.pk_norm_tip": "可达性归一化三件套随镜像构建/更新级联产出;查名冲突按身份优先规则裁决,明细见缓存目录 _conflict_ledger.json",
  "web.data.pk_retry_btn": "重试",
  "web.data.pk_stale": "PK-DB 镜像已 {age} 天,数据可能陈旧 —— 建议更新。",
  "web.data.pk_status_fail": "PK-DB 镜像状态读取失败",

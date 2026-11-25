@@ -531,3 +531,14 @@ def test_synonym_fallback_off_strict_identity(sandbox_identity_sibling_only):
     assert res["unknown_reason"] == "no_exposure"
     assert res["exposure"]["synonym_fallback_sid"] is None
     assert res["exposure"]["n_cmax_obs"] == 0
+
+
+def test_normalization_status_and_production_caller_note(sandbox_norm):
+    """normalization_status(PK 卡显示用):未构建 → None;构建后返回版本与
+    台账摘要。build_normalized_cache 的生产调用点=PK 卡级联(api/pk_mirror),
+    docstring 有死代码保护注释——此用例同时钉住状态函数行为。"""
+    assert rch.normalization_status() is None            # 未构建 → None
+    _build_all()
+    st = rch.normalization_status()
+    assert st is not None and st["pk_norm_version"] == 7
+    assert "conflicts_total" in st and "conflict_keys" in st
