@@ -285,7 +285,8 @@ def _fake_reach_result(tier="reachable"):
     """compute_reachability 的最小桩:单药块契约 + 2 行逐靶点明细。"""
     import pandas as pd
     return {
-        "schema": "reachability.v1",
+        "schema": "reachability.v1.1",
+        "pk_norm_version": 2,
         "drug": "DrugA", "substance_sid": "drug_a",
         "tier": tier, "r_primary": 3.5 if tier == "reachable" else None,
         "unknown_reason": None,
@@ -331,6 +332,7 @@ def test_mount_reachability_block_and_sort_key(monkeypatch):
     assert r["sort_key_note"] is None
     ra = r["drug_a"]
     assert ra["drug"] == "DrugA" and ra["tier"] == "reachable"
+    assert ra["pk_norm_version"] == 2               # 数据版本戳随摘要透传进存档
     assert isinstance(ra["targets"], pd.DataFrame)  # 暂存,archive 剥离
     assert ra["detail_file"] == "reachability_DrugA.csv"
     assert calls == ["DrugA", "DrugB"]              # 复用传入 df,不再拉缓存

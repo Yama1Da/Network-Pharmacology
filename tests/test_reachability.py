@@ -285,13 +285,17 @@ class TestS56Cases:
 
     def test_case2_ramipril_reachable(self, sandbox_norm):
         """雷米普利:nM 活性 vs 治疗 Cmax → 可达。pChEMBL 方向哨兵:若 10**(-p)
-        写反,高 p(强效)案例活性剧增,R 翻转为不可达,本案例即红(§5.6)。"""
+        写反,高 p(强效)案例活性剧增,R 翻转为不可达,本案例即红(§5.6);
+        另验数据版本戳(2026-11-25 定稿):顶层返回带 pk_norm_version,
+        与 schema 串正交,存档/汇总表据此判数字出自哪套归一化规则。"""
         _build_all()
         targets = pd.DataFrame({"approvedSymbol": ["ACE"],
                                 "assay_type": ["F"], "pchembl_value": [8.3]})  # ≈5 nM
         res = rch.compute_reachability(targets, "ramipril")
         assert res["r_primary"] > 1 and res["tier"] == "reachable"
         assert res["exposure"]["cmax_molar_M"] == pytest.approx(1.2485e-7, rel=1e-3)
+        from WY import config
+        assert res["pk_norm_version"] == config.PK_NORM_VERSION
 
     def test_unknown_branches(self, sandbox_norm):
         """未知档显式:药名无物质映射→no_exposure;有暴露无活性→no_activity;

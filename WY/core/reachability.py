@@ -1035,8 +1035,12 @@ def compute_reachability(drug_targets, drug_name: str = "", *,
     if not computed.empty:
         drug_tier = max(computed["tier"], key=lambda t: weights.get(t, 0.0))
         top_r = computed.loc[computed["tier"] == drug_tier, "r_value"].max()
+        # pk_norm_version:数据版本戳,与 schema 串正交(契约定字段结构,此戳定
+        # 数字出自哪套归一化/查名规则);经 mount_reachability 摘要透传进
+        # result.json 存档,归一化升级后新旧存档可区分、sort_key 跨运行可比性可判
         return {
             "schema": REACHABILITY_SCHEMA,
+            "pk_norm_version": int(getattr(config, "PK_NORM_VERSION", 0) or 0),
             "drug": drug_name, "substance_sid": sid,
             "tier": drug_tier, "r_primary": float(top_r),
             "unknown_reason": None,
@@ -1046,6 +1050,7 @@ def compute_reachability(drug_targets, drug_name: str = "", *,
         }
     return {
         "schema": REACHABILITY_SCHEMA,
+        "pk_norm_version": int(getattr(config, "PK_NORM_VERSION", 0) or 0),
         "drug": drug_name, "substance_sid": sid,
         "tier": "unknown", "r_primary": None,
         "unknown_reason": unknown_reason or "no_activity",
