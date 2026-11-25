@@ -212,6 +212,7 @@ TEXT_WEB_EN = {
     "web.synergy.res_reach": "Target exposure reachability (E6)",
     "web.synergy.reach_computed": "{n}/{total} computed",
     "web.synergy.reach_fub_imputed": "fub conservative bound (may overestimate)",
+    "web.synergy.reach_synonym_fb": "exposure from synonym sibling sid: {sid}",
     "web.synergy.reach_high_conf_label": "High-confidence pair (both drugs ≥ partial)",
     "web.synergy.reach_conf_yes": "yes",
     "web.synergy.reach_conf_no": "no",

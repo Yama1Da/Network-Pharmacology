@@ -173,8 +173,12 @@ PKDB_DOWNLOAD_WORKERS = 4        # 镜像并发 worker 数(2026-11-17 定稿):�
 # 归一化缓存版本号:substance_map/cmax_norm/fub_norm 三件套 Parquet 文件名带它
 # (*_v{N}.parquet,一期 TARGET_FILTER_VERSION 同款逻辑);缺失时 reachability
 # 拒绝构建归一化缓存(不静默默认)。改清洗/聚合/分箱/权重逻辑必递增 → 旧缓存
-# 自动失效重算(方案 §3.1 第 2 层,清单 §0.6 版本递增纪律)。首版=1。
-PK_NORM_VERSION = 1
+# 自动失效重算(方案 §3.1 第 2 层,清单 §0.6 版本递增纪律)。
+# v1→v2(2026-11-25):物质查名改身份优先(名字==自身 sid/正式名 无条件胜过
+# 他物质同义词声明;实测 12/770 行经争议名解析,repaglinide 2 行误挂
+# 5-meo-dalt)+ 冲突台账落 _conflict_ledger.json + 查询侧同义兄弟兜底
+# (契约 reachability.v1.1,纪要见清单 §1.2)。
+PK_NORM_VERSION = 2
 
 # R 三档分箱阈值(§12.2-B2 定稿:主定义不加安全系数 k——fub 与细胞优先活性
 # 已内含主要校正,叠 k 属两个假设相乘、答辩难自证)。占据理论语义:R=1 ⇔ 50%

@@ -213,6 +213,7 @@ TEXT_WEB_ZH = {
     "web.synergy.res_reach": "靶点浓度可达性(E6)",
     "web.synergy.reach_computed": "可算 {n}/{total}",
     "web.synergy.reach_fub_imputed": "fub 保守上界(可能高估)",
+    "web.synergy.reach_synonym_fb": "暴露数据取自同义兄弟 sid:{sid}",
     "web.synergy.reach_high_conf_label": "高置信组合(两药均 ≥ 部分可达)",
     "web.synergy.reach_conf_yes": "是",
     "web.synergy.reach_conf_no": "否",

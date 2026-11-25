@@ -79,6 +79,13 @@ const drugLine = (d: SynergyReachDrug | undefined): string => {
   }
   return parts.join(' · ')
 }
+
+/* 兜底标记(契约 v1.1):exposure.synonym_fallback_sid 非空 = 数据取自同义兄弟
+ * 节点(主 sid 无暴露记录时的台账兜底)——JSON 已存,界面必须可见才算"显式" */
+const fallbackSids = computed(() => ({
+  a: reach.value?.drug_a?.exposure?.synonym_fallback_sid ?? null,
+  b: reach.value?.drug_b?.exposure?.synonym_fallback_sid ?? null
+}))
 </script>
 
 <template>
@@ -132,12 +139,14 @@ const drugLine = (d: SynergyReachDrug | undefined): string => {
       <div class="row">
         <dt>{{ result.pair.drug_a }}</dt>
         <dd>{{ drugLine(reach.drug_a) }}<i v-if="reach.drug_a?.exposure?.fub_imputed"
-               class="reach-warn">{{ t('web.synergy.reach_fub_imputed') }}</i></dd>
+               class="reach-warn">{{ t('web.synergy.reach_fub_imputed') }}</i><i
+               v-if="fallbackSids.a" class="reach-warn">{{ t('web.synergy.reach_synonym_fb', { sid: fallbackSids.a }) }}</i></dd>
       </div>
       <div class="row">
         <dt>{{ result.pair.drug_b }}</dt>
         <dd>{{ drugLine(reach.drug_b) }}<i v-if="reach.drug_b?.exposure?.fub_imputed"
-               class="reach-warn">{{ t('web.synergy.reach_fub_imputed') }}</i></dd>
+               class="reach-warn">{{ t('web.synergy.reach_fub_imputed') }}</i><i
+               v-if="fallbackSids.b" class="reach-warn">{{ t('web.synergy.reach_synonym_fb', { sid: fallbackSids.b }) }}</i></dd>
       </div>
       <div class="row">
         <dt>{{ t('web.synergy.reach_high_conf_label') }}</dt>

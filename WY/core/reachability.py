@@ -1,6 +1,7 @@
 """靶点浓度可达性:归一化 + R 值 + 加权排序(二期方案 §3.1 第 2/3 层)。
 
-契约 reachability.v1(2026-11-22 冻结,接口合同随 E6 消费端先行定稿;
+契约 reachability.v1.1(2026-11-22 冻结;2026-11-25 升版——exposure 增
+synonym_fallback_sid 字段 + 名字解析改身份优先 + 冲突台账,纪要见清单 §1.2;
 字段/枚举变更必须升版本并在清单文档留纪要,同 synergy.py SYNERGY_SCHEMA 纪律):
   - 分档枚举(§12.2-B2 定稿;unknown 为独立档,永不与 unreachable 合并——
     B3 给 unknown 0.5 > unreachable 0.2 的权重差,前端"未知"独立状态由此保证):
@@ -19,6 +20,14 @@
   - fub 缺失 → 保守上界 1.0 +"可能高估"标记,绝不当 0(除零 → inf)
   - 活性(摩尔) = 10 ** (-pChEMBL);方向写反则 R 全体倒置且不报错
     (清单 §1.2 陷阱 2,靠手算对照兜住——验收三案例见清单 §5.6)
+  - v1.1 增补(2026-11-25,负责人定稿):exposure 增 synonym_fallback_sid
+    (null=主 sid 直接命中;否则=实际取数所用的同义兄弟 sid,显式标记不静默)。
+    名字解析改**身份优先**(名字==自身 sid/正式名 无条件胜过他物质同义词声明,
+    与节点序无关;2026-11-25 实测 12/770 行经争议名解析、其中 repaglinide 2 行
+    误挂致幻剂 5-meo-dalt);查名冲突台账落 _conflict_ledger.json(构建期写入),
+    查询侧同义兄弟兜底(compute_reachability 的 synonym_fallback 参数,默认开:
+    主 sid 无暴露记录才触发,按台账竞争 sid 依序取数)——归属正确性与数据
+    覆盖率两全,兜底显式可见
 
 分工红线(文件清单 §1.2):本文件=队友实现;w(R) 标定产出与验收自检
 (二甲双胍/雷米普利手算对照、缺失标记两案例)须工程负责人复核签字后
@@ -49,7 +58,8 @@ import os
 logger = logging.getLogger(__name__)
 
 # 契约版本锚点:枚举/字段变更必须升版本并在清单文档留纪要(冻结纪律)
-REACHABILITY_SCHEMA = "reachability.v1"
+# v1.1(2026-11-25):exposure 增 synonym_fallback_sid(见模块 docstring 契约块)
+REACHABILITY_SCHEMA = "reachability.v1.1"
 
 # 分档枚举(契约冻结值;B2 定稿三档 + unknown 显式档)
 REACH_TIERS = ("reachable", "partial", "unreachable", "unknown")
@@ -234,7 +244,9 @@ def build_substance_map(force: bool = False) -> str:
         return out
     df = _substance_rows(_load_substance_nodes())
     path = _save_table_atomic(df, out)
-    logger.info("substance_map 归一化完成: %d 物质 → %s", len(df), path)
+    ledger_path = _write_conflict_ledger(_load_substance_nodes())
+    logger.info("substance_map 归一化完成: %d 物质 → %s(冲突台账: %s)",
+                len(df), path, ledger_path)
     return path
 
 
@@ -285,33 +297,86 @@ def _parse_num(raw) -> float | None:
         return None
 
 
-def _substance_lookup(nodes: list[dict]) -> dict:
-    """物质名/同义词 → (sid, mol_weight_g_mol) 查找表(cmax 行的 substance 是
-    名义字符串,如 'atorvastatin acid',需经 substance_map 桥到 sid 与质量)。
-    全部小写化;同条映射冲突时保留先到并计数(不静默覆盖)。"""
+def _build_name_index(nodes: list[dict]) -> tuple[dict, dict[str, list[str]], int]:
+    """物质名索引(身份优先两遍构建,2026-11-25 定稿):
+    第一遍——身份声明:名字精确等于自身 sid 或正式名的,无条件占位;
+    第二遍——名字+同义词补位:已被他 sid 占用的名字不覆盖,记入台账
+    (key → 竞争 sid 列表,依遭遇序)并计数。
+    返回 (lookup: 名字 → (sid, mol_weight_g_mol), ledger: 争议名台账, 冲突计数)。
+    为什么不是单纯"保留先到":节点序=镜像构建时上游返回序,既无语义优先级
+    又随重拉漂移——2026-11-25 实测 12/770 行经争议名解析,其中 repaglinide
+    2 行误挂 5-meo-dalt(上游脏同义词)。身份声明与顺序无关,修此错类;
+    剩余争议(真不同物质共享同义词,如 oxazepam-glucuronide 声称 diazepam)
+    本就不该消化,留台账供查询侧兜底与审计。"""
     lookup: dict[str, tuple[str, float | None]] = {}
-    conflicts = 0
+    mw_by_sid: dict[str, float | None] = {}
     for n in nodes:
         sid = str(n.get("sid", "") or "")
         if not sid:
             continue
         mass = (n.get("substance") or {}).get("mass")
         try:
-            mw = float(mass) if mass is not None else None
+            mw_by_sid[sid] = float(mass) if mass is not None else None
         except (TypeError, ValueError):
-            mw = None
+            mw_by_sid[sid] = None
+        own = str(n.get("name", "") or "").strip().lower()
+        for key in {sid.lower(), own} - {""}:
+            if key not in lookup:
+                lookup[key] = (sid, mw_by_sid[sid])
+    ledger: dict[str, list[str]] = {}
+    conflicts = 0
+    for n in nodes:
+        sid = str(n.get("sid", "") or "")
+        if not sid:
+            continue
         names = [str(n.get("name", "") or "")] + [str(s) for s in (n.get("synonyms") or [])]
         for name in names:
             key = name.strip().lower()
             if not key:
                 continue
-            if key in lookup and lookup[key][0] != sid:
-                conflicts += 1
+            holder = lookup.get(key)
+            if holder is not None:
+                if holder[0] != sid:
+                    conflicts += 1
+                    ledger.setdefault(key, [])
+                    if sid not in ledger[key]:
+                        ledger[key].append(sid)
                 continue
-            lookup[key] = (sid, mw)
+            lookup[key] = (sid, mw_by_sid[sid])
     if conflicts:
-        logger.warning("substance 名称映射冲突 %d 个(保留先到)", conflicts)
-    return lookup
+        # 告警放原语内:构建期与运行期(compute 直调本函数)两条路都要响,
+        # 每进程一次(2026-11-25 教训:告警留在包装里曾致运行路径静默)
+        _warn_once("substance_name_conflict",
+                   "substance 名称映射冲突 %d 处(身份优先已定归属;竞争者明细见"
+                   "归一化缓存目录 _conflict_ledger.json)" % conflicts)
+    return lookup, ledger, conflicts
+
+
+def _substance_lookup(nodes: list[dict]) -> dict:
+    """物质名/同义词 → (sid, mol_weight_g_mol) 查找表(_build_name_index 的
+    薄包装;构建侧只需 lookup,查询侧兜底用 _build_name_index 拿台账)。"""
+    return _build_name_index(nodes)[0]
+
+
+def _write_conflict_ledger(nodes: list[dict]) -> str:
+    """查名冲突台账落盘(构建期,substance_map 产物随行;审计与查询侧兜底共用):
+    _norm_dir()/_conflict_ledger.json,含 winner/claimants 与版本戳。"""
+    from datetime import datetime, timezone
+
+    from WY import config
+    from .caching import save_json_file
+
+    _lookup, ledger, conflicts = _build_name_index(nodes)
+    payload = {
+        "pk_norm_version": int(getattr(config, "PK_NORM_VERSION", 0) or 0),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "conflicts_total": conflicts,
+        "keys": {k: {"winner_sid": _lookup.get(k, (None,))[0], "claimants": v}
+                 for k, v in sorted(ledger.items())},
+    }
+    path = os.path.join(_norm_dir(), "_conflict_ledger.json")
+    save_json_file(path, payload, indent=1)
+    return path
 
 
 def _collect_dosing(study: dict) -> dict:
@@ -816,33 +881,55 @@ def _read_norm(stem: str) -> "pd.DataFrame":
 
 
 def compute_reachability(drug_targets, drug_name: str = "", *,
+                         synonym_fallback: bool = True,
                          reachable_min=None, partial_min=None) -> dict:
-    """单药可达性(第 3 层计算,§3.2;契约 reachability.v1 单药块):
+    """单药可达性(第 3 层计算,§3.2;契约 reachability.v1.1 单药块):
     B1 活性聚合 → R = (Cmax 中位数 × fub) ÷ 活性 → 三档分箱 → 逐靶点明细
     + 药级档(任一靶点达档即取最高权档,合同 2026-11-22 冻结)。
     drug_targets:一期 ChEMBL 靶点缓存 DataFrame(调用方保证已取——本函数
     不联网,缓存未就绪是调用方职责);reachable_min/partial_min 显式传参
     供 §3.2 边界敏感性对照。Cmax 取该物质全部干预中位数(§3.1 多观测取
-    中位数;跨干预聚合口径属静默风险点,负责人强制审查项)。"""
+    中位数;跨干预聚合口径属静默风险点,负责人强制审查项)。
+    synonym_fallback(2026-11-25 负责人定稿,默认开):主 sid 无暴露记录时,
+    按查名冲突台账(_build_name_index 的争议 key→竞争 sid)依序取数,命中即
+    用并在 exposure.synonym_fallback_sid 显式标记;主 sid 有数据永不兜底
+    (身份归属不受污染)。关闭则严格只认身份归属的 sid。"""
     import pandas as pd
 
     unknown_reason = None
     sid = None
     cmax_total = fub = None
     fub_imputed = None
+    fallback_sid = None
     cmax_meta = {"cmax_molar_M": None, "cmax_interventions": "", "n_cmax_obs": 0,
-                 "fub_value": None, "fub_imputed": None}
+                 "fub_value": None, "fub_imputed": None,
+                 "synonym_fallback_sid": None}
     key = str(drug_name or "").strip().lower()
+    lookup, ledger, _conflicts = _build_name_index(_load_substance_nodes())
     if key:
-        sid = _substance_lookup(_load_substance_nodes()).get(key, (None, None))[0]
+        sid = lookup.get(key, (None, None))[0]
     if sid is not None:
-        crows = _read_norm("cmax_norm")
-        crows = crows[crows["substance_sid"] == sid]
-        frow = _read_norm("fub_norm")
-        frow = frow[frow["substance_sid"] == sid]
-        if not frow.empty:
-            fub = float(frow["fub_value"].iloc[0])
-            fub_imputed = bool(frow["imputed_flag"].iloc[0])
+        def _fetch(sid_try: str):
+            crows = _read_norm("cmax_norm")
+            crows = crows[crows["substance_sid"] == sid_try]
+            frow = _read_norm("fub_norm")
+            frow = frow[frow["substance_sid"] == sid_try]
+            fub_v = fub_imp = None
+            if not frow.empty:
+                fub_v = float(frow["fub_value"].iloc[0])
+                fub_imp = bool(frow["imputed_flag"].iloc[0])
+            return crows, fub_v, fub_imp
+
+        crows, fub, fub_imputed = _fetch(sid)
+        if (crows.empty or fub is None) and synonym_fallback and key:
+            for alt in ledger.get(key, ()):
+                c2, f2, fi2 = _fetch(alt)
+                if not c2.empty and f2 is not None:
+                    crows, fub, fub_imputed = c2, f2, fi2
+                    fallback_sid = alt
+                    logger.info("reachability %s: 主 sid 无暴露记录,"
+                                "同义兄弟兜底取数 sid=%s", key, alt)
+                    break
         if not crows.empty and fub is not None:
             # 多干预中位数(§3.1);Cmax_free 在 r_value 内乘 fub
             cmax_total = float(crows["cmax_molar_M"].median())
@@ -851,6 +938,7 @@ def compute_reachability(drug_targets, drug_name: str = "", *,
                 "cmax_interventions": ";".join(sorted(set(crows["intervention"]))),
                 "n_cmax_obs": int(crows["n_obs"].sum()),
                 "fub_value": fub, "fub_imputed": fub_imputed,
+                "synonym_fallback_sid": fallback_sid,
             }
         else:
             unknown_reason = "no_exposure"

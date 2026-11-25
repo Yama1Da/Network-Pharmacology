@@ -451,6 +451,8 @@ export interface SynergyReachDrug {
     n_cmax_obs: number
     fub_value: number | null
     fub_imputed: boolean | null
+    /** v1.1:非 null = 主 sid 无暴露记录,数据取自该同义兄弟 sid(台账兜底) */
+    synonym_fallback_sid: string | null
   }
   n_targets: number
   n_computed: number

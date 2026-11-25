@@ -129,7 +129,7 @@ def _build_all():
 
 class TestContract:
     def test_schema_and_enums(self):
-        assert rch.REACHABILITY_SCHEMA == "reachability.v1"
+        assert rch.REACHABILITY_SCHEMA == "reachability.v1.1"
         assert rch.REACH_TIERS == ("reachable", "partial", "unreachable", "unknown")
         assert rch.REACH_UNKNOWN_REASONS == ("no_exposure", "no_activity",
                                              "no_molweight")
@@ -439,3 +439,95 @@ class TestMergedCacheActivity:
         assert detail.loc["TP53", "activity_M"] == pytest.approx(10 ** -6.5)
         assert detail.loc["TP53", "tier"] == "reachable"
         assert detail.loc["KRAS", "tier"] == "unknown"
+
+
+# ---- v1.1(2026-11-25):身份优先查名 + 冲突台账 + 同义兄弟兜底 ----
+
+_ID_NODES = [
+    {"sid": "dirty", "name": "Dirtymin", "synonyms": ["reald"], "parents": [],
+     "annotations": [], "xrefs": [], "measurement_type": None,
+     "substance": {"mass": 200.0, "charge": 0.0, "formula": None}},
+    {"sid": "reald", "name": "Reald", "synonyms": [], "parents": [],
+     "annotations": [], "xrefs": [], "measurement_type": None,
+     "substance": {"mass": 129.167, "charge": 0.0, "formula": None}},
+    # sib:本名 sibname,脏同义词声称 reald(上游数据现实缩样:同义图谱有交集)
+    {"sid": "sib", "name": "sibname", "synonyms": ["reald"], "parents": [],
+     "annotations": [], "xrefs": [], "measurement_type": None,
+     "substance": {"mass": 180.0, "charge": 0.0, "formula": None}},
+]
+
+
+def _write_identity_raw(row_substance: str) -> None:
+    """最小身份冲突数据落盘:dirty 节点(脏同义词声称 reald)**先于** reald
+    节点——旧"保留先到"按节点序会把名字 reald 判给 dirty;身份优先必须判给
+    reald 本尊。cmax 行拼写由参数给:identity 用例写 reald,兜底用例写 sibname
+    (sib 本名 → reald 名下 0 行,触发兜底)。"""
+    raw = os.path.join(config.CACHE_DIR, config.PKDB_CACHE_SUBDIR)
+    os.makedirs(raw, exist_ok=True)
+    with open(os.path.join(raw, "substance_map.json"), "w", encoding="utf-8") as f:
+        json.dump({"fetched_at": "2026-11-25T00:00:00+00:00", "nodes": _ID_NODES},
+                  f, ensure_ascii=False)
+    s = _study("PKDBIDT1", [
+        (".Sib_Tab1.tsv", _CMAX_HDR,
+         [["PKDBIDT1", "all", "SIB10", "cmax", row_substance,
+           "plasma", "NA", "NA", "100", "na", "ng/ml"]]),
+        (".Sib_TabInterventions.tsv", _DOSE_HDR,
+         [["PKDBIDT1", "SIB10", row_substance, "dosing", "0", "min", "po",
+           "tablet", "100", "mg", "single dose"]]),
+    ])
+    with open(os.path.join(raw, f"{s['sid']}.json"), "w", encoding="utf-8") as f:
+        json.dump(s, f, ensure_ascii=False)
+
+
+@pytest.fixture()
+def sandbox_identity(monkeypatch):
+    """身份路由用例:行拼写 reald,检验归属判给正主而非 dirty。"""
+    monkeypatch.setattr(config, "PK_NORM_VERSION", 7, raising=False)
+    _write_identity_raw("reald")
+
+
+@pytest.fixture()
+def sandbox_identity_sibling_only(monkeypatch):
+    """兜底用例:行拼写 sibname(sib 本名)→ reald 名下 0 行,主 sid 捞空。"""
+    monkeypatch.setattr(config, "PK_NORM_VERSION", 7, raising=False)
+    _write_identity_raw("sibname")
+
+
+def test_identity_priority_beats_dirty_synonym(sandbox_identity):
+    """身份优先:名字==自身 sid 的节点无条件胜过先出现的脏同义词声明;
+    行归属与查名都归正主;台账落盘并记下竞争者(winner/claimants)。"""
+    _build_all()
+    cm = rch._read_norm("cmax_norm")
+    assert cm[cm["substance_raw"].str.lower() == "reald"][
+        "substance_sid"].tolist() == ["reald"]          # 归正主,不归 dirty
+    led_path = os.path.join(rch._norm_dir(), "_conflict_ledger.json")
+    with open(led_path, encoding="utf-8") as f:
+        led = json.load(f)
+    entry = led["keys"]["reald"]
+    assert entry["winner_sid"] == "reald"
+    assert set(entry["claimants"]) == {"dirty", "sib"}   # 两个竞争者都留痕
+    assert led["pk_norm_version"] == 7                   # 版本戳随沙箱常量
+
+
+def test_synonym_fallback_recovers_sibling(sandbox_identity_sibling_only):
+    """兜底(默认开):主 sid(reald)无暴露记录 → 按台账竞争 sid 取数,
+    exposure.synonym_fallback_sid 显式标记;substance_sid 保持身份归属不变。"""
+    _build_all()
+    res = rch.compute_reachability(None, "reald")
+    assert res["substance_sid"] == "reald"               # 身份回答不变
+    assert res["exposure"]["synonym_fallback_sid"] == "sib"
+    assert res["exposure"]["n_cmax_obs"] >= 1            # 兄弟节点数据被回收
+    # 100 ng/ml ÷ 180 g/mol → 0.556 µM 数量级(沙箱数值,锚点在主测试集)
+    assert res["exposure"]["cmax_molar_M"] == pytest.approx(
+        100 * 1e-6 / 180.0, rel=1e-3)   # 100 ng/ml = 1e-4 g/L ÷ 180
+
+
+def test_synonym_fallback_off_strict_identity(sandbox_identity_sibling_only):
+    """兜底关(显式参数):主 sid 无记录 → 严格 no_exposure,不碰兄弟节点;
+    sensitivity 对照由此参数驱动(§3.2 同款模式)。"""
+    _build_all()
+    res = rch.compute_reachability(None, "reald", synonym_fallback=False)
+    assert res["tier"] == "unknown"
+    assert res["unknown_reason"] == "no_exposure"
+    assert res["exposure"]["synonym_fallback_sid"] is None
+    assert res["exposure"]["n_cmax_obs"] == 0

@@ -775,6 +775,7 @@
  "web.synergy.reach_high_conf_label": "High-confidence pair (both drugs ≥ partial)",
  "web.synergy.reach_sort_key": "E6 sort key ({'|'}z_sep{'|'}×min(w))",
  "web.synergy.reach_sort_null": "null distribution degenerate — ranked last",
+ "web.synergy.reach_synonym_fb": "exposure from synonym sibling sid: {sid}",
  "web.synergy.reach_tier_partial": "partial",
  "web.synergy.reach_tier_reachable": "reachable",
  "web.synergy.reach_tier_unknown": "unknown",
