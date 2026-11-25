@@ -344,7 +344,7 @@ def _tframe(genes, scores):
 
 
 def _fake_synergy_contract(a_genes, b_genes, d_genes=None, **kw):
-    return {"schema": "synergy.v1.1",
+    return {"schema": "synergy.v1.2",
             "pair": {"drug_a": kw.get("drug_a", ""), "drug_b": kw.get("drug_b", "")},
             "inputs": {"power_limited": False},
             "separation": {"s_ab": 0.0808,
@@ -418,12 +418,21 @@ def test_synergy_batch_mixed_summary(tmp_path, monkeypatch):
 
 
 def test_synergy_batch_ok_rows_and_slicing(tmp_path, monkeypatch):
-    """批量成功行:s_ab/几何标签/归档目录进汇总表;切片按 top-n 生效(症状:全量 vs 切片)。"""
+    """批量成功行:s_ab/几何标签/归档目录进汇总表;切片按 top-n 生效(症状:全量 vs 切片);
+    E6 可达性五列随契约摘要进表(v1.2),失败/降级对留空。"""
     calls = _stub_synergy_chain(monkeypatch)
     # 带分数档的靶点表覆盖(链桩默认分数恒同,测不出切片次序)
     monkeypatch.setattr(cli, "get_drug_targets_merged", lambda name: _tframe(
         ["G1", "G2", "G3"] if name == "A" else ["G4", "G5", "G6"],
         [0.1, 0.9, 0.5] if name == "A" else [0.2, 0.8, 0.4]))
+    # 挂载桩(真挂载在单测环境会因归一化缓存未就绪降级为 null):固定摘要块,
+    # sort_key=|z|×min(w)=2.6×0.6(展示口径,核心数学不在此测)
+    def fake_mount(contract, ta=None, tb=None):
+        contract["reachability"] = {
+            "drug_a": {"tier": "reachable"}, "drug_b": {"tier": "partial"},
+            "high_confidence": False, "sort_key": 2.6 * 0.6, "sort_key_note": None}
+        return contract
+    monkeypatch.setattr(cli, "mount_reachability", fake_mount)
     csv = tmp_path / "batch.csv"
     pd.DataFrame({"drug_a": ["A", "A"], "drug_b": ["B", "B"], "disease": ["cancer", ""]}
                  ).to_csv(csv, index=False)
@@ -441,6 +450,12 @@ def test_synergy_batch_ok_rows_and_slicing(tmp_path, monkeypatch):
     assert (ok["geometry_label"] == "separated").all()
     assert ok["directory"].notna().all()
     assert (ok["p_lower"] == "0.005").all()
+    # E6 五列(展示列):档位/置信/排序键/标注;sort_key 定稿乘积形式 2.6×0.6
+    assert (ok["r_tier_a"] == "reachable").all()
+    assert (ok["r_tier_b"] == "partial").all()
+    assert (ok["r_high_conf"] == "False").all()
+    assert (ok["r_sort_key"] == "1.5600").all()
+    assert ok["r_sort_key_note"].isna().all()       # 空 CSV 单元格读回即 NaN
 
 
 def test_synergy_no_targets_token(tmp_path, monkeypatch):

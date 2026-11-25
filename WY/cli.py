@@ -829,8 +829,14 @@ def cmd_batch(args) -> int:
 
 # ======== 子命令:synergy(分离度协同预测) ========
 
+# 批量汇总表列序:分析列 + E6 可达性列(v1.2 定稿:sort_key/high_confidence 是
+# 一对药裁决的一部分,批量汇总就是排序比较面,不进表则批量输出无法完成排序
+# 使命;列名与网页 list_results 行同源同义,旧档/降级对留空)+ 记账列。
+# r_sort_key 只作展示列(E6 定稿:排行语义归分析排行,不进核心数学)。
 _SYNERGY_SUMMARY_COLUMNS = ("drug_a", "drug_b", "disease", "status", "s_ab",
                             "geometry_label", "p_lower", "z_sep", "power_limited",
+                            "r_tier_a", "r_tier_b", "r_high_conf", "r_sort_key",
+                            "r_sort_key_note",
                             "detail", "seconds", "directory")
 
 
@@ -994,7 +1000,10 @@ def cmd_synergy(args) -> int:
             a, b, disease, top_n=top_n, n_perm=args.n_perm, prefix=prefix)
         record = {"drug_a": a, "drug_b": b, "disease": disease, "status": "failed",
                   "s_ab": "", "geometry_label": "", "p_lower": "", "z_sep": "",
-                  "power_limited": "", "detail": detail, "seconds": round(seconds, 1),
+                  "power_limited": "",
+                  "r_tier_a": "", "r_tier_b": "", "r_high_conf": "",
+                  "r_sort_key": "", "r_sort_key_note": "",
+                  "detail": detail, "seconds": round(seconds, 1),
                   "directory": ""}
         if contract is not None:
             ok_n += 1
@@ -1009,6 +1018,17 @@ def cmd_synergy(args) -> int:
                 power_limited=1 if contract.get("inputs", {}).get("power_limited") else 0,
                 directory=directory or "",
             )
+            # E6 可达性列直取契约摘要块;槽位 null(缓存未就绪降级)留空不伪造
+            r = contract.get("reachability")
+            if r:
+                sk = r.get("sort_key")
+                record.update(
+                    r_tier_a=(r.get("drug_a") or {}).get("tier") or "",
+                    r_tier_b=(r.get("drug_b") or {}).get("tier") or "",
+                    r_high_conf=r.get("high_confidence"),
+                    r_sort_key=f"{sk:.4f}" if sk is not None else "",
+                    r_sort_key_note=r.get("sort_key_note") or "",
+                )
             print(f"[synergy] ({n}/{len(pairs)}) ok: s_ab={record['s_ab']} "
                   f"({record['geometry_label']}, p_lower={record['p_lower']})"
                   + (", power_limited" if record["power_limited"] else ""))
@@ -1020,7 +1040,10 @@ def cmd_synergy(args) -> int:
     for lineno, reason in bad_rows:
         rows.append({"drug_a": "", "drug_b": "", "disease": "", "status": "failed",
                      "s_ab": "", "geometry_label": "", "p_lower": "", "z_sep": "",
-                     "power_limited": "", "detail": f"line {lineno}: {reason}",
+                     "power_limited": "",
+                     "r_tier_a": "", "r_tier_b": "", "r_high_conf": "",
+                     "r_sort_key": "", "r_sort_key_note": "",
+                     "detail": f"line {lineno}: {reason}",
                      "seconds": "", "directory": ""})
 
     if out_dir is not None:
