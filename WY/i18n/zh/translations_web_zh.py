@@ -216,7 +216,7 @@ TEXT_WEB_ZH = {
     "web.synergy.reach_high_conf_label": "高置信组合(两药均 ≥ 部分可达)",
     "web.synergy.reach_conf_yes": "是",
     "web.synergy.reach_conf_no": "否",
-    "web.synergy.reach_sort_key": "E6 排序键(|z_sep|×min(w))",
+    "web.synergy.reach_sort_key": "E6 排序键({'|'}z_sep{'|'}×min(w))",
     "web.synergy.reach_sort_null": "零分布退化——排末位",
     "web.synergy.res_prox": "疾病邻近度(负 z = 比随机更近疾病模块)",
     "web.synergy.res_prox_err": "该项未得出结果:{err}",

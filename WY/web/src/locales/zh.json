@@ -773,7 +773,7 @@
  "web.synergy.reach_conf_yes": "是",
  "web.synergy.reach_fub_imputed": "fub 保守上界(可能高估)",
  "web.synergy.reach_high_conf_label": "高置信组合(两药均 ≥ 部分可达)",
- "web.synergy.reach_sort_key": "E6 排序键(|z_sep|×min(w))",
+ "web.synergy.reach_sort_key": "E6 排序键({'|'}z_sep{'|'}×min(w))",
  "web.synergy.reach_sort_null": "零分布退化——排末位",
  "web.synergy.reach_tier_partial": "部分可达",
  "web.synergy.reach_tier_reachable": "可达",

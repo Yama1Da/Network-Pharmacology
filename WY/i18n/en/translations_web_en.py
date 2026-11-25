@@ -215,7 +215,7 @@ TEXT_WEB_EN = {
     "web.synergy.reach_high_conf_label": "High-confidence pair (both drugs ≥ partial)",
     "web.synergy.reach_conf_yes": "yes",
     "web.synergy.reach_conf_no": "no",
-    "web.synergy.reach_sort_key": "E6 sort key (|z_sep|×min(w))",
+    "web.synergy.reach_sort_key": "E6 sort key ({'|'}z_sep{'|'}×min(w))",
     "web.synergy.reach_sort_null": "null distribution degenerate — ranked last",
     "web.synergy.res_prox": "Disease proximity (negative z = closer than random)",
     "web.synergy.res_prox_err": "No result for this item: {err}",
