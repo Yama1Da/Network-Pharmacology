@@ -216,7 +216,7 @@ TEXT_WEB_EN = {
     "web.synergy_results.high_conf_tag": "high-conf",
     "web.synergy.reach_tier_reachable": "reachable",
     "web.synergy.reach_tier_partial": "partial",
-    "web.synergy.reach_tier_unknown": "unknown",
+    "web.synergy.reach_tier_unknown": "exposure unknown",
     "web.synergy.reach_tier_unreachable": "unreachable",
     # ---- W7 reachability annotation columns (2026-11-25): home tables + analysis hub table; filter defaults to all ----
     "web.reach.col": "reachability",

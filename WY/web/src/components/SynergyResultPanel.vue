@@ -58,7 +58,9 @@ const proxRows = computed(() => {
 /* ---- v1.2 E6 可达性块(null = 未挂载/缓存未就绪/旧档,整节不渲染) ---- */
 const reach = computed(() => props.result.reachability ?? null)
 
-const tierText = (tier: string | null | undefined): string => {
+/* unknown 按真因拆词(2026-11-25):no_activity=活性未知,其余 unknown=暴露未知 */
+const tierText = (tier: string | null | undefined, reason?: string | null): string => {
+  if (tier === 'unknown' && reason === 'no_activity') return t('web.reach.tier_no_activity')
   const m: Record<string, string> = {
     reachable: t('web.synergy.reach_tier_reachable'),
     partial: t('web.synergy.reach_tier_partial'),
@@ -71,7 +73,7 @@ const tierText = (tier: string | null | undefined): string => {
 /* 单药摘要行:分档 · 可算比例 · 游离 Cmax 中位(µM);空值如实显示 — */
 const drugLine = (d: SynergyReachDrug | undefined): string => {
   if (!d) return t('web.synergy.value_na')
-  const parts = [tierText(d.tier),
+  const parts = [tierText(d.tier, d.unknown_reason),
                  t('web.synergy.reach_computed', { n: d.n_computed, total: d.n_targets })]
   const cmax = d.exposure?.cmax_molar_M
   if (cmax !== null && cmax !== undefined) {

@@ -794,7 +794,7 @@
  "web.synergy.reach_synonym_fb": "exposure from synonym sibling sid: {sid}",
  "web.synergy.reach_tier_partial": "partial",
  "web.synergy.reach_tier_reachable": "reachable",
- "web.synergy.reach_tier_unknown": "unknown",
+ "web.synergy.reach_tier_unknown": "exposure unknown",
  "web.synergy.reach_tier_unreachable": "unreachable",
  "web.synergy.res_archived": "Archived under Analysis Artifacts — traceable and reproducible",
  "web.synergy.res_cov": "Network coverage",

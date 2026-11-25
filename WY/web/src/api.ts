@@ -524,6 +524,9 @@ export interface SynergyRunRow {
   r_high_conf: boolean | null
   r_sort_key: number | null
   r_sort_key_note: string | null
+  /** unknown 档真因(按真因拆词:no_exposure/no_activity;判档/旧档为 null) */
+  r_unknown_a: string | null
+  r_unknown_b: string | null
 }
 
 interface SynergyAnalyzeBody {

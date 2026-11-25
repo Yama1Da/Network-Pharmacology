@@ -148,8 +148,10 @@ const labelOf = (row: SynergyRunRow): string => {
   return m[row.geometry_label] ?? row.geometry_label
 }
 
-/* v1.2 E6 分档短词(四档独立,未知≠不可达;旧档/未挂载显示 —) */
-const tierShort = (tier: string | null): string => {
+/* v1.2 E6 分档短词(四档独立,未知≠不可达;旧档/未挂载显示 —);
+ * unknown 按真因拆词(2026-11-25):no_exposure=暴露未知,no_activity=活性未知 */
+const tierShort = (tier: string | null, reason?: string | null): string => {
+  if (tier === 'unknown' && reason === 'no_activity') return t('web.reach.tier_no_activity')
   const m: Record<string, string> = {
     reachable: t('web.synergy.reach_tier_reachable'),
     partial: t('web.synergy.reach_tier_partial'),
@@ -215,7 +217,7 @@ onMounted(() => void loadRuns())
           <span class="fmeta">
             {{ labelOf(r) }} · s_AB {{ r.s_ab ?? '—' }}
             <template v-if="r.r_tier_a || r.r_tier_b">
-              · {{ t('web.synergy_results.reach_tag', { a: tierShort(r.r_tier_a), b: tierShort(r.r_tier_b) }) }}
+              · {{ t('web.synergy_results.reach_tag', { a: tierShort(r.r_tier_a, r.r_unknown_a), b: tierShort(r.r_tier_b, r.r_unknown_b) }) }}
             </template>
             <i v-if="r.r_high_conf" class="conf-tag">{{ t('web.synergy_results.high_conf_tag') }}</i>
             <i v-if="r.r_sort_key_note === 'z_null'" class="limit-tag">{{ t('web.synergy.reach_sort_null') }}</i>

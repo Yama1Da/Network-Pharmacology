@@ -376,7 +376,9 @@ def list_results() -> list[dict]:
                "s_ab": None, "power_limited": None, "computed_at": "",
                # v1.2 E6 行摘要字段(旧 v1.1 归档/未挂载时保持 None,前端显示"—")
                "r_tier_a": None, "r_tier_b": None, "r_high_conf": None,
-               "r_sort_key": None, "r_sort_key_note": None}
+               "r_sort_key": None, "r_sort_key_note": None,
+               # unknown 档真因(按真因拆词,no_exposure/no_activity;无则 None)
+               "r_unknown_a": None, "r_unknown_b": None}
         rf = os.path.join(path, "result.json")
         if not os.path.isfile(rf):
             row["reason"] = "缺 result.json"
@@ -405,6 +407,8 @@ def list_results() -> list[dict]:
                 row["r_high_conf"] = r.get("high_confidence")
                 row["r_sort_key"] = r.get("sort_key")
                 row["r_sort_key_note"] = r.get("sort_key_note")
+                row["r_unknown_a"] = (r.get("drug_a") or {}).get("unknown_reason")
+                row["r_unknown_b"] = (r.get("drug_b") or {}).get("unknown_reason")
         except (OSError, ValueError):
             row["reason"] = "result.json 解析失败"
             logging.exception("synergy 归档损坏: %s", name)
