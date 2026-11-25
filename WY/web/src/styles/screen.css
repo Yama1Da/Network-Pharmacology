@@ -1087,6 +1087,43 @@ td.warn {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- 可达性标注(W7,2026-11-25;主页三表 + 分析页 hub 表共用) ----------
+ * 四档独立配色:可达/部分用强调系,不可达用警示红,暴露未知必须视觉独立
+ * (暗淡斜体——方案红线:"未知"不得与"不可达"合并)。 */
+.reach-cell {
+  font-size: 11px;
+  white-space: nowrap;
+}
+.reach-reachable {
+  color: var(--c-accent);
+}
+.reach-partial {
+  color: var(--c-accent);
+  opacity: 0.72;
+}
+.reach-unreachable {
+  color: var(--c-danger);
+}
+.reach-unknown {
+  color: var(--c-ink3);
+  font-style: italic;
+}
+.reach-filter {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--c-line);
+  color: var(--c-sub);
+  font-family: inherit;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.reach-filter:focus {
+  outline: none;
+  color: var(--c-ink);
+}
+
 /* ---------- 下载列表(全局:Analysis/Ml 共用)——说明为主、文件名为辅 ---------- */
 .dl-list {
   list-style: none;

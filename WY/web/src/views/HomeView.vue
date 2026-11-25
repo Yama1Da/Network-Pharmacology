@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '../api'
 import { setPrefill } from '../store'
 import { useJob } from '../composables/useJob'
+import { useReachAnnotation } from '../composables/useReach'
 import { downloadBlob } from '../utils/download'
 import { theme } from '../utils/theme'
 
@@ -18,6 +19,12 @@ const disease = ref('Type 2 diabetes mellitus')
 type TargetRow = Record<string, string | number | null>
 type ListTab = 'drug' | 'disease' | 'common'
 const listTab = ref<ListTab>('common')
+
+/* 可达性标注列(W7):懒取共享逻辑见 composables/useReach.ts;过滤默认"全部"保一期 */
+const {
+  reach, reachFilter, load: loadReach, hasReach, tier: reachTier, word: reachWord,
+  title: reachTitle, matchesFilter
+} = useReachAnnotation()
 
 const job = useJob((result) => {
   done.value = {
@@ -33,6 +40,7 @@ const job = useJob((result) => {
     }
   }
   listTab.value = 'common'
+  void loadReach(drug.value.trim())  // 标注懒取:不阻塞主结果渲染
 })
 
 const done = ref<{
@@ -44,7 +52,7 @@ const done = ref<{
   rows: Record<ListTab, TargetRow[]>
 } | null>(null)
 
-type ColKind = 'sym' | 'flag' | 'score'
+type ColKind = 'sym' | 'flag' | 'score' | 'reach'
 interface ListCol { key: string; label: string; kind: ColKind }
 
 const listCols = computed<Record<ListTab, ListCol[]>>(() => {
@@ -55,6 +63,7 @@ const listCols = computed<Record<ListTab, ListCol[]>>(() => {
     { key: 'score_pchembl', label: 'pChEMBL', kind: 'score' },
     { key: 'score_dgidb', label: t('web.home.col_dgidb_score'), kind: 'score' }
   ]
+  if (hasReach.value) drug.push({ key: 'reach', label: t('web.reach.col'), kind: 'reach' })
   const disease: ListCol[] = [
     { key: 'approvedSymbol', label: t('web.home.col_gene'), kind: 'sym' },
     { key: 'source_ot', label: 'Open Targets', kind: 'flag' },
@@ -67,6 +76,13 @@ const listCols = computed<Record<ListTab, ListCol[]>>(() => {
 
 const activeRows = computed<TargetRow[]>(() => done.value?.rows[listTab.value] ?? [])
 
+/* 过滤只作用于有药物语境的表(药物/交集);疾病表无暴露语义,不受开关影响 */
+const shownRows = computed<TargetRow[]>(() => {
+  const rows = activeRows.value
+  if (reachFilter.value === 'all' || !hasReach.value || listTab.value === 'disease') return rows
+  return rows.filter((r) => matchesFilter(reachTier(r.approvedSymbol), reachFilter.value))
+})
+
 function fmtCell(v: string | number | null | undefined, kind: ColKind): string {
   if (kind === 'flag') return v ? '✓' : '–'
   if (kind === 'score') return v == null ? '—' : Number(v).toFixed(3)
@@ -78,6 +94,7 @@ function retrieve(): void {
     return
   }
   done.value = null
+  reach.value = null
   dlError.value = ''
   void job.run(api.retrieveTargets(drug.value.trim(), disease.value.trim()),
     { doneText: t('web.home.retrieve_done') })
@@ -230,19 +247,33 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
           <span class="lv-sep">/</span>
           <button class="lv" :class="{ on: listTab === 'common' }" @click="listTab = 'common'">
             {{ t('web.home.tab_common') }}&nbsp;{{ done.common_count }}</button>
+          <!-- 可达性过滤(W7):默认"全部"保一期行为;疾病表无暴露语义故不显示 -->
+          <select v-if="hasReach && listTab !== 'disease'" v-model="reachFilter"
+                  class="reach-filter" :title="t('web.reach.filter')">
+            <option value="all">{{ t('web.reach.filter_all') }}</option>
+            <option value="partial_up">{{ t('web.reach.filter_partial_up') }}</option>
+            <option value="reachable">{{ t('web.reach.filter_reachable') }}</option>
+            <option value="judged">{{ t('web.reach.filter_judged') }}</option>
+          </select>
         </div>
         <div class="tl-scroll">
-          <table v-if="activeRows.length" class="tbl">
+          <table v-if="shownRows.length" class="tbl">
             <thead>
               <tr>
                 <th v-for="c in listCols[listTab]" :key="c.key">{{ c.label }}</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(r, i) in activeRows" :key="i">
+              <tr v-for="(r, i) in shownRows" :key="i">
                 <td v-for="c in listCols[listTab]" :key="c.key"
                     :class="c.kind === 'sym' ? 'sym' : c.kind === 'flag' ? { flag: true, on: !!r[c.key] } : 'score'">
-                  {{ fmtCell(r[c.key], c.kind) }}</td>
+                  <span v-if="c.kind === 'reach'" class="reach-cell"
+                        :class="`reach-${reachTier(r.approvedSymbol)}`"
+                        :title="reachTitle(r.approvedSymbol)">
+                    {{ reachWord(r.approvedSymbol) }}
+                  </span>
+                  <template v-else>{{ fmtCell(r[c.key], c.kind) }}</template>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -415,6 +446,7 @@ onBeforeUnmount(() => window.cancelAnimationFrame(raf))
   justify-content: center;
   gap: 14px;
   margin-bottom: 12px;
+  align-items: baseline;
 }
 .tl-scroll {
   max-height: 280px;

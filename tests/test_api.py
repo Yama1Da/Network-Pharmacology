@@ -287,6 +287,60 @@ def test_pk_mirror_build_cascades_normalization(client, monkeypatch):
     assert job2["result"]["normalize_error"] == "normalize_failed"
 
 
+def test_targets_reachability_annotation(client, monkeypatch):
+    """W7 逐靶点可达性标注端点(主页三表/分析页 hub 表共用数据源):
+    merged 靶点 → compute → {gene: {r_value, tier}} + 药级摘要;
+    无靶点 / 归一化缓存未就绪 → reachability=null 显式降级(不伪造、不 500,
+    与 mount_reachability 同款语义);NaN r_value → JSON null。"""
+    import pandas as pd
+
+    def fake_merged(name):
+        return pd.DataFrame({"approvedSymbol": ["ACE", "X"],
+                             "score_pchembl": [8.0, 6.0], "score_dgidb": [0.5, 0.5]})
+
+    def fake_compute(df, drug_name="", **kw):
+        return {"schema": "reachability.v1.1", "pk_norm_version": 2,
+                "drug": drug_name, "substance_sid": "s1", "tier": "reachable",
+                "r_primary": 3.5, "unknown_reason": None,
+                "exposure": {"cmax_molar_M": 1e-6, "n_cmax_obs": 2},
+                "n_targets": 2, "n_computed": 1,
+                "targets": pd.DataFrame([
+                    {"gene": "ACE", "r_value": 3.5, "tier": "reachable",
+                     "unknown_reason": None},
+                    {"gene": "X", "r_value": float("nan"), "tier": "unknown",
+                     "unknown_reason": "no_activity"},
+                ])}
+
+    monkeypatch.setattr("WY.core.targets.get_drug_targets_merged", fake_merged)
+    monkeypatch.setattr("WY.core.reachability.compute_reachability", fake_compute)
+    body = client.get("/api/targets/reachability",
+                      params={"drug": "Ramipril"}).json()
+    assert body["reachability"]["tier"] == "reachable"
+    assert body["reachability"]["pk_norm_version"] == 2
+    assert body["genes"]["ACE"]["r_value"] == 3.5 and body["genes"]["ACE"]["tier"] == "reachable"
+    assert body["genes"]["X"]["r_value"] is None      # NaN → null(JSON 安全)
+    assert body["genes"]["X"]["tier"] == "unknown"    # 四档独立,未知≠不可达
+    # 真因透传(按真因拆词):no_activity → 前端显示"活性未知"而非"暴露未知"
+    assert body["genes"]["X"]["unknown_reason"] == "no_activity"
+    assert body["genes"]["ACE"]["unknown_reason"] is None
+
+    # 降级 1:四库无靶点(空 merged 表)
+    monkeypatch.setattr("WY.core.targets.get_drug_targets_merged",
+                        lambda name: pd.DataFrame())
+    body2 = client.get("/api/targets/reachability",
+                       params={"drug": "no_such_drug_xyz"}).json()
+    assert body2["reachability"] is None and body2["reason"] == "no_targets"
+
+    # 降级 2:归一化缓存未就绪(RuntimeError → 显式 reason,不 500)
+    def boom(df, drug_name="", **kw):
+        raise RuntimeError("归一化缓存缺失")
+    monkeypatch.setattr("WY.core.targets.get_drug_targets_merged", fake_merged)
+    monkeypatch.setattr("WY.core.reachability.compute_reachability", boom)
+    body3 = client.get("/api/targets/reachability",
+                       params={"drug": "Ramipril"}).json()
+    assert body3["reachability"] is None and body3["reason"] == "norm_cache_missing"
+
+
 
 
 def test_ml_ppi_job_status_endpoints(client, monkeypatch):

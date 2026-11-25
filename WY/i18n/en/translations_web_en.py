@@ -218,6 +218,15 @@ TEXT_WEB_EN = {
     "web.synergy.reach_tier_partial": "partial",
     "web.synergy.reach_tier_unknown": "unknown",
     "web.synergy.reach_tier_unreachable": "unreachable",
+    # ---- W7 reachability annotation columns (2026-11-25): home tables + analysis hub table; filter defaults to all ----
+    "web.reach.col": "reachability",
+    "web.reach.filter": "Reachability filter (default: all, preserves phase-1 behavior)",
+    "web.reach.filter_all": "reachability: all",
+    "web.reach.filter_partial_up": "partial & above",
+    "web.reach.filter_reachable": "reachable only",
+    "web.reach.filter_judged": "judged only (exclude unknown)",
+    # unknown split by true cause: no_exposure = exposure unknown (reuses web.synergy.reach_tier_unknown), no_activity = activity unknown
+    "web.reach.tier_no_activity": "activity unknown",
     "web.synergy.res_reach": "Target exposure reachability (E6)",
     "web.synergy.reach_computed": "{n}/{total} computed",
     "web.synergy.reach_fub_imputed": "fub conservative bound (may overestimate)",

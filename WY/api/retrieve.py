@@ -202,3 +202,48 @@ def targets_export(job_id: str, items: str) -> Response:
         media = "application/zip"
     return Response(content=data, media_type=media,
                     headers={"Content-Disposition": _attachment(fname)})
+
+
+@router.get("/api/targets/reachability")
+def targets_reachability(drug: str) -> dict:
+    """逐靶点浓度可达性标注(W7 靶点标注列数据源,主页/分析页共用):
+    药名 → merged 靶点(缓存优先) → compute_reachability(计算层直读归一化
+    缓存,不联网) → {gene: {r_value, tier}} + 药级摘要。
+    降级语义与 mount_reachability 同款:归一化缓存未就绪/无靶点 →
+    reachability=null,不伪造数据(前端据此不渲染标注列)。merged 缓存未命中
+    时会触发四库检索,与 /api/targets/* 其余端点同语义。"""
+    import math
+
+    import pandas as pd
+
+    from WY.core.reachability import compute_reachability
+    from WY.core.targets import get_drug_targets_merged
+
+    name = (drug or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="drug required")
+    try:
+        merged = get_drug_targets_merged(name)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"targets_retrieve_failed: {e}")
+    if merged is None or merged.empty:
+        return {"drug": name, "reachability": None, "reason": "no_targets", "genes": {}}
+    try:
+        res = compute_reachability(merged, name)
+    except RuntimeError:
+        # 归一化缓存未就绪:显式降级(PK 卡"构建/更新"后即恢复),不报 500
+        return {"drug": name, "reachability": None, "reason": "norm_cache_missing",
+                "genes": {}}
+    genes: dict[str, dict] = {}
+    for row in res["targets"].itertuples(index=False):
+        rv = row.r_value
+        ur = getattr(row, "unknown_reason", None)
+        genes[str(row.gene)] = {
+            "r_value": float(rv) if isinstance(rv, float) and math.isfinite(rv) else None,
+            "tier": str(row.tier),
+            # 真因透传(2026-11-25 负责人定稿"按真因拆词"):no_exposure=暴露未知,
+            # no_activity=活性未知;前端据此拆 unknown 档用词,档位仍四档独立
+            "unknown_reason": None if ur is None or pd.isna(ur) else str(ur),
+        }
+    summary = {k: v for k, v in res.items() if k != "targets"}
+    return {"drug": name, "reachability": summary, "genes": genes}

@@ -219,6 +219,15 @@ TEXT_WEB_ZH = {
     "web.synergy.reach_tier_partial": "部分可达",
     "web.synergy.reach_tier_unknown": "暴露未知",
     "web.synergy.reach_tier_unreachable": "不可达",
+    # ---- W7 可达性标注列(2026-11-25):主页三表 + 分析页 hub 表;过滤默认"全部"保一期 ----
+    "web.reach.col": "可达性",
+    "web.reach.filter": "可达性过滤(默认全部,保一期行为)",
+    "web.reach.filter_all": "可达性:全部",
+    "web.reach.filter_partial_up": "部分及以上",
+    "web.reach.filter_reachable": "仅可达",
+    "web.reach.filter_judged": "仅已判档(排除未知)",
+    # unknown 档按真因拆词:no_exposure=暴露未知(复用 web.synergy.reach_tier_unknown),no_activity=活性未知
+    "web.reach.tier_no_activity": "活性未知",
     "web.synergy.res_reach": "靶点浓度可达性(E6)",
     "web.synergy.reach_computed": "可算 {n}/{total}",
     "web.synergy.reach_fub_imputed": "fub 保守上界(可能高估)",

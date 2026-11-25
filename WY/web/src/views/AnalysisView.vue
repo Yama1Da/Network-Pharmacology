@@ -10,6 +10,7 @@ import {
 import { takePrefill } from '../store'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
+import { useReachAnnotation } from '../composables/useReach'
 import Stepper from '../components/Stepper.vue'
 import { downloadBlob } from '../utils/download'
 import { fmt } from '../utils/format'
@@ -39,8 +40,31 @@ const snapshot = computed<(string | number)[]>(() => [
 /* ---------------- 分析任务 ---------------- */
 
 const ppi = ref<PpiResult | null>(null)
+
+/* 可达性标注(W7):names 模式才有药物语境,任务完成后懒取,挂在 hub 表;
+ * genes 模式粘贴基因清单无暴露语义,不取数不渲染(共享逻辑见 useReach.ts) */
+const {
+  reachFilter, load: loadReach, reset: resetReach, hasReach,
+  tier: reachTier, word: reachWord, title: reachTitle, matchesFilter
+} = useReachAnnotation()
+
 const job = useJob((result) => {
   ppi.value = result as unknown as PpiResult
+  const p = ppi.value
+  if (String(p?.params?.[0]) === 'names') void loadReach(String(p?.params?.[1] ?? ''))
+  else resetReach()
+})
+
+/* hub 表标注列:行内基因列名固定 gene(metrics_df 口径);过滤默认"全部"保一期 */
+const hubCols = computed<string[]>(() => {
+  const base = ppi.value?.hub_table.length ? Object.keys(ppi.value.hub_table[0]) : []
+  if (hasReach.value && !base.includes('__reach')) base.push('__reach')
+  return base
+})
+const hubRowsShown = computed<Row[]>(() => {
+  const rows = ppi.value?.hub_table ?? []
+  if (!hasReach.value || reachFilter.value === 'all') return rows
+  return rows.filter((r) => matchesFilter(reachTier(r.gene), reachFilter.value))
 })
 
 const stages = computed<string[]>(() => {
@@ -358,21 +382,36 @@ async function resumeAnalyzeJob(): Promise<void> {
     <p v-if="!ppi.genes_count" class="stale">{{ t('web.analysis.no_common') }}</p>
     <p v-if="!ppi.edges" class="stale">{{ t('web.analysis.no_edges') }}</p>
 
-    <!-- Hub 表 -->
+    <!-- Hub 表(可达性标注列 W7:names 模式懒取;过滤默认"全部"保一期) -->
     <section v-if="ppi.hub_table.length" class="sec">
       <h3 class="sec-title">
         {{ ppi.hub_rule.startsWith('top')
           ? t('web.analysis.hub_top_title', { n: ppi.hub_table.length, method: ppi.hub_method_eff })
           : t('web.analysis.hub_title') }}
+        <select v-if="hasReach" v-model="reachFilter" class="reach-filter"
+                :title="t('web.reach.filter')" style="margin-left:12px">
+          <option value="all">{{ t('web.reach.filter_all') }}</option>
+          <option value="partial_up">{{ t('web.reach.filter_partial_up') }}</option>
+          <option value="reachable">{{ t('web.reach.filter_reachable') }}</option>
+          <option value="judged">{{ t('web.reach.filter_judged') }}</option>
+        </select>
       </h3>
       <div class="tbl-wrap">
         <table class="tbl">
           <thead>
-            <tr><th v-for="k in Object.keys(ppi.hub_table[0])" :key="k">{{ k }}</th></tr>
+            <tr>
+              <th v-for="k in hubCols" :key="k">{{ k === '__reach' ? t('web.reach.col') : k }}</th>
+            </tr>
           </thead>
           <tbody>
-            <tr v-for="(r, i) in ppi.hub_table" :key="i">
+            <tr v-for="(r, i) in hubRowsShown" :key="i">
               <td v-for="(v, k) in r" :key="k">{{ v }}</td>
+              <td v-if="hasReach">
+                <span class="reach-cell" :class="`reach-${reachTier(r.gene)}`"
+                      :title="reachTitle(r.gene)">
+                  {{ reachWord(r.gene) }}
+                </span>
+              </td>
             </tr>
           </tbody>
         </table>
