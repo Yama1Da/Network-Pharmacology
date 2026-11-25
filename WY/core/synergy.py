@@ -373,7 +373,10 @@ def list_results() -> list[dict]:
         mtime = datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
         row = {"run": name, "mtime": mtime, "ok": False, "reason": None,
                "drug_a": "", "drug_b": "", "disease": "", "geometry_label": "",
-               "s_ab": None, "power_limited": None, "computed_at": ""}
+               "s_ab": None, "power_limited": None, "computed_at": "",
+               # v1.2 E6 行摘要字段(旧 v1.1 归档/未挂载时保持 None,前端显示"—")
+               "r_tier_a": None, "r_tier_b": None, "r_high_conf": None,
+               "r_sort_key": None, "r_sort_key_note": None}
         rf = os.path.join(path, "result.json")
         if not os.path.isfile(rf):
             row["reason"] = "缺 result.json"
@@ -392,6 +395,16 @@ def list_results() -> list[dict]:
                        s_ab=data.get("separation", {}).get("s_ab"),
                        power_limited=bool(data.get("inputs", {}).get("power_limited")),
                        computed_at=str(data.get("meta", {}).get("computed_at", "")))
+            # E6 行摘要(v1.2):分档两列 + 高置信 + 排序键;管理页保持新→旧时间序,
+            # sort_key 只作展示列——E6 "整表按置信×惩罚排序"的排行语义归分析排行
+            # (协同页运行结果/批量汇总),不在结果管理页改序(2026-11-25 负责人定)
+            r = data.get("reachability")
+            if isinstance(r, dict):
+                row["r_tier_a"] = (r.get("drug_a") or {}).get("tier")
+                row["r_tier_b"] = (r.get("drug_b") or {}).get("tier")
+                row["r_high_conf"] = r.get("high_confidence")
+                row["r_sort_key"] = r.get("sort_key")
+                row["r_sort_key_note"] = r.get("sort_key_note")
         except (OSError, ValueError):
             row["reason"] = "result.json 解析失败"
             logging.exception("synergy 归档损坏: %s", name)
