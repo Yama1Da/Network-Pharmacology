@@ -507,6 +507,11 @@ def test_identity_priority_beats_dirty_synonym(sandbox_identity):
     assert entry["winner_sid"] == "reald"
     assert set(entry["claimants"]) == {"dirty", "sib"}   # 两个竞争者都留痕
     assert led["pk_norm_version"] == 7                   # 版本戳随沙箱常量
+    # PK 卡展开视图数据源:normalization_status 的 conflicts 字典(2026-11-25)
+    st = rch.normalization_status()
+    assert st is not None and st["pk_norm_version"] == 7
+    assert st["conflicts"]["reald"]["winner_sid"] == "reald"
+    assert set(st["conflicts"]["reald"]["claimants"]) == {"dirty", "sib"}
 
 
 def test_synonym_fallback_recovers_sibling(sandbox_identity_sibling_only):

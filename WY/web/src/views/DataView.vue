@@ -4,7 +4,7 @@
  * (#/artifacts),入口在数据网络药理学分析页顶栏(2026-11-17 迁移)。
  * 两面板各自持有独立 notice(2026-11-17 修复:原先共用一个 useNotice,
  * PK 完成提示会在互作组面板里同时冒出来)。 */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, type InteractomeStatus, type PkMirrorStatus } from '../api'
 import { useJob } from '../composables/useJob'
@@ -15,6 +15,11 @@ const itx = ref<InteractomeStatus | null>(null)
 const pk = ref<PkMirrorStatus | null>(null)
 const loaded = ref(false)
 const pkLoaded = ref(false)
+/* 查名冲突台账展开(PK 卡):名 → {winner_sid, claimants},按争议名字典序 */
+const ledgerOpen = ref(false)
+const ledgerRows = computed(() =>
+  Object.entries(pk.value?.normalization?.conflicts ?? {})
+    .map(([key, v]) => ({ key, winner_sid: v.winner_sid, claimants: v.claimants })))
 const { notice: itxNotice, flash: flashItx } = useNotice(3200)
 const { notice: pkNotice, flash: flashPk } = useNotice(3200)
 
@@ -149,6 +154,32 @@ onMounted(() => {
       </button>
     </div>
 
+    <!-- 查名冲突台账展开(仅 PK 卡;日志页只有 warning 行,明细在这里) -->
+    <div v-if="pkLoaded && (pk?.normalization?.conflict_keys ?? 0) > 0" class="controls">
+      <button class="bar-btn" :disabled="pkJob.running.value" @click="ledgerOpen = !ledgerOpen">
+        {{ ledgerOpen ? t('web.data.pk_ledger_hide')
+           : t('web.data.pk_ledger_btn', { n: pk?.normalization?.conflict_keys ?? 0 }) }}
+      </button>
+    </div>
+    <div v-if="ledgerOpen && ledgerRows.length" class="pk-ledger">
+      <div class="ledger-row ledger-head">
+        <span>{{ t('web.data.pk_ledger_head_key') }}</span>
+        <span>{{ t('web.data.pk_ledger_head_winner') }}</span>
+        <span>{{ t('web.data.pk_ledger_head_claimants') }}</span>
+      </div>
+      <div v-for="row in ledgerRows" :key="row.key" class="ledger-row">
+        <span class="mono">{{ row.key }}</span>
+        <span class="mono">{{ row.winner_sid }}</span>
+        <span class="mono dim">{{ row.claimants.join(', ') }}</span>
+      </div>
+      <p class="count" style="display:block; color:var(--c-ink3); margin-top:6px">
+        {{ t('web.data.pk_ledger_file') }}
+      </p>
+    </div>
+    <p v-if="ledgerOpen && !ledgerRows.length" class="count" style="display:block">
+      {{ t('web.data.pk_ledger_empty') }}
+    </p>
+
     <div v-if="pkJob.running.value" class="progress">
       <div class="progress-track">
         <div class="progress-fill"
@@ -162,3 +193,34 @@ onMounted(() => {
     </Transition>
   </div>
 </template>
+
+<style scoped>
+.pk-ledger {
+  margin-top: 4px;
+  border-top: 1px solid var(--c-rowline);
+  padding-top: 6px;
+  max-height: 280px;
+  overflow: auto;
+}
+.ledger-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.5fr) minmax(110px, 1fr) minmax(120px, 1.2fr);
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--c-rowline);
+  font-size: 11.5px;
+}
+.ledger-head {
+  color: var(--c-sub);
+  letter-spacing: 0.08em;
+  font-size: 10.5px;
+}
+.mono {
+  font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+  color: var(--c-ink);
+  overflow-wrap: anywhere;
+}
+.dim {
+  color: var(--c-mid);
+}
+</style>

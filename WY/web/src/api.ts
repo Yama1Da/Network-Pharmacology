@@ -203,6 +203,8 @@ export interface PkMirrorStatus {
     pk_norm_version: number
     conflicts_total?: number
     conflict_keys?: number
+    /** 争议名台账全量:名字 → {winner_sid, claimants}(PK 卡展开视图) */
+    conflicts?: Record<string, { winner_sid: string; claimants: string[] }>
   } | null
 }
 
