@@ -431,8 +431,39 @@ export interface SynergyContract {
   geometry_label: 'overlap' | 'separated' | 'tie'
   label_basis: string
   ranks: null
-  reachability: null
+  /** v1.2 E6 挂载块;null = 未挂载/归一化缓存未就绪/旧 v1.1 归档 */
+  reachability: SynergyReachBlock | null
   meta: { computed_at: string; engine: string; run: SynergyRunParams }
+}
+
+/** reachability.v1 单药块摘要(逐靶点明细外移运行目录 CSV,result.json 不含)。 */
+export interface SynergyReachDrug {
+  schema: string
+  drug: string
+  substance_sid: string | null
+  /** reachable | partial | unknown | unreachable(unknown=暴露未知,独立态,≠不可达) */
+  tier: string
+  r_primary: number | null
+  unknown_reason: string | null
+  exposure: {
+    cmax_molar_M: number | null
+    cmax_interventions: string
+    n_cmax_obs: number
+    fub_value: number | null
+    fub_imputed: boolean | null
+  }
+  n_targets: number
+  n_computed: number
+  detail_file: string | null
+}
+
+/** v1.2 E6 块:sort_key = |z_sep| × min(w_a,w_b);z=None → null + note "z_null"。 */
+export interface SynergyReachBlock {
+  drug_a: SynergyReachDrug
+  drug_b: SynergyReachDrug
+  high_confidence: boolean
+  sort_key: number | null
+  sort_key_note: string | null
 }
 
 /** job 结果载荷 = 契约 + 归档目录名(相对 downloads 集合,可打包下载)。 */
@@ -453,6 +484,12 @@ export interface SynergyRunRow {
   s_ab: number | null
   power_limited: boolean | null
   computed_at: string
+  /** v1.2 E6 摘要(旧档/未挂载为 null,前端显示"—") */
+  r_tier_a: string | null
+  r_tier_b: string | null
+  r_high_conf: boolean | null
+  r_sort_key: number | null
+  r_sort_key_note: string | null
 }
 
 interface SynergyAnalyzeBody {

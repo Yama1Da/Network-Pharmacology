@@ -1766,7 +1766,28 @@ def _seed_synergy_run(run: str) -> None:
                                                          "n_perm": 50}},
                     "proximity": {"z_a": None, "z_b": None, "z_ab": None},
                     "geometry_label": "overlap", "label_basis": "s_ab < 0",
-                    "ranks": None, "reachability": None,
+                    "ranks": None,
+                    "reachability": {
+                        "drug_a": {"schema": "reachability.v1", "drug": "Metformin",
+                                   "substance_sid": "metformin", "tier": "reachable",
+                                   "r_primary": 3536.16, "unknown_reason": None,
+                                   "exposure": {"cmax_molar_M": 1.226e-5,
+                                                "cmax_interventions": "MET1000",
+                                                "n_cmax_obs": 10, "fub_value": 1.0,
+                                                "fub_imputed": True},
+                                   "n_targets": 172, "n_computed": 3,
+                                   "detail_file": "reachability_Metformin.csv"},
+                        "drug_b": {"schema": "reachability.v1", "drug": "Aspirin",
+                                   "substance_sid": "aspirin", "tier": "unknown",
+                                   "r_primary": None, "unknown_reason": "no_exposure",
+                                   "exposure": {"cmax_molar_M": None,
+                                                "cmax_interventions": "",
+                                                "n_cmax_obs": 0, "fub_value": 1.0,
+                                                "fub_imputed": True},
+                                   "n_targets": 141, "n_computed": 0,
+                                   "detail_file": None},
+                        "high_confidence": False, "sort_key": 0.97,
+                        "sort_key_note": None},
                     "meta": {"computed_at": "2026-11-18T00:00:00+00:00",
                              "engine": "synergy.py",
                              "run": {"top_n": 30, "sort": "dual_source_max_norm",
@@ -1804,6 +1825,11 @@ def test_synergy_results_lifecycle(client):
     row = [r for r in rows if r["run"] == run][0]
     assert row["ok"] and row["drug_a"] == "Metformin"
     assert row["geometry_label"] == "overlap" and row["s_ab"] == pytest.approx(-0.1)
+    # v1.2 E6 行摘要:分档两列/高置信/排序键随行;未知档独立如实透传
+    assert row["r_tier_a"] == "reachable" and row["r_tier_b"] == "unknown"
+    assert row["r_high_conf"] is False
+    assert row["r_sort_key"] == pytest.approx(0.97)
+    assert row["r_sort_key_note"] is None
 
     detail = client.get("/api/synergy/results/detail", params={"run": run}).json()
     assert detail["schema"] == "synergy.v1.2"
