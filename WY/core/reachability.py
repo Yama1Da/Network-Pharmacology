@@ -761,6 +761,8 @@ def normalization_status() -> dict | None:
                 led = json.load(f)
             out["conflicts_total"] = int(led.get("conflicts_total", 0))
             out["conflict_keys"] = len(led.get("keys", {}))
+            # 全量明细随载荷走(PK 卡展开视图;台账规模与镜像物质数同阶,KB 级)
+            out["conflicts"] = led.get("keys", {})
         except (OSError, ValueError):
             logger.exception("冲突台账读取失败(卡片隐藏该行,不影响状态)")
     return out
@@ -1011,7 +1013,13 @@ def compute_reachability(drug_targets, drug_name: str = "", *,
             "n_assays": a["n_assays"] if a else 0,
             "activity_alt_M": a["activity_alt_M"] if a else None,
             "fallback_flag": a["fallback_flag"] if a else None,
-            "unknown_reason": None if r is not None else "no_activity",
+            # 行级原因按真因选(2026-11-25 勘误):药级无暴露(cmax/fub 缺)时
+            # 全行真因是 no_exposure,只有"有暴露但该靶点无活性记录"才是
+            # no_activity——此前写死 no_activity,Artesunate 类全药无暴露时
+            # 66 行原因全标错(药级块正确、行级误导)
+            "unknown_reason": None if r is not None else (
+                "no_exposure" if (cmax_total is None or fub is None)
+                else "no_activity"),
         })
     detail = pd.DataFrame(rows, columns=[
         "gene", "r_value", "tier", "activity_M", "activity_class", "n_assays",

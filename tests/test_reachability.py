@@ -542,3 +542,20 @@ def test_normalization_status_and_production_caller_note(sandbox_norm):
     st = rch.normalization_status()
     assert st is not None and st["pk_norm_version"] == 7
     assert "conflicts_total" in st and "conflict_keys" in st
+
+
+def test_row_reason_distinguishes_exposure_from_activity(sandbox_norm):
+    """行级 unknown_reason 按真因选(2026-11-25 勘误):有暴露无活性 →
+    no_activity;无暴露 → no_exposure(此前写死 no_activity 误导)。"""
+    import pandas as pd
+
+    _build_all()
+    targets = pd.DataFrame({"approvedSymbol": ["G1", "G2"]})
+    # theophylline 在沙箱里只有 fu 行、无 cmax 行 → 药级无暴露
+    res = rch.compute_reachability(targets, "theophylline")
+    assert res["unknown_reason"] == "no_exposure"
+    assert (res["targets"]["unknown_reason"] == "no_exposure").all()
+    # metformin 有暴露,但靶点无 ChEMBL 活性记录 → no_activity
+    res2 = rch.compute_reachability(targets, "metformin")
+    assert res2["exposure"]["n_cmax_obs"] >= 1
+    assert (res2["targets"]["unknown_reason"] == "no_activity").all()
