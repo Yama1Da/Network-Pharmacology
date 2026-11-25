@@ -1,10 +1,12 @@
 <script setup lang="ts">
-/** 协同结果渲染面板(契约 synergy.v1.1):SynergyView 与协同分析结果页两处复用。
+/** 协同结果渲染面板(契约 synergy.v1.2):SynergyView 与协同分析结果页两处复用。
  * 措辞红线(§1.3):三枚举只述几何事实,禁译"协同/拮抗";|z_sep|<1 附弱信号提示。
+ * v1.2 E6:可达性四档为药理学事实,同样不做协同/拮抗断言;"暴露未知"独立态,
+ * 不得与"不可达"合并显示(§2 HomeView 行);fub 保守上界随行标注"可能高估"。
  * 深色适配:色值全走 var(--c-*),无硬编码。 */
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { SynergyContract, SynergyProx } from '../api'
+import type { SynergyContract, SynergyProx, SynergyReachDrug } from '../api'
 import { fmt } from '../utils/format'
 
 const props = defineProps<{ result: SynergyContract }>()
@@ -52,6 +54,31 @@ const proxRows = computed(() => {
   ]
   return rows
 })
+
+/* ---- v1.2 E6 可达性块(null = 未挂载/缓存未就绪/旧档,整节不渲染) ---- */
+const reach = computed(() => props.result.reachability ?? null)
+
+const tierText = (tier: string | null | undefined): string => {
+  const m: Record<string, string> = {
+    reachable: t('web.synergy.reach_tier_reachable'),
+    partial: t('web.synergy.reach_tier_partial'),
+    unknown: t('web.synergy.reach_tier_unknown'),
+    unreachable: t('web.synergy.reach_tier_unreachable')
+  }
+  return (tier && m[tier]) || tier || t('web.synergy.value_na')
+}
+
+/* 单药摘要行:分档 · 可算比例 · 游离 Cmax 中位(µM);空值如实显示 — */
+const drugLine = (d: SynergyReachDrug | undefined): string => {
+  if (!d) return t('web.synergy.value_na')
+  const parts = [tierText(d.tier),
+                 t('web.synergy.reach_computed', { n: d.n_computed, total: d.n_targets })]
+  const cmax = d.exposure?.cmax_molar_M
+  if (cmax !== null && cmax !== undefined) {
+    parts.push(`Cmax_free ${fmt(cmax * 1e6, 2)} µM`)
+  }
+  return parts.join(' · ')
+}
 </script>
 
 <template>
@@ -99,6 +126,31 @@ const proxRows = computed(() => {
     </dl>
   </template>
 
+  <template v-if="reach">
+    <h2 class="sec">{{ t('web.synergy.res_reach') }}</h2>
+    <dl class="rows">
+      <div class="row">
+        <dt>{{ result.pair.drug_a }}</dt>
+        <dd>{{ drugLine(reach.drug_a) }}<i v-if="reach.drug_a?.exposure?.fub_imputed"
+               class="reach-warn">{{ t('web.synergy.reach_fub_imputed') }}</i></dd>
+      </div>
+      <div class="row">
+        <dt>{{ result.pair.drug_b }}</dt>
+        <dd>{{ drugLine(reach.drug_b) }}<i v-if="reach.drug_b?.exposure?.fub_imputed"
+               class="reach-warn">{{ t('web.synergy.reach_fub_imputed') }}</i></dd>
+      </div>
+      <div class="row">
+        <dt>{{ t('web.synergy.reach_high_conf_label') }}</dt>
+        <dd>{{ reach.high_confidence ? t('web.synergy.reach_conf_yes') : t('web.synergy.reach_conf_no') }}</dd>
+      </div>
+      <div class="row">
+        <dt>{{ t('web.synergy.reach_sort_key') }}</dt>
+        <dd v-if="reach.sort_key !== null && reach.sort_key !== undefined">{{ fmt(reach.sort_key, 4) }}</dd>
+        <dd v-else class="dim">{{ t('web.synergy.reach_sort_null') }}</dd>
+      </div>
+    </dl>
+  </template>
+
   <p class="meta-line">
     {{ t('web.synergy.res_cov', {
       a: result.inputs.coverage.a_in_lcc, at: result.inputs.coverage.a_total,
@@ -142,6 +194,15 @@ const proxRows = computed(() => {
   font-size: 11px;
   letter-spacing: 0.06em;
   color: var(--c-danger);
+}
+.reach-warn {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--c-mid);
+  border: 1px solid var(--c-faint);
+  padding: 0 4px;
+  margin-left: 8px;
 }
 .sec {
   margin: 26px 0 10px;

@@ -148,6 +148,17 @@ const labelOf = (row: SynergyRunRow): string => {
   return m[row.geometry_label] ?? row.geometry_label
 }
 
+/* v1.2 E6 分档短词(四档独立,未知≠不可达;旧档/未挂载显示 —) */
+const tierShort = (tier: string | null): string => {
+  const m: Record<string, string> = {
+    reachable: t('web.synergy.reach_tier_reachable'),
+    partial: t('web.synergy.reach_tier_partial'),
+    unknown: t('web.synergy.reach_tier_unknown'),
+    unreachable: t('web.synergy.reach_tier_unreachable')
+  }
+  return (tier && m[tier]) || t('web.synergy.value_na')
+}
+
 onMounted(() => void loadRuns())
 </script>
 
@@ -203,6 +214,11 @@ onMounted(() => void loadRuns())
           }}<template v-if="r.disease"> · {{ r.disease }}</template><i v-if="!r.ok" class="bad-tag">{{ r.reason }}</i></span>
           <span class="fmeta">
             {{ labelOf(r) }} · s_AB {{ r.s_ab ?? '—' }}
+            <template v-if="r.r_tier_a || r.r_tier_b">
+              · {{ t('web.synergy_results.reach_tag', { a: tierShort(r.r_tier_a), b: tierShort(r.r_tier_b) }) }}
+            </template>
+            <i v-if="r.r_high_conf" class="conf-tag">{{ t('web.synergy_results.high_conf_tag') }}</i>
+            <i v-if="r.r_sort_key_note === 'z_null'" class="limit-tag">{{ t('web.synergy.reach_sort_null') }}</i>
             <i v-if="r.power_limited" class="limit-tag">{{ t('web.synergy_results.power_tag') }}</i>
             · {{ r.mtime }}
           </span>
@@ -248,6 +264,16 @@ onMounted(() => void loadRuns())
   letter-spacing: 0.15em;
   color: var(--c-sub);
   border: 1px solid var(--c-faint);
+  padding: 0 5px;
+  margin-left: 8px;
+  vertical-align: 1.5px;
+}
+.conf-tag {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: var(--c-accent);
+  border: 1px solid currentColor;
   padding: 0 5px;
   margin-left: 8px;
   vertical-align: 1.5px;
