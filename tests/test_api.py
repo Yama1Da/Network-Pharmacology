@@ -2021,3 +2021,117 @@ def test_progress_keys_bilingual_parity_and_render(monkeypatch):
             assert rendered != key, f"{lang} 缺键:{key}"
             assert "{" not in rendered and "}" not in rendered, \
                 f"{lang} 占位符残留:{key} → {rendered}"
+
+
+# ======== 疾病模块多方法一致性(模块C,/api/modules/consensus)========
+
+def _fake_consensus_result():
+    """consensus_targets 的替身返回:小共识表,含 NaN 秩(非成员)以验证 NaN→null 序列化。"""
+    df = pd.DataFrame([
+        {"gene": "GENA", "rwr_rank": 1.0, "diamond_rank": 1.0, "neighbor_rank": float("nan"),
+         "n_methods": 2, "consensus_score": 1.0, "consistent": True, "is_seed": True},
+        {"gene": "GENB", "rwr_rank": 2.0, "diamond_rank": float("nan"), "neighbor_rank": 1.0,
+         "n_methods": 2, "consensus_score": 1.5, "consistent": True, "is_seed": False},
+        {"gene": "GENC", "rwr_rank": float("nan"), "diamond_rank": 2.0, "neighbor_rank": float("nan"),
+         "n_methods": 1, "consensus_score": 2.0, "consistent": False, "is_seed": False},
+    ])
+    return {"schema": "consensus.v1", "ok": True, "error": None,
+            "modules": {"rwr": ["GENA", "GENB"], "diamond": ["GENA", "GENC"],
+                        "neighbor": ["GENB"]},
+            "module_sizes": {"rwr": 2, "diamond": 2, "neighbor": 1},
+            "consensus": df,
+            "coverage": {"seeds_in_lcc": 2, "seeds_total": 2, "seeds_out_of_lcc": ["GENX"]},
+            "k": 2}
+
+
+def test_modules_consensus_names_mode_flow(client, monkeypatch):
+    """names 模式全链路:疾病侧 merged 缓存 → 种子大写归一 → 任务完成 → NaN 秩
+    序列化为 null → 产物 CSV 落运行目录(进 files_written)。"""
+    d = os.path.join(config.DOWNLOADS_DIR, "consensus_demo_data")
+    os.makedirs(d, exist_ok=True)
+    monkeypatch.setattr("WY.core.interactome.is_built", lambda: True)
+    monkeypatch.setattr("WY.core.network_algorithms._lcc_context", lambda species: None)
+    captured = {}
+
+    def _fake_consensus_targets(ctx, seeds, n=None, k=None):
+        captured.update(seeds=list(seeds), n=n, k=k)
+        return _fake_consensus_result()
+
+    monkeypatch.setattr("WY.core.disease_modules.consensus_targets", _fake_consensus_targets)
+    monkeypatch.setattr("WY.core.targets.get_disease_targets_merged",
+                        lambda name: pd.DataFrame({"approvedSymbol": ["GENA", "GENB", "genx"]}))
+    r = client.post("/api/modules/consensus",
+                    json={"directory_rel": "consensus_demo_data", "prefix": "demo",
+                          "mode": "names", "drug": "x", "disease": "cancer",
+                          "n": 30, "k": 2, "n_perms": 0})
+    assert r.status_code == 200
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done"
+    body = job["result"]
+    assert body["ok"] is True and body["schema"] == "consensus.v1"
+    assert captured["seeds"] == ["GENA", "GENB", "GENX"]  # 大写归一 + 去重 + 字母序
+    assert captured["n"] == 30 and captured["k"] == 2
+    rows = body["rows"]
+    # NaN 秩 → JSON null(Starlette allow_nan=False,NaN 直传会 500);秩取整
+    assert rows[0]["neighbor_rank"] is None and rows[0]["rwr_rank"] == 1
+    assert rows[0]["consistent"] is True and rows[1]["is_seed"] is False
+    assert body["coverage"]["seeds_out_of_lcc"] == ["GENX"]
+    assert body["consistent_genes"] == 2 and body["consistent_list"] == ["GENA", "GENB"]
+    assert body["files_written"] == ["demo_consensus_targets.csv", "demo_consensus_methods.csv"]
+    assert os.path.isfile(os.path.join(d, "demo_consensus_targets.csv"))
+    assert os.path.isfile(os.path.join(d, "demo_consensus_methods.csv"))
+
+
+def test_modules_consensus_genes_mode_reads_query_genes(client, monkeypatch):
+    """genes 模式种子以运行目录 {prefix}_query_genes.csv 为准(与本次分析同一份,
+    表单文本不可信),csv 缺失才兜底解析 genes_text——此处验证主路径。"""
+    d = os.path.join(config.DOWNLOADS_DIR, "consensus_genes_data")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "m_query_genes.csv"), "w", encoding="utf-8-sig") as f:
+        f.write("# cache key\ngene,source,rwr_score\nGENQ1,seed,1.0\nGENQ2,seed,0.5\n")
+    monkeypatch.setattr("WY.core.interactome.is_built", lambda: True)
+    monkeypatch.setattr("WY.core.network_algorithms._lcc_context", lambda species: None)
+    captured = {}
+
+    def _fake(ctx, seeds, n=None, k=None):
+        captured.update(seeds=list(seeds))
+        return _fake_consensus_result()
+
+    monkeypatch.setattr("WY.core.disease_modules.consensus_targets", _fake)
+    r = client.post("/api/modules/consensus",
+                    json={"directory_rel": "consensus_genes_data", "prefix": "m",
+                          "mode": "genes", "genes_text": "SHOULD_NOT_BE_USED", "n_perms": 0})
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done" and job["result"]["ok"] is True
+    assert captured["seeds"] == ["GENQ1", "GENQ2"]
+
+
+def test_modules_consensus_guards_and_failures(client, monkeypatch):
+    """请求形态错误走 400/404;数据侧失败走 {"ok": False, "reason": 枚举}(i18n
+    由前端映射),不抛 500。"""
+    assert client.post("/api/modules/consensus",
+                       json={"directory_rel": "x", "prefix": "p", "mode": "bad"}).status_code == 400
+    assert client.post("/api/modules/consensus",
+                       json={"directory_rel": "x", "prefix": "p", "mode": "genes",
+                             "n": 5}).status_code == 400
+    assert client.post("/api/modules/consensus",
+                       json={"directory_rel": "../outside", "prefix": "p",
+                             "mode": "genes"}).status_code == 404
+    d = os.path.join(config.DOWNLOADS_DIR, "consensus_fail_data")
+    os.makedirs(d, exist_ok=True)
+    monkeypatch.setattr("WY.core.interactome.is_built", lambda: False)
+    r = client.post("/api/modules/consensus",
+                    json={"directory_rel": "consensus_fail_data", "prefix": "p",
+                          "mode": "genes", "genes_text": "A,B"})
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done"
+    assert job["result"] == {"ok": False, "reason": "interactome_not_built"}
+    monkeypatch.setattr("WY.core.interactome.is_built", lambda: True)
+    monkeypatch.setattr("WY.core.network_algorithms._lcc_context", lambda species: None)
+    monkeypatch.setattr("WY.core.disease_modules.consensus_targets",
+                        lambda *a, **k: {"ok": False, "error": "rwr_failed"})
+    r = client.post("/api/modules/consensus",
+                    json={"directory_rel": "consensus_fail_data", "prefix": "p",
+                          "mode": "genes", "genes_text": "A,B"})
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["result"] == {"ok": False, "reason": "rwr_failed"}

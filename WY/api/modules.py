@@ -124,9 +124,6 @@ def modules_consensus(body: ConsensusBody) -> dict:
         raise HTTPException(status_code=400, detail="mode must be names|genes")
     if not body.prefix.strip():
         raise HTTPException(status_code=400, detail="prefix required")
-    directory = _resolve_under(config.DOWNLOADS_DIR, body.directory_rel)
-    if directory is None or not os.path.isdir(directory):
-        raise HTTPException(status_code=404, detail="no such analysis directory")
     if body.n is not None and not (_N_MIN <= body.n <= _N_MAX):
         raise HTTPException(status_code=400, detail=f"n must be {_N_MIN}..{_N_MAX}")
     if body.k is not None and not (1 <= body.k <= 3):
@@ -134,6 +131,10 @@ def modules_consensus(body: ConsensusBody) -> dict:
     perms = int(body.n_perms or 0)
     if not (0 <= perms <= _PERMS_MAX):
         raise HTTPException(status_code=400, detail=f"n_perms must be 0..{_PERMS_MAX}")
+    # 形态校验(400)全部通过后才做资源定位(404):语义是"请求本身先站得住"
+    directory = _resolve_under(config.DOWNLOADS_DIR, body.directory_rel)
+    if directory is None or not os.path.isdir(directory):
+        raise HTTPException(status_code=404, detail="no such analysis directory")
 
     def task(progress) -> dict:
         from WY.core.disease_modules import (consensus_targets, export_consensus_csv,

@@ -151,6 +151,52 @@ export interface TargetsReachability {
   genes: Record<string, ReachGene>
 }
 
+/* ---- 疾病模块多方法一致性(二期方案 §4.4,模块C 面板):字段与 api/modules.py 一一对应 ---- */
+
+/** consensus 表单行;秩/共识分的 null = 未被该方法捞入(非成员) */
+export interface ConsensusRow {
+  gene: string
+  rwr_rank: number | null
+  diamond_rank: number | null
+  neighbor_rank: number | null
+  n_methods: number
+  consensus_score: number | null
+  consistent: boolean
+  is_seed: boolean
+}
+
+/** 度匹配零模型置换检验的单方法结果(n_perms>0 时才有) */
+export interface ConsensusSig {
+  p: number
+  n_perms: number
+  observed_cohesion: number
+  null_mean: number
+  null_sd: number
+}
+
+export interface ModulesConsensusResult {
+  ok: boolean
+  /** 数据侧失败稳定枚举:no_seeds/disease_required/no_disease_targets/
+   * interactome_not_built/rwr_failed——前端映射 i18n */
+  reason?: string
+  schema?: string
+  params: { n: number; k: number; n_perms: number | null }
+  coverage: {
+    seeds_total: number
+    seeds_in_lcc: number
+    seeds_out_of_lcc_count: number
+    seeds_out_of_lcc: string[]
+  }
+  module_sizes: { rwr: number; diamond: number; neighbor: number }
+  consistent_genes: number
+  /** 一致基因全量清单(填入分析输入按钮用;行表有 _ROWS_CAP 截断,清单没有) */
+  consistent_list: string[]
+  rows_total: number
+  rows: ConsensusRow[]
+  significance: Record<string, ConsensusSig> | null
+  files_written: string[]
+}
+
 export interface PpiResult {
   prefix: string
   directory_rel: string
@@ -728,6 +774,20 @@ export const api = {
     prefix: string
   ): Promise<{ job_id: string }> =>
     post('/api/ppi/rerun-gsea', { side, drug, disease, prefix }),
+
+  /* 疾病模块多方法一致性(模块C 面板):jobs 异步,产物落运行目录进下载列表;
+   * n_perms 网页默认 0(置换检验全量档留 CLI/基准层,性能红线见 api/modules.py) */
+  modulesConsensus: (body: {
+    directory_rel: string
+    prefix: string
+    mode: string
+    drug?: string
+    disease?: string
+    genes_text?: string
+    n?: number | null
+    k?: number | null
+    n_perms?: number | null
+  }): Promise<{ job_id: string }> => post('/api/modules/consensus', body),
 
   /* ---- 主页四库检索 + 设置(阶段 3 补全) ---- */
   retrieveTargets: (drug: string, disease: string): Promise<{ job_id: string }> =>
