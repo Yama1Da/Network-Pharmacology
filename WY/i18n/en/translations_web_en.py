@@ -229,7 +229,7 @@ TEXT_WEB_EN = {
     "web.reach.tier_no_activity": "activity unknown",
     # ---- W7 exposure-constrained rank comparison (2026-11-27): gate max(5, ceil(5%×N)); weights provisional until 1.7 calibration ----
     "web.analysis.reach_cmp_title": "Before vs after exposure-weighted ranking",
-    "web.analysis.reach_cmp_hint": "Before = phase-1 equal-weight RWR (drug targets as seeds); after = same score × tier weight w(R)",
+    "web.analysis.reach_cmp_hint": "Before = phase-1 equal-weight RWR (drug targets as seeds); after = same score × tier weight w(R); see the panel for conclusions",
     "web.analysis.reach_cmp_gate": "Judged {judged}/{total}: insufficient evidence, ranking left unweighted",
     "web.synergy.res_reach": "Target exposure reachability (E6)",
     "web.synergy.reach_computed": "{n}/{total} computed",
@@ -436,6 +436,7 @@ TEXT_WEB_EN = {
     "web.analysis.dl_desc.query_genes_csv": "Query gene list (seed / RWR-expanded origin)",
     "web.analysis.dl_desc.modules_csv": "Module summary table",
     "web.analysis.dl_desc.module_enrichment_csv": "Module enrichment full results table",
+    "web.analysis.dl_desc.reach_compare_png": "Exposure-weighted rank comparison chart",
     "web.analysis.dl_whole": "Download whole package ({name})",
     "web.analysis.dl_hint": "All artifacts live under {dir}; the whole directory can also be downloaded on the Data Management page.",
     "web.analysis.dl_zip_fail": "Whole-package download failed",

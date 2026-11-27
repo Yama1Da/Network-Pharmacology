@@ -75,6 +75,18 @@ def _serialize_ppi(ppi: dict) -> dict:
     artifacts = {k: _rel_downloads(v) for k, v in saved.items()
                  if isinstance(v, str) and k != "directory"}
 
+    # 运行目录全量文件清单(2026-11-27 负责人定稿:下载区按真实文件名逐文件
+    # 列出,取代前端硬编码键白名单——新产物不再漏列)。analysis_meta.json 是
+    # 内部元数据(药病名/基因清单/参数,供 ML 页发现),不对用户下载,剔除。
+    run_files: list[dict] = []
+    run_dir = saved.get("directory", "")
+    if run_dir and os.path.isdir(run_dir):
+        for name in sorted(os.listdir(run_dir)):
+            full = os.path.join(run_dir, name)
+            if name == "analysis_meta.json" or not os.path.isfile(full):
+                continue
+            run_files.append({"name": name, "rel": _rel_downloads(full)})
+
     views = ["interactive", "static"]
     if ppi.get("string_fig") is not None:
         views.append("string")
@@ -134,6 +146,8 @@ def _serialize_ppi(ppi: dict) -> dict:
         # W7 招牌图摘要:{gate, judged, total} | null(过门槛时另有 artifacts
         # 里的 reach_compare_png;低于门槛前端显示结论行)
         "reach_compare": ppi.get("reach_compare"),
+        # 运行目录全量文件清单(除 analysis_meta.json)
+        "files": run_files,
     }
 
 

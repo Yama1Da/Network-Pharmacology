@@ -182,6 +182,8 @@ export interface PpiResult {
   } | null
   /** W7 招牌图摘要:gate=false 时前端显示结论行;gate=true 看 artifacts 的 reach_compare_png */
   reach_compare: { gate: boolean; judged: number; total: number } | null
+  /** 运行目录全量文件清单(除 analysis_meta.json 内部元数据)——下载区逐文件列出 */
+  files: { name: string; rel: string }[]
 }
 
 export interface PpiAnalyzeBody {

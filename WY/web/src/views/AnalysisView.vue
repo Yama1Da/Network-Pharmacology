@@ -204,29 +204,60 @@ const gseaDone = computed(() => {
     !['request_failed', 'circuit_open', 'normalize_empty'].includes(g.reason)
 })
 
-/* 下载清单 */
-/** 下载区逐项说明。注意 vue-i18n 的 te() 不认扁平点号键,改以 t() 原样返回键名判定缺失
- * (词典缺键的未来产物回退显示产物键名)。 */
-function dlDesc(key: string): string {
-  const ik = `web.analysis.dl_desc.${key}`
+/* 下载清单:后端列运行目录全量文件(除 analysis_meta.json 内部元数据)做**保底**,
+ * 认识的后缀叠加人类可读描述;没映射的新文件不会漏——自动回退显示原始文件名。
+ * 【维护提醒】新增产物类型时记得两步:①在下面 DL_PATTERNS 加一行后缀→描述键
+ * 映射;②i18n 词典 web.analysis.dl_desc.* 补描述(zh/en 各一条)。不加也不会
+ * 漏列,该文件显示原始文件名(全量枚举 + 友好名叠加)。 */
+const DL_PATTERNS: { suffix: string; key: string }[] = [
+  { suffix: '_nodes.csv', key: 'nodes' },
+  { suffix: '_edges.csv', key: 'edges' },
+  { suffix: '_network.html', key: 'html' },
+  { suffix: '_graph.graphml', key: 'graphml' },
+  { suffix: '_enrichment.csv', key: 'enrichment_csv' },
+  { suffix: '_network_string.png', key: 'string_png' },
+  { suffix: '_network_string.svg', key: 'string_svg' },
+  { suffix: '_network_cytoscape.png', key: 'cyto_png' },
+  { suffix: '_network_cytoscape.svg', key: 'cyto_svg' },
+  { suffix: '_network.png', key: 'network_png' },
+  { suffix: '_network.svg', key: 'network_svg' },
+  { suffix: '_core_targets.png', key: 'core_png' },
+  { suffix: '_core_targets.svg', key: 'core_svg' },
+  { suffix: '_enrichment_network.png', key: 'dtp_png' },
+  { suffix: '_enrichment_network.svg', key: 'dtp_svg' },
+  { suffix: '_enrichment_bar.png', key: 'enrichment_bar_png' },
+  { suffix: '_enrichment_bar.svg', key: 'enrichment_bar_svg' },
+  { suffix: '_enrichment_dot.png', key: 'enrichment_dot_png' },
+  { suffix: '_enrichment_dot.svg', key: 'enrichment_dot_svg' },
+  { suffix: '_gsea_drug.png', key: 'gsea_drug_png' },
+  { suffix: '_gsea_drug.svg', key: 'gsea_drug_svg' },
+  { suffix: '_gsea_disease.png', key: 'gsea_disease_png' },
+  { suffix: '_gsea_disease.svg', key: 'gsea_disease_svg' },
+  { suffix: '_gsea_drug.csv', key: 'gsea_drug_csv' },
+  { suffix: '_gsea_disease.csv', key: 'gsea_disease_csv' },
+  { suffix: '_rwr_disease_seeds.csv', key: 'rwr_disease_csv' },
+  { suffix: '_rwr_drug_seeds.csv', key: 'rwr_drug_csv' },
+  { suffix: '_proximity.csv', key: 'proximity_csv' },
+  { suffix: '_query_genes.csv', key: 'query_genes_csv' },
+  { suffix: '_modules.csv', key: 'modules_csv' },
+  { suffix: '_module_enrichment.csv', key: 'module_enrichment_csv' },
+  { suffix: 'reach_compare.png', key: 'reach_compare_png' },
+]
+
+function dlDesc(name: string): string {
+  // 注意 vue-i18n 的 te() 不认扁平点号键:以 t() 原样返回键名判定缺失,回退文件名
+  const hit = DL_PATTERNS.find((p) => name.endsWith(p.suffix))
+  if (!hit) return name
+  const ik = `web.analysis.dl_desc.${hit.key}`
   const s = t(ik)
-  return s === ik ? key : s
+  return s === ik ? name : s
 }
 
-const downloadItems = computed<{ label: string; rel: string }[]>(() => {
-  const a = artifacts.value
-  const out: { label: string; rel: string }[] = []
-  for (const key of ['nodes', 'edges', 'html', 'graphml', 'enrichment_csv',
-    'network_png', 'network_svg', 'string_png', 'string_svg', 'cyto_png', 'cyto_svg',
-    'core_png', 'core_svg', 'dtp_png', 'dtp_svg',
-    'enrichment_bar_png', 'enrichment_bar_svg', 'enrichment_dot_png', 'enrichment_dot_svg',
-    'gsea_drug_png', 'gsea_drug_svg', 'gsea_disease_png', 'gsea_disease_svg',
-    'gsea_drug_csv', 'gsea_disease_csv', 'rwr_disease_csv', 'rwr_drug_csv',
-    'proximity_csv', 'query_genes_csv', 'modules_csv', 'module_enrichment_csv']) {
-    if (a[key]) out.push({ label: key, rel: a[key] })
-  }
-  return out
-})
+const downloadItems = computed(() =>
+  (ppi.value?.files ?? []).map((f) => ({
+    name: f.name, rel: f.rel, desc: dlDesc(f.name),
+    known: dlDesc(f.name) !== f.name,
+  })))
 
 const dirName = computed(() =>
   (ppi.value?.directory_rel ?? '').split('/').pop() ?? '')
@@ -709,8 +740,8 @@ async function resumeAnalyzeJob(): Promise<void> {
         <ul class="dl-list">
           <li v-for="d in downloadItems" :key="d.rel" class="dl-row">
             <div class="dl-main">
-              <span class="dl-desc">{{ dlDesc(d.label) }}</span>
-              <span class="dl-name">{{ d.rel }}</span>
+              <span class="dl-desc">{{ d.desc }}</span>
+              <span class="dl-name" :class="{ unknown: !d.known }">{{ d.name }}</span>
             </div>
             <a class="mini" :href="artifactsUrl(d.rel, true)">{{ t('web.common.download') }}</a>
           </li>
@@ -1008,6 +1039,11 @@ async function resumeAnalyzeJob(): Promise<void> {
   gap: 14px;
   padding: 8px 2px;
   border-bottom: 1px solid var(--c-rowline);
+}
+/* 无友好名映射的文件:文件名暗淡斜体显示(可见但明确"未登记",提示维护者补映射) */
+.dl-name.unknown {
+  color: var(--c-ink3);
+  font-style: italic;
 }
 /* dl-list/dl-main/dl-desc/dl-name 已提升为全局样式(styles/screen.css) */
 .notice.err {

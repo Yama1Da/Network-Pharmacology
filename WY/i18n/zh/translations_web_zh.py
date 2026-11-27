@@ -230,7 +230,7 @@ TEXT_WEB_ZH = {
     "web.reach.tier_no_activity": "活性未知",
     # ---- W7 暴露约束前后排序对比(招牌图,2026-11-27):门槛 max(5, ceil(5%×N)),权重 1.7 校准前临时口径 ----
     "web.analysis.reach_cmp_title": "暴露约束前后排序对比(可达性加权)",
-    "web.analysis.reach_cmp_hint": "前 = 一期等权 RWR 排序(药物靶点为种子);后 = 同一得分 × 可达性档位权重 w(R)",
+    "web.analysis.reach_cmp_hint": "前 = 一期等权 RWR 排序(药物靶点为种子);后 = 同一得分 × 可达性档位权重 w(R);完整结论见图右栏",
     "web.analysis.reach_cmp_gate": "判档 {judged}/{total}:证据不足,排序不加权",
     "web.synergy.res_reach": "靶点浓度可达性(E6)",
     "web.synergy.reach_computed": "可算 {n}/{total}",
@@ -438,6 +438,7 @@ TEXT_WEB_ZH = {
     "web.analysis.dl_desc.query_genes_csv": "查询集清单(种子 / RWR 扩展来源)",
     "web.analysis.dl_desc.modules_csv": "模块汇总表",
     "web.analysis.dl_desc.module_enrichment_csv": "模块富集完整结果表",
+    "web.analysis.dl_desc.reach_compare_png": "暴露约束前后排序对比图",
     "web.analysis.dl_whole": "整包下载 ({name})",
     "web.analysis.dl_hint": "全部产物位于 {dir},也可在数据管理页整目录下载。",
     "web.analysis.dl_zip_fail": "整包下载失败",
