@@ -180,6 +180,8 @@ export interface PpiResult {
     enr_total?: number
     enr_modules?: number
   } | null
+  /** W7 招牌图摘要:gate=false 时前端显示结论行;gate=true 看 artifacts 的 reach_compare_png */
+  reach_compare: { gate: boolean; judged: number; total: number } | null
 }
 
 export interface PpiAnalyzeBody {

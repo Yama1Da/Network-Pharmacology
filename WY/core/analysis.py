@@ -543,6 +543,34 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         genes=genes,
         progress=progress)
 
+    # ---- Step 5.6(可选,W7 招牌图,2026-11-27):暴露约束前后排序对比 ----
+    # 仅 names 模式;数据源 = RWR 药侧种子得分(一期等权)× w(R) 档位权重
+    # (w_unknown=0.5 为 1.7 校准前临时口径);渲染门槛 max(5, ceil(5%×N)) 见
+    # 方案 §3.2。失败/低于门槛只跳过自身或回结论行摘要,不推翻主报告。
+    reach_compare: dict | None = None
+    if mode == "names" and drug_name.strip():
+        try:
+            from .reach_compare import save_reach_compare
+            from .reachability import compute_reachability
+            drug_rwr = (rwr_results or {}).get("drug_seeds") or {}
+            if drug_rwr.get("ok") and drug_rwr.get("seeds"):
+                seed_scores = {str(r["gene"]): float(r["score"])
+                               for r in drug_rwr["seeds"]}
+                # 逐靶点档位直连计算层(core→core,分层红线:core 不 import api);
+                # 归一化缓存未就绪 → RuntimeError → 本步整体跳过(结论行也不出)
+                res = compute_reachability(
+                    get_drug_targets_merged(drug_name.strip()), drug_name.strip())
+                tiers = {str(g): str(t) for g, t in
+                         zip(res["targets"]["gene"], res["targets"]["tier"])}
+                reach_compare = save_reach_compare(
+                    saved["directory"], drug_name.strip(), seed_scores, tiers)
+                png = reach_compare.pop("reach_compare_png", None)
+                if png:
+                    saved["reach_compare_png"] = png  # 进 artifacts → 前端/产物页
+        except Exception:
+            logging.exception("reach compare step failed — skipped gracefully")
+            reach_compare = None
+
     return {
         "genes": genes,
         "edges_df": edges_df,
@@ -570,6 +598,7 @@ def run_ppi_analysis(mode, drug_name, disease_name, gene_text, score,
         "rwr": rwr_results,
         "modules": modules_result,
         "saved": saved,
+        "reach_compare": reach_compare,
         "prefix": prefix,
         "params": (mode, drug_name, disease_name, gene_text, score,
                    network_type, int(rwr_expand), int(hub_top_n), hub_method),

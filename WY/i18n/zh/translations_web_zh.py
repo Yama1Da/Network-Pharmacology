@@ -228,6 +228,10 @@ TEXT_WEB_ZH = {
     "web.reach.filter_judged": "仅已判档(排除未知)",
     # unknown 档按真因拆词:no_exposure=暴露未知(复用 web.synergy.reach_tier_unknown),no_activity=活性未知
     "web.reach.tier_no_activity": "活性未知",
+    # ---- W7 暴露约束前后排序对比(招牌图,2026-11-27):门槛 max(5, ceil(5%×N)),权重 1.7 校准前临时口径 ----
+    "web.analysis.reach_cmp_title": "暴露约束前后排序对比(可达性加权)",
+    "web.analysis.reach_cmp_hint": "前 = 一期等权 RWR 排序(药物靶点为种子);后 = 同一得分 × 可达性档位权重 w(R)",
+    "web.analysis.reach_cmp_gate": "判档 {judged}/{total}:证据不足,排序不加权",
     "web.synergy.res_reach": "靶点浓度可达性(E6)",
     "web.synergy.reach_computed": "可算 {n}/{total}",
     "web.synergy.reach_fub_imputed": "fub 保守上界(可能高估)",

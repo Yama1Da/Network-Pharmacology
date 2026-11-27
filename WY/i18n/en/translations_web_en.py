@@ -227,6 +227,10 @@ TEXT_WEB_EN = {
     "web.reach.filter_judged": "judged only (exclude unknown)",
     # unknown split by true cause: no_exposure = exposure unknown (reuses web.synergy.reach_tier_unknown), no_activity = activity unknown
     "web.reach.tier_no_activity": "activity unknown",
+    # ---- W7 exposure-constrained rank comparison (2026-11-27): gate max(5, ceil(5%×N)); weights provisional until 1.7 calibration ----
+    "web.analysis.reach_cmp_title": "Before vs after exposure-weighted ranking",
+    "web.analysis.reach_cmp_hint": "Before = phase-1 equal-weight RWR (drug targets as seeds); after = same score × tier weight w(R)",
+    "web.analysis.reach_cmp_gate": "Judged {judged}/{total}: insufficient evidence, ranking left unweighted",
     "web.synergy.res_reach": "Target exposure reachability (E6)",
     "web.synergy.reach_computed": "{n}/{total} computed",
     "web.synergy.reach_fub_imputed": "fub conservative bound (may overestimate)",

@@ -152,6 +152,9 @@ function art(key: string): string | null {
 /* 邻近度(PpiResult.proximity 已是 ProximityResult,无需再转 any) */
 const prox = computed(() => ppi.value?.proximity ?? null)
 
+/* 暴露约束前后排序对比摘要(W7):gate=false → 结论行;true → artifacts 出图 */
+const reachCmp = computed(() => ppi.value?.reach_compare ?? null)
+
 /* RWR */
 const rwr = computed(() => ppi.value?.rwr ?? null)
 const rwrSide = ref<'disease_seeds' | 'drug_seeds'>('disease_seeds')
@@ -489,6 +492,21 @@ async function resumeAnalyzeJob(): Promise<void> {
           </div>
         </template>
       </template>
+    </section>
+
+    <!-- 暴露约束前后排序对比(W7 招牌图,2026-11-27):门槛 max(5, ceil(5%×N)),
+         过门槛看 artifacts 的 reach_compare_png;低于门槛只出结论行(方案 §3.2) -->
+    <section v-if="reachCmp" class="sec">
+      <h3 class="sec-title">{{ t('web.analysis.reach_cmp_title') }}</h3>
+      <template v-if="art('reach_compare_png')">
+        <p class="hint-line">{{ t('web.analysis.reach_cmp_hint') }}</p>
+        <img class="fig-img" :src="artifactsUrl(art('reach_compare_png') ?? '')"
+             alt="reachability-weighted rank comparison" />
+      </template>
+      <p v-else class="hint-line">
+        {{ t('web.analysis.reach_cmp_gate', { judged: reachCmp.judged,
+                                               total: reachCmp.total }) }}
+      </p>
     </section>
 
     <!-- RWR -->

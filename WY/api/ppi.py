@@ -131,6 +131,9 @@ def _serialize_ppi(ppi: dict) -> dict:
         "proximity": ppi.get("proximity"),
         "rwr": rwr,
         "modules": modules_out,
+        # W7 招牌图摘要:{gate, judged, total} | null(过门槛时另有 artifacts
+        # 里的 reach_compare_png;低于门槛前端显示结论行)
+        "reach_compare": ppi.get("reach_compare"),
     }
 
 
