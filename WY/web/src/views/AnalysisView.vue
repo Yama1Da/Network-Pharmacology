@@ -12,6 +12,7 @@ import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
 import { useReachAnnotation } from '../composables/useReach'
 import Stepper from '../components/Stepper.vue'
+import ConsensusPanel from '../components/ConsensusPanel.vue'
 import { downloadBlob } from '../utils/download'
 import { fmt } from '../utils/format'
 
@@ -242,6 +243,9 @@ const DL_PATTERNS: { suffix: string; key: string }[] = [
   { suffix: '_modules.csv', key: 'modules_csv' },
   { suffix: '_module_enrichment.csv', key: 'module_enrichment_csv' },
   { suffix: 'reach_compare.png', key: 'reach_compare_png' },
+  { suffix: '_consensus_targets.csv', key: 'consensus_targets_csv' },
+  { suffix: '_consensus_methods.csv', key: 'consensus_methods_csv' },
+  { suffix: '_consensus_significance.csv', key: 'consensus_significance_csv' },
 ]
 
 function dlDesc(name: string): string {
@@ -274,6 +278,27 @@ async function zipWholeDirectory(): Promise<void> {
   } catch {
     flash(t('web.analysis.dl_zip_fail'))
   }
+}
+
+/* 多方法一致性面板(模块C)联动:
+ * - saved:一致性产物是在分析完成后另起的任务写的,本次 ppi.files 快照里没有
+ *   ——按后端 files_written 补进下载列表(目录 rel 与 _serialize_ppi 同构);
+ * - fill(下游打通 v1):一致子集填进手动模式基因框,参数过期标记自然亮起,
+ *   用户自己点「开始分析」重跑——严守方案 §4.4「默认不替换」红线。 */
+function consensusSaved(names: string[]): void {
+  const dir = ppi.value?.directory_rel
+  if (!dir || !ppi.value) return
+  const known = new Set((ppi.value.files ?? []).map((f) => f.name))
+  const add = names.filter((n) => n && !known.has(n))
+    .map((n) => ({ name: n, rel: `${dir}/${n}` }))
+  if (add.length) ppi.value = { ...ppi.value, files: [...(ppi.value.files ?? []), ...add] }
+}
+
+function fillFromConsensus(genes: string[]): void {
+  if (!genes.length) return
+  mode.value = 'genes'
+  genesText.value = genes.join(', ')
+  flash(t('web.analysis.consensus_filled', { count: genes.length }))
 }
 
 onMounted(() => {
@@ -600,6 +625,11 @@ async function resumeAnalyzeJob(): Promise<void> {
         </template>
       </details>
     </section>
+
+    <!-- 多方法一致性(模块C):独立组件,种子来源随本次分析(names=疾病靶点全集/genes=基因列表),
+         产物落运行目录自动进下载列表;填入按钮走 fill 事件写表单,默认不替换 -->
+    <ConsensusPanel v-if="ppi" :ppi="ppi" :mode="mode" :drug="drug" :disease="disease"
+                    :genes-text="genesText" @fill="fillFromConsensus" @saved="consensusSaved" />
 
     <!-- 富集 -->
     <section class="sec">
