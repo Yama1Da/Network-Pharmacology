@@ -375,6 +375,15 @@ RWR_NULL_SEED = 0
 # RWR 结果缓存目录(只在计算成功时保存)
 RWR_CACHE_DIR = os.path.join(CACHE_DIR, "rwr")
 
+# ======== 疾病模块多方法一致性(二期方案 §4) ========
+# 模块扩张规模 N:三方法(RWR/DIAMOnD/近邻扩张)共用同一 N 保证可比性(§4.1 陷阱#4);
+# 默认 100 为方案定稿值,disease_modules._plan_or_config 会校验 config 与方案一致,
+# 改值前先改方案(§5.2 标定纪律)。
+MODULE_EXPAND_N = 100
+# 一致性标记 k:被 ≥k 种方法捞入模块即标记为「一致基因」(§4.2,默认 2);
+# 同受 _plan_or_config 与方案定稿值的一致性校验。
+CONSENSUS_MIN_METHODS = 2
+
 # ======== 分子对接配置（AutoDock Vina v1.2.7） ========
 # Vina 程序目录自动探测(逻辑在 env_discovery.py,导入时求值):优先环境变量 VINA_DIR
 # (可写入 API.env),其次 PATH;换电脑只需设置其中之一。都找不到时 VINA_DIR 为空串,
