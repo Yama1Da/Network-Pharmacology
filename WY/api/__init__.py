@@ -60,6 +60,7 @@ from . import retrieve
 from . import docking
 from . import ml
 from . import synergy
+from . import modules
 
 app.include_router(collections.router)
 app.include_router(transfer_routes.router)
@@ -74,6 +75,7 @@ app.include_router(retrieve.router)
 app.include_router(docking.router)
 app.include_router(ml.router)
 app.include_router(synergy.router)
+app.include_router(modules.router)
 
 
 
