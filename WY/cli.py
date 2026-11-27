@@ -827,6 +827,122 @@ def cmd_batch(args) -> int:
     return 1 if failed_n else 0
 
 
+# ======== 子命令:modules(疾病模块三方法一致性,模块C §4.4) ========
+
+def _setup_modules(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--genes", required=True,
+                   help="Seed genes (usually disease targets): path to a .txt/.csv, or a comma-separated list")
+    p.add_argument("--top-n", type=int, default=None,
+                   help="Module expansion size N per method, 三方法共用 (default: config "
+                        "MODULE_EXPAND_N, §4.1 定稿 100)")
+    p.add_argument("--k", type=int, default=None,
+                   help="Consensus threshold: methods a gene must belong to to count as "
+                        "consistent (default: config CONSENSUS_MIN_METHODS, §4.2 定稿 2)")
+    p.add_argument("--n-perms", type=int, default=None,
+                   help="Permutation rounds for module significance (degree-matched null; "
+                        "default: config RWR_NULL_PERMS; 0 = skip significance)")
+    p.add_argument("--out", default=None,
+                   help="Output directory (default: CLI_RESULTS_DIR from API.env, else ./results)")
+
+
+def cmd_modules(args) -> int:
+    """疾病模块三方法(RWR/DIAMOnD/近邻扩张)+ Borda 共识 + 置换检验显著性
+    (模块C §4.2/§4.4),落盘 consensus.csv / modules.csv / significance.csv(可选)
+    / summary.json。种子与互作组 LCC 取交集,交集外基因进 summary 计数不静默丢
+    (陷阱#3)。背景互作组未构建时警告并跳过,CLI 绝不自动触发下载(同 proximity/rwr)。"""
+    out_dir = _resolve_out_dir(args.out)
+    if out_dir is None:
+        return 1
+    if args.n_perms is not None and args.n_perms < 0:
+        _warn("--n-perms must be >= 0 (0 = skip significance)")
+        return 1
+    seeds = _read_genes(args.genes)
+    if not seeds:
+        _warn(f"no genes parsed from --genes '{args.genes}'")
+        return 1
+    if not interactome.is_built():
+        _warn("background interactome not built; build it in the web UI or via "
+              "tools/build_interactome.py, then rerun")
+        return 1
+    t0 = time.monotonic()
+    from WY.core.disease_modules import (consensus_targets, export_consensus_csv,
+                                         module_significance)
+    from WY.core.network_algorithms import _lcc_context
+
+    print(f"[modules] {len(seeds)} seed genes, N="
+          f"{'default' if args.top_n is None else args.top_n}, "
+          f"k={'default' if args.k is None else args.k}, "
+          f"n_perms={'default' if args.n_perms is None else args.n_perms}, "
+          f"output directory: {out_dir}")
+    ctx = _lcc_context("Human")
+    res = consensus_targets(ctx, seeds, n=args.top_n, k=args.k)
+    if not res.get("ok"):
+        _warn(f"consensus failed: {res.get('error') or 'unknown error'}")
+        return 1
+
+    written: list[str] = []
+    cons_path = export_consensus_csv(res["consensus"],
+                                     os.path.join(out_dir, "consensus.csv"))
+    if cons_path:
+        written.append(cons_path)
+    # 三方法成员长表(method,rank,gene;rank 从 1 开始,陷阱#5 同源)
+    mod_rows = [{"method": m, "rank": r, "gene": g}
+                for m in ("rwr", "diamond", "neighbor")
+                for r, g in enumerate(res["modules"][m], 1)]
+    mods_path = _save_csv(pd.DataFrame(mod_rows), os.path.join(out_dir, "modules.csv"))
+    if mods_path:
+        written.append(mods_path)
+
+    sig_summary = None
+    sig = None
+    perms = args.n_perms if args.n_perms is not None else None
+    if perms is None or perms > 0:  # 默认跑置换检验(--n-perms 0 显式跳过)
+        sig = module_significance(ctx, seeds, n=args.top_n, n_perms=args.n_perms)
+        sig_rows = [{"method": m, **v} for m, v in sig["methods"].items()]
+        sig_path = _save_csv(pd.DataFrame(sig_rows),
+                             os.path.join(out_dir, "significance.csv"))
+        if sig_path:
+            written.append(sig_path)
+        sig_summary = {m: {"p": v["p"], "n_perms": v["n_perms"]}
+                       for m, v in sig["methods"].items()}
+
+    cov = res.get("coverage") or {}
+    summary = {
+        "command": "modules",
+        "schema": res.get("schema"),
+        "seeds_total": len(seeds),
+        "seeds_out_of_lcc": cov.get("seeds_out_of_lcc", []),
+        "seeds_in_lcc": cov.get("seeds_in_lcc"),
+        # 参数快照(纪律:当次生效值如实入账;k/n_perms 取有效值,None=配置默认)
+        "params": {"n": (sig.get("n") if sig is not None else args.top_n),
+                   "k": res.get("k"),
+                   "n_perms": (sig.get("n_perms") if sig is not None else None)},
+        "module_sizes": res.get("module_sizes"),
+        "significance": sig_summary,
+        "consistent_genes": int(res["consensus"]["consistent"].sum()),
+        # summary.json 自指:files 计入自身(与落盘后的 written 终态一致)
+        "files": [os.path.basename(p) for p in written] + ["summary.json"],
+        "seconds": round(time.monotonic() - t0, 1),
+    }
+    summary_path = _save_json(summary, os.path.join(out_dir, "summary.json"))
+    if summary_path:
+        written.append(summary_path)
+
+    top = res["consensus"][res["consensus"]["consistent"]]
+    top_genes = top["gene"].head(10).tolist()
+    print(f"[modules] seed coverage {cov.get('seeds_in_lcc', '?')}/{len(seeds)} in LCC"
+          + (f" ({len(cov.get('seeds_out_of_lcc', []))} outside)" if cov.get("seeds_out_of_lcc") else ""))
+    print(f"[modules] sizes: " + ", ".join(f"{m}={n}" for m, n in (res.get("module_sizes") or {}).items())
+          + f", consistent(≥k)={summary['consistent_genes']}")
+    if sig_summary:
+        print("[modules] significance p: " + ", ".join(f"{m}={v['p']:.4g}" for m, v in sig_summary.items()))
+    if top_genes:
+        print(f"[modules] top consensus genes: {', '.join(top_genes)}")
+    print(f"[modules] done in {summary['seconds']}s: {len(written)} file(s) written"
+          + ("".join(f"\n  {p}" for p in written)))
+    return 0
+
+
 # ======== 子命令:synergy(分离度协同预测) ========
 
 # 批量汇总表列序:分析列 + E6 可达性列(v1.2 定稿:sort_key/high_confidence 是
@@ -1115,6 +1231,7 @@ HANDLER_HELP = {
     "rwr": "Random-walk-with-restart ranking of the whole network from seed genes",
     "analyze": "Full pipeline for one drug-disease pair (all steps + summary.json)",
     "batch": "Run the full pipeline for many drug-disease pairs from a CSV (batch summary + resume)",
+    "modules": "Disease-module consensus: RWR/DIAMOnD/neighbor expansion + Borda consensus + permutation significance from seed genes",
     "synergy": "Separation-based synergy prediction for drug pairs (--a/--b or --input batch CSV)",
 }
 
@@ -1127,6 +1244,7 @@ COMMANDS = {
     "rwr": (_setup_rwr, cmd_rwr),
     "analyze": (_setup_analyze, cmd_analyze),
     "batch": (_setup_batch, cmd_batch),
+    "modules": (_setup_modules, cmd_modules),
     "synergy": (_setup_synergy, cmd_synergy),
 }
 

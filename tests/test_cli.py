@@ -213,6 +213,115 @@ def test_proximity_and_rwr_skip_when_interactome_missing(tmp_path, monkeypatch):
                     "--out", str(tmp_path)])
     rc2 = cli.main(["rwr", "--seeds", "TP53", "--out", str(tmp_path)])
     assert rc1 == 1 and rc2 == 1
+    # modules 同款纪律(§4.4,模块C):未建互作组不跑、不自动下载
+    rc3 = cli.main(["modules", "--genes", "TP53,EGFR", "--out", str(tmp_path)])
+    assert rc3 == 1
+
+
+# ---------- 子命令:modules(疾病模块三方法一致性,§4.4) ----------
+
+
+def _stub_modules_chain(monkeypatch):
+    """打桩模块C链路:ctx 注入 + consensus_targets/module_significance;
+    export_consensus_csv 走真实现(纯 CSV 落盘,一并覆盖)。"""
+    import pandas as pd
+
+    monkeypatch.setattr(cli.interactome, "is_built", lambda *a, **k: True)
+    monkeypatch.setattr("WY.core.network_algorithms._lcc_context",
+                        lambda species: (["n1", "n2"], {}, None, {}))
+    calls = {}
+
+    def fake_consensus(ctx, seeds, n=None, k=None):
+        calls["seeds"] = list(seeds)
+        calls["n"], calls["k"] = n, k
+        consensus = pd.DataFrame([
+            {"gene": "TP53", "rwr_rank": 1, "diamond_rank": 1, "neighbor_rank": 2,
+             "n_methods": 3, "consensus_score": 4.0 / 3, "consistent": True,
+             "is_seed": True},
+            {"gene": "EGFR", "rwr_rank": 2, "diamond_rank": None, "neighbor_rank": 1,
+             "n_methods": 2, "consensus_score": 1.5, "consistent": True,
+             "is_seed": True},
+            {"gene": "ORF8", "rwr_rank": 3, "diamond_rank": 2, "neighbor_rank": None,
+             "n_methods": 2, "consensus_score": 2.5, "consistent": True,
+             "is_seed": False},
+        ])
+        return {"schema": "consensus.v1", "ok": True, "error": None,
+                "modules": {"rwr": ["TP53", "EGFR", "ORF8"],
+                            "diamond": ["TP53", "ORF8"],
+                            "neighbor": ["EGFR", "TP53"]},
+                "module_sizes": {"rwr": 3, "diamond": 2, "neighbor": 2},
+                "consensus": consensus,
+                "coverage": {"seeds_in_lcc": 2, "seeds_out_of_lcc": ["NOT_A_GENE"]},
+                "k": 2}
+
+    def fake_sig(ctx, seeds, n=None, n_perms=None, null_seed=None):
+        calls["n_perms"] = n_perms
+        return {"schema": "consensus.v1", "n": n or 100, "n_perms": n_perms or 200,
+                "methods": {"rwr": {"observed_cohesion": 12, "null_mean": 3.0,
+                                    "null_sd": 1.5, "n_perms": n_perms or 200,
+                                    "p": 0.01}},
+                "seed_in_lcc": 2}
+
+    monkeypatch.setattr("WY.core.disease_modules.consensus_targets", fake_consensus)
+    monkeypatch.setattr("WY.core.disease_modules.module_significance", fake_sig)
+    return calls
+
+
+def test_modules_consensus_writes_outputs(tmp_path, monkeypatch):
+    """modules 子命令:三方法长表 + 共识表 + 显著性 + summary.json;参数快照
+    记有效值(--top-n/--k 显式、n_perms 有效轮数);LCC 外种子进 summary 不静默丢。"""
+    calls = _stub_modules_chain(monkeypatch)
+    genes_csv = tmp_path / "seeds.csv"
+    pd.DataFrame({"approvedSymbol": ["TP53", "EGFR", "NOT_A_GENE"]}
+                 ).to_csv(genes_csv, index=False)
+    out = tmp_path / "res"
+    rc = cli.main(["modules", "--genes", str(genes_csv), "--top-n", "50",
+                   "--k", "2", "--n-perms", "30", "--out", str(out)])
+    assert rc == 0
+    assert calls["seeds"] == ["TP53", "EGFR", "NOT_A_GENE"]
+    assert calls["n"] == 50 and calls["k"] == 2 and calls["n_perms"] == 30
+    for name in ("consensus.csv", "modules.csv", "significance.csv", "summary.json"):
+        assert (out / name).exists(), name
+    mods = pd.read_csv(out / "modules.csv")
+    assert set(mods["method"]) == {"rwr", "diamond", "neighbor"}
+    assert (mods.groupby("method")["rank"].min() == 1).all()  # 秩从 1 开始(陷阱#5)
+    cons = pd.read_csv(out / "consensus.csv")
+    assert list(cons["gene"]) == ["TP53", "EGFR", "ORF8"]  # 共识序不被导出打乱
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert summary["params"] == {"n": 50, "k": 2, "n_perms": 30}
+    assert summary["seeds_out_of_lcc"] == ["NOT_A_GENE"]  # 陷阱#3:不静默丢
+    assert summary["seeds_in_lcc"] == 2
+    assert summary["consistent_genes"] == 3
+    assert set(summary["files"]) == {"consensus.csv", "modules.csv",
+                                     "significance.csv", "summary.json"}
+
+
+def test_modules_skip_significance_and_failures(tmp_path, monkeypatch):
+    """--n-perms 0 显式跳过显著性(不出 significance.csv);空基因表与共识失败
+    稳定令牌退出码 1。"""
+    calls = _stub_modules_chain(monkeypatch)
+    out = tmp_path / "res0"
+    rc = cli.main(["modules", "--genes", "TP53", "--n-perms", "0", "--out", str(out)])
+    assert rc == 0 and "n_perms" not in calls  # 显著性整段跳过,fake_sig 不被调
+    assert not (out / "significance.csv").exists()
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert summary["significance"] is None and summary["params"]["n_perms"] is None
+
+    # 空基因表:rc 1
+    empty = tmp_path / "empty.txt"
+    empty.write_text("# 只有注释\n", encoding="utf-8")
+    rc2 = cli.main(["modules", "--genes", str(empty), "--out", str(tmp_path / "e1")])
+    assert rc2 == 1
+
+    # 共识失败:稳定令牌(rc 1,detail 进 stderr 警告)
+    def boom(ctx, seeds, n=None, k=None):
+        return {"schema": "consensus.v1", "ok": False, "error": "rwr_failed",
+                "consensus": None,
+                "modules": {"diamond": [], "neighbor": [], "rwr": []},
+                "coverage": {}}
+    monkeypatch.setattr("WY.core.disease_modules.consensus_targets", boom)
+    rc3 = cli.main(["modules", "--genes", "TP53", "--out", str(tmp_path / "e2")])
+    assert rc3 == 1
 
 
 # ---------- 子命令:analyze / batch ----------
