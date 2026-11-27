@@ -245,9 +245,14 @@ const DL_PATTERNS: { suffix: string; key: string }[] = [
 ]
 
 function dlDesc(name: string): string {
-  // 注意 vue-i18n 的 te() 不认扁平点号键:以 t() 原样返回键名判定缺失,回退文件名
-  const hit = DL_PATTERNS.find((p) => name.endsWith(p.suffix))
+  // 最长后缀优先(顺序无关):_module_enrichment.csv 也以 _enrichment.csv 结尾、
+  // _enrichment_network.png 也以 _network.png 结尾,短后缀先匹配会错标(2026-11-28 勘误)
+  let hit: { suffix: string; key: string } | null = null
+  for (const p of DL_PATTERNS) {
+    if (name.endsWith(p.suffix) && (!hit || p.suffix.length > hit.suffix.length)) hit = p
+  }
   if (!hit) return name
+  // 注意 vue-i18n 的 te() 不认扁平点号键:以 t() 原样返回键名判定缺失,回退文件名
   const ik = `web.analysis.dl_desc.${hit.key}`
   const s = t(ik)
   return s === ik ? name : s
@@ -703,9 +708,8 @@ async function resumeAnalyzeJob(): Promise<void> {
         <template v-if="ppi.modules?.enr_rows?.length">
           <h4 class="sub-sec">{{ t('web.analysis.mod_enr_title') }}</h4>
           <p class="hint-line">
-            {{ t('web.analysis.mod_enr_stats', { total: ppi.modules.enr_total, mods: ppi.modules.enr_modules }) }}
-            <a v-if="art('module_enrichment_csv')" class="bar-btn"
-               :href="artifactsUrl(art('module_enrichment_csv') ?? '', true)">{{ t('web.analysis.dl_full_csv') }}</a>
+            {{ t('web.analysis.mod_enr_stats', { total: ppi.modules.enr_total }) }}
+            <!-- 完整表走底部"下载产物"清单(模块富集完整结果表)与整包 ZIP;此处不再放就地下载(2026-11-28 单一入口定稿) -->
           </p>
           <div class="tbl-wrap">
             <table class="tbl">
