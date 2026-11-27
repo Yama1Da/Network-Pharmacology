@@ -132,49 +132,17 @@ npap --help                 # 详见下方「命令行批量分析（CLI）」�
 分析 CLI 秒回，网页改过的阈值 CLI 自动沿用。CLI 面向批量出表，不绘图、
 不对接，论文用图走网页端。
 
+快速感受：
+
 ```bash
 cd WY
 source .venv/bin/activate   # Windows: .venv\Scripts\activate（启动脚本已建好环境）
-
-# 单步命令：每个环节产出 CSV/JSON 到 --out 目录（默认 ./results，
-# 可在 API.env 里用 CLI_RESULTS_DIR 配置固定输出目录）
-python cli.py targets   --drug aspirin --disease "colorectal cancer"   # 四数据源靶点明细
-python cli.py ppi       --genes genes.txt                              # STRING 网络 + MCC 核心靶点
-python cli.py enrich    --genes common_targets.csv [--pvalue 0.05] [--sources GO:BP,KEGG]
-python cli.py proximity --drug aspirin --disease "colorectal cancer"   # 邻近度 Z-score
-python cli.py rwr       --seeds core_targets.csv                       # RWR 全网络排序
-
-# 单对全流程：一个结果子目录 + summary.json（参数快照与各步状态，可追溯）
-python cli.py analyze --drug aspirin --disease "colorectal cancer"
-
-# 批量：pairs.csv 须含 drug、disease 两列，一行一对；每对一个子目录 + batch_summary.csv
-python cli.py batch --pairs pairs.csv --out results
-python cli.py batch --pairs pairs.csv --out results --resume   # 断点续跑
+python cli.py analyze --drug aspirin --disease "colorectal cancer"   # 单对全流程
+python cli.py batch --pairs pairs.csv --out results --resume         # 批量 + 断点续跑
+python cli.py synergy --input pairs.csv --out results                # 协同预测批量（二期）
 ```
 
-- **退出码**：全部成功 0，任一失败 1，失败原因直接打印（结果不会静默残缺）；
-  单对失败不中断整批，`--resume` 跳过已成功的对、重试失败的对。
-- **基因清单**三种写法对 `ppi`/`enrich` 的 `--genes` 与 `rwr` 的 `--seeds`
-  通用：txt 一行一个基因（支持 `#` 注释）、csv（自动取 `gene`/`approvedSymbol`
-  列）、逗号分隔列表。`targets`/`proximity`/`analyze`/`batch` 只收药名/病名，
-  两组命令靠产出文件衔接（如 `enrich --genes common_targets.csv`）。
-- proximity / RWR 依赖背景互作组：未构建时跳过并提示，不会自动触发大文件下载。
-- 仅支持英文疾病名；批量建议顺序跑，不要同时开多个 batch 进程。
-- `python cli.py serve` 可直接启动网页版服务器（自动打开浏览器）。
-
-**装成全局命令 `npap`（可选）**：
-
-```bash
-cd WY
-pip install -e ..        # 必须带 -e（可编辑安装）：缓存/日志/API.env 均相对
-                         # WY/ 源码目录解析，普通安装会把它们写进 site-packages
-npap --help              # 入口脚本装进当前环境的 Scripts\（Windows）或 bin/
-```
-
-装完后 `npap` 在已激活的环境里任意目录可用（三平台一致）；要免激活使用，
-把该环境的 `Scripts\`（Windows）或 `bin/`（Linux/macOS）目录加入 PATH。
-全局使用建议在 `API.env` 里配一次 `CLI_RESULTS_DIR`，否则不带 `--out` 时
-结果会落到当前目录的 `results`。
+**完整命令手册见独立文档：[documents/CLI_Manual_zh.md](documents/CLI_Manual_zh.md)**
 
 ## 配置说明
 
@@ -210,7 +178,7 @@ npap --help              # 入口脚本装进当前环境的 Scripts\（Windows�
 ```
 WY/
 ├── api/                    # FastAPI 入口：/api 端点按页拆分（__init__ 装配 + 各页路由模块）+ 托管 web/dist
-├── cli.py                  # CLI 入口：serve / targets / ppi / enrich / proximity / rwr / analyze / batch
+├── cli.py                  # CLI 入口：serve / targets / ppi / enrich / proximity / rwr / analyze /batch/ modules / synergy（手册见 documents/）
 ├── config.py               # 全部可调参数（路径、限流/重试、缓存 TTL、过滤阈值、STRING 版本）
 ├── env_discovery.py        # Vina / Open Babel 可执行文件探测
 ├── API.env                 # 密钥与本机路径（不入库；设置页首次保存后自动生成）

@@ -169,59 +169,18 @@ web UI: analyses the web has already run return instantly in the CLI, and thresh
 changed in the web UI apply to the CLI automatically. The CLI targets batch tabulation;
 it does not plot and does not dock — paper figures come from the web UI.
 
+Quick taste:
+
 ```bash
 cd WY
 source .venv/bin/activate   # Windows: .venv\Scripts\activate (the launcher created the env)
-
-# Single-step commands: each writes CSV/JSON files into --out (default ./results;
-# set CLI_RESULTS_DIR in API.env once for a permanent output directory)
-python cli.py targets   --drug aspirin --disease "colorectal cancer"   # targets from 4 sources
-python cli.py ppi       --genes genes.txt                              # STRING network + MCC core targets
-python cli.py enrich    --genes common_targets.csv [--pvalue 0.05] [--sources GO:BP,KEGG]
-python cli.py proximity --drug aspirin --disease "colorectal cancer"   # proximity Z-score
-python cli.py rwr       --seeds core_targets.csv                       # network-wide RWR ranking
-
-# Full pipeline for one pair: one result subdirectory + summary.json (parameter snapshot
-# and per-step status, fully traceable)
-python cli.py analyze --drug aspirin --disease "colorectal cancer"
-
-# Batch: pairs.csv must contain 'drug' and 'disease' columns, one pair per row;
-# one subdirectory per pair + batch_summary.csv
-python cli.py batch --pairs pairs.csv --out results
-python cli.py batch --pairs pairs.csv --out results --resume   # checkpoint resume
+python cli.py analyze --drug aspirin --disease "colorectal cancer"   # full pipeline, one pair
+python cli.py batch --pairs pairs.csv --out results --resume         # many pairs + resume
+python cli.py synergy --input pairs.csv --out results                # synergy batch (phase 2)
 ```
 
-- **Exit codes**: 0 when everything succeeds, 1 when anything fails; failure reasons are
-  printed directly (results are never silently incomplete). A single failed pair never
-  aborts the batch, and `--resume` skips pairs that already succeeded and retries failed
-  ones.
-- **Gene lists** are interchangeable across `--genes` (`ppi`/`enrich`) and `--seeds`
-  (`rwr`), in any of three forms: a .txt with one gene per line (`#` comments allowed),
-  a .csv (auto-detects the `gene`/`approvedSymbol` column), or a comma-separated literal
-  list. `targets`/`proximity`/`analyze`/`batch` take drug/disease names only; the two
-  groups connect through the produced files (e.g.
-  `enrich --genes common_targets.csv`).
-- proximity / RWR require the background interactome: when it is missing they are skipped
-  with a notice and never trigger the large download automatically.
-- English disease names only; run batches sequentially — do not start multiple batch
-  processes at once.
-- `python cli.py serve` starts the web server directly (and opens the browser).
-
-**Install as a global `npap` command (optional)**:
-
-```bash
-cd WY
-pip install -e ..        # -e (editable) is required: caches/logs/API.env are all resolved
-                         # relative to the WY/ source directory; a regular install would
-                         # write them into site-packages
-npap --help              # the entry script lands in the env's Scripts\ (Windows) or bin/
-```
-
-After installing, `npap` is available in any directory while the environment is active
-(identical on all three platforms); to use it without activation, add the environment's
-`Scripts\` (Windows) or `bin/` (Linux/macOS) directory to PATH. For global use, set
-`CLI_RESULTS_DIR` in `API.env` once; otherwise, without `--out`, results land in the
-`results` folder under the current directory.
+**Full command reference — see the dedicated manual:
+[documents/CLI_Manual_en.md](documents/CLI_Manual_en.md)**
 
 ## Configuration
 
@@ -265,7 +224,7 @@ For behavior changes see `WY/config.py`; for secrets see `WY/API.env`.
 ```
 WY/
 ├── api/                    # FastAPI entry: /api endpoints split per page (__init__ assembly + route modules) + hosts web/dist
-├── cli.py                  # CLI entry: serve / targets / ppi / enrich / proximity / rwr / analyze / batch
+├── cli.py                  # CLI entry: serve / targets / ppi / enrich / proximity / rwr / analyze / batch / modules / synergy (manual in documents/)
 ├── config.py               # All tunable parameters (paths, rate limits/retries, cache TTL, filter thresholds, STRING version)
 ├── env_discovery.py        # Vina / Open Babel executable discovery
 ├── API.env                 # Secrets and local paths (not committed; auto-created on first save in Settings)
