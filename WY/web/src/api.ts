@@ -1,4 +1,17 @@
-/** NPAP API 的类型化访问层:与 WY/api.py 的端点一一对应。 */
+/** NPAP API 的类型化访问层:与 WY/api.py 的端点一一对应。
+ * 大域按目录拆在 api/ 子目录(http 原语 / 跨域类型 / 各域端点),此处组装,
+ * 并继续以 ../api 作为消费者的唯一导入面。 */
+
+import { attachmentName, json, jsonWithDetail, post } from './api/http'
+import { mlApi } from './api/ml'
+import type { InFlightJob, JobState, Row } from './api/types'
+
+/* 类型出口:跨域共享类型与已外移的 ML 域类型,旧导入路径不变 */
+export type { InFlightJob, JobState, Row } from './api/types'
+export type {
+  MlHistoryRun, MlOverviewResult, MlProbeBatchItem,
+  MlProbeResult, MlRunResult, MlRunRow
+} from './api/ml'
 
 export interface LogFile {
   name: string
@@ -41,26 +54,6 @@ interface CollectionListing {
 interface DeleteResult {
   deleted: number
   failed: string[]
-}
-
-export interface JobState {
-  job_id: string
-  status: 'running' | 'done' | 'error'
-  description: string
-  progress: { fraction: number | null; text: string; [k: string]: unknown }
-  result: Record<string, unknown> | null
-  error: string | null
-  trace?: string
-}
-
-export type Row = Record<string, unknown>
-
-/** 在途任务状态(/api/{ml,ppi,synergy}/job 的公共形态):重进页面恢复进度用。 */
-interface InFlightJob {
-  running: boolean
-  job_id?: string
-  status?: string
-  progress?: JobState['progress']
 }
 
 /** 网络邻近度检验的落网覆盖(LCC 内命中数 / 集合总数)。 */
@@ -284,157 +277,6 @@ export interface PkMirrorStatus {
   } | null
 }
 
-/* ---- GEO 表达谱 + ML(阶段 3c)共享类型:字段与 core 一一对应 ---- */
-
-/** 数据集可用性判定(core.expression.assess_expression_dataset)。 */
-interface MlAssess {
-  matrix_empty: boolean
-  symbol_level: boolean | null
-  shape?: [number, number] | null
-  gpl: string
-  annot: string | null
-  group_fields: string[]
-  counts_available: boolean | null
-  n_samples: number | null
-  usable: boolean
-}
-
-/** /api/ml/probe 返回;仅前端请求本身失败时只有 err 字段。 */
-export interface MlProbeResult {
-  gse?: string
-  r?: { size_bytes: number; speed_bps: number; reliable?: boolean } | null
-  err?: string
-  assess?: MlAssess | null
-  annot_missing?: boolean
-  gpl?: string
-  annot?: string
-}
-
-/** /api/ml/probe-batch 的单行结果:徽章原料 + 四态归纳(status 由后端归纳,前端直接消费)。 */
-export interface MlProbeBatchItem {
-  gse: string
-  err: string
-  assess: MlAssess | null
-  counts_confirmed?: boolean | null
-  status: 'ok' | 'unusable' | 'unknown' | 'err'
-}
-
-/** 分组选择器字段(总览 job 的 group_picker 载荷):取值含整行命中数 n
- * (与 assign_groups 同口径),overlaps 为子串包含型重叠对(应标红禁选)。 */
-interface MlGroupValue {
-  value: string
-  n: number
-}
-
-interface MlGroupField {
-  name: string
-  label: string
-  values: MlGroupValue[]
-  overlaps: { a: string; b: string; n: number }[]
-  suggest_case?: string | null
-  suggest_control?: string | null
-}
-
-interface MlGroupPicker {
-  fields: MlGroupField[]
-}
-
-/** counts 模式分组选择器(发动机不同的原因见 core.expression.counts_picker_fields):
- * 正则匹配对象是 counts 列名 → 建议物是「取值对应列组的最长公共前缀」而非取值本身。 */
-interface MlCountsGroup {
-  value: string
-  columns: string[]
-  suggest: string
-}
-
-interface MlCountsField {
-  name: string
-  label: string
-  groups: MlCountsGroup[]
-  suggest_case?: string | null
-  suggest_control?: string | null
-}
-
-interface MlCountsPicker {
-  fields: MlCountsField[]
-}
-
-/** /api/ml/overview 的 job result。 */
-export interface MlOverviewResult {
-  overview: Row[]
-  counts_rows?: Row[]
-  assess?: MlAssess
-  group_picker?: MlGroupPicker
-  counts_picker?: MlCountsPicker | null
-  counts_match?: { matched: number; total: number } | null
-  issues?: string[]
-  counts_error?: string
-}
-
-/** /api/ml/run 的 job result。 */
-export interface MlRunResult {
-  gse: string
-  tag?: string
-  out_dir?: string
-  out_dir_rel?: string
-  artifacts?: Record<string, string>
-  roc_png_rel?: string
-  consensus_curve_rel?: string
-  elapsed?: number
-  meta?: {
-    n_samples?: number
-    n_genes?: number
-    cv_auc?: number | null
-    cv_mean?: number | null
-    cv_sd?: number | null
-    cv_repeats?: number | null
-    algo_spearman_mean?: number | null
-    [k: string]: unknown
-  }
-  geo_fallback?: boolean
-  geo_cache_date?: string
-  funnel?: Row[]
-  consensus?: Row[]
-  consensus_total?: number
-  shortlist?: Row[]
-  shortlist_count?: number | null
-  deg?: Row[]
-}
-
-/** run 陈旧原因(core.ml_pipeline.stale_reasons)。 */
-interface MlStaleReason {
-  type: string
-  old?: string | null
-  new?: string | null
-  name?: string
-}
-
-/** /api/ml/history 的单行(近 3 次摘要)。 */
-export interface MlHistoryRun {
-  name: string
-  auc?: number | null
-  n_samples?: number | null
-  shortlist_count?: number | null
-  ml_version?: string | null
-  stale?: MlStaleReason[]
-}
-
-/** /api/ml/runs 的单行(结果管理清单)。 */
-export interface MlRunRow {
-  name: string
-  path: string
-  dir_rel?: string
-  size_bytes: number
-  mtime: number
-  gse?: string | null
-  source?: string | null
-  n_samples?: number | null
-  auc?: number | null
-  shortlist_count?: number | null
-  ml_version?: string | null
-  stale?: MlStaleReason[]
-}
-
 /* ---- 设置快照(GET /api/settings 与保存/导入设置后的回填共用) ---- */
 
 export interface SettingsSnapshot {
@@ -624,50 +466,6 @@ interface TransferDecisionBody {
   name: string
   action: 'overwrite' | 'skip' | 'rename'
   new_name?: string
-}
-
-/** 统一响应解包:失败时优先取 FastAPI 的 detail 文本(设置校验、来源校验等都
- * 写成了人话,只在状态码上断掉会让用户看到裸 "HTTP 400"),取不到再退回状态码
- * (2026-11 审计 M5:原 json() 丢弃 detail,全端点 4xx 只剩 "HTTP 400")。 */
-async function json<T>(r: Response): Promise<T> {
-  if (!r.ok) {
-    let detail = ''
-    try {
-      detail = ((await r.json()) as { detail?: string })?.detail ?? ''
-    } catch {
-      /* 响应体不是 JSON 时退回状态码 */
-    }
-    throw new Error(detail || `HTTP ${r.status}`)
-  }
-  return (await r.json()) as T
-}
-
-/** 兼容别名:detail 提取已并入 json(),所有端点统一受益。 */
-const jsonWithDetail = json
-
-async function post<T>(url: string, body: unknown): Promise<T> {
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  }).then((r) => json<T>(r))
-}
-
-/** 从 Content-Disposition 取服务端文件名:优先 RFC 5987 的 filename*(中文药名场景),
- * 退回普通 filename="…";都缺失返回 null,由调用方兜底命名。 */
-function attachmentName(disposition: string | null): string | null {
-  if (!disposition) return null
-  const star = /filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/.exec(disposition)
-  if (star) {
-    try {
-      return decodeURIComponent(star[1].trim())
-    } catch {
-      /* 非法百分号编码时退回普通 filename */
-    }
-  }
-  const plain = /filename\s*=\s*"([^"]*)"/.exec(disposition) ??
-                /filename\s*=\s*([^;]+)/.exec(disposition)
-  return plain ? plain[1].trim() : null
 }
 
 export const api = {
@@ -943,60 +741,8 @@ export const api = {
   ): Promise<{ path: string; artifact_rel: string; offline_ok: boolean }> =>
     post(`/api/docking/${sid}/save3d`, body),
 
-  /* ---- GEO 表达谱 + ML 共识筛选(阶段 3c) ---- */
-  mlDiseases: (): Promise<{ diseases: string[]; drugs: string[] }> =>
-    fetch('/api/ml/diseases').then((r) => json(r)),
-
-  mlSearch: (disease: string, limit: number): Promise<{ results: Row[]; disease: string }> =>
-    post('/api/ml/search', { disease, limit }),
-
-  mlProbe: (gse: string, platformInfo: { platform: string; type: string }):
-    Promise<MlProbeResult> =>
-    post('/api/ml/probe', { gse, platform: platformInfo.platform, type_: platformInfo.type }),
-
-  mlProbeBatch: (rows: { gse: string; platform: string; type: string }[]):
-    Promise<{ results: MlProbeBatchItem[] }> =>
-    post('/api/ml/probe-batch', {
-      rows: rows.map((r) => ({ gse: r.gse, platform: r.platform, type_: r.type }))
-    }),
-
-  mlOverview: (gse: string): Promise<{ job_id: string }> =>
-    post('/api/ml/overview', { gse }),
-
-  mlRanked: (body: { disease: string; drug: string }): Promise<{
-    files: { label: string; base_disease: string; drug: string }[]
-  }> => post('/api/ml/ranked', body),
-
-  mlJob: (): Promise<InFlightJob & { gse?: string; mode?: string }> =>
-    fetch('/api/ml/job').then((r) => json(r)),
-
-  mlRun: (body: Record<string, unknown>): Promise<{ job_id: string }> =>
-    post('/api/ml/run', body),
-
-  mlHistory: (): Promise<{ runs: MlHistoryRun[] }> =>
-    fetch('/api/ml/history').then((r) => json(r)),
-
-  mlRuns: (): Promise<{ runs: MlRunRow[] }> =>
-    fetch('/api/ml/runs').then((r) => json(r)),
-
-  mlRunsDelete: (body: { paths: string[] }): Promise<{ deleted: string[] }> =>
-    post('/api/ml/runs/delete', body),
-
-  mlRunsZip: (paths: string[]): Promise<Blob> =>
-    fetch('/api/ml/runs/zip', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paths })
-    }).then((r) => {
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      return r.blob()
-    }),
-
-  mlRunsCleanup: (body: { keep: number }): Promise<{ deleted: number }> =>
-    post('/api/ml/runs/cleanup', body),
-
-  mlForceRefresh: (gse: string): Promise<{ job_id: string }> =>
-    post('/api/ml/force-refresh', { gse })
+  /* ---- GEO 表达谱 + ML 共识筛选(阶段 3c):方法在 api/ml.ts,此处展开并入 ---- */
+  ...mlApi
 }
 
 /** 产物直出:downloads 相对路径 → 伺服 URL(download=true 触发附件下载)。 */
