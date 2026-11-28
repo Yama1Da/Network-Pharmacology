@@ -4,6 +4,7 @@
 
 import { json, post } from './api/http'
 import { collectionsApi } from './api/collections'
+import { logsApi } from './api/logs'
 import { dockingApi } from './api/docking'
 import { mlApi } from './api/ml'
 import { ppiApi } from './api/ppi'
@@ -16,6 +17,7 @@ import type { JobState } from './api/types'
 /* 类型出口:跨域共享类型与已外移域的类型,旧导入路径不变 */
 export type { InFlightJob, JobState, Row } from './api/types'
 export type { CollectionItem, CollectionKind } from './api/collections'
+export type { LogFile } from './api/logs'
 export type {
   MlHistoryRun, MlOverviewResult, MlProbeBatchItem,
   MlProbeResult, MlRunResult, MlRunRow
@@ -31,20 +33,6 @@ export type {
   SynergyReachBlock, SynergyReachDrug, SynergyRunRow
 } from './api/synergy'
 export type { TransferImportReport, TransferItemReport } from './api/transfer'
-
-export interface LogFile {
-  name: string
-  modified: string
-  size: number
-  is_current: boolean
-}
-
-interface LogContent {
-  name: string
-  content: string
-  truncated: boolean
-  size: number
-}
 
 export interface InteractomeStatus {
   built: boolean
@@ -85,20 +73,8 @@ export interface PkMirrorStatus {
 }
 
 export const api = {
-  /* ---- Logs(阶段 1) ---- */
-  logsFiles: (): Promise<{ files: LogFile[] }> =>
-    fetch('/api/logs/files').then((r) => json(r)),
-
-  logsContent: (name: string, maxBytes = 2_000_000): Promise<LogContent> =>
-    fetch(`/api/logs/content?name=${encodeURIComponent(name)}&max_bytes=${maxBytes}`).then(
-      (r) => json(r)
-    ),
-
-  logsLevel: (): Promise<{ level: string }> =>
-    fetch('/api/logs/level').then((r) => json(r)),
-
-  setLogsLevel: (level: 'INFO' | 'DEBUG'): Promise<{ level: string }> =>
-    post('/api/logs/level', { level }),
+  /* ---- 日志(阶段 1):方法在 api/logs.ts,此处展开并入 ---- */
+  ...logsApi,
 
   /* ---- 文件集合(阶段 2)+ 来源刷新(管理页):方法在 api/collections.ts,此处展开并入 ---- */
   ...collectionsApi,
