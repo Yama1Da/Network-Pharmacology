@@ -4,6 +4,23 @@
 import { json, jsonWithDetail, post } from './http'
 import type { Row } from './types'
 
+/** Step 1 产物的事件载荷类型(Phase 4 D4 拆分后 DockingView 与
+ * DockingSourcePanel 跨文件共享):来源摘要(s1)与结构筛选结果。 */
+export interface DockingSourceSummary {
+  drug: string
+  disease: string
+  hub: number
+  enr: number
+  candidates: string[]
+}
+
+export interface DockingStructCheck {
+  genes: string[]
+  no_struct: string[]
+  hub_no_struct: string[]
+  structures: Record<string, number>
+}
+
 export const dockingApi = {
   dockingSession: (): Promise<{ sid: string }> =>
     post('/api/docking/session', {}),

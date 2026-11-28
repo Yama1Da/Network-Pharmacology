@@ -18,6 +18,7 @@ import type { JobState } from './api/types'
 export type { InFlightJob, JobState, Row } from './api/types'
 export type { CollectionItem, CollectionKind } from './api/collections'
 export type { LogFile } from './api/logs'
+export type { DockingSourceSummary, DockingStructCheck } from './api/docking'
 export type {
   MlCountsField, MlGroupField, MlHistoryRun, MlOverviewResult,
   MlProbeBatchItem, MlProbeResult, MlRunResult, MlRunRow
