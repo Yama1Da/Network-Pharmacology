@@ -29,10 +29,26 @@ const emit = defineEmits<{
 }>()
 const { t } = useI18n()
 
-const nRef = ref(100)
-const kRef = ref(2)
-const permsRef = ref(0)
+const nRef = ref<number | ''>(100)
+const kRef = ref<number | ''>(2)
+const permsRef = ref<number | ''>(0)
 const result = ref<ModulesConsensusResult | null>(null)
+
+/* 参数校验(2026-11-28 负责人质询后加固):越界值不许静默钳位执行——实时红标
+ * + 明示范围 + 拒绝提交;空框在提交前回写默认值,让"按默认跑"可见而非静默。
+ * 后端 400 范围校验保留为最后一道闸,正常路径到不了那里。 */
+const effN = computed(() => (nRef.value === '' ? 100 : Math.round(Number(nRef.value))))
+const effK = computed(() => (kRef.value === '' ? 2 : Math.round(Number(kRef.value))))
+const effPerms = computed(() => (permsRef.value === '' ? 0 : Math.round(Number(permsRef.value))))
+const invalidN = computed(() => nRef.value !== '' && !(effN.value >= 10 && effN.value <= 300))
+const invalidK = computed(() => kRef.value !== '' && !(effK.value >= 1 && effK.value <= 3))
+const invalidPerms = computed(() => permsRef.value !== '' && !(effPerms.value >= 0 && effPerms.value <= 200))
+const anyInvalid = computed(() => invalidN.value || invalidK.value || invalidPerms.value)
+const invalidMsg = computed(() => [
+  invalidN.value ? t('web.analysis.consensus_bad_n') : '',
+  invalidK.value ? t('web.analysis.consensus_bad_k') : '',
+  invalidPerms.value ? t('web.analysis.consensus_bad_perms') : ''
+].filter(Boolean).join('；'))
 
 const consJob = useJob((res) => {
   const r = res as unknown as ModulesConsensusResult
@@ -42,6 +58,11 @@ const consJob = useJob((res) => {
 
 function run(): void {
   if (consJob.running.value) return
+  if (anyInvalid.value) return  // 拒绝提交:参数行下方的红字实时提示就是反馈
+  // 空框回写默认值(可见化,不静默)
+  nRef.value = effN.value
+  kRef.value = effK.value
+  permsRef.value = effPerms.value
   result.value = null
   void consJob.run(
     api.modulesConsensus({
@@ -51,9 +72,9 @@ function run(): void {
       drug: props.drug,
       disease: props.disease,
       genes_text: props.genesText,
-      n: Math.min(300, Math.max(10, Math.round(nRef.value || 100))),
-      k: Math.min(3, Math.max(1, Math.round(kRef.value || 2))),
-      n_perms: Math.min(200, Math.max(0, Math.round(permsRef.value || 0)))
+      n: effN.value,
+      k: effK.value,
+      n_perms: effPerms.value
     }),
     { doneText: t('web.analysis.consensus_done') }
   )
@@ -125,18 +146,19 @@ function rankTitle(rank: number | null, nTotal: number): string {
 
     <div class="cons-params">
       <label class="cons-field">N
-        <input v-model.number="nRef" type="number" min="10" max="300" />
+        <input v-model.number="nRef" type="number" min="10" max="300" :class="{ bad: invalidN }" />
       </label>
       <label class="cons-field">k
-        <input v-model.number="kRef" type="number" min="1" max="3" />
+        <input v-model.number="kRef" type="number" min="1" max="3" :class="{ bad: invalidK }" />
       </label>
       <label class="cons-field">n_perms
-        <input v-model.number="permsRef" type="number" min="0" max="200" />
+        <input v-model.number="permsRef" type="number" min="0" max="200" :class="{ bad: invalidPerms }" />
       </label>
       <button class="cons-run" :disabled="consJob.running.value" @click="run">
         {{ consJob.running.value ? t('web.analysis.rerunning') : t('web.analysis.consensus_run') }}
       </button>
     </div>
+    <p v-if="anyInvalid" class="notice err">{{ invalidMsg }}</p>
     <p v-if="consJob.running.value" class="hint-line">
       {{ consJob.text.value }}<template v-if="consJob.fraction.value !== null"> · {{ Math.round(consJob.fraction.value * 100) }}%</template>
     </p>
@@ -258,6 +280,9 @@ function rankTitle(rank: number | null, nTotal: number): string {
 .cons-field input:focus {
   outline: none;
   border-bottom-color: var(--c-accent);
+}
+.cons-field input.bad {
+  border-bottom-color: var(--c-danger);
 }
 .cons-run,
 .cons-fill {
