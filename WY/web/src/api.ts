@@ -2,7 +2,7 @@
  * 大域按目录拆在 api/ 子目录(http 原语 / 跨域类型 / 各域端点),此处组装,
  * 并继续以 ../api 作为消费者的唯一导入面。 */
 
-import { json, jsonWithDetail, post } from './api/http'
+import { json, post } from './api/http'
 import { collectionsApi } from './api/collections'
 import { dockingApi } from './api/docking'
 import { mlApi } from './api/ml'
@@ -10,8 +10,8 @@ import { ppiApi } from './api/ppi'
 import { retrieveApi } from './api/retrieve'
 import { settingsApi } from './api/settings'
 import { synergyApi } from './api/synergy'
+import { transferApi } from './api/transfer'
 import type { JobState } from './api/types'
-import type { SettingsSnapshot } from './api/settings'
 
 /* 类型出口:跨域共享类型与已外移域的类型,旧导入路径不变 */
 export type { InFlightJob, JobState, Row } from './api/types'
@@ -30,6 +30,7 @@ export type {
   SynergyContract, SynergyJobResult, SynergyProx,
   SynergyReachBlock, SynergyReachDrug, SynergyRunRow
 } from './api/synergy'
+export type { TransferImportReport, TransferItemReport } from './api/transfer'
 
 export interface LogFile {
   name: string
@@ -81,43 +82,6 @@ export interface PkMirrorStatus {
     /** 争议名台账全量:名字 → {winner_sid, claimants}(PK 卡展开视图) */
     conflicts?: Record<string, { winner_sid: string; claimants: string[] }>
   } | null
-}
-
-/* ---- 数据迁移(设置页:结果导出 / 两段式导入) ---- */
-
-type TransferScope = 'ppi' | 'synergy' | 'star' | 'geo' | 'ui_settings'
-
-/** 导入预览的单条目(kind 为目录类范围时含文件数/体积/冲突标记;'analysis' 为旧版包遗留 kind)。 */
-export interface TransferItemReport {
-  kind: Exclude<TransferScope, 'ui_settings'> | 'analysis'
-  name: string
-  files: number
-  bytes: number
-  conflict: boolean
-  invalid?: boolean
-  invalid_reason?: string
-}
-
-/** 上传解包后的预览报告;warnings 为导出端与本机算法/数据版本差异提示。 */
-export interface TransferImportReport {
-  manifest: { app_version: string; created_at: string; schema: Record<string, unknown> }
-  items: TransferItemReport[]
-  ui_settings: { present: boolean; keys?: number; conflict?: boolean }
-  warnings: string[]
-}
-
-/** commit 的落盘报告;失败项留在会话里可调整决策重试。 */
-interface TransferCommitReport {
-  applied: { kind: string; name: string; keys?: string[] }[]
-  skipped: { kind: string; name: string }[]
-  failed: { kind: string; name: string; reason: string }[]
-}
-
-interface TransferDecisionBody {
-  kind: string
-  name: string
-  action: 'overwrite' | 'skip' | 'rename'
-  new_name?: string
 }
 
 export const api = {
@@ -176,33 +140,8 @@ export const api = {
   /* ---- 设置(阶段 3 补全):方法在 api/settings.ts,此处展开并入 ---- */
   ...settingsApi,
 
-  /* ---- 数据迁移(设置页) ---- */
-  transferExport: (scopes: TransferScope[]): Promise<{ job_id: string }> =>
-    post('/api/transfer/export', { scopes }),
-
-  transferDownload: async (filename: string): Promise<Blob> => {
-    const r = await fetch(`/api/transfer/export/${encodeURIComponent(filename)}`)
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    return r.blob()
-  },
-
-  transferImport: (file: File): Promise<{ sid: string; report: TransferImportReport }> =>
-    fetch('/api/transfer/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/zip' },
-      body: file
-    }).then((r) => jsonWithDetail<{ sid: string; report: TransferImportReport }>(r)),
-
-  transferCommit: (
-    sid: string,
-    decisions: TransferDecisionBody[]
-  ): Promise<{ report: TransferCommitReport; ui_snapshot: SettingsSnapshot | null }> =>
-    post(`/api/transfer/import/${encodeURIComponent(sid)}/commit`, { decisions }),
-
-  transferCancel: (sid: string): Promise<{ cancelled: boolean }> =>
-    fetch(`/api/transfer/import/${encodeURIComponent(sid)}`, { method: 'DELETE' }).then(
-      (r) => json(r)
-    ),
+  /* ---- 数据迁移(设置页):方法在 api/transfer.ts,此处展开并入 ---- */
+  ...transferApi,
 
   /* ---- 分子对接(阶段 3b):方法在 api/docking.ts,此处展开并入 ---- */
   ...dockingApi,
