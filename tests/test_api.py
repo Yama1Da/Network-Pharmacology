@@ -382,8 +382,9 @@ def test_ml_ppi_job_status_endpoints(client, monkeypatch):
     body = client.get("/api/ppi/job").json()
     assert body["running"] is False and body["job_id"] == jid and body["status"] == "done"
 
-    # 超过回填窗口(窗口置 0 模拟):不再吐 job_id——空表单,结果走落盘渠道
-    monkeypatch.setattr("WY.core.jobs.RESULT_REPLAY_WINDOW_S", 0)
+    # 超过回填窗口(窗口置 -1 模拟"恒已超窗",不依赖时钟走到 finished 之后):
+    # 不再吐 job_id——空表单,结果走落盘渠道
+    monkeypatch.setattr("WY.core.jobs.RESULT_REPLAY_WINDOW_S", -1)
     assert client.get("/api/ml/job").json() == {"running": False}
     assert client.get("/api/ppi/job").json() == {"running": False}
 
@@ -408,7 +409,7 @@ def test_synergy_job_status_replay_window(client, monkeypatch):
     body = client.get("/api/synergy/job").json()
     assert body["running"] is False and body["job_id"] == jid and body["status"] == "done"
 
-    monkeypatch.setattr("WY.core.jobs.RESULT_REPLAY_WINDOW_S", 0)
+    monkeypatch.setattr("WY.core.jobs.RESULT_REPLAY_WINDOW_S", -1)  # 恒已超窗,同 ppi/ml
     assert client.get("/api/synergy/job").json() == {"running": False}
 
 

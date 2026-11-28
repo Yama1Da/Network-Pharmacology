@@ -80,5 +80,11 @@ def test_gc_reaps_only_expired_finished_jobs(monkeypatch):
     fresh["fresh_done"] = {"status": "done", "created": now - 60}
     fresh["old_running"] = {"status": "running", "created": now - 7200}
     fresh["old_error"] = {"status": "error", "created": now - 7200}
+    # 保留期自完成时刻(finished)起算:提交已久但刚完成的必须保留——否则长任务
+    # (>1h)完成瞬间就被回收,10 分钟回填窗口形同虚设(2026-11-28 修正)。
+    fresh["old_created_fresh_finished"] = {"status": "done", "created": now - 7200,
+                                           "finished": now - 60}
+    fresh["old_created_old_finished"] = {"status": "error", "created": now - 7200,
+                                         "finished": now - 7200}
     jobs._gc()
-    assert set(fresh) == {"fresh_done", "old_running"}
+    assert set(fresh) == {"fresh_done", "old_running", "old_created_fresh_finished"}

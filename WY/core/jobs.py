@@ -1,8 +1,8 @@
 """进程内长任务注册表:TS API 的分钟级操作(来源刷新、互作组构建)的提交-轮询模型。
 
 单机单用户定位,不引入 Celery/Redis:任务在 daemon 工作线程执行,进度经回调写入
-注册表,HTTP 层只暴露 submit/get 两个动作。任务完成后结果保留 _TTL 秒供轮询取走,
-过期自动回收。FastAPI 的同步端点跑在线程池里,与任务线程共享 core 的线程安全约定
+注册表,HTTP 层只暴露 submit/get 两个动作。任务完成后结果自完成时刻起保留 _TTL 秒
+供轮询取走,过期自动回收。FastAPI 的同步端点跑在线程池里,与任务线程共享 core 的线程安全约定
 (各数据源自带锁保护),与 FastAPI 线程池端点遵循同一套约定。
 """
 
@@ -18,8 +18,10 @@ _JOBS: dict[str, dict] = {}
 _TTL = 3600  # 已完成任务保留 1 小时,过期回收
 # 已完成任务的"结果回填窗口":api 层各 /job 状态端点只在此窗口内继续吐 job_id,
 # 前端重进页面据此回填结果(同当场跑完的体验);过期后不再回填,结果走各落盘渠道。
-# 窗口短于 _TTL:回填是锦上添花,注册表本体仍按 1h 供在途轮询与 GC。
-RESULT_REPLAY_WINDOW_S = 300
+# 窗口自"完成时刻"起算(2026-11-28 修正:原按提交时刻算,长任务完成瞬间窗口已过期,
+# 回填必然落空);GC 同步改为从完成时刻起保留,否则长任务完成即被回收、窗口形同虚设。
+# 窗口短于 _TTL:回填是锦上添花,注册表本体仍供在途轮询与 GC。
+RESULT_REPLAY_WINDOW_S = 600
 
 
 def submit(fn: Callable[[Callable], object], description: str = "") -> str:
@@ -31,6 +33,7 @@ def submit(fn: Callable[[Callable], object], description: str = "") -> str:
             "status": "running", "description": description,
             "progress": {"fraction": None, "text": ""},
             "result": None, "error": None, "created": time.time(),
+            "finished": None,  # 完成时刻;done/error 时回填,回填窗口与 GC 均以此为准
         }
     threading.Thread(target=_run, args=(job_id, fn), daemon=True,
                      name=f"npap-job-{job_id}").start()
@@ -54,7 +57,7 @@ def _run(job_id: str, fn: Callable[[Callable], object]) -> None:
         result = fn(progress)
         with _LOCK:
             if job_id in _JOBS:
-                _JOBS[job_id].update(status="done", result=result,
+                _JOBS[job_id].update(status="done", result=result, finished=time.time(),
                                      progress={"fraction": 1.0,
                                                "text": _JOBS[job_id]["progress"]["text"]})
     except Exception as exc:
@@ -63,6 +66,7 @@ def _run(job_id: str, fn: Callable[[Callable], object]) -> None:
         with _LOCK:
             if job_id in _JOBS:
                 _JOBS[job_id].update(status="error", error=f"{type(exc).__name__}: {exc}",
+                                     finished=time.time(),
                                      trace=traceback.format_exc(limit=8))
     _gc()
 
@@ -80,5 +84,6 @@ def _gc() -> None:
     now = time.time()
     with _LOCK:
         for jid in [j for j, job in _JOBS.items()
-                    if job["status"] in ("done", "error") and now - job["created"] > _TTL]:
+                    if job["status"] in ("done", "error")
+                    and now - (job.get("finished") or job["created"]) > _TTL]:
             del _JOBS[jid]

@@ -201,7 +201,7 @@ def ppi_job_status() -> dict:
     if job is None:
         return {"running": False, "job_id": job_id, "status": "unknown"}
     if job["status"] != "running" \
-            and time.time() - job["created"] > jobs.RESULT_REPLAY_WINDOW_S:
+            and time.time() - (job.get("finished") or job["created"]) > jobs.RESULT_REPLAY_WINDOW_S:
         return {"running": False}
     return {"running": job["status"] == "running", "job_id": job_id,
             "status": job["status"], "progress": job["progress"], **ctx}
