@@ -244,8 +244,8 @@ watch([ui, () => tasks.value.length, dockY], async () => {
       <span class="tc-pill-body">
         <svg v-if="status === 'run'" class="tc-ico" viewBox="0 0 18 18" width="16" height="16">
           <circle cx="9" cy="9" r="7" fill="none" stroke="var(--c-line)" stroke-width="2" />
-          <circle cx="9" cy="9" r="7" fill="none" stroke="var(--c-ink)" stroke-width="2"
-                  stroke-dasharray="27.3 43.98" transform="rotate(-90 9 9)" />
+          <circle class="tc-ico-arc" cx="9" cy="9" r="7" fill="none" stroke="var(--c-ink)"
+                  stroke-width="2" stroke-linecap="round" stroke-dasharray="22 44" />
         </svg>
         {{ pillText }}
       </span>
@@ -427,6 +427,10 @@ watch([ui, () => tasks.value.length, dockY], async () => {
 .tc-launcher.st-run.md-panel .tc-ring,
 .tc-launcher.st-run.md-dock:hover .tc-ring { display: block; }
 .tc-ico { display: block; flex: 0 0 auto; }
+/* 运行指示圈:匀速旋转(转 = 有任务在跑;具体进度看面板各行与胶囊文字) */
+.tc-ico-arc { transform-origin: 9px 9px; animation: tc-spin 1s linear infinite; }
+@keyframes tc-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .tc-ico-arc { animation: none; } }
 /* 边框巡游:两黑两白(pathLength=100 归一化),偏移恰一个周期无缝循环 */
 .tc-march { animation: tc-march 2.4s linear infinite; }
 @keyframes tc-march { to { stroke-dashoffset: -50; } }
