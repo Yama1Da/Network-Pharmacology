@@ -149,6 +149,16 @@ async function load(): Promise<void> {
 let pollTimer = 0
 onMounted(() => {
   void load()
+  // 跨页恢复:离开页面期间刷新任务照跑,重进时找回在途 job 续接进度条;
+  // 命中 done(回填窗口内)即回填结果表并刷新清单,同当场跑完的体验
+  void api.sourcesJobStatus(props.kind)
+    .then((st) => {
+      if (!st.job_id || (st.status !== 'running' && st.status !== 'done')) return
+      if (!job.running.value) {
+        void job.resume(st.job_id, { doneText: t('web.sources.one_ok') })
+      }
+    })
+    .catch(() => { /* 状态查询失败不阻塞清单加载 */ })
   pollTimer = window.setInterval(() => { if (!job.running.value && !confirmArm.value) void load() }, 15000)
 })
 onBeforeUnmount(() => {

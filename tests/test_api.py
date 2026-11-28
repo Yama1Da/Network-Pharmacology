@@ -127,6 +127,7 @@ def test_collection_zip_delete_roundtrip(client, monkeypatch):
 def test_sources_refresh_unknown_kind_404(client):
     assert client.post("/api/sources/geo/refresh",
                        json={"filenames": None}).status_code == 404
+    assert client.get("/api/sources/geo/job").status_code == 404
 
 
 def test_sources_refresh_job_flow(client, monkeypatch):
@@ -136,6 +137,41 @@ def test_sources_refresh_job_flow(client, monkeypatch):
     assert r.status_code == 200
     job = _wait_job(client, r.json()["job_id"])
     assert job["status"] == "done"
+
+
+def test_sources_job_status_replay_window(client, monkeypatch):
+    """/api/sources/{kind}/job 跨页恢复端点:running 照常吐 job_id;
+    done 未超回填窗口也吐(resume 回填结果表);超窗只报 running=False。
+    两类来源各自记各自的 job,互不覆盖(可同时在后端各跑一个)。"""
+    import threading
+
+    from WY.core import jobs
+    import WY.api.sources as sources_api
+
+    # 注册表按测试隔离:避免其他用例提交过的刷新残留串扰
+    monkeypatch.setattr(sources_api, "_last_refresh_job", {"drug": None, "disease": None})
+    assert client.get("/api/sources/drug/job").json() == {"running": False}
+
+    release = threading.Event()
+    jid = jobs.submit(
+        lambda progress: release.wait(timeout=10) or {"rows": []},
+        "test drug sources refresh")
+    monkeypatch.setattr(sources_api, "_last_refresh_job", {"drug": jid, "disease": None})
+
+    body = client.get("/api/sources/drug/job").json()
+    assert body["running"] is True and body["job_id"] == jid and body["status"] == "running"
+    # disease 未登记过:仍是空态,两类互不串扰
+    assert client.get("/api/sources/disease/job").json() == {"running": False}
+
+    release.set()
+    _wait_job(client, jid)
+    # 完成未超回填窗口:仍吐 job_id(done),前端 resume 即回填结果表
+    body = client.get("/api/sources/drug/job").json()
+    assert body["running"] is False and body["job_id"] == jid and body["status"] == "done"
+
+    # 超过回填窗口(窗口置 -1 模拟"恒已超窗"):不再吐 job_id,清单本身已是最新
+    monkeypatch.setattr("WY.core.jobs.RESULT_REPLAY_WINDOW_S", -1)
+    assert client.get("/api/sources/drug/job").json() == {"running": False}
 
 
 def test_interactome_status_payload(client):

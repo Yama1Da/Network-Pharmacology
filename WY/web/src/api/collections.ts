@@ -2,6 +2,7 @@
  * 与 drug/disease 来源刷新;kind 枚举与后端集合注册表一致。 */
 
 import { json, post } from './http'
+import type { InFlightJob } from './types'
 
 export type CollectionKind =
   | 'drug_sources' | 'disease_sources'
@@ -55,5 +56,9 @@ export const collectionsApi = {
     filenames: string[] | null,
     hours?: number
   ): Promise<{ job_id: string }> =>
-    post(`/api/sources/${kind}/refresh`, { filenames, hours })
+    post(`/api/sources/${kind}/refresh`, { filenames, hours }),
+
+  /* 最近一次来源刷新的在途状态(跨页恢复:页面重进时 resume 续接进度条) */
+  sourcesJobStatus: (kind: 'drug' | 'disease'): Promise<InFlightJob> =>
+    fetch(`/api/sources/${kind}/job`).then((r) => json(r))
 }

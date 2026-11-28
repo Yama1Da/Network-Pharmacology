@@ -1,4 +1,12 @@
-"""来源刷新(药物/疾病管理页):单文件与批量,经 job 提交-轮询。"""
+"""来源刷新(药物/疾病管理页):单文件与批量,经 job 提交-轮询。
+
+两类来源的刷新是相互独立的 job(独立 spec/缓存目录,update_all_cache_files
+并发安全),可同时在后端各跑一个;每类在进程内记最近一次 job_id,供
+/api/sources/{kind}/job 状态端点支撑页面重进恢复(同 ppi/ml/synergy 模式)。
+"""
+
+import threading
+import time
 
 from fastapi import APIRouter
 from fastapi import HTTPException
@@ -9,6 +17,9 @@ from WY.core.sources import disease_spec, drug_spec
 
 
 router = APIRouter()
+
+_last_refresh_job: dict[str, str | None] = {"drug": None, "disease": None}
+_last_job_lock = threading.Lock()
 
 
 class RefreshBody(BaseModel):
@@ -39,4 +50,28 @@ def sources_refresh(kind: str, body: RefreshBody) -> dict:
         return {"rows": results.to_dict(orient="records")}
 
     job_id = jobs.submit(task, f"{kind} sources refresh")
+    with _last_job_lock:
+        _last_refresh_job[kind] = job_id
     return {"job_id": job_id}
+
+
+@router.get("/api/sources/{kind}/job")
+def sources_job_status(kind: str) -> dict:
+    """最近一次来源刷新的在途状态(跨页离开任务照跑,页面重进恢复):
+    running 照常吐 job_id 供续接;已完成但在回填窗口内(jobs.RESULT_REPLAY_WINDOW_S)
+    也吐——前端 resume 命中 done 即回填结果表并刷新清单,同当场跑完的体验;
+    超窗不吐,来源清单本身已是最新数据,无需回填。"""
+    if kind not in ("drug", "disease"):
+        raise HTTPException(status_code=404, detail=f"unknown source kind '{kind}'")
+    with _last_job_lock:
+        job_id = _last_refresh_job.get(kind)
+    if job_id is None:
+        return {"running": False}
+    job = jobs.get(job_id)
+    if job is None:
+        return {"running": False, "job_id": job_id, "status": "unknown"}
+    if job["status"] != "running" \
+            and time.time() - (job.get("finished") or job["created"]) > jobs.RESULT_REPLAY_WINDOW_S:
+        return {"running": False}
+    return {"running": job["status"] == "running", "job_id": job_id,
+            "status": job["status"], "progress": job["progress"]}
