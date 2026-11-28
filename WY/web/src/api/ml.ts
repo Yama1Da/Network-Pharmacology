@@ -43,7 +43,7 @@ interface MlGroupValue {
   n: number
 }
 
-interface MlGroupField {
+export interface MlGroupField {
   name: string
   label: string
   values: MlGroupValue[]
@@ -64,7 +64,7 @@ interface MlCountsGroup {
   suggest: string
 }
 
-interface MlCountsField {
+export interface MlCountsField {
   name: string
   label: string
   groups: MlCountsGroup[]

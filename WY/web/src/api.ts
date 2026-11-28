@@ -19,8 +19,8 @@ export type { InFlightJob, JobState, Row } from './api/types'
 export type { CollectionItem, CollectionKind } from './api/collections'
 export type { LogFile } from './api/logs'
 export type {
-  MlHistoryRun, MlOverviewResult, MlProbeBatchItem,
-  MlProbeResult, MlRunResult, MlRunRow
+  MlCountsField, MlGroupField, MlHistoryRun, MlOverviewResult,
+  MlProbeBatchItem, MlProbeResult, MlRunResult, MlRunRow
 } from './api/ml'
 export type {
   ConsensusRow, ConsensusSig, ModulesConsensusResult,

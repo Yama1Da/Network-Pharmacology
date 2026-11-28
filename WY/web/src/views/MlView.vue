@@ -6,12 +6,18 @@
  * 全链编排唯一定义在 core.ml_pipeline.run_screen_chain(CLI/页面/API 共用)。 */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, artifactsUrl, type MlHistoryRun, type MlOverviewResult,
+import { api, type MlHistoryRun, type MlOverviewResult,
          type MlProbeResult, type MlRunResult, type Row } from '../api'
+import MlCountsPicker from '../components/MlCountsPicker.vue'
+import MlGroupPicker from '../components/MlGroupPicker.vue'
+import MlResultPanel from '../components/MlResultPanel.vue'
 import Stepper from '../components/Stepper.vue'
 import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
-import { dropBadge, freshBadge, freshBadgeWithAge, pruneBadges, putBadge } from '../utils/probeBadgeCache'
+import { dropBadge, pruneBadges } from '../utils/probeBadgeCache'
+import { useMlGseProbe } from '../composables/useMlGseProbe'
+import { useMlProbeBadges } from '../composables/useMlProbeBadges'
+import { useMlRun } from '../composables/useMlRun'
 import { fmtSize } from '../utils/format'
 
 const { t } = useI18n()
@@ -26,86 +32,6 @@ const searchResults = ref<Row[]>([])
 const searchDisease = ref('')
 const searchBusy = ref(false)
 const gse = ref('')
-const probe = ref<MlProbeResult | null>(null)
-const probeBusy = ref(false)
-let probedGse = ''
-
-/* 检索表体检徽章:行级预检状态存 utils/probeBadgeCache(模块级,切页不丢;
- * 判定是 GEO 归档不可变属性,缓存安全;本地盘上状态变化由 overviewJob/
- * forceJob 的 onDone 钩子精准失效,TTL 1h 兜底)+ 勾选集 + 批检忙碌 */
-const selectedRows = ref<Set<string>>(new Set())
-const probeBatchBusy = ref(false)
-const selectedCount = computed(() => selectedRows.value.size)
-const allSelected = computed(() =>
-  searchResults.value.length > 0 &&
-  searchResults.value.every((r) => selectedRows.value.has(rowGse(r))))
-
-function rowGse(r: Row): string {
-  return String(r.gse ?? '').trim().toUpperCase()
-}
-
-function toggleRow(g: string): void {
-  const s = new Set(selectedRows.value)
-  if (s.has(g)) s.delete(g)
-  else s.add(g)
-  selectedRows.value = s
-}
-
-function toggleAll(): void {
-  selectedRows.value = allSelected.value
-    ? new Set()
-    : new Set(searchResults.value.map(rowGse))
-}
-
-/* 体检后的 symbol_level 实测结论:i18n 键 + 语义色(空串=维持启发式原文) */
-function symbolVerdict(g: string): { key: string; tone: 'ok' | 'bad' | 'unknown' } | null {
-  const p = freshBadge(g)
-  if (!p) return null
-  if (p.status === 'err') return { key: 'web.ml.sym_unknown', tone: 'unknown' }
-  const a = p.assess
-  if (!a) return { key: 'web.ml.sym_unknown', tone: 'unknown' }
-  if (a.matrix_empty && a.counts_available) return { key: 'web.ml.sym_ok_counts', tone: 'ok' }
-  if (a.matrix_empty) return { key: 'web.ml.sym_bad_no_counts', tone: 'bad' }
-  if (a.symbol_level) return { key: 'web.ml.sym_ok_gene', tone: 'ok' }
-  if (a.annot === 'missing') return { key: 'web.ml.sym_bad_annot', tone: 'bad' }
-  return { key: 'web.ml.sym_unknown', tone: 'unknown' }
-}
-
-function dotClass(g: string): string {
-  // 批检进行中:已勾选且未出结果的行亮琥珀脉冲(结果由同步端点一次性返回,
-  // 期间全部选中行保持 busy 态,到齐后统一翻转为终态)
-  if (!freshBadge(g)) {
-    return probeBatchBusy.value && selectedRows.value.has(g) ? 'busy' : 'unknown'
-  }
-  const v = symbolVerdict(g)!
-  return v.tone === 'ok' ? 'ok' : v.tone === 'bad' ? 'bad' : 'unknown'
-}
-
-async function probeBatch(force = false): Promise<void> {
-  pruneBadges()
-  const rows = searchResults.value
-    .filter((r) => selectedRows.value.has(rowGse(r)))
-    // 已有新鲜结论(TTL 内)的行跳过,重复打网络无增量;过期/err 行自动重测;
-    // Shift+点击 = 强制重测(忽略缓存,QA 2026-11-09),本地数据集状态变化
-    // 另有失效钩子(overviewJob/forceJob onDone)精准作废对应条目
-    .filter((r) => force || !freshBadge(rowGse(r)))
-    .map((r) => ({ gse: rowGse(r), ...searchPlatformFor(rowGse(r)) }))
-  if (!rows.length) { flash(t('web.ml.probe_sel_cached')); return }
-  probeBatchBusy.value = true
-  try {
-    const res = await api.mlProbeBatch(rows)
-    for (const item of res.results) putBadge(item)
-    flash(t('web.ml.probe_batch_done', { n: res.results.length }))
-  } catch (e) {
-    flash(t('web.ml.probe_fail', { msg: e instanceof Error ? e.message : String(e) }))
-  } finally {
-    probeBatchBusy.value = false
-  }
-}
-const exprPath = ref('')
-const labelsPath = ref('')
-const localCase = ref('')
-
 async function loadDiseases(): Promise<void> {
   try {
     diseases.value = (await api.mlDiseases()).diseases
@@ -120,9 +46,7 @@ async function search(): Promise<void> {
       searchResults.value = r.results as Row[]
       searchDisease.value = r.disease
       gse.value = ''
-      probe.value = null
-      probedGse = ''
-      badgeApplied.value = null
+      resetProbe()
       // 徽章缓存不清:判定不可变,换检索词同 GSE 即时复用;只剪过期条目
       pruneBadges()
       selectedRows.value = new Set()
@@ -146,197 +70,26 @@ const searchStale = computed(() =>
   searchResults.value.length > 0 &&
   disease.value.trim().toLowerCase() !== searchDisease.value.toLowerCase())
 
-function searchPlatformFor(g: string): { platform: string; type: string } {
-  const row = searchResults.value.find((r) => String(r.gse ?? '').toUpperCase() === g)
-  return { platform: String(row?.platform ?? ''), type: String(row?.type ?? '') }
-}
-
-/* GSE 确定后预检(每 GSE 一次;徽章命中则豁免,2026-11-10 QA 拍板):
- * 批检与单检同走后端 _probe_one,1h TTL 内绿/红结论相同——命中即跳过单检
- * (省一次 Range 请求与缓存命中时的全矩阵解析),红点直接锁定;灰(unknown)、
- * err(不缓存,重试有真实价值)、无徽章(直填/超时)照旧单检。 */
-const badgeApplied = ref<{ status: 'ok' | 'unusable'; ageMin: number } | null>(null)
-
-async function probeGse(): Promise<void> {
-  const g = gse.value.trim().toUpperCase()
-  badgeApplied.value = null
-  if (!g) return
-  // 徽章查询必须在"每 GSE 一次"去重之前:批检徽章常在单检已跑完后才落地
-  // (黄点期间点过该 GSE),再次 change 同一 GSE 仍要查——否则占位说明永远
-  // 不会出现,单检的旧结果(可能是 err)一直占着展示位
-  const b = freshBadgeWithAge(g)
-  if (b && (b.item.status === 'ok' || b.item.status === 'unusable')) {
-    probedGse = g
-    badgeApplied.value = { status: b.item.status, ageMin: b.ageMin }
-    probe.value = null
-    probeBusy.value = false
-    return
-  }
-  if (probedGse === g) return
-  probedGse = g
-  probeBusy.value = true
-  try {
-    probe.value = await api.mlProbe(g, searchPlatformFor(g))
-  } catch (e) {
-    probe.value = { err: e instanceof Error ? e.message : String(e) }
-  } finally {
-    probeBusy.value = false
-  }
-}
-
-function onGseChange(): void {
-  probedGse = ''
-  probe.value = null
-  void probeGse()
-}
-
-const useLocal = computed(() => !!exprPath.value.trim() && !!labelsPath.value.trim())
-const localPartial = computed(() => !!exprPath.value.trim() !== !!labelsPath.value.trim())
-const hasGse = computed(() => !!gse.value.trim())
-const sourceConflict = computed(() => useLocal.value && hasGse.value)
-
-/* 预检展示与可用性锁定 */
-const probeR = computed(() => probe.value?.r ?? null)
-const probeErr = computed(() => probe.value?.err ?? '')
-const probeAssess = computed(() => probe.value?.assess ?? null)
-const unusable = computed(() => {
-  // 徽章直锁:批检判 unusable 的红点数据集跳过单检,选中即锁(2026-11-10 QA;
-  // 批检返回体无 annot_missing 字段,不能靠合成 assess 判定,须按 status 直锁)
-  if (hasGse.value && badgeApplied.value?.status === 'unusable') return true
-  const p = probe.value
-  const a = probeAssess.value
-  return !!(hasGse.value && a && p?.gse === gse.value.trim().toUpperCase() &&
-    ((a.matrix_empty && !a.counts_available) ||
-     (!a.symbol_level && a.annot === 'missing')))
-})
-
-const fmtEta = (s: number): string =>
-  s < 90 ? `${Math.max(1, Math.round(s))} ${t('web.ml.unit_sec')}`
-    : s < 3600 ? `${Math.max(1, Math.round(s / 60))} ${t('web.ml.unit_min')}`
-      : `${Math.floor(s / 3600)} ${t('web.ml.unit_hour')} ${Math.round(s % 3600 / 60)} ${t('web.ml.unit_min_short')}`
-
 /* ---------------- ② 配置 ---------------- */
 
 const casePat = ref('')
 const ctrlPat = ref('')
 const overviewJob = useJob((result) => {
-  // 失效钩子:数据集已落盘,旧徽章(未实锤态)不再可信,立即回灰点重测
-  dropBadge(gse.value.trim().toUpperCase())
+  // 徽章不作废(2026-11-28 定稿):总览只读数据集,归档推断在 TTL 内仍可信,
+  // 跑一次总览就作废过于激进;作废时机移至 runJob onDone(真正落盘数据集)
   overview.value = result as unknown as MlOverviewResult
   flash(t('web.ml.overview_done_flash'))
 })
 const overview = ref<MlOverviewResult | null>(null)
 
-/* ---------------- 分组选择器(总览的三下拉:字段 → case/control 取值) ----------------
- * 生成的正则为「列取值全值」的转义 —— 与 assign_groups 整行拼接匹配同源,
- * protocol 列复述队列描述造成的污染从源头不存在;重叠对由后端 overlaps 显式给出。 */
-const gpField = ref('')
-const gpCase = ref('')
-const gpCtrl = ref('')
-const gpFields = computed(() => overview.value?.group_picker?.fields ?? [])
-const gpCurrent = computed(() => gpFields.value.find((f) => f.name === gpField.value) ?? null)
-const gpCaseN = computed(() =>
-  gpCurrent.value?.values.find((v) => v.value === gpCase.value)?.n ?? null)
-const gpCtrlN = computed(() =>
-  gpCurrent.value?.values.find((v) => v.value === gpCtrl.value)?.n ?? null)
-const gpOverlap = computed(() => {
-  const f = gpCurrent.value
-  if (!f || !gpCase.value || !gpCtrl.value) return null
-  return f.overlaps.find((o) => (o.a === gpCase.value && o.b === gpCtrl.value)
-                             || (o.a === gpCtrl.value && o.b === gpCase.value)) ?? null
-})
-const gpValid = computed(() => {
-  if (!gpCase.value || !gpCtrl.value) return null
-  if (gpCase.value === gpCtrl.value) return { ok: false, reason: 'same' }
-  if (gpOverlap.value) return { ok: false, reason: 'overlap' }
-  if ((gpCaseN.value ?? 0) === 0 || (gpCtrlN.value ?? 0) === 0) return { ok: false, reason: 'zero' }
-  if ((gpCaseN.value ?? 0) < 3 || (gpCtrlN.value ?? 0) < 3) return { ok: false, reason: 'small' }
-  return { ok: true, reason: '' }
-})
-/* 疑似纵向字段(取值含治疗前后/周次等):病例组含配对样本时提示用户收紧到时间点 */
-const gpPairedField = computed(() => {
-  for (const f of gpFields.value) {
-    if (f.name === gpField.value) continue
-    if (f.values.some((v) =>
-      /before|after|week|pre-?treatment|post-?treatment|day\s*\d/i.test(v.value)))
-      return f.label
-  }
-  return ''
-})
-
-function gpPickField(name: string): void {
-  gpField.value = name
-  const f = gpFields.value.find((x) => x.name === name)
-  gpCase.value = f?.suggest_case ?? ''
-  gpCtrl.value = f?.suggest_control ?? ''
-}
-
-/* 填入成功的按钮旁短反馈:2s 后消失(flash 在页顶,填按钮在页腰,容易两头都看不到) */
-const gpFilled = ref(false)
-let gpFilledTimer = 0
-
-function gpApply(): void {
-  if (!gpValid.value?.ok) return
-  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  casePat.value = esc(gpCase.value)
-  ctrlPat.value = esc(gpCtrl.value)
-  flash(t('web.ml.gp_filled'))
-  gpFilled.value = true
-  window.clearTimeout(gpFilledTimer)
-  gpFilledTimer = window.setTimeout(() => { gpFilled.value = false }, 2000)
-}
-
-/* ---------------- counts 模式分组选择器 ----------------
- * 与矩阵模式同外壳、不同发动机(原因见 core.expression.counts_picker_fields):
- * 正则匹配对象是 counts 列名 → 建议物 = 取值对应列组的最长公共前缀。 */
-const ctsField = ref('')
-const ctsCase = ref('')
-const ctsCtrl = ref('')
-const ctsFields = computed(() => overview.value?.counts_picker?.fields ?? [])
-const ctsCurrent = computed(() => ctsFields.value.find((f) => f.name === ctsField.value) ?? null)
-const ctsAllCols = computed(() =>
+/* counts 列名全集:供 MlCountsPicker 算 spill(建议前缀波及组外列数) */
+const countsSampleCols = computed(() =>
   overview.value?.counts_rows?.map((r) => String(r.sample ?? '')) ?? [])
-const ctsCaseGroup = computed(() =>
-  ctsCurrent.value?.groups.find((g) => g.value === ctsCase.value) ?? null)
-const ctsCtrlGroup = computed(() =>
-  ctsCurrent.value?.groups.find((g) => g.value === ctsCtrl.value) ?? null)
-const ctsSpill = computed(() => {
-  // 建议前缀会波及组外列(如 D5_20 与 D5_20B 并存)→ 标红,建议手调
-  const g = ctsCaseGroup.value
-  if (!g || !g.suggest) return 0
-  return ctsAllCols.value.filter((c) => c.includes(g.suggest)).length - g.columns.length
-})
-const ctsValid = computed(() => {
-  if (!ctsCase.value || !ctsCtrl.value) return null
-  if (ctsCase.value === ctsCtrl.value) return { ok: false, reason: 'same' }
-  // 组内列名无公共前缀(如 run accession 混名)→ 建议为空,填入会得到空正则:
-  // 空正则匹配一切,canRun 也会因正则为空而锁死,必须在此拦下(QA 2026-11-09)
-  if (!ctsCaseGroup.value?.suggest || !ctsCtrlGroup.value?.suggest) return { ok: false, reason: 'no_lcp' }
-  if ((ctsCaseGroup.value?.columns.length ?? 0) < 3
-      || (ctsCtrlGroup.value?.columns.length ?? 0) < 3) return { ok: false, reason: 'small' }
-  if (ctsSpill.value > 0) return { ok: false, reason: 'spill' }
-  return { ok: true, reason: '' }
-})
 
-function ctsPickField(name: string): void {
-  ctsField.value = name
-  const f = ctsFields.value.find((x) => x.name === name)
-  ctsCase.value = f?.suggest_case ?? ''
-  ctsCtrl.value = f?.suggest_control ?? ''
-}
-
-const ctsFilled = ref(false)
-let ctsFilledTimer = 0
-
-function ctsApply(): void {
-  if (!ctsValid.value?.ok) return
-  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  casePat.value = esc(ctsCaseGroup.value?.suggest ?? '')
-  ctrlPat.value = esc(ctsCtrlGroup.value?.suggest ?? '')
-  flash(t('web.ml.gp_filled'))
-  ctsFilled.value = true
-  window.clearTimeout(ctsFilledTimer)
-  ctsFilledTimer = window.setTimeout(() => { ctsFilled.value = false }, 2000)
+/* 分组选择器填入的公共落点(转义后的正则由组件 emit,壳层只写两个输入框) */
+function applyCaseCtrl(caseRe: string, ctrlRe: string): void {
+  casePat.value = caseRe
+  ctrlPat.value = ctrlRe
 }
 
 async function loadOverview(): Promise<void> {
@@ -396,102 +149,11 @@ const bootstrapN = ref(30)
 
 /* ---------------- ③ 运行 ---------------- */
 
-const resultData = ref<MlRunResult | null>(null)
-const fallback = ref<{ gse: string; date: string } | null>(null)
-const runJob = useJob((result) => {
-  resultData.value = result as unknown as MlRunResult
-  const r = resultData.value
-  if (r.geo_fallback) {
-    fallback.value = { gse: String(r.gse), date: String(r.geo_cache_date ?? '') }
-  } else {
-    fallback.value = null
-  }
-  flash(t('web.ml.run_done_flash', { gse: r.gse, s: r.elapsed }))
-  void loadHistory()
-})
-
-/* 切换数据上下文时清掉上一轮的展示,避免④区残留旧结果:
- * - 换 GSE:结果/总览/回退提示清空,分组正则一并清(样本命名规则变了),
- *   但三个调节器参数保留——那是用户的分析偏好,与数据集无关;
- * - 换疾病名 / 换输入方式(tab):只清结果区。 */
-watch(gse, () => {
-  resultData.value = null
-  fallback.value = null
-  overview.value = null
-  casePat.value = ''
-  ctrlPat.value = ''
-  gpField.value = ''
-  gpCase.value = ''
-  gpCtrl.value = ''
-  ctsField.value = ''
-  ctsCase.value = ''
-  ctsCtrl.value = ''
-})
-watch(disease, () => {
-  resultData.value = null
-  fallback.value = null
-})
-watch(tab, () => {
-  resultData.value = null
-  fallback.value = null
-})
-
-/* 整包下载:当前 run 目录打成一个 zip(单 run 走 make_dir_zip) */
-const zipBusy = ref(false)
-const runDirName = computed(() => (resultData.value?.out_dir ?? '').split(/[\\/]/).pop() ?? '')
-async function zipRun(): Promise<void> {
-  if (!resultData.value?.out_dir) return
-  zipBusy.value = true
-  try {
-    const blob = await api.mlRunsZip([resultData.value.out_dir])
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${runDirName.value}.zip`
-    a.click()
-    URL.revokeObjectURL(url)
-  } catch {
-    flash(t('web.common.zip_fail'))
-  } finally {
-    zipBusy.value = false
-  }
-}
-
-const canRun = computed(() =>
-  ((hasGse.value && casePat.value.trim() && ctrlPat.value.trim()) || useLocal.value)
-  && !sourceConflict.value && !unusable.value)
-
-async function run(): Promise<void> {
-  if (sourceConflict.value) { flash(t('web.ml.conflict_flash')); return }
-  if (localPartial.value) { flash(t('web.ml.partial_flash')); return }
-  // 代际守卫(P0-F 及其备案扩展):发起时捕获 GSE/疾病名/输入方式三重快照,
-  // 任一变化即视为数据上下文已变,在途结果作废不落④区(watch 只清展示,
-  // 不阻断 onDone 回填——守卫补上这段)
-  const g0 = gse.value.trim().toUpperCase()
-  const d0 = disease.value.trim().toLowerCase()
-  const tab0 = tab.value
-  await runJob.run(api.mlRun({
-    mode: useLocal.value ? 'local' : 'gse',
-    gse: g0,
-    case_pattern: casePat.value, control_pattern: ctrlPat.value,
-    expr: exprPath.value, labels: labelsPath.value, case_label: localCase.value,
-    ranked_labels: [...rankedSel.value],
-    top_k: topK.value, prefilter_top: prefilterN.value, bootstrap_rounds: bootstrapN.value
-  }), {
-    doneText: t('web.ml.run_done_text'),
-    stale: () => gse.value.trim().toUpperCase() !== g0
-      || disease.value.trim().toLowerCase() !== d0
-      || tab.value !== tab0
-  })
-}
-
 const forceJob = useJob(() => {
   // 失效钩子:强制重下已落盘,旧徽章立即作废(gse 取值须在清 fallback 之前)
   dropBadge(fallback.value?.gse ?? gse.value.trim().toUpperCase())
   fallback.value = null
-  probedGse = ''
-  probe.value = null
-  badgeApplied.value = null
+  resetProbe()
   flash(t('web.ml.force_done_flash'))
 })
 
@@ -500,50 +162,6 @@ async function forceRedownload(): Promise<void> {
   if (!g) return
   await forceJob.run(api.mlForceRefresh(g), { doneText: t('web.ml.force_done_text') })
 }
-
-/* ---------------- ④ 结果 ---------------- */
-
-const meta = computed(() => resultData.value?.meta ?? null)
-const consensusRows = computed<Row[]>(() => resultData.value?.consensus ?? [])
-const consensusTotal = computed(() => resultData.value?.consensus_total ?? 0)
-const funnelRows = computed<Row[]>(() => resultData.value?.funnel ?? [])
-const shortlistRows = computed<Row[]>(() => resultData.value?.shortlist ?? [])
-const shortlistCount = computed(() => resultData.value?.shortlist_count ?? '—')
-const artifactsMap = computed<Record<string, string>>(() => resultData.value?.artifacts ?? {})
-
-/* ---------------- 下载区(run 目录全部落盘文件,按说明归类) ---------------- */
-
-interface DlItem { file: string; rel: string; desc: string; main: boolean }
-
-/** 产物归类:页面展示对应的四项为主成果;DEG 全表/共识曲线/元数据等为补充产物(默认折叠)。
- * 未识别的新产物文件名即说明,进补充区——后端新增产物不需要改前端就能出现。 */
-function classifyArtifact(file: string): { desc: string; main: boolean } | null {
-  if (/^ml_roc_.*\.png$/.test(file)) return { desc: t('web.ml.dl_roc'), main: true }
-  if (file === 'ml_consensus_scores.csv') return { desc: t('web.ml.dl_consensus'), main: true }
-  if (file === 'shortlist.csv') return { desc: t('web.ml.dl_shortlist'), main: true }
-  if (file === 'funnel.csv') return { desc: t('web.ml.dl_funnel'), main: true }
-  if (file === 'deg_results.csv') return { desc: t('web.ml.dl_deg'), main: false }
-  if (file === 'consensus_curve.png') return { desc: t('web.ml.dl_curve'), main: false }
-  if (file === 'summary.json') return { desc: t('web.ml.dl_summary'), main: false }
-  return null
-}
-
-const mainDownloads = computed<DlItem[]>(() => {
-  const out: DlItem[] = []
-  for (const [file, rel] of Object.entries(artifactsMap.value)) {
-    const c = classifyArtifact(file)
-    if (c?.main) out.push({ file, rel, desc: c.desc, main: true })
-  }
-  return out
-})
-const extraDownloads = computed<DlItem[]>(() => {
-  const out: DlItem[] = []
-  for (const [file, rel] of Object.entries(artifactsMap.value)) {
-    const c = classifyArtifact(file)
-    if (!c?.main) out.push({ file, rel, desc: c?.desc ?? file, main: false })
-  }
-  return out
-})
 
 /* ---------------- 历史(近 3 次) ---------------- */
 
@@ -562,24 +180,25 @@ async function loadHistory(): Promise<void> {
 
 const { notice, flash } = useNotice(4200)
 
-/* 阶段顺序与标签(标签走 i18n) */
-const STAGE_ORDER = ['fetch', 'group', 'preprocess', 'deg', 'ml', 'shortlist', 'save'] as const
-const STATE_ICON: Record<string, string> = { pending: '○', running: '◐', done: '●' }
-const stageLabels = computed<Record<string, string>>(() => ({
-  fetch: t('web.ml.stage_fetch'),
-  group: t('web.ml.stage_group'),
-  preprocess: t('web.ml.stage_preprocess'),
-  deg: t('web.ml.stage_deg'),
-  ml: t('web.ml.stage_ml'),
-  shortlist: t('web.ml.stage_shortlist'),
-  save: t('web.ml.stage_save')
-}))
-const stageStates = computed<Record<string, string>>(() => {
-  const map: Record<string, string> = {}
-  for (const k of STAGE_ORDER) map[k] = 'pending'
-  const p = runJob.extra.value as { step?: string; state?: string }
-  if (p?.step && p?.state && p.step in map) map[p.step] = p.state
-  return map
+/* ① 区逻辑组合:徽章批检(勾选/圆点/批检)+ GSE 单检与可用性锁;
+ * searchPlatformFor 由批检组产出、单检消费。onGseChange/pickRow/search/
+ * forceRedownload 经 resetProbe 重置单检态。 */
+const { selectedRows, probeBatchBusy, selectedCount, allSelected, rowGse, toggleRow,
+        toggleAll, symbolVerdict, dotClass, searchPlatformFor, probeBatch } =
+  useMlProbeBadges(searchResults, flash)
+const { exprPath, labelsPath, localCase, probe, probeBusy, badgeApplied, probeGse,
+        onGseChange, resetProbe, useLocal, localPartial, hasGse, sourceConflict,
+        probeR, probeErr, probeAssess, unusable, fmtEta } =
+  useMlGseProbe(gse, searchPlatformFor)
+
+/* ③ 区运行编排(run 提交/七阶段显示/在途恢复):参数包与守卫经 deps 注入;
+ * 强制重下(forceJob)跨①区失效钩子(resetProbe),留壳层。 */
+const { resultData, fallback, runJob, canRun, run, resumeRunJob,
+        STAGE_ORDER, STATE_ICON, stageLabels, stageStates } = useMlRun({
+  gse, disease, tab, casePat, ctrlPat, overview,
+  exprPath, labelsPath, localCase, rankedSel, topK, prefilterN, bootstrapN,
+  hasGse, useLocal, localPartial, sourceConflict, unusable,
+  flash, loadHistory
 })
 
 onMounted(() => {
@@ -588,28 +207,6 @@ onMounted(() => {
   void loadHistory()
   void resumeRunJob()
 })
-
-/* 在途 run 恢复(跨页离开任务照跑,重进找回进度与结果——同协同预测语义):
- * 挂载时表单是全新默认态,先采纳任务的 GSE 作为数据上下文(gse 模式),
- * 否则结果回填会撞代际守卫;再按捕获快照续轮询。后端在"完成未超回填窗口"
- * 时也吐 job_id(done)——resume 第一拍命中即回填 ④ 区,同当场跑完体验;
- * local 模式的本地文件路径不可采纳,只续轮询——结果照常落 ④ 区。 */
-async function resumeRunJob(): Promise<void> {
-  try {
-    const st = await api.mlJob()
-    if (!st.job_id || (st.status !== 'running' && st.status !== 'done')) return
-    if (st.mode === 'gse' && st.gse) gse.value = st.gse
-    const g0 = gse.value.trim().toUpperCase()
-    const d0 = disease.value.trim().toLowerCase()
-    const tab0 = tab.value
-    await runJob.resume(st.job_id, {
-      doneText: t('web.ml.run_done_text'),
-      stale: () => gse.value.trim().toUpperCase() !== g0
-        || disease.value.trim().toLowerCase() !== d0
-        || tab.value !== tab0
-    })
-  } catch { /* 状态不可达:照常空表单 */ }
-}
 </script>
 
 <template>
@@ -823,47 +420,8 @@ async function resumeRunJob(): Promise<void> {
                  { m: overview.counts_match?.matched ?? 0, n: overview.counts_match?.total ?? 0 }) }}
           </p>
           <template v-if="overview.counts_picker?.fields?.length">
-            <div class="set-row">
-              <label class="set-label">{{ t('web.ml.gp_field_label') }}</label>
-              <select class="sel inline" v-model="ctsField" :disabled="unusable"
-                      @change="ctsPickField(ctsField)">
-                <option value="" disabled>{{ t('web.ml.gp_field_ph') }}</option>
-                <option v-for="f in overview.counts_picker.fields" :key="f.name" :value="f.name">
-                  {{ f.label }} ({{ f.groups.length }} 组)
-                </option>
-              </select>
-            </div>
-            <template v-if="ctsCurrent">
-              <div class="set-row">
-                <label class="set-label">{{ t('web.ml.gp_case') }}</label>
-                <select class="sel inline" v-model="ctsCase" :disabled="unusable">
-                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
-                  <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
-                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · {{ g.suggest ? `建议 ${g.suggest}` : t('web.ml.gp_no_lcp') }}
-                  </option>
-                </select>
-              </div>
-              <div class="set-row">
-                <label class="set-label">{{ t('web.ml.gp_ctrl') }}</label>
-                <select class="sel inline" v-model="ctsCtrl" :disabled="unusable">
-                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
-                  <option v-for="g in ctsCurrent.groups" :key="g.value" :value="g.value">
-                    {{ g.value.slice(0, 60) }} → {{ g.columns.length }} 列 · {{ g.suggest ? `建议 ${g.suggest}` : t('web.ml.gp_no_lcp') }}
-                  </option>
-                </select>
-              </div>
-              <p v-if="ctsCase && ctsCtrl" class="hint-line"
-                 :class="{ good: ctsValid?.ok, stale: !ctsValid?.ok }">
-                {{ ctsValid?.ok
-                  ? t('web.ml.gp_covers', { n: ctsCaseGroup?.columns.length, m: ctsCtrlGroup?.columns.length })
-                  : t('web.ml.gp_validate_fail',
-                      { reason: t('web.ml.gp_reason_' + ctsValid?.reason) }) }}
-              </p>
-              <button class="bar-btn" :disabled="!ctsValid?.ok || unusable" @click="ctsApply">
-                {{ t('web.ml.gp_fill') }}
-              </button>
-              <span v-if="ctsFilled" class="state on">{{ t('web.ml.gp_filled') }}</span>
-            </template>
+            <MlCountsPicker :fields="overview.counts_picker.fields" :all-cols="countsSampleCols"
+                            :gse="gse" :unusable="unusable" :flash="flash" @apply="applyCaseCtrl" />
           </template>
         </template>
         <template v-if="overview.assess && !overview.assess.matrix_empty">
@@ -879,50 +437,8 @@ async function resumeRunJob(): Promise<void> {
             }) }}
           </p>
           <template v-if="overview.group_picker?.fields?.length">
-            <div class="set-row">
-              <label class="set-label">{{ t('web.ml.gp_field_label') }}</label>
-              <select class="sel inline" v-model="gpField" :disabled="unusable"
-                      @change="gpPickField(gpField)">
-                <option value="" disabled>{{ t('web.ml.gp_field_ph') }}</option>
-                <option v-for="f in overview.group_picker.fields" :key="f.name" :value="f.name">
-                  {{ f.label }} ({{ f.values.length }})
-                </option>
-              </select>
-            </div>
-            <template v-if="gpCurrent">
-              <div class="set-row">
-                <label class="set-label">{{ t('web.ml.gp_case') }}</label>
-                <select class="sel inline" v-model="gpCase" :disabled="unusable">
-                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
-                  <option v-for="v in gpCurrent.values" :key="v.value" :value="v.value">
-                    {{ v.value }} ({{ v.n }})
-                  </option>
-                </select>
-              </div>
-              <div class="set-row">
-                <label class="set-label">{{ t('web.ml.gp_ctrl') }}</label>
-                <select class="sel inline" v-model="gpCtrl" :disabled="unusable">
-                  <option value="" disabled>{{ t('web.ml.gp_value_ph') }}</option>
-                  <option v-for="v in gpCurrent.values" :key="v.value" :value="v.value">
-                    {{ v.value }} ({{ v.n }})
-                  </option>
-                </select>
-              </div>
-              <p v-if="gpPairedField" class="stale">
-                {{ t('web.ml.gp_paired', { field: gpPairedField }) }}
-              </p>
-              <p v-if="gpCase && gpCtrl" class="hint-line"
-                 :class="{ good: gpValid?.ok, stale: !gpValid?.ok }">
-                {{ gpValid?.ok
-                  ? t('web.ml.gp_validate_ok', { n: gpCaseN, m: gpCtrlN })
-                  : t('web.ml.gp_validate_fail',
-                      { reason: t('web.ml.gp_reason_' + gpValid?.reason) }) }}
-              </p>
-              <button class="bar-btn" :disabled="!gpValid?.ok || unusable" @click="gpApply">
-                {{ t('web.ml.gp_fill') }}
-              </button>
-              <span v-if="gpFilled" class="state on">{{ t('web.ml.gp_filled') }}</span>
-            </template>
+            <MlGroupPicker :fields="overview.group_picker.fields"
+                           :gse="gse" :unusable="unusable" :flash="flash" @apply="applyCaseCtrl" />
           </template>
           <p v-if="overview.assess.n_samples != null && overview.assess.n_samples < 12" class="stale">
             {{ t('web.ml.few_samples', { n: overview.assess.n_samples }) }}
@@ -1016,83 +532,7 @@ async function resumeRunJob(): Promise<void> {
     </section>
 
     <!-- ============ ④ 结果区 ============ -->
-    <section class="sec" v-if="resultData">
-      <h3 class="sec-title">{{ t('web.ml.sec_result', { gse: resultData.gse, s: resultData.elapsed }) }}</h3>
-      <div class="metrics">
-        <div class="metric"><b>{{ meta?.n_samples }}</b><span>{{ t('web.ml.m_samples') }}</span></div>
-        <div class="metric"><b>{{ meta?.n_genes }}</b><span>{{ t('web.ml.m_genes') }}</span></div>
-        <div class="metric">
-          <b>{{ meta?.cv_mean ?? meta?.cv_auc ?? 'N/A' }}</b>
-          <span>CV-AUC<template v-if="meta?.cv_sd != null"> ± {{ meta.cv_sd }}</template></span>
-        </div>
-        <div class="metric"><b>{{ meta?.algo_spearman_mean }}</b><span>{{ t('web.ml.m_spearman') }}</span></div>
-      </div>
-
-      <template v-if="resultData.roc_png_rel">
-        <p class="hint-line" style="margin-top:16px">{{ t('web.ml.roc_hint') }}</p>
-        <p v-if="(meta?.n_samples ?? 0) < 10" class="hint-line">{{ t('web.ml.roc_small_n') }}</p>
-        <img class="fig-img" :src="artifactsUrl(resultData.roc_png_rel)" alt="ROC" />
-      </template>
-
-      <h4 class="sub-sec">{{ t('web.ml.consensus_head', { n: Math.min(20, consensusRows.length), total: consensusTotal }) }}</h4>
-      <div class="tbl-wrap">
-        <table class="tbl">
-          <thead><tr><th v-for="k in Object.keys(consensusRows[0] ?? {})" :key="k">{{ k }}</th></tr></thead>
-          <tbody>
-            <tr v-for="(r, i) in consensusRows.slice(0, 20)" :key="i">
-              <td v-for="(v, k) in r" :key="k">{{ v }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <h4 class="sub-sec">{{ t('web.ml.funnel_head') }}</h4>
-      <div class="tbl-wrap" style="max-height:240px">
-        <table class="tbl">
-          <thead><tr><th v-for="k in Object.keys(funnelRows[0] ?? {})" :key="k">{{ k }}</th></tr></thead>
-          <tbody><tr v-for="(r, i) in funnelRows" :key="i"><td v-for="(v, k) in r" :key="k">{{ v }}</td></tr></tbody>
-        </table>
-      </div>
-
-      <h4 class="sub-sec">{{ t('web.ml.shortlist_head', { n: shortlistCount }) }}</h4>
-      <div class="tbl-wrap" style="max-height:320px">
-        <table class="tbl">
-          <thead><tr><th v-for="k in Object.keys(shortlistRows[0] ?? {})" :key="k">{{ k }}</th></tr></thead>
-          <tbody><tr v-for="(r, i) in shortlistRows" :key="i"><td v-for="(v, k) in r" :key="k">{{ v }}</td></tr></tbody>
-        </table>
-      </div>
-
-      <!-- 下载区:整包一键带走;主成果带说明(与分析页同款排版),补充产物默认折叠 -->
-      <h4 class="sub-sec">{{ t('web.ml.dl_title') }}</h4>
-      <button class="bar-btn" :disabled="zipBusy" @click="zipRun">
-        {{ zipBusy ? t('web.ml_results.zipping') : t('web.ml.dl_zip', { name: `${runDirName}.zip` }) }}
-      </button>
-      <ul v-if="mainDownloads.length" class="dl-list">
-        <li v-for="d in mainDownloads" :key="d.rel" class="dl-row">
-          <div class="dl-main">
-            <span class="dl-desc">{{ d.desc }}</span>
-            <span class="dl-name">{{ d.file }}</span>
-          </div>
-          <a class="mini" :href="artifactsUrl(d.rel, true)">{{ t('web.common.download') }}</a>
-        </li>
-      </ul>
-      <details v-if="extraDownloads.length" class="fold">
-        <summary class="hint-line fold2">{{ t('web.ml.dl_more', { n: extraDownloads.length }) }}</summary>
-        <ul class="dl-list">
-          <li v-for="d in extraDownloads" :key="d.rel" class="dl-row">
-            <div class="dl-main">
-              <span class="dl-desc">{{ d.desc }}</span>
-              <span class="dl-name">{{ d.file }}</span>
-            </div>
-            <a class="mini" :href="artifactsUrl(d.rel, true)">{{ t('web.common.download') }}</a>
-          </li>
-        </ul>
-      </details>
-    </section>
-    <section class="sec" v-else>
-      <h3 class="sec-title">{{ t('web.ml.sec_result_idle') }}</h3>
-      <p class="hint-line">{{ t('web.ml.result_idle_hint') }}</p>
-    </section>
+    <MlResultPanel :result="resultData" :flash="flash" />
 
     <!-- ============ 历史结果(近 3 次) ============ -->
     <section class="sec">
@@ -1177,19 +617,6 @@ async function resumeRunJob(): Promise<void> {
   margin-right: 6px;
   font-style: normal;
 }
-.fig-img {
-  max-width: 420px;
-  margin-top: 10px;
-  border: 1px solid var(--c-line-soft);
-  background: var(--c-panel);
-}
-.sub-sec {
-  margin: 22px 0 8px;
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  color: var(--c-ink);
-}
 .stale-tag {
   font-style: normal;
   font-size: 10px;
@@ -1253,19 +680,5 @@ async function resumeRunJob(): Promise<void> {
 }
 .opt-label {
   white-space: nowrap;
-}
-/* 补充产物折叠(下载区) */
-.fold2 {
-  margin-top: 12px;
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-}
-.fold2::before {
-  content: '› ';
-  color: var(--c-quiet);
-}
-.fold[open] .fold2::before {
-  content: '⌄ ';
 }
 </style>

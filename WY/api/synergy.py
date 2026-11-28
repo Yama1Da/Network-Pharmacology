@@ -108,9 +108,16 @@ def synergy_results_detail(run: str) -> dict:
 
 @router.get("/api/synergy/library")
 def synergy_library() -> dict:
-    """选择器数据源:本地 merged 缓存已收录的药物/疾病查询名(只读本地,不联网)。
+    """选择器数据源(只读本地,不联网),两路取并集:
+    ① merged 缓存命中名(list_known_targets);
+    ② 查询历史台账(query_history.names——双源整合成功过的全部查询名,
+    与 merged 缓存生命周期解耦,设置页 purge 后下拉不缩水)。
     前端 datalist 下拉 + 保留自由手输。"""
-    return {"drugs": list_known_targets("drug"), "diseases": list_known_targets("disease")}
+    from WY.core.query_history import names as qh_names
+
+    drugs = sorted(set(list_known_targets("drug")) | set(qh_names("drug")))
+    diseases = sorted(set(list_known_targets("disease")) | set(qh_names("disease")))
+    return {"drugs": drugs, "diseases": diseases}
 
 
 @router.post("/api/synergy/analyze")

@@ -2136,3 +2136,18 @@ def test_modules_consensus_guards_and_failures(client, monkeypatch):
                           "mode": "genes", "genes_text": "A,B"})
     job = _wait_job(client, r.json()["job_id"])
     assert job["result"] == {"ok": False, "reason": "rwr_failed"}
+
+
+
+
+def test_synergy_library_unions_ledger(client):
+    """选择器数据源两路并集(2026-11-28 ledger 方案):merged 缓存命中名 ∪
+    查询历史台账名。台账缓存被 purge 清空后历史仍在——下拉不缩水。"""
+    from WY.core import query_history as qh
+
+    qh.record("drug", "Sorafenib")
+    qh.record("disease", "cancer")
+    r = client.get("/api/synergy/library")
+    assert r.status_code == 200
+    body = r.json()
+    assert "Sorafenib" in body["drugs"] and "cancer" in body["diseases"]
