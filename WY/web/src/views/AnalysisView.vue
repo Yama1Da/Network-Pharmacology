@@ -67,6 +67,10 @@ function art(key: string): string | null {
   return artifacts.value[key] ?? null
 }
 
+/* 一致性面板强制刷新信号:主分析 job 的 jobId 每次提交唯一——同名药病对重跑
+ * 时运行目录不变,directory_rel 观察不到;GSEA/模块重跑走独立端点不碰主 jobId */
+const runKey = computed(() => job.jobId.value)
+
 /* 邻近度(PpiResult.proximity 已是 ProximityResult,无需再转 any) */
 const prox = computed(() => ppi.value?.proximity ?? null)
 
@@ -324,7 +328,8 @@ onMounted(() => {
     <!-- 多方法一致性(模块C):独立组件,种子来源随本次分析(names=疾病靶点全集/genes=基因列表),
          产物落运行目录自动进下载列表;填入按钮走 fill 事件写表单,默认不替换 -->
     <ConsensusPanel v-if="ppi" :ppi="ppi" :mode="mode" :drug="drug" :disease="disease"
-                    :genes-text="genesText" @fill="fillFromConsensus" @saved="consensusSaved" />
+                    :genes-text="genesText" :run-key="runKey"
+                    @fill="fillFromConsensus" @saved="consensusSaved" />
 
     <!-- 富集 -->
     <section class="sec">

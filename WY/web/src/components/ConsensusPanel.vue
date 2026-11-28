@@ -22,6 +22,8 @@ const props = defineProps<{
   drug: string
   disease: string
   genesText: string
+  /** 主分析 job 的 jobId(壳层 runKey):每次提交分析唯一,作强制刷新信号 */
+  runKey: string
 }>()
 const emit = defineEmits<{
   (e: 'fill', genes: string[]): void
@@ -34,11 +36,13 @@ const kRef = ref<number | ''>(2)
 const permsRef = ref<number | ''>(0)
 const result = ref<ModulesConsensusResult | null>(null)
 
-/* 每次新分析(= 新运行目录)都清掉上次一致性结果,强制用户重跑:一致性产物
- * 落在运行目录、经 ppi.files 快照进下载区——残留旧图会让用户误以为已有结果
- * 而跳过重跑,新目录便缺一致性产物(2026-11-28 用户定稿)。重跑模块/GSEA
- * 不改运行目录,不触发本钩子。 */
-watch(() => props.ppi?.directory_rel, () => {
+/* 每次新分析都清掉上次一致性结果,强制用户重跑:一致性产物落在运行目录、
+ * 经 ppi.files 快照进下载区——残留旧图会让用户误以为已有结果而跳过重跑,
+ * 新目录便缺一致性产物(2026-11-28 用户定稿,且"无论疾病名是否一样"都刷新)。
+ * 信号用主分析 job 的 jobId 而非 directory_rel:同名药病对重跑时运行目录不变,
+ * directory_rel 观察不到;也不观察 ppi 对象——GSEA/模块重跑经壳层对象合并
+ * 会换引用,误伤。GSEA/模块走独立端点、不碰主 jobId,不会清掉面板。 */
+watch(() => props.runKey, () => {
   result.value = null
 })
 
