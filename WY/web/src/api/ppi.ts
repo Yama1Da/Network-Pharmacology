@@ -1,8 +1,8 @@
 /** PPI 分析(阶段 3a)+ 疾病模块多方法一致性(模块C 面板):类型与端点,
  * 字段与 api/ppi.py、api/modules.py 一一对应。 */
 
-import { post } from './http'
-import type { Row } from './types'
+import { json, post } from './http'
+import type { InFlightJob, Row } from './types'
 
 /** 网络邻近度检验的落网覆盖(LCC 内命中数 / 集合总数)。 */
 interface ProximityCoverage {
@@ -191,5 +191,9 @@ export const ppiApi = {
     n?: number | null
     k?: number | null
     n_perms?: number | null
-  }): Promise<{ job_id: string }> => post('/api/modules/consensus', body)
+  }): Promise<{ job_id: string }> => post('/api/modules/consensus', body),
+
+  /* 在途任务状态:重进分析页恢复进度(与 synergyJob/mlJob 同形态) */
+  ppiJob: (): Promise<InFlightJob & { mode?: string; drug?: string; disease?: string }> =>
+    fetch('/api/ppi/job').then((r) => json(r))
 }
