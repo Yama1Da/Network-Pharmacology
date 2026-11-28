@@ -9,6 +9,7 @@ export interface JobState {
   progress: { fraction: number | null; text: string; [k: string]: unknown }
   result: Record<string, unknown> | null
   error: string | null
+  finished?: number | null   // 完成时刻(秒);回填窗口与任务中心倒计时以此为准
   trace?: string
 }
 

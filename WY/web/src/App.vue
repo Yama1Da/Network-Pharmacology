@@ -19,6 +19,7 @@ import SettingsView from './views/SettingsView.vue'
 import SourcesView from './views/SourcesView.vue'
 import SynergyView from './views/SynergyView.vue'
 import SynergyResultsView from './views/SynergyResultsView.vue'
+import TaskCenter from './components/TaskCenter.vue'
 
 const { t, locale } = useI18n()
 
@@ -196,6 +197,10 @@ onBeforeUnmount(() => {
     <footer class="foot">
       <span>{{ t('web.app.foot') }}</span>
     </footer>
+
+    <!-- 任务中心悬浮胶囊:贴右缘缝隙/弹出/面板三态,跨页跟踪全部长任务(见组件头注)。
+         ready = 入场幕布播完——任务中心不参与开场动画 -->
+    <TaskCenter v-if="ready" />
   </div>
 </template>
 

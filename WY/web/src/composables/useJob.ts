@@ -1,6 +1,7 @@
 import { onScopeDispose, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, type JobState } from '../api'
+import { trackJob, readTask } from './useJobCenter'
 
 /** 长任务的提交-轮询:run() 提交后每 0.6s 轮询一次。
  * fraction/text 为总进度;extra 携带后端附加字段(如 PPI 分析的 step/state 阶段状态)。
@@ -46,6 +47,7 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
     return submit
       .then(({ job_id }) => {
         jobId.value = job_id
+        trackJob(job_id)          // 登记进任务中心:跨页可见,离开本页也有提醒
         return poll(job_id, opts)
       })
       .catch((e) => {
@@ -72,6 +74,7 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
     error.value = ''
     result.value = null
     jobId.value = existingJobId
+    trackJob(existingJobId)     // 重进页面续接:任务中心同步找回该任务
     return poll(existingJobId, opts)
       .catch((e) => {
         error.value = e instanceof Error ? e.message : String(e)
@@ -107,11 +110,14 @@ export function useJob(onDone?: (result: Record<string, unknown>) => void) {
         result.value = state.result
         text.value = opts.doneText ?? t('web.job.done')
         onDone?.(state.result ?? {})
+        // 终态在本页轮询现场看完(未卸载):任务中心免提醒,直接移除
+        readTask(job_id)
         break
       }
       if (state.status === 'error') {
         error.value = state.error ?? t('web.job.fail')
         text.value = opts.failText ?? t('web.job.fail')
+        readTask(job_id)          // 同上:失败已在本页展示,不再计入未读
         break
       }
       await new Promise((r) => setTimeout(r, 600))
