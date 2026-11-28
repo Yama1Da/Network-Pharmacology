@@ -30,7 +30,7 @@ matplotlib.use("Agg", force=True)
 # - 缓存目录:十类数据源/算法缓存
 # - 对接缓存:四个子目录 + UniProt 基因映射缓存文件
 # - 下载/日志:MD 结果、星形文件、GEO 结果、日志目录
-# - 单文件:HTTP 缓存、DisGeNET 限流状态、UI 设置、搜索历史
+# - 单文件:HTTP 缓存、DisGeNET 限流状态、UI 设置
 _SANDBOX_ATTRS = (
     "CACHE_DIR",
     "PPI_CACHE_DIR", "ENRICHMENT_CACHE_DIR", "DRUG_CACHE_DIR",
