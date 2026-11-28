@@ -10,7 +10,7 @@
  * 下游打通 v1:仅「将一致子集填入分析输入」按钮(emit fill,父组件写表单、
  * 用户自己重跑),严守方案 §4.4「默认不替换」红线;消融对比归 benchmark/CLI
  * 层,前端不做。 */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, type ModulesConsensusResult } from '../api'
 import { useJob } from '../composables/useJob'
@@ -33,6 +33,14 @@ const nRef = ref<number | ''>(100)
 const kRef = ref<number | ''>(2)
 const permsRef = ref<number | ''>(0)
 const result = ref<ModulesConsensusResult | null>(null)
+
+/* 每次新分析(= 新运行目录)都清掉上次一致性结果,强制用户重跑:一致性产物
+ * 落在运行目录、经 ppi.files 快照进下载区——残留旧图会让用户误以为已有结果
+ * 而跳过重跑,新目录便缺一致性产物(2026-11-28 用户定稿)。重跑模块/GSEA
+ * 不改运行目录,不触发本钩子。 */
+watch(() => props.ppi?.directory_rel, () => {
+  result.value = null
+})
 
 /* 参数校验(2026-11-28 负责人质询后加固):越界值不许静默钳位执行——实时红标
  * + 明示范围 + 拒绝提交;空框在提交前回写默认值,让"按默认跑"可见而非静默。

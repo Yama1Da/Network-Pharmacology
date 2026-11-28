@@ -264,6 +264,10 @@ onMounted(() => {
     </p>
     <p v-if="!ppi.genes_count" class="stale">{{ t('web.analysis.no_common') }}</p>
     <p v-if="!ppi.edges" class="stale">{{ t('web.analysis.no_edges') }}</p>
+    <!-- 衔接说明(2026-11-28 实测 Ferulic acid×T2DM 后定稿):0 交集时下方邻近度/
+         RWR/一致性仍有结果,不解释会让用户误以为"没网还能算"是 bug——它们走的是
+         背景互作组 × 双方全量靶点的另一条数据线,与交集网络无关 -->
+    <p v-if="!ppi.genes_count" class="hint-line">{{ t('web.analysis.empty_overlap_hint') }}</p>
 
     <!-- Hub 表(可达性标注列 W7:names 模式懒取;过滤默认"全部"保一期) -->
     <section v-if="ppi.hub_table.length" class="sec">
