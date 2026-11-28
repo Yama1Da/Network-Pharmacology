@@ -81,6 +81,7 @@
  "web.analysis.consensus_col_neighbor": "Neighbor",
  "web.analysis.consensus_col_score": "Consensus",
  "web.analysis.consensus_done": "Consensus computation finished",
+ "web.analysis.consensus_fill_blocked": "Seeds in LCC ({s}) already reach the module size cap (N={n}): no expansion happened — the consistent subset is the seed set itself, filling would be a no-op",
  "web.analysis.consensus_fill_btn": "Fill consistent subset into analysis input ({count} genes)",
  "web.analysis.consensus_filled": "Filled {count} consistent genes; click Start Analysis to re-run with the new seeds",
  "web.analysis.consensus_hint": "RWR / DIAMOnD / neighbor expansion run on the same input with the same module size N; consensus score = mean rank across methods (Borda); captured by ≥k methods marks a gene as consistent.",

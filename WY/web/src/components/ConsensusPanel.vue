@@ -214,9 +214,12 @@ function rankTitle(rank: number | null, nTotal: number): string {
       </p>
       <div class="cons-foot">
         <span class="hint-line">{{ t('web.analysis.consensus_rows_hint', { total: cons.rows_total, shown: shown.length }) }}</span>
-        <button class="cons-fill" @click="emit('fill', fillGenes)">
+        <!-- 退化态(种子 ≥ N,三方法未扩张):一致子集=种子本身,填入是无意义的原样
+             回倒——禁用按钮并明示原因(§1.12 陷阱②) -->
+        <button v-if="!cons.degenerate" class="cons-fill" @click="emit('fill', fillGenes)">
           {{ t('web.analysis.consensus_fill_btn', { count: fillGenes.length }) }}
         </button>
+        <span v-else class="hint-line blocked">{{ t('web.analysis.consensus_fill_blocked', { s: cons.coverage.seeds_in_lcc, n: cons.params.n }) }}</span>
       </div>
     </template>
   </section>
@@ -266,6 +269,10 @@ function rankTitle(rank: number | null, nTotal: number): string {
   padding: 7px 16px;
   border-radius: 3px;
   cursor: pointer;
+}
+.blocked {
+  max-width: 60%;
+  text-align: right;
 }
 .cons-run:disabled {
   opacity: 0.5;

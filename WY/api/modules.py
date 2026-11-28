@@ -197,12 +197,17 @@ def modules_consensus(body: ConsensusBody) -> dict:
         cons = res["consensus"]
         consistent_list = sorted(
             cons.loc[cons["consistent"].astype(bool), "gene"].astype(str))
+        # 退化态(§1.12 陷阱②):种子入 LCC 数已达模块规模 N 时,三方法的扩张余量
+        # 全为 0(module = 种子本身),一致子集没有携带任何输入之外的信息——
+        # 下游「填入」因此是无意义的原样回倒,前端据此禁用填入按钮并明示原因。
+        in_lcc = int(cov.get("seeds_in_lcc") or 0)
         return {
             "ok": True, "schema": res.get("schema", CONSENSUS_SCHEMA),
             "params": {"n": n_eff, "k": int(res.get("k") or 2),
                        "n_perms": perms if perms > 0 else None},
+            "degenerate": bool(in_lcc >= n_eff),
             "coverage": {"seeds_total": int(len(seeds)),
-                         "seeds_in_lcc": int(cov.get("seeds_in_lcc") or 0),
+                         "seeds_in_lcc": in_lcc,
                          "seeds_out_of_lcc_count": len(out_lcc),
                          "seeds_out_of_lcc": out_lcc[:_OUT_OF_LCC_CAP]},
             "module_sizes": res.get("module_sizes"),

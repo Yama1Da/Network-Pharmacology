@@ -81,6 +81,7 @@
  "web.analysis.consensus_col_neighbor": "近邻秩",
  "web.analysis.consensus_col_score": "共识分",
  "web.analysis.consensus_done": "一致性计算完成",
+ "web.analysis.consensus_fill_blocked": "种子覆盖 {s} 已达模块规模上限(N={n}),三方法未发生扩张——一致子集即种子本身,填入无意义",
  "web.analysis.consensus_fill_btn": "将一致子集填入分析输入({count} 基因)",
  "web.analysis.consensus_filled": "已填入 {count} 个一致基因,点「开始分析」以新种子重跑",
  "web.analysis.consensus_hint": "RWR / DIAMOnD / 近邻度扩张 三方法同一输入、同一规模 N 独立扩张,共识分 = 所属方法平均秩(Borda);被 ≥k 种方法捞入标记为「一致」。",

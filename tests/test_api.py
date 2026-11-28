@@ -2076,6 +2076,7 @@ def test_modules_consensus_names_mode_flow(client, monkeypatch):
     assert rows[0]["neighbor_rank"] is None and rows[0]["rwr_rank"] == 1
     assert rows[0]["consistent"] is True and rows[1]["is_seed"] is False
     assert body["coverage"]["seeds_out_of_lcc"] == ["GENX"]
+    assert body["degenerate"] is False  # 3 种子 < N=30,正常扩张态
     assert body["consistent_genes"] == 2 and body["consistent_list"] == ["GENA", "GENB"]
     assert body["files_written"] == ["demo_consensus_targets.csv", "demo_consensus_methods.csv"]
     assert os.path.isfile(os.path.join(d, "demo_consensus_targets.csv"))

@@ -181,6 +181,8 @@ export interface ModulesConsensusResult {
   reason?: string
   schema?: string
   params: { n: number; k: number; n_perms: number | null }
+  /** 退化态:种子入 LCC 数 ≥ N,三方法未扩张,一致子集=种子本身(填入无意义) */
+  degenerate?: boolean
   coverage: {
     seeds_total: number
     seeds_in_lcc: number

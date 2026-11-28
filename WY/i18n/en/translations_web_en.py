@@ -259,6 +259,7 @@ TEXT_WEB_EN = {
     "web.analysis.consensus_legend": "Darker = better rank (1 darkest), – = not captured by that method",
     "web.analysis.consensus_rows_hint": "{total} genes · first {shown} shown · the full table is in the download list below (consensus_targets.csv)",
     "web.analysis.consensus_fill_btn": "Fill consistent subset into analysis input ({count} genes)",
+    "web.analysis.consensus_fill_blocked": "Seeds in LCC ({s}) already reach the module size cap (N={n}): no expansion happened — the consistent subset is the seed set itself, filling would be a no-op",
     "web.analysis.consensus_filled": "Filled {count} consistent genes; click Start Analysis to re-run with the new seeds",
     "web.analysis.consensus_not_member": "Not captured by that method",
     "web.analysis.consensus_rank_title": "Rank {r} / {n}",
