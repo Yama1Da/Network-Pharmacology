@@ -32,7 +32,8 @@ def transfer_export(body: TransferExportBody) -> dict:
     if not scopes:
         raise HTTPException(status_code=400, detail="empty scopes")
     # 空库快速失败:免得 job 打包出一个只有 manifest 的空包
-    if not any(s == "ui_settings" or transfer.list_scope_items(s) for s in scopes):
+    if not any(s in ("ui_settings", "query_history")
+               or transfer.list_scope_items(s) for s in scopes):
         raise HTTPException(status_code=400,
                             detail="nothing to export in selected scopes")
 

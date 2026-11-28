@@ -919,6 +919,7 @@
  "web.transfer.run_import": "Run import",
  "web.transfer.scope_geo": "GEO screening results",
  "web.transfer.scope_ppi": "PPI analysis results",
+ "web.transfer.scope_query_history": "Query history ledger",
  "web.transfer.scope_settings": "UI settings",
  "web.transfer.scope_star": "Docking stars",
  "web.transfer.scope_synergy": "Synergy prediction results",

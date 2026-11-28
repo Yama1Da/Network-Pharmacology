@@ -30,7 +30,7 @@ MANIFEST_VERSION = 1
 # downloads 下的专属产物目录(2026-11 拆分:原 analysis 一个范围整目录打包,
 # 导入预览只能整目录决策;拆开后按单条结果列条目,与 star/geo 粒度一致)。
 DIR_KINDS = ("ppi", "synergy", "star", "geo")
-ALL_SCOPES = (*DIR_KINDS, "ui_settings")
+ALL_SCOPES = (*DIR_KINDS, "ui_settings", "query_history")
 # 旧版包(≤2026-11)的条目 kind:analysis=downloads 根整目录打包。仅在导入侧
 # 认识(manifest 校验/落盘映射),导出范围里已不存在。
 _LEGACY_KINDS = ("analysis",)
@@ -143,7 +143,12 @@ def build_export_bundle(scopes, out_path: str, progress=None) -> dict:
     dir_scopes = [k for k in DIR_KINDS if k in scopes]
     planned = {kind: list_scope_items(kind) for kind in dir_scopes}
     has_ui = "ui_settings" in scopes and os.path.isfile(config.UI_SETTINGS_FILE)
-    if not any(planned.values()) and not has_ui:
+    # 查询历史台账:单文件范围(同 ui_settings 模式);空台账视为无物可导
+    from .query_history import export_blob
+
+    qh_blob = export_blob() if "query_history" in scopes else None
+    has_qh = qh_blob is not None
+    if not any(planned.values()) and not has_ui and not has_qh:
         raise TransferError("nothing to export in selected scopes")
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -180,9 +185,16 @@ def build_export_bundle(scopes, out_path: str, progress=None) -> dict:
             zf.write(config.UI_SETTINGS_FILE, "ui_settings.json")
             ui_exported = True
 
+        qh_exported = False
+        if has_qh:
+            zf.writestr("query_history.json",
+                        json.dumps(qh_blob, ensure_ascii=False, indent=2))
+            qh_exported = True
+
         manifest = _manifest()
         manifest["items"] = items
         manifest["ui_settings"] = ui_exported
+        manifest["query_history"] = qh_exported
         zf.writestr(MANIFEST_NAME, json.dumps(manifest, ensure_ascii=False, indent=2))
 
     counts = {kind: sum(1 for it in items if it["kind"] == kind) for kind in DIR_KINDS}
@@ -190,7 +202,8 @@ def build_export_bundle(scopes, out_path: str, progress=None) -> dict:
                  os.path.basename(out_path), os.path.getsize(out_path),
                  len(plan_files), counts, ui_exported)
     return {"filename": os.path.basename(out_path), "size": os.path.getsize(out_path),
-            "counts": counts, "ui_settings": ui_exported}
+            "counts": counts, "ui_settings": ui_exported,
+            "query_history": qh_exported}
 
 
 # ======== 导入·分析与落盘 ========
@@ -336,6 +349,7 @@ def analyze_bundle(zip_path: str, staging_dir: str) -> dict:
         # 条目必须都能对上 manifest(或包级白名单文件);先全量安检,再动手解压
         manifest_items = {(it["kind"], it["name"]) for it in manifest["items"]}
         ui_in_bundle = manifest.get("ui_settings") is True
+        qh_in_bundle = manifest.get("query_history") is True
         plan: list[tuple[zipfile.ZipInfo, str, list[str]]] = []
         for info in infos:
             target, parts = _safe_target(staging_dir, info.filename)
@@ -347,6 +361,9 @@ def analyze_bundle(zip_path: str, staging_dir: str) -> dict:
             elif info.filename == "ui_settings.json":
                 if not ui_in_bundle:
                     raise TransferError("unexpected ui_settings.json in bundle")
+            elif info.filename == "query_history.json":
+                if not qh_in_bundle:
+                    raise TransferError("unexpected query_history.json in bundle")
             elif len(parts) >= 4 and parts[0] == "items" \
                     and (parts[1], parts[2]) in manifest_items:
                 pass
@@ -410,6 +427,17 @@ def _build_report(manifest: dict, stat: dict, staging_dir: str) -> dict:
         raw = load_json_file(path)
         ui["keys"] = len(_filter_ui_settings(raw)) if isinstance(raw, dict) else 0
         ui["conflict"] = os.path.isfile(config.UI_SETTINGS_FILE)
+
+    from . import query_history
+
+    qh = {"present": manifest.get("query_history") is True}
+    if qh["present"]:
+        path = os.path.join(staging_dir, "query_history.json")
+        from WY.core.caching import load_json_file
+        raw = load_json_file(path)
+        qh["keys"] = (len(raw.get("drugs", {})) + len(raw.get("diseases", {}))
+                      if isinstance(raw, dict) else 0)
+        qh["conflict"] = query_history.export_blob() is not None
     warnings = _schema_warnings(manifest.get("schema", {}))
     for w in warnings:
         logger.debug("导入包版本差异: %s", w)
@@ -419,6 +447,7 @@ def _build_report(manifest: dict, stat: dict, staging_dir: str) -> dict:
                      "schema": manifest.get("schema", {})},
         "items": items,
         "ui_settings": ui,
+        "query_history": qh,
         "warnings": warnings,
     }
 
@@ -484,6 +513,15 @@ def commit_import(staging_dir: str, decisions: list[dict]) -> dict:
                     raise TransferError(f"unknown action for ui_settings: {action!r}")
                 applied.append(_apply_ui_settings(staging_dir))
                 continue
+            if kind == "query_history":
+                if action == "skip":
+                    skipped.append({"kind": "query_history",
+                                    "name": "query_history.json"})
+                    continue
+                if action not in ("import", "overwrite"):
+                    raise TransferError(f"unknown action for query_history: {action!r}")
+                applied.append(_apply_query_history(staging_dir))
+                continue
             if kind not in DIR_KINDS and kind not in _LEGACY_KINDS:
                 raise TransferError(f"unknown kind: {kind!r}")
             _ensure_item_name(name)
@@ -546,6 +584,21 @@ def _apply_ui_settings(staging_dir: str) -> dict:
     save_json_file(config.UI_SETTINGS_FILE, cleaned)
     config.apply_ui_settings_overrides()
     return {"kind": "ui_settings", "name": "ui_settings.json", "keys": sorted(cleaned)}
+
+
+def _apply_query_history(staging_dir: str) -> dict:
+    """用包内 query_history.json **合并**进本地台账(union,永不覆盖):
+    台账是历史记录,导入语义 = 并入而非替换(与 ui_settings 的整体替换不同)。
+    返回 merged 计数供导入报告展示。"""
+    from WY.core.caching import load_json_file
+    from .query_history import merge_blob
+
+    path = os.path.join(staging_dir, "query_history.json")
+    raw = load_json_file(path)
+    if not isinstance(raw, dict):
+        raise TransferError("query_history.json in bundle is not a JSON object")
+    merged_n = merge_blob(raw)
+    return {"kind": "query_history", "name": "query_history.json", "merged": merged_n}
 
 
 # ======== 导入会话(进程内 dict + TTL,暂存目录随会话清理) ========

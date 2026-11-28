@@ -1,8 +1,10 @@
 /** ML 页 GSE 体检徽章的会话级缓存(QA 2026-11-09)。
  *
  * 徽章判定(matrix_empty / counts / 注释)是 GEO 归档的不可变属性,缓存语义安全;
- * 唯一会翻转它的是本地盘上状态(数据集下载/强制重下完成)——由视图在对应 job 的
- * onDone 里调 dropBadge() 精准失效;TTL 1h 兜底,过期自动重测。
+ * 唯一会翻转它的是本地盘上状态——由视图在 runJob(数据集落盘)/forceJob(强制
+ * 重下)的 onDone 里调 dropBadge() 精准失效;总览只读数据集,不触发作废
+ * (2026-11-28 定稿:跑总览即作废过于激进,归档推断在 TTL 内视为仍可信)。
+ * TTL 1h 兜底,过期自动重测。
  * 纯浏览器内存,不落盘,刷新页面即清空;容量上限防多疾病检索累积。
  * err(网络层瞬时失败)不入缓存:下次批检自然重试,免得把瞬时故障钉死一个 TTL。
  */
@@ -61,7 +63,7 @@ export function putBadge(item: MlProbeBatchItem): void {
   }
 }
 
-/** 失效钩子:数据集下载/强制重下完成后由视图调用,该 GSE 徽章立刻回灰点重测。 */
+/** 失效钩子:run 落盘 / 强制重下完成后由视图调用,该 GSE 徽章立刻回灰点重测。 */
 export function dropBadge(gse: string): void {
   cache.delete(gse)
 }

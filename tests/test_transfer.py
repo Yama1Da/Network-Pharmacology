@@ -548,3 +548,42 @@ def test_import_ui_settings_sources_roundtrip(monkeypatch):
     assert config.ENRICHMENT_SOURCES == ("KEGG", "GO:CC")  # 元组:下游 for 迭代/拼接安全
     with open(config.UI_SETTINGS_FILE, encoding="utf-8") as f:
         assert json.load(f)["ENRICHMENT_SOURCES"] == ["KEGG", "GO:CC"]
+
+
+def test_query_history_scope_roundtrip(tmp_path):
+    """台账 scope(2026-11-28):导出含 query_history.json + manifest 标记;
+    导入按**合并**语义进本机台账(union 永不覆盖,已有条目 first_at 保留)。"""
+    from WY.core import query_history as qh
+
+    if os.path.isfile(qh._path()):
+        os.remove(qh._path())
+    qh.record("drug", "ExportDrug")
+    qh.record("disease", "ExportDisease")
+    zip_path = os.path.join(config.TRANSFER_DIR, transfer.export_filename())
+    result = transfer.build_export_bundle(("query_history",), zip_path)
+    assert result["query_history"] is True
+    zf = zipfile.ZipFile(zip_path)
+    assert "query_history.json" in zf.namelist()
+    manifest = json.loads(zf.read(transfer.MANIFEST_NAME))
+    assert manifest["query_history"] is True
+
+    # 模拟换机:清空本机台账;留一条本地已有记录,验证合并语义不覆盖不删除
+    os.remove(qh._path())
+    qh.record("drug", "LocalDrug")
+
+    staging = os.path.join(config.TRANSFER_DIR, "import_test_qh")
+    report = transfer.analyze_bundle(zip_path, staging)
+    assert report["query_history"]["present"] is True
+    assert report["query_history"]["keys"] == 2
+
+    report1 = transfer.commit_import(staging, [
+        {"kind": "query_history", "name": "query_history.json",
+         "action": "import"}])
+    assert report1["failed"] == []
+    assert any(a["kind"] == "query_history" for a in report1["applied"])
+    data = qh.load()
+    assert {"ExportDrug", "LocalDrug"} <= set(data["drugs"])
+    assert {"ExportDisease"} <= set(data["diseases"])
+    assert data["drugs"]["LocalDrug"]["first_at"] <= data["drugs"]["LocalDrug"]["last_at"]
+    # 清理:台账是全局文件,不让本例内容泄进后续测试
+    os.remove(qh._path())

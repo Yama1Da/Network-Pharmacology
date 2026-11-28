@@ -919,6 +919,7 @@
  "web.transfer.run_import": "执行导入",
  "web.transfer.scope_geo": "GEO 筛选结果",
  "web.transfer.scope_ppi": "PPI 分析结果",
+ "web.transfer.scope_query_history": "查询历史台账",
  "web.transfer.scope_settings": "界面设置",
  "web.transfer.scope_star": "对接 star 收藏",
  "web.transfer.scope_synergy": "协同预测结果",

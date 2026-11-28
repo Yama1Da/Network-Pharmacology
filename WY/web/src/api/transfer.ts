@@ -3,7 +3,7 @@
 import { json, jsonWithDetail, post } from './http'
 import type { SettingsSnapshot } from './settings'
 
-type TransferScope = 'ppi' | 'synergy' | 'star' | 'geo' | 'ui_settings'
+type TransferScope = 'ppi' | 'synergy' | 'star' | 'geo' | 'ui_settings' | 'query_history'
 
 /** 导入预览的单条目(kind 为目录类范围时含文件数/体积/冲突标记;'analysis' 为旧版包遗留 kind)。 */
 export interface TransferItemReport {
@@ -21,12 +21,14 @@ export interface TransferImportReport {
   manifest: { app_version: string; created_at: string; schema: Record<string, unknown> }
   items: TransferItemReport[]
   ui_settings: { present: boolean; keys?: number; conflict?: boolean }
+  /** 查询历史台账(单文件范围):导入为合并语义,见 api/transfer.py _apply_query_history */
+  query_history: { present: boolean; keys?: number; conflict?: boolean }
   warnings: string[]
 }
 
 /** commit 的落盘报告;失败项留在会话里可调整决策重试。 */
 interface TransferCommitReport {
-  applied: { kind: string; name: string; keys?: string[] }[]
+  applied: { kind: string; name: string; keys?: string[]; merged?: number }[]
   skipped: { kind: string; name: string }[]
   failed: { kind: string; name: string; reason: string }[]
 }
@@ -34,7 +36,7 @@ interface TransferCommitReport {
 interface TransferDecisionBody {
   kind: string
   name: string
-  action: 'overwrite' | 'skip' | 'rename'
+  action: 'import' | 'overwrite' | 'skip' | 'rename'
   new_name?: string
 }
 

@@ -863,6 +863,7 @@ TEXT_WEB_ZH = {
     "web.transfer.scope_star": "对接 star 收藏",
     "web.transfer.scope_geo": "GEO 筛选结果",
     "web.transfer.scope_settings": "界面设置",
+    "web.transfer.scope_query_history": "查询历史台账",
     "web.transfer.export_btn": "导出选中项",
     "web.transfer.exporting": "打包中…",
     "web.transfer.export_done": "已导出 {n} 项结果",

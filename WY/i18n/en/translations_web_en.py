@@ -865,6 +865,7 @@ TEXT_WEB_EN = {
     "web.transfer.scope_star": "Docking stars",
     "web.transfer.scope_geo": "GEO screening results",
     "web.transfer.scope_settings": "UI settings",
+    "web.transfer.scope_query_history": "Query history ledger",
     "web.transfer.export_btn": "Export selected",
     "web.transfer.exporting": "Packing…",
     "web.transfer.export_done": "Exported {n} item(s)",

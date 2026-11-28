@@ -226,6 +226,11 @@ def _merge_source_pair(
     merged = pd.DataFrame(records)
     if save:
         save_csv_cache(merged, cache_path, skip_empty=False)
+        # 查询历史台账(2026-11-28):双源整合成功落盘即记一笔——台账里的名字
+        # 都是"双源整合命中过"的查询名,语义与 merged 一致;purge 清缓存不清台账
+        from .query_history import record
+
+        record(kind, name)
     elif not merged.empty:
         logging.warning(
             "Merged %s '%s' NOT cached because some sources failed", kind, name)

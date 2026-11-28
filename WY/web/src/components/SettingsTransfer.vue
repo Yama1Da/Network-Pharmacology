@@ -23,20 +23,22 @@ const { t } = useI18n()
 
 
 
-type ScopeKey = 'ppi' | 'synergy' | 'star' | 'geo' | 'ui_settings'
+type ScopeKey = 'ppi' | 'synergy' | 'star' | 'geo' | 'ui_settings' | 'query_history'
 const SCOPE_DEFS: { key: ScopeKey; label: string }[] = [
   { key: 'ppi', label: 'web.transfer.scope_ppi' },
   { key: 'synergy', label: 'web.transfer.scope_synergy' },
   { key: 'star', label: 'web.transfer.scope_star' },
   { key: 'geo', label: 'web.transfer.scope_geo' },
-  { key: 'ui_settings', label: 'web.transfer.scope_settings' }
+  { key: 'ui_settings', label: 'web.transfer.scope_settings' },
+  { key: 'query_history', label: 'web.transfer.scope_query_history' }
 ]
 // 旧版包遗留 kind(analysis)不在表内,导入预览类型列按 ?? 兜底显示原词
 const KIND_LABEL: Record<string, string> = Object.fromEntries(
   SCOPE_DEFS.map((s) => [s.key, s.label])
 )
 const exportScopes = ref<Record<ScopeKey, boolean>>({
-  ppi: true, synergy: true, star: true, geo: true, ui_settings: true
+  ppi: true, synergy: true, star: true, geo: true, ui_settings: true,
+  query_history: true
 })
 
 const exportJob = useJob((result) => {
@@ -72,6 +74,7 @@ const importSid = ref('')
 const importReport = ref<TransferImportReport | null>(null)
 const decisions = ref<Record<string, RowDecision>>({})
 const uiDone = ref(false)
+const qhDone = ref(false)
 
 const keyOf = (kind: string, name: string): string => `${kind}/${name}`
 const selectedCount = computed(
@@ -151,6 +154,7 @@ async function commitImport(): Promise<void> {
         items: importReport.value.items.filter((it) => !done.has(keyOf(it.kind, it.name)))
       }
       if (rep.applied.some((a) => a.kind === 'ui_settings')) uiDone.value = true
+      if (rep.applied.some((a) => a.kind === 'query_history')) qhDone.value = true
     }
     decisions.value = Object.fromEntries(
       Object.entries(decisions.value).filter(([k]) => !done.has(k))
@@ -181,6 +185,7 @@ function resetImport(): void {
   importReport.value = null
   decisions.value = {}
   uiDone.value = false
+  qhDone.value = false
 }
 
 function humanSize(n: number): string {
@@ -268,6 +273,21 @@ const kindLabel = (it: TransferItemReport): string => t(KIND_LABEL[it.kind] ?? i
           <span class="tf-size">—</span>
           <span class="tf-action">
             <select v-model="dec('ui_settings', 'ui_settings.json').action" class="tf-select">
+              <option value="import">{{ t('web.transfer.act_import') }}</option>
+              <option value="skip">{{ t('web.transfer.act_skip') }}</option>
+            </select>
+          </span>
+        </div>
+        <div v-if="importReport.query_history.present && !qhDone" class="tf-row">
+          <span class="tf-kind">{{ t('web.transfer.scope_query_history') }}</span>
+          <span class="tf-name">query_history.json
+            <em v-if="importReport.query_history.conflict" class="tf-flag">
+              {{ t('web.transfer.conflict') }}
+            </em>
+          </span>
+          <span class="tf-size">—</span>
+          <span class="tf-action">
+            <select v-model="dec('query_history', 'query_history.json').action" class="tf-select">
               <option value="import">{{ t('web.transfer.act_import') }}</option>
               <option value="skip">{{ t('web.transfer.act_skip') }}</option>
             </select>
