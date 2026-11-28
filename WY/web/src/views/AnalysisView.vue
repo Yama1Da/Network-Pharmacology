@@ -20,9 +20,14 @@ const { t } = useI18n()
 
 /* ---------------- 表单 ---------------- */
 
+/* 已缓存查询名下拉(与协同页同源同款):本地 merged 缓存的药/病查询名,
+ * 只读本地不联网;拉取失败输入框照常手输(SynergyView 同款降级) */
+const drugOptions = ref<string[]>([])
+const diseaseOptions = ref<string[]>([])
+
 const mode = ref<'names' | 'genes'>('names')
-const drug = ref('metformin')
-const disease = ref('Type 2 diabetes mellitus')
+const drug = ref('')
+const disease = ref('')
 const genesText = ref('')
 const score = ref(0.45)
 const networkType = ref('full')
@@ -310,6 +315,15 @@ onMounted(() => {
     disease.value = pf.disease
   }
   void resumeAnalyzeJob()
+  void (async () => {
+    try {
+      const lib = await api.synergyLibrary()
+      drugOptions.value = lib.drugs
+      diseaseOptions.value = lib.diseases
+    } catch {
+      /* 本地库清单不可达时输入框照常手输 */
+    }
+  })()
 })
 
 /* 在途分析恢复(跨页离开任务照跑,重进找回进度与结果——同协同预测语义):
@@ -350,13 +364,22 @@ async function resumeAnalyzeJob(): Promise<void> {
     </div>
 
     <div v-if="mode === 'names'" class="names-form">
+      <!-- 已缓存查询名下拉(2026-11-28 负责人定稿):与协同页同款 datalist + 自由手输,
+           数据源 /api/synergy/library(list_known_targets,merged 缓存命中名)——
+           选中即缓存命中,分析免重新联网,一致性面板种子解析也秒回 -->
+      <datalist id="analysis-drug-options">
+        <option v-for="d in drugOptions" :key="d" :value="d"></option>
+      </datalist>
+      <datalist id="analysis-disease-options">
+        <option v-for="d in diseaseOptions" :key="d" :value="d"></option>
+      </datalist>
       <label class="field">
-        <input v-model="drug" spellcheck="false" :placeholder="t('web.common.ph_drug')" />
+        <input v-model="drug" spellcheck="false" list="analysis-drug-options" :placeholder="t('web.common.ph_drug')" />
         <i class="line"></i>
       </label>
       <span class="cross">×</span>
       <label class="field">
-        <input v-model="disease" spellcheck="false" :placeholder="t('web.common.ph_disease')" />
+        <input v-model="disease" spellcheck="false" list="analysis-disease-options" :placeholder="t('web.common.ph_disease')" />
         <i class="line"></i>
       </label>
     </div>
