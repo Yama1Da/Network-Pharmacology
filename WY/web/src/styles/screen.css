@@ -1312,3 +1312,28 @@ button.chip:hover {
 .save-note.fail {
   color: var(--c-danger);
 }
+
+/* ---------- 折叠区标题(AnalysisView 结果区的 RWR/GSEA/模块/下载四组共用,
+ * 原宿主 scoped 副本上提) ---------- */
+.fold {
+  border: none;
+}
+.fold-title {
+  cursor: pointer;
+  list-style: none;
+}
+.fold-title::before {
+  content: '› ';
+  color: var(--c-quiet);
+}
+.fold[open] .fold-title::before {
+  content: '⌄ ';
+}
+
+/* ---------- 分析页结果图(邻近度/网络图/富集等产物图;MlResultPanel 的 ROC 图
+ * 保留 420px 特化 scoped 副本覆盖) ---------- */
+.fig-img {
+  max-width: 100%;
+  margin-top: 12px;
+  border: 1px solid var(--c-line-soft);
+}

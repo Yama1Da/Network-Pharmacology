@@ -24,7 +24,7 @@ export type {
 } from './api/ml'
 export type {
   ConsensusRow, ConsensusSig, ModulesConsensusResult,
-  PpiAnalyzeBody, PpiResult, ProximityResult, RwrRow
+  PpiAnalyzeBody, PpiResult, ProximityResult, RwrRow, RwrSideResult
 } from './api/ppi'
 export type { ReachGene, TargetsReachability } from './api/retrieve'
 export type { SettingsSnapshot } from './api/settings'

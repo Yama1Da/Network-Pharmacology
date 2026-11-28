@@ -5,15 +5,20 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  api, artifactsUrl, type PpiAnalyzeBody, type PpiResult, type RwrRow, type Row
+  api, artifactsUrl, type PpiResult, type Row
 } from '../api'
 import { takePrefill } from '../store'
-import { useJob } from '../composables/useJob'
 import { useNotice } from '../composables/useNotice'
-import { useReachAnnotation } from '../composables/useReach'
+import { useAnalysisJob } from '../composables/useAnalysisJob'
 import Stepper from '../components/Stepper.vue'
+import AnalysisDownloadSection from '../components/AnalysisDownloadSection.vue'
+import AnalysisGseaSection from '../components/AnalysisGseaSection.vue'
+import AnalysisModulesSection from '../components/AnalysisModulesSection.vue'
+import AnalysisNetworkViewer from '../components/AnalysisNetworkViewer.vue'
+import AnalysisProximitySection from '../components/AnalysisProximitySection.vue'
+import AnalysisReachCmpSection from '../components/AnalysisReachCmpSection.vue'
+import AnalysisRwrSection from '../components/AnalysisRwrSection.vue'
 import ConsensusPanel from '../components/ConsensusPanel.vue'
-import { downloadBlob } from '../utils/download'
 import { fmt } from '../utils/format'
 
 const { t } = useI18n()
@@ -43,112 +48,19 @@ const snapshot = computed<(string | number)[]>(() => [
   score.value, networkType.value, rwrExpand.value, hubTopN.value, hubMethod.value
 ])
 
-/* ---------------- 分析任务 ---------------- */
-
-const ppi = ref<PpiResult | null>(null)
-
-/* 可达性标注(W7):names 模式才有药物语境,任务完成后懒取,挂在 hub 表;
- * genes 模式粘贴基因清单无暴露语义,不取数不渲染(共享逻辑见 useReach.ts) */
-const {
-  reachFilter, load: loadReach, reset: resetReach, hasReach,
-  tier: reachTier, word: reachWord, title: reachTitle, matchesFilter
-} = useReachAnnotation()
-
-const job = useJob((result) => {
-  ppi.value = result as unknown as PpiResult
-  const p = ppi.value
-  if (String(p?.params?.[0]) === 'names') void loadReach(String(p?.params?.[1] ?? ''))
-  else resetReach()
-})
-
-/* hub 表标注列:行内基因列名固定 gene(metrics_df 口径);过滤默认"全部"保一期 */
-const hubCols = computed<string[]>(() => {
-  const base = ppi.value?.hub_table.length ? Object.keys(ppi.value.hub_table[0]) : []
-  if (hasReach.value && !base.includes('__reach')) base.push('__reach')
-  return base
-})
-const hubRowsShown = computed<Row[]>(() => {
-  const rows = ppi.value?.hub_table ?? []
-  if (!hasReach.value || reachFilter.value === 'all') return rows
-  return rows.filter((r) => matchesFilter(reachTier(r.gene), reachFilter.value))
-})
-
-const stages = computed<string[]>(() => {
-  const base = ['targets', 'string', 'graph', 'enrichment']
-  const extra = mode.value === 'names' ? ['gsea', 'network'] : []
-  return [...base, ...extra, 'modules', 'save']
-})
-
-const stageLabels = computed<Record<string, string>>(() => ({
-  targets: t('web.analysis.stage_targets'),
-  string: t('web.analysis.stage_string'),
-  graph: t('web.analysis.stage_graph'),
-  enrichment: t('web.analysis.stage_enrichment'),
-  gsea: t('web.analysis.stage_gsea'),
-  network: t('web.analysis.stage_network'),
-  modules: t('web.analysis.stage_modules'),
-  save: t('web.analysis.stage_save')
-}))
-const STATE_ICON: Record<string, string> = { pending: '○', running: '◐', done: '●' }
-
-const stepStates = computed<Record<string, string>>(() => {
-  const map: Record<string, string> = {}
-  for (const k of stages.value) map[k] = 'pending'
-  const p = job.extra.value as { step?: string; state?: string; steps?: Record<string, string> }
-  // 后端富集/GSEA/邻近度+RWR/模块检测并发执行,整体上报 steps 映射 → 多阶段同时点亮;
-  // steps 缺失时(旧任务/其他作业)退回单 step/state 语义
-  if (p?.steps) {
-    for (const [k, st] of Object.entries(p.steps)) if (k in map) map[k] = st
-  } else if (p?.step && p?.state && p.step in map) {
-    map[p.step] = p.state
-  }
-  return map
-})
-
-function analyze(): void {
-  if (mode.value === 'names' && (!drug.value.trim() || !disease.value.trim())) {
-    flash(t('web.analysis.need_names'))
-    return
-  }
-  // genes 模式下 drug/disease 是隐藏表单的残留值,与结果无关:传空,后端 params
-  // 快照同样置空,两侧一致,paramsStale 才不会误报参数过期
-  const namesMode = mode.value === 'names'
-  const body: PpiAnalyzeBody = {
-    mode: mode.value, drug: namesMode ? drug.value : '', disease: namesMode ? disease.value : '',
-    genes_text: genesText.value,
-    score: score.value, network_type: networkType.value, rwr_expand: rwrExpand.value,
-    hub_top_n: hubTopN.value, hub_method: hubMethod.value
-  }
-  void job.run(api.analyzePpi(body), { doneText: t('web.analysis.report_done') })
-}
-
-/* ---------------- 结果 ---------------- */
-
-const paramsStale = computed(() => {
-  if (!ppi.value) return false
-  const a = snapshot.value
-  const b = ppi.value.params
-  return a.length !== b.length || a.some((v, i) => String(v) !== String(b[i]))
-})
-
 const { notice, flash } = useNotice(3200)
 
-const view = ref('')
-const availableViews = computed(() => ppi.value?.views ?? [])
-const effectiveView = computed(() => {
-  const v = view.value
-  if (v && availableViews.value.includes(v)) return v
-  return availableViews.value.includes('cytoscape') ? 'cytoscape' : 'interactive'
+/* 主作业(ppi 数据源/job/七阶段显示/hub 表可达性/paramsStale/analyze/resume)
+ * 见 useAnalysisJob;表单状态留壳层——一致性面板 fill 联动写表单字段,datalist
+ * 与模板绑定都在此处,拆走接线大于收益 */
+const {
+  ppi, paramsStale, job, reachFilter, hasReach, reachTier, reachWord, reachTitle,
+  hubCols, hubRowsShown, stages, stageLabels, STATE_ICON, stepStates,
+  analyze, resumeAnalyzeJob
+} = useAnalysisJob({
+  mode, drug, disease, genesText, score, networkType, rwrExpand, hubTopN, hubMethod,
+  snapshot, flash
 })
-function setView(v: string): void {
-  view.value = v
-}
-const viewLabels = computed<Record<string, string>>(() => ({
-  interactive: t('web.analysis.view_interactive'),
-  static: t('web.analysis.view_static'),
-  string: t('web.analysis.view_string'),
-  cytoscape: t('web.analysis.view_cytoscape')
-}))
 
 const artifacts = computed(() => ppi.value?.artifacts ?? {})
 function art(key: string): string | null {
@@ -161,129 +73,30 @@ const prox = computed(() => ppi.value?.proximity ?? null)
 /* 暴露约束前后排序对比摘要(W7):gate=false → 结论行;true → artifacts 出图 */
 const reachCmp = computed(() => ppi.value?.reach_compare ?? null)
 
-/* RWR */
+/* RWR(侧切换与行拆分在 AnalysisRwrSection) */
 const rwr = computed(() => ppi.value?.rwr ?? null)
-const rwrSide = ref<'disease_seeds' | 'drug_seeds'>('disease_seeds')
-const rwrRes = computed(() => rwr.value?.[rwrSide.value] ?? null)
-const rwrTop = computed<(RwrRow & { is_seed: boolean })[]>(() => {
-  const res = rwrRes.value
-  if (!res?.ok) return []
-  const seeds = (res.seeds ?? []).map((r) => ({ ...r, is_seed: true }))
-  const non = (res.top_nonseed ?? []).map((r) => ({ ...r, is_seed: false }))
-  return [...seeds, ...non].sort((a, b) => b.score - a.score)
-})
-const rwrNonSeed = computed(() => rwrTop.value.filter((r) => !r.is_seed))
-const rwrSeeds = computed(() => rwrTop.value.filter((r) => r.is_seed))
 
-/* 模块 / GSEA 重跑 */
-const modsJob = useJob((result) => {
-  if (ppi.value) {
-    ppi.value = { ...ppi.value, modules: {
-      summary: (result.summary ?? []) as Row[],
-      failures: (result.failures ?? []) as unknown[],
-      no_sig: (result.no_sig ?? []) as number[],
-      hidden_single: Number(result.hidden_single ?? 0),
-      enr_rows: (result.enr_rows ?? []) as Row[],
-      enr_total: Number(result.enr_total ?? 0),
-      enr_modules: Number(result.enr_modules ?? 0)
-    } }
+/* 模块 / GSEA 重跑:完成事件由组件 emit,此处合并回 PpiResult(单一结果对象)
+ * 并 flash;api.rerunGsea/rerunModules 调用已移入组件 script */
+function onGseaDone(result: Record<string, unknown>, side: 'drug' | 'disease'): void {
+  if (!ppi.value) return
+  const g = { ...ppi.value.gsea }
+  g[side] = {
+    reason: String(result.reason ?? ''),
+    stats: (result.stats ?? {}) as Row,
+    rows: (result.rows ?? []) as Row[]
   }
-  flash(t('web.analysis.modules_done_flash'))
-})
-const gseaJob = useJob((result) => {
-  if (ppi.value && gseaSide.value) {
-    const g = { ...ppi.value.gsea }
-    g[gseaSide.value] = {
-      reason: String(result.reason ?? ''),
-      stats: (result.stats ?? {}) as Row,
-      rows: (result.rows ?? []) as Row[]
-    }
-    ppi.value = { ...ppi.value, gsea: g }
-  }
+  ppi.value = { ...ppi.value, gsea: g }
   flash(t('web.analysis.gsea_done_flash'))
-})
-const gseaSide = ref<'drug' | 'disease'>('drug')
-const gseaRes = computed(() => ppi.value?.gsea?.[gseaSide.value] ?? null)
-const gseaDone = computed(() => {
-  const g = gseaRes.value
-  return !!g && !paramsStale.value &&
-    !['request_failed', 'circuit_open', 'normalize_empty'].includes(g.reason)
-})
-
-/* 下载清单:后端列运行目录全量文件(除 analysis_meta.json 内部元数据)做**保底**,
- * 认识的后缀叠加人类可读描述;没映射的新文件不会漏——自动回退显示原始文件名。
- * 【维护提醒】新增产物类型时记得两步:①在下面 DL_PATTERNS 加一行后缀→描述键
- * 映射;②i18n 词典 web.analysis.dl_desc.* 补描述(zh/en 各一条)。不加也不会
- * 漏列,该文件显示原始文件名(全量枚举 + 友好名叠加)。 */
-const DL_PATTERNS: { suffix: string; key: string }[] = [
-  { suffix: '_nodes.csv', key: 'nodes' },
-  { suffix: '_edges.csv', key: 'edges' },
-  { suffix: '_network.html', key: 'html' },
-  { suffix: '_graph.graphml', key: 'graphml' },
-  { suffix: '_enrichment.csv', key: 'enrichment_csv' },
-  { suffix: '_network_string.png', key: 'string_png' },
-  { suffix: '_network_string.svg', key: 'string_svg' },
-  { suffix: '_network_cytoscape.png', key: 'cyto_png' },
-  { suffix: '_network_cytoscape.svg', key: 'cyto_svg' },
-  { suffix: '_network.png', key: 'network_png' },
-  { suffix: '_network.svg', key: 'network_svg' },
-  { suffix: '_core_targets.png', key: 'core_png' },
-  { suffix: '_core_targets.svg', key: 'core_svg' },
-  { suffix: '_enrichment_network.png', key: 'dtp_png' },
-  { suffix: '_enrichment_network.svg', key: 'dtp_svg' },
-  { suffix: '_enrichment_bar.png', key: 'enrichment_bar_png' },
-  { suffix: '_enrichment_bar.svg', key: 'enrichment_bar_svg' },
-  { suffix: '_enrichment_dot.png', key: 'enrichment_dot_png' },
-  { suffix: '_enrichment_dot.svg', key: 'enrichment_dot_svg' },
-  { suffix: '_gsea_drug.png', key: 'gsea_drug_png' },
-  { suffix: '_gsea_drug.svg', key: 'gsea_drug_svg' },
-  { suffix: '_gsea_disease.png', key: 'gsea_disease_png' },
-  { suffix: '_gsea_disease.svg', key: 'gsea_disease_svg' },
-  { suffix: '_gsea_drug.csv', key: 'gsea_drug_csv' },
-  { suffix: '_gsea_disease.csv', key: 'gsea_disease_csv' },
-  { suffix: '_rwr_disease_seeds.csv', key: 'rwr_disease_csv' },
-  { suffix: '_rwr_drug_seeds.csv', key: 'rwr_drug_csv' },
-  { suffix: '_proximity.csv', key: 'proximity_csv' },
-  { suffix: '_query_genes.csv', key: 'query_genes_csv' },
-  { suffix: '_modules.csv', key: 'modules_csv' },
-  { suffix: '_module_enrichment.csv', key: 'module_enrichment_csv' },
-  { suffix: 'reach_compare.png', key: 'reach_compare_png' },
-  { suffix: '_consensus_targets.csv', key: 'consensus_targets_csv' },
-  { suffix: '_consensus_methods.csv', key: 'consensus_methods_csv' },
-  { suffix: '_consensus_significance.csv', key: 'consensus_significance_csv' },
-]
-
-function dlDesc(name: string): string {
-  // 最长后缀优先(顺序无关):_module_enrichment.csv 也以 _enrichment.csv 结尾、
-  // _enrichment_network.png 也以 _network.png 结尾,短后缀先匹配会错标(2026-11-28 勘误)
-  let hit: { suffix: string; key: string } | null = null
-  for (const p of DL_PATTERNS) {
-    if (name.endsWith(p.suffix) && (!hit || p.suffix.length > hit.suffix.length)) hit = p
-  }
-  if (!hit) return name
-  // 注意 vue-i18n 的 te() 不认扁平点号键:以 t() 原样返回键名判定缺失,回退文件名
-  const ik = `web.analysis.dl_desc.${hit.key}`
-  const s = t(ik)
-  return s === ik ? name : s
 }
-
-const downloadItems = computed(() =>
-  (ppi.value?.files ?? []).map((f) => ({
-    name: f.name, rel: f.rel, desc: dlDesc(f.name),
-    known: dlDesc(f.name) !== f.name,
-  })))
-
-const dirName = computed(() =>
-  (ppi.value?.directory_rel ?? '').split('/').pop() ?? '')
-
-async function zipWholeDirectory(): Promise<void> {
-  if (!dirName.value) return
-  try {
-    downloadBlob(await api.zip('downloads', [dirName.value]), `${dirName.value}.zip`)
-  } catch {
-    flash(t('web.analysis.dl_zip_fail'))
-  }
+function onModulesDone(modules: NonNullable<PpiResult['modules']>): void {
+  if (!ppi.value) return
+  ppi.value = { ...ppi.value, modules }
+  flash(t('web.analysis.modules_done_flash'))
 }
+/* 重跑忙闲回传(组件 emit):「开始分析」按钮防重入——重跑中禁点 */
+const gseaRerunning = ref(false)
+const modsRerunning = ref(false)
 
 /* 多方法一致性面板(模块C)联动:
  * - saved:一致性产物是在分析完成后另起的任务写的,本次 ppi.files 快照里没有
@@ -325,23 +138,6 @@ onMounted(() => {
     }
   })()
 })
-
-/* 在途分析恢复(跨页离开任务照跑,重进找回进度与结果——同协同预测语义):
- * names 模式先采纳任务的分析对象,结果回填后 paramsStale 不会误报参数过期;
- * 后端在"完成未超回填窗口"时也吐 job_id(done)——resume 即回填报告,同当场
- * 跑完体验;genes 模式基因列表不可采纳,只续轮询。 */
-async function resumeAnalyzeJob(): Promise<void> {
-  try {
-    const st = await api.ppiJob()
-    if (!st.job_id || (st.status !== 'running' && st.status !== 'done')) return
-    if (st.mode === 'names' && st.drug) {
-      mode.value = 'names'
-      drug.value = st.drug
-      disease.value = st.disease ?? ''
-    }
-    await job.resume(st.job_id, { doneText: t('web.analysis.report_done') })
-  } catch { /* 状态不可达:照常空表单 */ }
-}
 </script>
 
 <template>
@@ -419,7 +215,7 @@ async function resumeAnalyzeJob(): Promise<void> {
     </div>
 
     <div class="build-row">
-      <button class="build" :disabled="job.running.value || modsJob.running.value || gseaJob.running.value"
+      <button class="build" :disabled="job.running.value || gseaRerunning || modsRerunning"
               :title="t('web.analysis.build_title')" :aria-label="t('web.analysis.build_title')" @click="analyze">
         <svg viewBox="0 0 24 14" width="26" height="15">
           <path d="M1 7h20M15.5 1.5 21.5 7l-6 5.5" fill="none" stroke="currentColor"
@@ -505,149 +301,21 @@ async function resumeAnalyzeJob(): Promise<void> {
       </div>
     </section>
 
-    <!-- 网络图:视图切换 -->
-    <section class="sec">
-      <h3 class="sec-title">{{ t('web.analysis.sec_network') }}</h3>
-      <div class="lv-group">
-        <button v-for="v in ppi.views" :key="v" class="lv"
-                :class="{ on: effectiveView === v }" @click="setView(v)">{{ viewLabels[v] }}</button>
-      </div>
-      <p v-if="effectiveView === 'string'" class="hint-line">{{ t('web.analysis.view_string_hint') }}</p>
-      <p v-if="effectiveView === 'cytoscape'" class="hint-line">{{ t('web.analysis.view_cyto_hint') }}</p>
-      <iframe v-if="effectiveView === 'interactive'"
-              class="fig-frame" :src="artifactsUrl(art('html') ?? '')" />
-      <img v-else-if="effectiveView === 'static'"
-           class="fig-img" :src="artifactsUrl(art('png') ?? '')" alt="static network" />
-      <img v-else-if="effectiveView === 'string'"
-           class="fig-img" :src="artifactsUrl(art('string_png') ?? '')" alt="string style" />
-      <img v-else class="fig-img" :src="artifactsUrl(art('cyto_png') ?? '')" alt="cytoscape style" />
-      <p class="hint-line">{{ t('web.analysis.views_saved_hint') }}</p>
-    </section>
+    <!-- 网络图:视图切换 + 核心靶点 -->
+    <AnalysisNetworkViewer :views="ppi.views" :artifacts="artifacts" />
 
-    <!-- 核心靶点 -->
-    <section v-if="art('core_png')" class="sec">
-      <h3 class="sec-title">{{ t('web.analysis.sec_core') }}</h3>
-      <img class="fig-img" :src="artifactsUrl(art('core_png') ?? '')" alt="core targets" />
-    </section>
+    <!-- 邻近度(有结果且 names 模式才渲染;空网络时 proximity=null 整块不出现) -->
+    <template v-if="prox && ppi.params[0] === 'names'">
+      <AnalysisProximitySection :prox="prox" />
+    </template>
 
-    <!-- 邻近度 -->
-    <section v-if="prox && ppi.params[0] === 'names'" class="sec">
-      <h3 class="sec-title">{{ t('web.analysis.sec_prox') }}</h3>
-      <p class="hint-line">
-        {{ t('web.analysis.prox_setup', { n: prox.n_perm, seed: prox.seed ?? '-' }) }}
-      </p>
-      <template v-if="prox.error === 'not_built'">
-        <p class="stale">{{ t('web.analysis.prox_not_built') }}</p>
-      </template>
-      <template v-else-if="prox.error &&
-                           ['low_coverage_drug', 'low_coverage_disease', 'empty_after_filter'].includes(prox.error)">
-        <p class="stale">
-          {{ t('web.analysis.prox_low_cov', { din: prox.coverage?.drug_in_lcc ?? 0, dtotal: prox.coverage?.drug_total ?? 0,
-                                               iin: prox.coverage?.disease_in_lcc ?? 0, itotal: prox.coverage?.disease_total ?? 0 }) }}
-        </p>
-      </template>
-      <template v-else-if="prox.error">
-        <p class="stale">{{ t('web.analysis.prox_fail', { err: prox.error }) }}</p>
-      </template>
-      <template v-else-if="prox.ok">
-        <div class="metrics three">
-          <div class="metric"><b>{{ fmt(prox.d_c) }}</b><span>{{ t('web.analysis.m_dc') }}</span></div>
-          <div class="metric"><b>{{ fmt(prox.z) }}</b><span>{{ t('web.analysis.m_z') }}</span></div>
-          <div class="metric"><b>{{ fmt(prox.p_empirical, 4) }}</b><span>{{ t('web.analysis.m_p') }}</span></div>
-        </div>
-        <p class="hint-line" :class="{ good: typeof prox.z === 'number' && prox.z < 0 }">
-          {{ typeof prox.z === 'number'
-            ? (prox.z < 0 ? t('web.analysis.prox_support') : t('web.analysis.prox_unsupported'))
-            : t('web.analysis.prox_degenerate') }}
-        </p>
-        <p class="hint-line">
-          {{ t('web.analysis.prox_lcc', { nodes: prox.lcc_nodes, din: prox.coverage?.drug_in_lcc ?? 0,
-                                          dtotal: prox.coverage?.drug_total ?? 0,
-                                          iin: prox.coverage?.disease_in_lcc ?? 0,
-                                          itotal: prox.coverage?.disease_total ?? 0 }) }}
-          {{ prox.cached ? t('web.analysis.cached_hit') : '' }}
-        </p>
-        <template v-if="prox.d_c_excl != null">
-          <p class="hint-line">{{ t('web.analysis.prox_excl', { n: prox.n_excl ?? 0 }) }}</p>
-          <div class="metrics three">
-            <div class="metric"><b>{{ fmt(prox.d_c_excl) }}</b><span>{{ t('web.analysis.m_dc_excl') }}</span></div>
-            <div class="metric"><b>{{ fmt(prox.z_excl) }}</b><span>{{ t('web.analysis.m_z_excl') }}</span></div>
-            <div class="metric"><b>{{ fmt(prox.p_excl, 4) }}</b><span>{{ t('web.analysis.m_p_excl') }}</span></div>
-          </div>
-        </template>
-      </template>
-    </section>
+    <!-- 暴露约束前后排序对比(W7 招牌图) -->
+    <AnalysisReachCmpSection v-if="reachCmp" :reach-cmp="reachCmp" :artifacts="artifacts" />
 
-    <!-- 暴露约束前后排序对比(W7 招牌图,2026-11-27):门槛 max(5, ceil(5%×N)),
-         过门槛看 artifacts 的 reach_compare_png;低于门槛只出结论行(方案 §3.2) -->
-    <section v-if="reachCmp" class="sec">
-      <h3 class="sec-title">{{ t('web.analysis.reach_cmp_title') }}</h3>
-      <template v-if="art('reach_compare_png')">
-        <p class="hint-line">{{ t('web.analysis.reach_cmp_hint') }}</p>
-        <img class="fig-img" :src="artifactsUrl(art('reach_compare_png') ?? '')"
-             alt="reachability-weighted rank comparison" />
-      </template>
-      <p v-else class="hint-line">
-        {{ t('web.analysis.reach_cmp_gate', { judged: reachCmp.judged,
-                                               total: reachCmp.total }) }}
-      </p>
-    </section>
-
-    <!-- RWR -->
-    <section v-if="rwr && ppi.params[0] === 'names'" class="sec">
-      <details class="fold">
-        <summary class="sec-title fold-title">{{ t('web.analysis.sec_rwr') }}</summary>
-        <p class="hint-line">{{ t('web.analysis.rwr_hint') }}</p>
-        <div class="lv-group">
-          <button class="lv" :class="{ on: rwrSide === 'disease_seeds' }"
-                  @click="rwrSide = 'disease_seeds'">{{ t('web.analysis.rwr_side_disease') }}</button>
-          <i class="lv-sep">/</i>
-          <button class="lv" :class="{ on: rwrSide === 'drug_seeds' }"
-                  @click="rwrSide = 'drug_seeds'">{{ t('web.analysis.rwr_side_drug') }}</button>
-        </div>
-        <template v-if="rwrRes">
-          <p v-if="rwrRes.error === 'not_built'" class="stale">{{ t('web.analysis.rwr_not_built') }}</p>
-          <p v-else-if="rwrRes.error" class="stale">{{ t('web.analysis.rwr_fail', { err: rwrRes.error }) }}</p>
-          <template v-else-if="rwrRes.ok">
-            <p class="hint-line">
-              {{ t('web.analysis.rwr_meta', { n: rwrRes.n_iter,
-                                              conv: rwrRes.converged ? t('web.analysis.converged') : t('web.analysis.not_converged'),
-                                              in: rwrRes.coverage?.seed_in_lcc ?? 0, total: rwrRes.coverage?.seed_total ?? 0 }) }}
-              {{ rwrRes.cached ? t('web.analysis.cached_hit') : '' }}
-            </p>
-            <p v-if="rwrRes.enrichment && rwrRes.enrichment.z != null" class="hint-line"
-               :class="{ good: rwrRes.enrichment.p != null && rwrRes.enrichment.p < 0.05 }">
-              {{ t('web.analysis.rwr_enrich', {
-                n: rwrRes.enrichment.n_annotated, z: fmt(rwrRes.enrichment.z),
-                p: fmt(rwrRes.enrichment.p, 4),
-                sig: rwrRes.enrichment.p != null && rwrRes.enrichment.p < 0.05
-                  ? t('web.analysis.sig_yes') : t('web.analysis.sig_no') }) }}
-            </p>
-            <div v-if="rwrNonSeed.length" class="tbl-wrap">
-              <table class="tbl">
-                <thead><tr><th>gene</th><th>score</th><th v-if="'annotated' in rwrNonSeed[0]">{{ t('web.analysis.th_annot') }}</th></tr></thead>
-                <tbody>
-                  <tr v-for="r in rwrNonSeed" :key="String(r.gene)">
-                    <td>{{ r.gene }}</td><td>{{ fmt(r.score, 6) }}</td>
-                    <td v-if="'annotated' in r">{{ r.annotated ? '✓' : '' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p v-else class="hint-line">{{ t('web.analysis.rwr_empty') }}</p>
-            <details v-if="rwrSeeds.length" class="fold">
-              <summary class="hint-line">{{ t('web.analysis.seeds_fold', { n: rwrSeeds.length }) }}</summary>
-              <div class="tbl-wrap">
-                <table class="tbl">
-                  <thead><tr><th>gene</th><th>score</th></tr></thead>
-                  <tbody><tr v-for="r in rwrSeeds" :key="String(r.gene)"><td>{{ r.gene }}</td><td>{{ fmt(r.score, 6) }}</td></tr></tbody>
-                </table>
-              </div>
-            </details>
-          </template>
-        </template>
-      </details>
-    </section>
+    <!-- RWR(有结果且 names 模式才渲染;空网络时 rwr={} 整块不出现) -->
+    <template v-if="rwr && Object.keys(rwr).length && ppi.params[0] === 'names'">
+      <AnalysisRwrSection :rwr="rwr" />
+    </template>
 
     <!-- 多方法一致性(模块C):独立组件,种子来源随本次分析(names=疾病靶点全集/genes=基因列表),
          产物落运行目录自动进下载列表;填入按钮走 fill 事件写表单,默认不替换 -->
@@ -692,120 +360,20 @@ async function resumeAnalyzeJob(): Promise<void> {
       </template>
     </section>
 
-    <!-- GSEA -->
-    <section v-if="ppi.params[0] === 'names'" class="sec">
-      <details class="fold">
-        <summary class="sec-title fold-title">{{ t('web.analysis.sec_gsea') }}</summary>
-        <div class="lv-group">
-          <button class="lv" :class="{ on: gseaSide === 'drug' }" @click="gseaSide = 'drug'">{{ t('web.analysis.gsea_side_drug') }}</button>
-          <i class="lv-sep">/</i>
-          <button class="lv" :class="{ on: gseaSide === 'disease' }" @click="gseaSide = 'disease'">{{ t('web.analysis.gsea_side_disease') }}</button>
-        </div>
-        <button class="bar-btn" :disabled="gseaDone || paramsStale || gseaJob.running.value"
-                @click="gseaSide && gseaJob.run(api.rerunGsea(gseaSide, drug, disease, ppi.prefix), { doneText: t('web.analysis.gsea_done_text') })">
-          {{ gseaJob.running.value ? t('web.analysis.rerunning') : (gseaDone ? t('web.analysis.gsea_has_result') : t('web.analysis.gsea_rerun')) }}
-        </button>
-        <p v-if="gseaJob.running.value" class="hint-line">{{ gseaJob.text.value || t('web.analysis.rerunning') }}</p>
-        <p v-if="gseaJob.error.value" class="notice err">{{ t('web.analysis.gsea_done_text') }}:{{ gseaJob.error.value }}</p>
-        <template v-if="gseaRes">
-          <p v-if="gseaRes.reason === 'insufficient_input'" class="stale">{{ t('web.analysis.gsea_insufficient') }}</p>
-          <p v-else-if="gseaRes.reason === 'request_failed'" class="stale">{{ t('web.analysis.gsea_req_failed') }}</p>
-          <p v-else-if="!gseaRes.rows.length" class="hint-line">{{ t('web.analysis.gsea_empty') }}</p>
-          <template v-else>
-            <img v-if="art(`gsea_${gseaSide}_png`)" class="fig-img"
-                 :src="artifactsUrl(art(`gsea_${gseaSide}_png`) ?? '')" :alt="`GSEA ${gseaSide}`" />
-            <div class="tbl-wrap">
-              <table class="tbl">
-                <thead><tr><th>term_name</th><th>NES</th><th>adj_p</th></tr></thead>
-                <tbody>
-                  <tr v-for="(r, i) in gseaRes.rows" :key="i">
-                    <td>{{ r.Term ?? r.term_name ?? r.Name }}</td>
-                    <td>{{ fmt(r.NES ?? r.nes, 3) }}</td>
-                    <td>{{ fmt(r['FDR q-val'] ?? r.fdr_q_value ?? r.adj_p ?? r['FDR p-val'], 4) }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </template>
-        </template>
-      </details>
-    </section>
+    <!-- GSEA(names 模式渲染条件在壳层) -->
+    <template v-if="ppi.params[0] === 'names'">
+      <AnalysisGseaSection :gsea="ppi.gsea" :artifacts="artifacts" :params-stale="paramsStale"
+                           :drug="drug" :disease="disease" :prefix="ppi.prefix"
+                           @done="onGseaDone" @running="v => gseaRerunning = v" />
+    </template>
 
     <!-- 模块 -->
-    <section class="sec">
-      <details class="fold">
-        <summary class="sec-title fold-title">{{ t('web.analysis.sec_modules') }}</summary>
-        <button class="bar-btn" :disabled="paramsStale || modsJob.running.value"
-                @click="modsJob.run(api.rerunModules(ppi.directory_rel, ppi.prefix), { doneText: t('web.analysis.modules_done_text') })">
-          {{ modsJob.running.value ? t('web.analysis.rerunning') : t('web.analysis.modules_rerun') }}
-        </button>
-        <p v-if="modsJob.running.value" class="hint-line">{{ modsJob.text.value || t('web.analysis.rerunning') }}</p>
-        <p v-if="modsJob.error.value" class="notice err">{{ t('web.analysis.modules_done_text') }}:{{ modsJob.error.value }}</p>
-        <p v-if="ppi.modules && !ppi.modules.summary.length" class="hint-line">
-          {{ t('web.analysis.modules_empty') }}
-        </p>
-        <p v-if="ppi.modules?.summary.length" class="hint-line">
-          {{ t('web.analysis.modules_summary_title') }}<template v-if="ppi.modules.hidden_single">
-            · {{ t('web.analysis.modules_hidden', { n: ppi.modules.hidden_single }) }}</template>
-        </p>
-        <div v-if="ppi.modules?.summary.length" class="tbl-wrap">
-          <table class="tbl">
-            <thead><tr><th>module_id</th><th>size</th><th>avg_degree</th><th>genes_preview</th></tr></thead>
-            <tbody>
-              <tr v-for="r in ppi.modules.summary" :key="String(r.module_id)">
-                <td>{{ r.module_id }}</td><td>{{ r.size }}</td><td>{{ r.avg_degree }}</td><td>{{ r.genes_preview }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <template v-if="ppi.modules?.enr_rows?.length">
-          <h4 class="sub-sec">{{ t('web.analysis.mod_enr_title') }}</h4>
-          <p class="hint-line">
-            {{ t('web.analysis.mod_enr_stats', { total: ppi.modules.enr_total }) }}
-            <!-- 完整表走底部"下载产物"清单(模块富集完整结果表)与整包 ZIP;此处不再放就地下载(2026-11-28 单一入口定稿) -->
-          </p>
-          <div class="tbl-wrap">
-            <table class="tbl">
-              <thead>
-                <tr><th>module_id</th><th>source</th><th>term_id</th><th>term_name</th>
-                    <th>adj_p</th><th>intersection</th><th>query_size</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="(r, i) in ppi.modules.enr_rows" :key="i">
-                  <td>{{ r.module_id }}</td><td>{{ r.source }}</td><td>{{ r.term_id }}</td>
-                  <td>{{ r.term_name }}</td><td>{{ fmt(r.adjusted_p_value, 4) }}</td>
-                  <td>{{ r.intersection_size }}</td><td>{{ r.query_size }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </template>
-        <p v-if="ppi.modules?.no_sig?.length" class="hint-line">
-          {{ t('web.analysis.modules_no_sig', { names: ppi.modules.no_sig.join(', ') }) }}
-        </p>
-        <p v-if="ppi.modules?.failures?.length" class="stale">
-          {{ t('web.analysis.modules_failures', { n: ppi.modules.failures.length }) }}
-        </p>
-      </details>
-    </section>
+    <AnalysisModulesSection :modules="ppi.modules" :params-stale="paramsStale"
+                            :directory-rel="ppi.directory_rel" :prefix="ppi.prefix"
+                            @done="onModulesDone" @running="v => modsRerunning = v" />
 
     <!-- 下载区 -->
-    <section class="sec">
-      <details class="fold">
-        <summary class="sec-title fold-title">{{ t('web.analysis.dl_title', { n: downloadItems.length }) }}</summary>
-        <button class="bar-btn" @click="zipWholeDirectory">{{ t('web.analysis.dl_whole', { name: `${dirName}.zip` }) }}</button>
-        <ul class="dl-list">
-          <li v-for="d in downloadItems" :key="d.rel" class="dl-row">
-            <div class="dl-main">
-              <span class="dl-desc">{{ d.desc }}</span>
-              <span class="dl-name" :class="{ unknown: !d.known }">{{ d.name }}</span>
-            </div>
-            <a class="mini" :href="artifactsUrl(d.rel, true)">{{ t('web.common.download') }}</a>
-          </li>
-        </ul>
-        <p class="hint-line">{{ t('web.analysis.dl_hint', { dir: ppi.directory_rel }) }}</p>
-      </details>
-    </section>
+    <AnalysisDownloadSection :files="ppi.files" :directory-rel="ppi.directory_rel" :flash="flash" />
   </div>
 </template>
 
@@ -1013,20 +581,6 @@ async function resumeAnalyzeJob(): Promise<void> {
   letter-spacing: 0.14em;
   color: var(--c-ink);
 }
-.fold {
-  border: none;
-}
-.fold-title {
-  cursor: pointer;
-  list-style: none;
-}
-.fold-title::before {
-  content: '› ';
-  color: var(--c-quiet);
-}
-.fold[open] .fold-title::before {
-  content: '⌄ ';
-}
 .tbl-wrap {
   max-height: 420px;
   overflow: auto;
@@ -1060,11 +614,6 @@ async function resumeAnalyzeJob(): Promise<void> {
   border: 1px solid var(--c-line-soft);
   margin-top: 12px;
   background: var(--c-panel);
-}
-.fig-img {
-  max-width: 100%;
-  margin-top: 12px;
-  border: 1px solid var(--c-line-soft);
 }
 .bar-btn {
   border: none;

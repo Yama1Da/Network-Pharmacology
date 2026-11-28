@@ -53,7 +53,7 @@ interface RwrEnrichment {
 }
 
 /** 单侧 RWR 结果(疾病种子 / 药物种子;not_built 哨兵只含部分字段)。 */
-interface RwrSideResult {
+export interface RwrSideResult {
   ok: boolean
   error: string | null
   alpha?: number
