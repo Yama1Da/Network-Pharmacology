@@ -710,7 +710,7 @@ async function resumeAnalyzeJob(): Promise<void> {
 
     <!-- 模块 -->
     <section class="sec">
-      <details class="fold" open>
+      <details class="fold">
         <summary class="sec-title fold-title">{{ t('web.analysis.sec_modules') }}</summary>
         <button class="bar-btn" :disabled="paramsStale || modsJob.running.value"
                 @click="modsJob.run(api.rerunModules(ppi.directory_rel, ppi.prefix), { doneText: t('web.analysis.modules_done_text') })">
