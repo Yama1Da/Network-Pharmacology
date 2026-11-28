@@ -159,6 +159,14 @@ function rankTitle(rank: number | null, nTotal: number): string {
       </button>
     </div>
     <p v-if="anyInvalid" class="notice err">{{ invalidMsg }}</p>
+    <!-- 运行进度(治"死态"):细线进度条与主分析同款全局样式;后端步进上报
+         (DIAMOnD 每入模一步 / 显著性每完成一次置换)驱动连续爬行 -->
+    <div v-if="consJob.running.value" class="progress">
+      <div class="progress-track">
+        <div class="progress-fill"
+             :style="{ width: `${((consJob.fraction.value ?? 0) * 100).toFixed(0)}%` }"></div>
+      </div>
+    </div>
     <p v-if="consJob.running.value" class="hint-line">
       {{ consJob.text.value }}<template v-if="consJob.fraction.value !== null"> · {{ Math.round(consJob.fraction.value * 100) }}%</template>
     </p>

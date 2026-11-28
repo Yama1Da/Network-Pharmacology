@@ -86,12 +86,15 @@ def _diamond_pvalue(k_out: int, n_mod: int, k: int, M: int) -> float:
     return float(hypergeom.sf(k_out - 1, M, n_mod, k))
 
 
-def diamond_expand(ctx, seeds, n=None) -> dict:
+def diamond_expand(ctx, seeds, n=None, step_progress=None) -> dict:
     """DIAMOnD 扩张(Ghiassian 2015,严格按原文逐步度校正超几何):
     每步对全部候选重算超几何尾部 p(陷阱#1:先正确后优化,不做增量优化),
     取最小者入模。tie-break 为原文未定义的复现性微决策,钉死:
     p 升序 → k_out 降序(连接更多者优先,贴近原文意图)→ 基因字典序
-    (可复现红线 §1.2-8 同款)。种子先交集(陷阱#3)。"""
+    (可复现红线 §1.2-8 同款)。种子先交集(陷阱#3)。
+    step_progress: 可选 (method, done, total) 回调,每入模一步上报一次——
+    UI 进度条用(真实图分钟级,治"死态");core 不解释语义,CLI 不传零开销,
+    且只读不动结果,不影响可复现性。"""
     nodes, idx, _Mt, degree_map = ctx
     import networkx as nx
 
@@ -117,6 +120,8 @@ def diamond_expand(ctx, seeds, n=None) -> dict:
         mod_set.add(best_v)
         join_order.append(best_v)
         candidates.remove(best_v)
+        if step_progress:
+            step_progress("diamond", len(module), n_target)
     return {"module": module, "join_order": join_order,
             "n_added": len(join_order),
             "coverage": {"seeds_in_lcc": len(seed_in),
@@ -190,17 +195,19 @@ def _method_ranks(module: list[str], join_order: list[str]) -> dict:
     return {g: i + 1 for i, g in enumerate(dict.fromkeys(order))}
 
 
-def consensus_targets(ctx, seeds, *, n=None, k=None) -> dict:
+def consensus_targets(ctx, seeds, *, n=None, k=None, step_progress=None) -> dict:
     """三方法 + Borda 共识(§4.2)。返回:
       schema / modules(三方法同 N 同输入,陷阱#4)/ consensus 表
       (gene, rwr_rank, diamond_rank, neighbor_rank, n_methods,
        consensus_score, consistent, is_seed, 各方法成员布尔列)/ coverage。
     秩从 1 开始(陷阱#5);非成员 = NaN;consensus_score = 所属方法秩的
     平均(Borda);consistent = n_methods ≥ k(默认 2)。
-    consensus 表序:consensus_score 升序(更优在前)→ n_methods 降序 → 基因序。"""
+    consensus 表序:consensus_score 升序(更优在前)→ n_methods 降序 → 基因序。
+    step_progress: 透传 diamond_expand 的逐步回调(见该函数 docstring)——
+    RWR/近邻扩张秒级,不上报;回调结果不入返回值,可复现性不受影响。"""
     import pandas as pd
 
-    dm = diamond_expand(ctx, seeds, n)
+    dm = diamond_expand(ctx, seeds, n, step_progress=step_progress)
     nb = neighbor_expansion(ctx, seeds, n)
     rw = rwr_module(ctx, seeds, n)
     seed_in, seed_out = _seeds_intersect(ctx, seeds)
@@ -252,14 +259,16 @@ def consensus_targets(ctx, seeds, *, n=None, k=None) -> dict:
 
 
 def module_significance(ctx, seeds, *, n=None, n_perms=None,
-                        null_seed=None) -> dict:
+                        null_seed=None, perm_progress=None) -> dict:
     """三方法模块显著性(§4.2,度匹配零模型,一期框架复用):
     观测统计 = 模块内部边数(cohesion);零分布 = degree_matched_sample
     重抽种子集 → 同一方法扩张 → 内部边数;经验单侧 p = (1+#{null>=obs})
     /(perms+1)(富集方向,一期邻近度经验 p 同式)。
     n_perms 默认 RWR_NULL_PERMS,null_seed 默认 RWR_NULL_SEED(一期同源)。
     成本注记(§12.1-E4 同款):DIAMOnD 零分布 = perms × 逐步扩张,真实图
-    分钟级起,批量前先小 perms 试跑(陷阱#1 先正确后优化)。"""
+    分钟级起,批量前先小 perms 试跑(陷阱#1 先正确后优化)。
+    perm_progress: 可选 (method, done, total) 回调,每完成一次置换上报——
+    UI 进度条用;只读不动结果,不影响 p 值可复现性。"""
     import numpy as np
     from .network_algorithms import _build_degree_bins, degree_matched_sample
 
@@ -290,6 +299,8 @@ def module_significance(ctx, seeds, *, n=None, n_perms=None,
         for i in range(perms):
             sample = degree_matched_sample(degree_map, seed_in, 100, rng, bins=bins)
             nulls[i] = cohesion(set(expand(sorted(sample))))
+            if perm_progress:
+                perm_progress(name, i + 1, perms)
         p = float((1 + int((nulls >= obs).sum())) / (perms + 1))
         out[name] = {"observed_cohesion": obs, "null_mean": float(nulls.mean()),
                      "null_sd": float(nulls.std()), "n_perms": perms,

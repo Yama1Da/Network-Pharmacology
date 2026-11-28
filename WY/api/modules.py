@@ -151,8 +151,15 @@ def modules_consensus(body: ConsensusBody) -> dict:
             return {"ok": False, "reason": str(exc)}
         progress(fraction=0.15,
                  text=f"three-method expansion (rwr/diamond/neighbor), seeds={len(seeds)}")
+
+        def _on_step(method: str, done: int, total: int) -> None:
+            # DIAMOnD 逐步扩张是分钟级主力:步进上报让进度条连续爬行(治"死态")
+            if method == "diamond" and total > 0:
+                progress(fraction=0.15 + 0.4 * (min(done, total) / total),
+                         text=f"DIAMOnD expansion {min(done, total)}/{total}")
+
         ctx = _lcc_context("Human")
-        res = consensus_targets(ctx, seeds, n=body.n, k=body.k)
+        res = consensus_targets(ctx, seeds, n=body.n, k=body.k, step_progress=_on_step)
         if not res.get("ok"):
             return {"ok": False, "reason": res.get("error") or "rwr_failed"}
 
@@ -176,7 +183,14 @@ def modules_consensus(body: ConsensusBody) -> dict:
         if perms > 0:
             progress(fraction=0.6,
                      text=f"significance: {perms} degree-matched perms x 3 methods")
-            sig = module_significance(ctx, seeds, n=body.n, n_perms=perms)
+
+            def _on_perm(name: str, i: int, perms_total: int) -> None:
+                # 逐置换上报(0.6→0.95):200 次全量是 CLI/基准层档位,网页小值也可见推进
+                progress(fraction=0.6 + 0.35 * (i / max(perms_total, 1)),
+                         text=f"significance: {name} {i}/{perms_total}")
+
+            sig = module_significance(ctx, seeds, n=body.n, n_perms=perms,
+                                      perm_progress=_on_perm)
             sig_df = pd.DataFrame([{"method": m, **v}
                                    for m, v in sig["methods"].items()])
             sig_path = os.path.join(directory,

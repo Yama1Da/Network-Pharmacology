@@ -135,3 +135,36 @@ class TestExport:
                                         str(tmp_path / "consensus_targets.csv"))
         df = pd.read_csv(path, comment="#")
         assert "consensus_score" in df.columns and len(df) == len(out["consensus"])
+
+
+class TestProgressHooks:
+    """2026-11-28 UI 进度条钩子(§1.12):步进/逐置换回调只读不动结果——
+    同输入同输出(可复现红线);CLI 不传即零开销,core 不解释回调语义。"""
+
+    def test_diamond_step_progress_fires(self, ctx):
+        calls = []
+        res = dmo.diamond_expand(ctx, ["A", "B"], n=5,
+                                 step_progress=lambda m, d, t: calls.append((m, d, t)))
+        assert res["join_order"] == ["C", "F", "D"]  # 与无钩子逐字一致
+        # 每入模一步上报一次:3 步扩张 → (diamond, 模块当前大小, n_target)
+        assert calls == [("diamond", 3, 5), ("diamond", 4, 5), ("diamond", 5, 5)]
+
+    def test_diamond_no_hook_same_result(self, ctx):
+        assert (dmo.diamond_expand(ctx, ["A", "B"], n=5)["join_order"]
+                == dmo.diamond_expand(ctx, ["A", "B"], n=5,
+                                      step_progress=lambda *_: None)["join_order"])
+
+    def test_consensus_passes_hook_through(self, ctx):
+        calls = []
+        dmo.consensus_targets(ctx, ["A", "B"], n=5, k=2,
+                              step_progress=lambda m, d, t: calls.append((m, d, t)))
+        assert calls and all(m == "diamond" for m, _d, _t in calls)  # 仅 DIAMOnD 步进
+
+    def test_significance_perm_progress_fires(self, ctx):
+        calls = []
+        dmo.module_significance(ctx, ["A", "B"], n=3, n_perms=4,
+                                perm_progress=lambda m, d, t: calls.append((m, d, t)))
+        methods = [m for m, _d, _t in calls]
+        assert methods == ["rwr"] * 4 + ["diamond"] * 4 + ["neighbor"] * 4
+        assert all(d == i + 1 for i, (_m, d, _t) in enumerate(calls[:4]))
+        assert {t for _m, _d, t in calls} == {4}

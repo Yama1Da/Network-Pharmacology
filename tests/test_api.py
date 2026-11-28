@@ -2053,7 +2053,7 @@ def test_modules_consensus_names_mode_flow(client, monkeypatch):
     monkeypatch.setattr("WY.core.network_algorithms._lcc_context", lambda species: None)
     captured = {}
 
-    def _fake_consensus_targets(ctx, seeds, n=None, k=None):
+    def _fake_consensus_targets(ctx, seeds, n=None, k=None, step_progress=None):
         captured.update(seeds=list(seeds), n=n, k=k)
         return _fake_consensus_result()
 
@@ -2094,7 +2094,7 @@ def test_modules_consensus_genes_mode_reads_query_genes(client, monkeypatch):
     monkeypatch.setattr("WY.core.network_algorithms._lcc_context", lambda species: None)
     captured = {}
 
-    def _fake(ctx, seeds, n=None, k=None):
+    def _fake(ctx, seeds, n=None, k=None, step_progress=None):
         captured.update(seeds=list(seeds))
         return _fake_consensus_result()
 
