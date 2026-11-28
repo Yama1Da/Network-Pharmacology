@@ -33,3 +33,5 @@ coverage.xml
 /.acl-recovery-docking/
 /.zcode/
 /WY/resources/
+/output/
+/_video.7z
